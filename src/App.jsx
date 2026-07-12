@@ -11,7 +11,7 @@ import {
   signInWithPopup,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, onSnapshot, collection } from "firebase/firestore";
+import { getFirestore, doc, setDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 
@@ -71,7 +71,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.03.07";
+const APP_VERSION = "V0.03.08";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2081,7 +2081,7 @@ function Inp({label,value,onChange,placeholder="",type="text",multiline}){const 
 function Drp({label,value,onChange,options}){return <div style={{marginBottom:12}}><div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>{label}</div><select className="po-inp" value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">اختر...</option>{options.map(o=><option key={o.v||o} value={o.v||o}>{o.l||o.v||o}</option>)}</select></div>;}
 function Tabs({tabs,active,onChange}){return <div className="po-inp" style={{display:"flex",gap:4,background:"var(--po-inp)",borderRadius:8,padding:4,marginBottom:14}}>{tabs.map(([k,l])=><button key={k} onClick={()=>onChange(k)} style={{flex:1,padding:"8px 0",borderRadius:6,border:active===k?"2px solid #6366F1":"2px solid transparent",fontSize:12,fontWeight:active===k?700:500,cursor:"pointer",background:active===k?"#6366F1":"transparent",color:active===k?"#FFFFFF":"var(--po-dim)",transition:"all 0.15s"}}>{l}</button>)}</div>;}
 function rBdg(r){const m={owner:["#C084FC","Owner"],admin:["#38BDF8","Admin"],member:["#64748B","Member"]};const[c,l]=m[r]||["#64748B",r];return <Bdg label={l} color={c}/>;}
-function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
+function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"],guest:["#F59E0B","Guest"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
 function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EGYPT[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
 
 // Score Stepper — fixed scroll issue with onMouseDown instead of onClick
@@ -2386,7 +2386,7 @@ export default function Matchkeeper() {
           _eid = Math.max(_eid, ...remote.flatMap(c=>c.events.map(e=>e.id)), 0) + 1;
         }
         everRealRef.current.comms = true;
-      } else if (!everRealRef.current.comms) { syncedRef.current.comms = JSON.stringify(INIT_COMMS); setComms(INIT_COMMS); setDoc(doc(db,"padelos","comms"),{value:JSON.stringify(INIT_COMMS)}); } // else: transient "not found" after real data was seen — ignore, never wipe live data
+      } else if (!everRealRef.current.comms) { syncedRef.current.comms = JSON.stringify(INIT_COMMS); setComms(INIT_COMMS); } // local fallback only — NEVER auto-write seed data to Firestore; a transient "not found" on a fresh session must not overwrite real production data. Use the manual Factory Reset button for genuine first-time setup.
       markLoaded("comms");
     }, e => { console.log("Firestore comms error", e); markLoaded("comms"); });
     return unsub;
@@ -2410,7 +2410,7 @@ export default function Matchkeeper() {
           _uid = Math.max(_uid, ...remote.map(u=>u.id), 0) + 1;
         }
         everRealRef.current.users = true;
-      } else if (!everRealRef.current.users) { syncedRef.current.users = JSON.stringify(INIT_USERS); setUsers(INIT_USERS); setDoc(doc(db,"padelos","users"),{value:JSON.stringify(INIT_USERS)}); } // else: transient "not found" — ignore
+      } else if (!everRealRef.current.users) { syncedRef.current.users = JSON.stringify(INIT_USERS); setUsers(INIT_USERS); } // local fallback only — NEVER auto-write seed data to Firestore (this exact line caused a real production data loss: a fresh session misread a transient "not found" as an empty database and overwrote 18 real users with 12 seed ones)
       markLoaded("users");
     }, e => { console.log("Firestore users error", e); markLoaded("users"); });
     return unsub;
@@ -2434,7 +2434,7 @@ export default function Matchkeeper() {
           _vid = Math.max(_vid, ...remote.map(v=>v.id), 0) + 1;
         }
         everRealRef.current.venues = true;
-      } else if (!everRealRef.current.venues) { syncedRef.current.venues = JSON.stringify(INIT_VENUES); setVenues(INIT_VENUES); setDoc(doc(db,"padelos","venues"),{value:JSON.stringify(INIT_VENUES)}); } // else: transient "not found" — ignore
+      } else if (!everRealRef.current.venues) { syncedRef.current.venues = JSON.stringify(INIT_VENUES); setVenues(INIT_VENUES); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("venues");
     }, e => { console.log("Firestore venues error", e); markLoaded("venues"); });
     return unsub;
@@ -2457,7 +2457,7 @@ export default function Matchkeeper() {
           _nid = Math.max(_nid, ...remote.map(n=>n.id), 0) + 1;
         }
         everRealRef.current.notifications = true;
-      } else if (!everRealRef.current.notifications) { syncedRef.current.notifications = JSON.stringify([]); setNotifications([]); setDoc(doc(db,"padelos","notifications"),{value:JSON.stringify([])}); } // else: transient "not found" — ignore
+      } else if (!everRealRef.current.notifications) { syncedRef.current.notifications = JSON.stringify([]); setNotifications([]); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("notifications");
     }, e => { console.log("Firestore notifications error", e); markLoaded("notifications"); });
     return unsub;
@@ -2480,7 +2480,7 @@ export default function Matchkeeper() {
           _crid = Math.max(_crid, ...remote.map(r=>r.id), 0) + 1;
         }
         everRealRef.current.claimRequests = true;
-      } else if (!everRealRef.current.claimRequests) { syncedRef.current.claimRequests = JSON.stringify([]); setClaimRequests([]); setDoc(doc(db,"padelos","claimRequests"),{value:JSON.stringify([])}); } // else: transient "not found" — ignore
+      } else if (!everRealRef.current.claimRequests) { syncedRef.current.claimRequests = JSON.stringify([]); setClaimRequests([]); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("claimRequests");
     }, e => { console.log("Firestore claimRequests error", e); markLoaded("claimRequests"); });
     return unsub;
@@ -2577,6 +2577,48 @@ export default function Matchkeeper() {
       URL.revokeObjectURL(url);
       toast2("Data exported ✓");
     } catch(e) { toast2("Export failed","err"); }
+  };
+  // Manual backup — Platform Admin only. Writes a full snapshot to its own document
+  // (padelos_backups/<timestamp>) so a bad edit or bug can be rolled back without
+  // relying on someone remembering to export a JSON file beforehand.
+  const [backups, setBackups] = useState([]);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+  const refreshBackups = async () => {
+    setBackupsLoading(true);
+    try {
+      const snap = await getDocs(collection(db,"padelos_backups"));
+      const list = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>b.id.localeCompare(a.id));
+      setBackups(list);
+    } catch(e) { console.log("Fetch backups error", e); toast2("Couldn't load backups","err"); }
+    setBackupsLoading(false);
+  };
+  const createBackup = async () => {
+    try {
+      const id = new Date().toISOString();
+      await setDoc(doc(db,"padelos_backups",id), {
+        value: JSON.stringify({users, venues, comms}),
+        createdAt: id,
+        createdBy: me?.nickname || "unknown",
+        version: APP_VERSION,
+      });
+      toast2("Backup created ✓");
+      refreshBackups();
+    } catch(e) { console.log("Create backup error", e); toast2("Backup failed","err"); }
+  };
+  const restoreBackup = async (backupId) => {
+    const b = backups.find(x=>x.id===backupId);
+    if (!b) return;
+    try {
+      const snap = JSON.parse(b.value);
+      setUsers(snap.users||[]);
+      setVenues(snap.venues||[]);
+      setComms(snap.comms||[]);
+      toast2(`Restored backup from ${timeAgo(b.createdAt)} ✓`);
+    } catch(e) { console.log("Restore backup error", e); toast2("Restore failed — backup data unreadable","err"); }
+  };
+  const deleteBackup = async (backupId) => {
+    try { await deleteDoc(doc(db,"padelos_backups",backupId)); setBackups(bs=>bs.filter(b=>b.id!==backupId)); }
+    catch(e) { console.log("Delete backup error", e); toast2("Delete failed","err"); }
   };
   const repairDuplicateIds = () => {
     let fixed = 0;
@@ -2919,8 +2961,17 @@ export default function Matchkeeper() {
     const id=_uid++;
     const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
     setUsers(us=>[...us,newUser]);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
+    updC(cid,c=>({...c,
+      members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
+      events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
     toast2(`${g.n} added ✓`);
+  };
+  // Promotes a community guest to a full (casual) member — same person, same history,
+  // just no longer flagged as a guest anywhere in the app.
+  const convertGuestToMember=(cid,uid)=>{
+    updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,status:"casual"}:m)}));
+    setUsers(us=>us.map(u=>u.id===uid?{...u,isGuest:false}:u));
+    toast2("Converted to member ✓");
   };
   const checkIn=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]})}));toast2("Checked in ✓");};
   const votePoll=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.poll)return ev;const v={...ev.poll.votes};const my=v[me.id]||[];v[me.id]=my.includes(key)?my.filter(k=>k!==key):[...my,key];return{...ev,poll:{...ev.poll,votes:v}};})}));};
@@ -3141,7 +3192,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={()=>go("comm",{cid:comm.id})} onSave={d=>saveComm(comm.id,d)}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -3187,7 +3238,7 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
         {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser}/>}
-        {nav==="settings"&&<SettingsSc user={me} users={users} dark={dark} onToggleDark={()=>setDark(d=>!d)} onAddUser={u=>{const id=_uid++;setUsers(us=>[...us,{id,...u,joined:today,avatar:ini2(u.nickname),isGuest:false}]);toast2(`${u.nickname} added ✓`);}} onExport={exportData} onEditUser={editUser} onDeleteUser={deleteUser} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
+        {nav==="settings"&&<SettingsSc user={me} users={users} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={n=>{markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav:"notifications",view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}/>}
@@ -3197,6 +3248,9 @@ export default function Matchkeeper() {
           onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           claimRequests={claimRequests} onApproveClaim={approveClaim} onRejectClaim={rejectClaim}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset}
+          backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
+          onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
       </div>
       {toast&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:toast.t==="err"?"#EF4444":"#10B981",color:"#fff",padding:"10px 20px",borderRadius:8,fontSize:13,fontWeight:500,zIndex:999,whiteSpace:"nowrap",boxShadow:"0 4px 20px #00000055"}}>{toast.msg}</div>}
@@ -3378,7 +3432,7 @@ function CommStatsTab({comm, users, onViewProfile}){
   </>;
 }
 
-function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onInvite,onOpenEv,onCreateEv,onViewProfile}){
+function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile}){
   const [tab,setTab]=useState("members");
   const [showInvite,setShowInvite]=useState(false);
   const myRole=comm.members.find(m=>m.userId===me.id)?.role;
@@ -3388,7 +3442,7 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
   const regs=comm.members.filter(m=>m.status!=="inactive");
   const avgU=regs.length?Math.round(regs.reduce((s,m)=>s+(users.find(u=>u.id===m.userId)?.usr||0),0)/regs.length):0;
   const tdefs=[["members","Members"],["events","Events"],["stats","Stats"],...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
-  const statusOrder={regular:0,casual:1,inactive:2},roleOrder={owner:0,admin:1,member:2};
+  const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
   const sortedMembers=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
   const nonMembers=users.filter(u=>!comm.members.some(m=>m.userId===u.id));
 
@@ -3426,7 +3480,7 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
             <Card key={m.userId} style={{cursor:isAdmin?"pointer":"default"}}><div onClick={()=>isAdmin&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
               <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{isAdmin&&!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
-              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}} onClick={e=>e.stopPropagation()}>{m.role==="member"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>onToggleStatus(u.id)} color="#34D399"/>}{m.role==="member"&&<SmBtn label="↑ Admin" onClick={()=>onPromote(u.id)} color="#6366F1"/>}<SmBtn label="Remove" onClick={()=>onKick(u.id)} color="#EF4444"/></div>}
+              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}} onClick={e=>e.stopPropagation()}>{m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>onConvertGuest(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>onToggleStatus(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>onPromote(u.id)} color="#6366F1"/>}<SmBtn label="Remove" onClick={()=>onKick(u.id)} color="#EF4444"/></div>}
             </div></Card>
           );})}
         </div>;
@@ -5200,7 +5254,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim}){
+function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
   const [tab,setTab]=useState("users");
   const [editing,setEditing]=useState(null);
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50"});
@@ -5208,6 +5262,7 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const pendingClaims = claimRequests.filter(r=>r.status==="pending");
+  useEffect(()=>{ if(tab==="data") onRefreshBackups&&onRefreshBackups(); }, [tab]);
 
   return <><BBtn onBack={onBack} label="Back"/>
   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
@@ -5218,7 +5273,7 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
     </div>
   </div>
 
-  <Tabs tabs={[["users",`Users (${users.length})`],["claims",`Claims${pendingClaims.length>0?` (${pendingClaims.length})`:""}`],["archived","Archived Events"]]} active={tab} onChange={setTab}/>
+  <Tabs tabs={[["users",`Users (${users.length})`],["claims",`Claims${pendingClaims.length>0?` (${pendingClaims.length})`:""}`],["archived","Archived Events"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="claims"&&<>
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>When someone signs in and picks an existing player as themself, it lands here — confirm it's really them before their account gets linked.</div>
@@ -5293,31 +5348,59 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
         <div style={{fontSize:11,color:"var(--po-dim)"}}>{fmtD(ev.date)} · {ev.type}</div>
       </Card>)}
   </>}
+  {tab==="data"&&<>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>These tools affect every player and event in the community. Only Platform Admins can see this tab.</div>
+
+    <ST>Manual Backup</ST>
+    <Card style={{marginBottom:12}}>
+      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:10}}>Saves a snapshot of every player, community and event right now. Takes a few seconds. Use this before doing anything risky.</div>
+      <Btn label="📸 Backup Now" primary onClick={onCreateBackup} style={{width:"100%"}}/>
+    </Card>
+
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+      <ST style={{marginBottom:0}}>Recent Backups</ST>
+      <SmBtn label={backupsLoading?"Loading…":"↻ Refresh"} onClick={onRefreshBackups} color="#6366F1"/>
+    </div>
+    {backups.length===0
+      ? <Card style={{marginBottom:16}}><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>{backupsLoading?"Loading…":"No backups yet — tap \"Backup Now\" to create the first one."}</div></Card>
+      : backups.map(b=><Card key={b.id} style={{marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:18}}>📦</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{timeAgo(b.createdAt)}</div>
+              <div style={{fontSize:11,color:"var(--po-dim)"}}>by {b.createdBy||"unknown"} · {b.version||"—"}</div>
+            </div>
+            <SmBtn label="Restore" onClick={()=>{if(window.confirm(`Restore this backup from ${timeAgo(b.createdAt)}?\n\nThis replaces ALL current players, communities and events with what was saved at that moment. Anything added or changed since then will be lost unless you back it up first.`))onRestoreBackup(b.id);}} color="#F59E0B"/>
+            <SmBtn label="🗑" onClick={()=>{if(window.confirm("Delete this backup? This cannot be undone."))onDeleteBackup(b.id);}} color="#EF4444"/>
+          </div>
+        </Card>)}
+
+    <ST>Other Tools</ST>
+    <Card style={{padding:0,overflow:"hidden",marginBottom:16}}>
+      <div onClick={onExport} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
+        <span style={{fontSize:18}}>💾</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Export Data</span>
+        <span style={{fontSize:12,color:"var(--po-dim)"}}>Download JSON</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
+      <div onClick={()=>{if(window.confirm("Repair duplicate event IDs?\n\nThis scans all events and reassigns new unique IDs to any duplicates found, without deleting any data. Safe to run anytime."))onRepairIds();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
+        <span style={{fontSize:18}}>🔧</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Repair Data (Event IDs & Venues)</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
+      <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+        <span style={{fontSize:18}}>⚠️</span>
+        <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
+    </Card>
+  </>}
   </>;
 }
 
-function SettingsSc({user,users,dark,onToggleDark,onAddUser,onEditUser,onDeleteUser,onExport,onRepairIds,onFactoryReset,onSendTestNotif,onBack}){
-  const [showAddUser,setShowAddUser] = useState(false);
-  const [editingId,setEditingId] = useState(null);
-  const [nf,setNf] = useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50"});
-  const [ef,setEf] = useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:""});
+function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
-  const [photoUploading,setPhotoUploading] = useState(false);
-  const handlePhotoSelect = async (e) => {
-    const file = e.target.files[0];
-    e.target.value = ""; // allow re-selecting the same file later
-    if (!file) return;
-    setPhotoUploading(true);
-    try {
-      const url = await uploadProfilePhoto(user.id, file);
-      onEditUser(user.id, {nickname:user.nickname, name:user.name, gov:user.gov, area:user.area, usr:user.usr, phone:user.phone, photoURL:url});
-    } catch(err) { console.log("Photo upload error", err); }
-    setPhotoUploading(false);
-  };
-  const set=(k,v)=>setNf(p=>({...p,[k]:v}));
-  const sete=(k,v)=>setEf(p=>({...p,[k]:v}));
-  const startEdit=(u)=>{setEditingId(u.id);setEf({nickname:u.nickname,name:u.name,gov:u.gov||"القاهرة",area:u.area||"المعادي",usr:String(u.usr),phone:u.phone||""});};
   const enablePush = async () => {
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
@@ -5356,25 +5439,6 @@ function SettingsSc({user,users,dark,onToggleDark,onAddUser,onEditUser,onDeleteU
         <ST>Support</ST>
     <Card style={{padding:0,overflow:"hidden"}}>
       {[{i:"❓",l:"Help & FAQ"},{i:"📩",l:"Contact Support"},{i:"⚖️",l:"Terms & Privacy"}].map((item,i)=><div key={item.l} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:i<2?"0.5px solid var(--po-bdr)":"none",cursor:"pointer"}}><span style={{fontSize:18}}>{item.i}</span><span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{item.l}</span><span style={{color:"var(--po-dim)"}}>›</span></div>)}
-    </Card>
-    <ST>Data</ST>
-    <Card style={{padding:0,overflow:"hidden"}}>
-      <div onClick={onExport} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
-        <span style={{fontSize:18}}>💾</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Export My Data</span>
-        <span style={{fontSize:12,color:"var(--po-dim)"}}>Download backup JSON</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      <div onClick={()=>{if(window.confirm("Repair duplicate event IDs?\n\nThis scans all events and reassigns new unique IDs to any duplicates found, without deleting any data. Safe to run anytime."))onRepairIds();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
-        <span style={{fontSize:18}}>🔧</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Repair Data (Event IDs & Venues)</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player from this device and reloads the app with the original seed data.\n\nExport a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
-        <span style={{fontSize:18}}>⚠️</span>
-        <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
     </Card>
     <div style={{textAlign:"center",marginTop:24,fontSize:12,color:"var(--po-bdr)"}}>Matchkeeper {APP_VERSION}</div>
   </>;

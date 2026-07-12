@@ -36,12 +36,13 @@ async function enablePushNotifications(userId){
     const perm = await Notification.requestPermission();
     if (perm !== "granted") return {ok:false, reason:"denied"};
     const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+    await navigator.serviceWorker.ready; // wait until a service worker is actually active — registering alone doesn't guarantee it's ready yet, which was causing "no active Service Worker" failures
     const messaging = getMessaging(firebaseApp);
     const token = await getToken(messaging, {vapidKey: VAPID_KEY, serviceWorkerRegistration: reg});
     if (!token) return {ok:false, reason:"no-token"};
     await setDoc(doc(db,"fcmTokens", String(userId)), {token, updatedAt:new Date().toISOString()});
     return {ok:true};
-  }catch(e){ console.log("Push enable error", e); return {ok:false, reason:"error"}; }
+  }catch(e){ console.log("Push enable error", e); return {ok:false, reason:"error", detail: e?.message||String(e)}; }
 }
 const fbAuth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
@@ -70,7 +71,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.03.06";
+const APP_VERSION = "V0.03.07";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -5301,6 +5302,7 @@ function SettingsSc({user,users,dark,onToggleDark,onAddUser,onEditUser,onDeleteU
   const [nf,setNf] = useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50"});
   const [ef,setEf] = useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:""});
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
+  const [pushErrDetail,setPushErrDetail] = useState("");
   const [photoUploading,setPhotoUploading] = useState(false);
   const handlePhotoSelect = async (e) => {
     const file = e.target.files[0];
@@ -5320,6 +5322,7 @@ function SettingsSc({user,users,dark,onToggleDark,onAddUser,onEditUser,onDeleteU
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
     setPushStatus(res.ok ? "on" : "error");
+    setPushErrDetail(res.ok ? "" : (res.reason==="denied"?"Browser notification permission was denied":res.reason==="unsupported"?"This browser doesn't support push notifications":res.reason==="no-token"?"Couldn't get a push token — try again":(res.detail||"Unknown error")));
   };
   return <><BBtn onBack={onBack} label="Back"/>
     <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
@@ -5330,7 +5333,7 @@ function SettingsSc({user,users,dark,onToggleDark,onAddUser,onEditUser,onDeleteU
         <div style={{flex:1}}>
           <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Push Notifications</div>
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>
-            {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?"Couldn't enable — check browser notification permission":pushStatus==="working"?"Setting up…":"Get notified even when the app is closed"}
+            {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`Couldn't enable — ${pushErrDetail}`:pushStatus==="working"?"Setting up…":"Get notified even when the app is closed"}
           </div>
         </div>
         <Btn label={pushStatus==="on"?"✓ On":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>

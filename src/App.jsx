@@ -71,7 +71,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.03.08";
+const APP_VERSION = "V0.03.10";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2973,6 +2973,25 @@ export default function Matchkeeper() {
     setUsers(us=>us.map(u=>u.id===uid?{...u,isGuest:false}:u));
     toast2("Converted to member ✓");
   };
+  // One-time repair for guests added before community membership tracking existed:
+  // scans every event's registrations for isGuest players and adds any missing ones
+  // to their community's member list (status: guest), without touching anyone already there.
+  const backfillGuestMemberships = () => {
+    let added = 0;
+    const newComms = comms.map(c => {
+      const existingIds = new Set(c.members.map(m=>m.userId));
+      const guestIdsInEvents = new Set();
+      c.events.forEach(ev => ev.registrations.forEach(r => {
+        if (r.isGuest || users.find(u=>u.id===r.userId)?.isGuest) guestIdsInEvents.add(r.userId);
+      }));
+      const toAdd = [...guestIdsInEvents].filter(uid => !existingIds.has(uid));
+      if (toAdd.length===0) return c;
+      added += toAdd.length;
+      return {...c, members:[...c.members, ...toAdd.map(uid=>({userId:uid, role:"member", status:"guest", since:today}))]};
+    });
+    if (added>0) { setComms(newComms); toast2(`Added ${added} guest(s) to their communities ✓`); }
+    else toast2("No missing guest memberships found — all clean ✓");
+  };
   const checkIn=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]})}));toast2("Checked in ✓");};
   const votePoll=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.poll)return ev;const v={...ev.poll.votes};const my=v[me.id]||[];v[me.id]=my.includes(key)?my.filter(k=>k!==key):[...my,key];return{...ev,poll:{...ev.poll,votes:v}};})}));};
   const resolveT=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,type:key,poll:ev.poll?{...ev.poll,resolved:true,result:key}:null})}));toast2("Type set ✓");};
@@ -3248,7 +3267,7 @@ export default function Matchkeeper() {
           onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           claimRequests={claimRequests} onApproveClaim={approveClaim} onRejectClaim={rejectClaim}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -5254,7 +5273,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
+function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
   const [tab,setTab]=useState("users");
   const [editing,setEditing]=useState(null);
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50"});
@@ -5388,6 +5407,11 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Repair Data (Event IDs & Venues)</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
+      <div onClick={()=>{if(window.confirm("Backfill guest memberships?\n\nThis scans every event for guests added before this feature existed, and adds any missing ones to their community's member list. Safe to run anytime — never removes or duplicates anything."))onBackfillGuests();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
+        <span style={{fontSize:18}}>🧑‍🤝‍🧑</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Backfill Guest Memberships</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
       <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
         <span style={{fontSize:18}}>⚠️</span>
         <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
@@ -5401,6 +5425,8 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
 function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
+  const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
+  const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const enablePush = async () => {
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
@@ -5434,11 +5460,41 @@ function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
         </div>
         <span style={{fontSize:12,color:"var(--po-dim)",minWidth:24}}>{dark?"On":"Off"}</span>
       </div>
-      {[{i:"🌍",l:"Language",n:"English"},{i:"📍",l:"Home Area",n:user.area}].map((item,i)=><div key={item.l} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:i<1?"0.5px solid var(--po-bdr)":"none",cursor:"pointer"}}><span style={{fontSize:18}}>{item.i}</span><span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{item.l}</span><span style={{fontSize:12,color:"var(--po-dim)"}}>{item.n}</span><span style={{color:"var(--po-dim)"}}>›</span></div>)}
+      {[{i:"🌍",l:"Language",n:"English"},{i:"📍",l:"Home Area",n:user.area}].map((item,i)=><div key={item.l} onClick={item.l==="Language"?()=>alert("Arabic support is planned for a future update — English only for now."):undefined} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:i<1?"0.5px solid var(--po-bdr)":"none",cursor:"pointer"}}><span style={{fontSize:18}}>{item.i}</span><span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{item.l}</span><span style={{fontSize:12,color:"var(--po-dim)"}}>{item.n}</span><span style={{color:"var(--po-dim)"}}>›</span></div>)}
     </Card>
         <ST>Support</ST>
     <Card style={{padding:0,overflow:"hidden"}}>
-      {[{i:"❓",l:"Help & FAQ"},{i:"📩",l:"Contact Support"},{i:"⚖️",l:"Terms & Privacy"}].map((item,i)=><div key={item.l} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:i<2?"0.5px solid var(--po-bdr)":"none",cursor:"pointer"}}><span style={{fontSize:18}}>{item.i}</span><span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{item.l}</span><span style={{color:"var(--po-dim)"}}>›</span></div>)}
+      <div onClick={()=>setInfoPanel(p=>p==="faq"?null:"faq")} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:"pointer"}}>
+        <span style={{fontSize:18}}>❓</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Help & FAQ</span>
+        <span style={{color:"var(--po-dim)"}}>{infoPanel==="faq"?"▲":"▼"}</span>
+      </div>
+      {infoPanel==="faq"&&<div style={{padding:"4px 16px 16px",borderBottom:"0.5px solid var(--po-bdr)",fontSize:12,color:"var(--po-sub)",lineHeight:1.6}}>
+        <b style={{color:"var(--po-text)"}}>How do I join an event?</b><br/>Open the event and tap "I'm In" to register.<br/><br/>
+        <b style={{color:"var(--po-text)"}}>How is my USR calculated?</b><br/>It's the average of your last 5 event scores.<br/><br/>
+        <b style={{color:"var(--po-text)"}}>What happens if I'm on a break?</b><br/>Break rounds still earn points — you'll be back on court soon.<br/><br/>
+        <b style={{color:"var(--po-text)"}}>Can I cancel my registration?</b><br/>Yes, freely up to 24 hours before the event starts.
+      </div>}
+      <a href={admin?.phone?`https://wa.me/2${admin.phone.replace(/^0/,"")}`:undefined} target="_blank" rel="noreferrer" style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:"pointer",textDecoration:"none"}}>
+        <span style={{fontSize:18}}>💬</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>WhatsApp Support</span>
+        <span style={{fontSize:12,color:"var(--po-dim)"}}>{admin?.phone||"—"}</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </a>
+      <a href={admin?.email?`mailto:${admin.email}`:undefined} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:"pointer",textDecoration:"none"}}>
+        <span style={{fontSize:18}}>📩</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Email Support</span>
+        <span style={{fontSize:12,color:"var(--po-dim)"}}>{admin?.email||"—"}</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </a>
+      <div onClick={()=>setInfoPanel(p=>p==="terms"?null:"terms")} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+        <span style={{fontSize:18}}>⚖️</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Terms & Privacy</span>
+        <span style={{color:"var(--po-dim)"}}>{infoPanel==="terms"?"▲":"▼"}</span>
+      </div>
+      {infoPanel==="terms"&&<div style={{padding:"4px 16px 16px",fontSize:12,color:"var(--po-sub)",lineHeight:1.6}}>
+        Matchkeeper is an internal tool used to organize your community's events. Your name, phone number, and match history are visible only to your community's admins and members — never sold or shared outside it. For any question about your data, contact the community admin directly above.
+      </div>}
     </Card>
     <div style={{textAlign:"center",marginTop:24,fontSize:12,color:"var(--po-bdr)"}}>Matchkeeper {APP_VERSION}</div>
   </>;

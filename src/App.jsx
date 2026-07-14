@@ -71,7 +71,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.03.10";
+const APP_VERSION = "V0.03.11";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -81,7 +81,16 @@ const EVENT_TYPES = [
 
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
+const BREAK_PREF_LABELS = {none:"No Preference", early:"Early", mid:"Mid", late:"Late"};
 const breakPts = (tc) => Math.floor((tc + 1) / 2);
+// Distance from a player's preferred break window to round r — lower is more preferred.
+// Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
+function prefDist(pref, r, totalRounds) {
+  if (pref==="early") return r;
+  if (pref==="late") return (totalRounds-1-r);
+  if (pref==="mid") return Math.abs(r-(totalRounds-1)/2);
+  return 0;
+}
 
 // ── CI Break Plan ─────────────────────────────────────
 function buildBreakPlan(players, courts, totalRounds) {
@@ -99,7 +108,11 @@ function buildBreakPlan(players, courts, totalRounds) {
   const plan = [];
   for (let r = 0; r < totalRounds; r++) {
     const eligible = players.filter(p => assigned[p.userId] < ent[p.userId]);
-    eligible.sort((a, b) => { const rd = (ent[b.userId]-assigned[b.userId])-(ent[a.userId]-assigned[a.userId]); if (rd!==0) return rd; return (r-lastB[b.userId])-(r-lastB[a.userId]); });
+    eligible.sort((a, b) => {
+      const rd = (ent[b.userId]-assigned[b.userId])-(ent[a.userId]-assigned[a.userId]); if (rd!==0) return rd;
+      const spacing = (r-lastB[b.userId])-(r-lastB[a.userId]); if (spacing!==0) return spacing;
+      return prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); // break preference: last-resort tiebreak only
+    });
     const noC = eligible.filter(p => r - lastB[p.userId] > 1);
     const pool = noC.length >= bpr ? noC : eligible;
     const chosen = pool.slice(0, bpr).map(p => p.userId);
@@ -146,7 +159,30 @@ function genNextRoundCI(plan) {
   lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
   for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId));
   const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId));
-  returning.forEach(rp=>{const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];if(needy)buckets[parseInt(needy[0])].push(rp);});
+  // Where a returning player belongs is not "the court they last sat on" — it's the court
+  // their last ACTUAL result would have earned them (win promotes, loss relegates), applying
+  // the same movement rule as everyone else. Scans backward since they may have broken for
+  // more than one round in a row.
+  const findExpectedReturnCourt=(uid)=>{
+    for(let i=rounds.length-1;i>=0;i--){
+      for(const m of rounds[i].matches){
+        const inA=m.teamA.some(p=>p.userId===uid), inB=m.teamB.some(p=>p.userId===uid);
+        if(inA||inB){
+          if(!m.winner) return m.court; // no recorded result yet — fall back to their last court
+          const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+          return won ? Math.max(1,m.court-1) : Math.min(courts,m.court+1);
+        }
+      }
+    }
+    return null;
+  };
+  returning.forEach(rp=>{
+    const targetCourt=findExpectedReturnCourt(rp.userId);
+    const sameCourtHasRoom=targetCourt&&buckets[targetCourt]&&buckets[targetCourt].length<4;
+    if(sameCourtHasRoom){ buckets[targetCourt].push(rp); return; }
+    const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
+    if(needy)buckets[parseInt(needy[0])].push(rp);
+  });
   const matches=[]; for(let c=1;c<=courts;c++){const cp=buckets[c].slice(0,4);if(cp.length<4)continue;const pair=diversePair(cp,ph,lastRoundPairs);matches.push({court:c,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
   return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds}],partnerHistory:ph};
 }
@@ -158,6 +194,7 @@ function regenerateBreakPlan(plan, playedRounds) {
   const totalRounds = plan.totalRounds;
   const bpr = Math.max(0, players.length - courts*4);
   if (bpr === 0) return plan.breakPlan;
+  const firmBreaks = plan.firmBreaks || {}; // {roundIndex: [userId,...]} — admin-locked breaks that must survive regeneration untouched
 
   // Count breaks already assigned in played rounds
   const breakCounts = {};
@@ -166,6 +203,11 @@ function regenerateBreakPlan(plan, playedRounds) {
   fixedPlan.forEach(round => {
     round.forEach(uid => { if(breakCounts[uid]!==undefined) breakCounts[uid]++; });
   });
+  // Firm breaks in the recomputable range are mandatory — count them toward fairness too,
+  // same as any other break, before distributing the remaining slots.
+  for (let r = playedRounds; r < totalRounds; r++) {
+    (firmBreaks[r]||[]).forEach(uid => { if(breakCounts[uid]!==undefined) breakCounts[uid]++; });
+  }
 
   // Total breaks needed across all rounds
   const totalSlots = bpr * totalRounds;
@@ -183,7 +225,7 @@ function regenerateBreakPlan(plan, playedRounds) {
   const ent = {};
   sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
 
-  // Remaining breaks needed per player
+  // Remaining breaks needed per player (firm breaks already subtracted via breakCounts above)
   const remaining = {};
   players.forEach(p => {
     remaining[p.userId] = Math.max(0, ent[p.userId] - (breakCounts[p.userId]||0));
@@ -200,20 +242,25 @@ function regenerateBreakPlan(plan, playedRounds) {
   });
 
   for (let r = playedRounds; r < totalRounds; r++) {
-    const eligible = players.filter(p => remaining[p.userId] > 0);
+    const firmHere = firmBreaks[r] || [];
+    firmHere.forEach(uid => { lastBreak[uid] = r; }); // firm players occupy this round's break slot(s), fixed
+    const slotsLeft = Math.max(0, bpr - firmHere.length);
+
+    const eligible = players.filter(p => remaining[p.userId] > 0 && !firmHere.includes(p.userId));
     eligible.sort((a,b) => {
       const remDiff = remaining[b.userId] - remaining[a.userId];
       if (remDiff !== 0) return remDiff;
       const consecA = r - lastBreak[a.userId] <= 1 ? 1 : 0;
       const consecB = r - lastBreak[b.userId] <= 1 ? 1 : 0;
       if (consecA !== consecB) return consecA - consecB; // avoid consecutive
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: soft tiebreak
       return a.usr - b.usr; // lower USR priority
     });
     const noConsec = eligible.filter(p => r - lastBreak[p.userId] > 1);
-    const pool = noConsec.length >= bpr ? noConsec : eligible;
-    const chosen = pool.slice(0, bpr).map(p => p.userId);
-    chosen.forEach(uid => { remaining[uid]--; lastBreak[uid] = r; });
-    futurePlan.push(chosen);
+    const pool = noConsec.length >= slotsLeft ? noConsec : eligible;
+    const chosenExtra = pool.slice(0, slotsLeft).map(p => p.userId);
+    chosenExtra.forEach(uid => { remaining[uid]--; lastBreak[uid] = r; });
+    futurePlan.push([...firmHere, ...chosenExtra]);
   }
 
   return [...fixedPlan, ...futurePlan];
@@ -290,7 +337,11 @@ function snakeTeams(poolPlayers, poolIdx, startId) {
   const teams = [], half = Math.floor(sorted.length/2);
   for (let i = 0; i < half; i++) {
     const p1=sorted[i], p2=sorted[sorted.length-1-i];
-    teams.push({ id:startId+i, name:`Team ${startId+i}`, players:[p1,p2], avgUsr:Math.round((p1.usr+p2.usr)/2), poolIdx });
+    // Team's default break preference: only inherited when both players happen to agree;
+    // otherwise neutral (No Preference) rather than arbitrarily picking one player's choice.
+    // Admins can always set an explicit team-level override afterward.
+    const teamBreakPref = (p1.breakPref && p1.breakPref===p2.breakPref) ? p1.breakPref : "none";
+    teams.push({ id:startId+i, name:`Team ${startId+i}`, players:[p1,p2], avgUsr:Math.round((p1.usr+p2.usr)/2), poolIdx, breakPref:teamBreakPref });
   }
   return teams;
 }
@@ -397,7 +448,7 @@ function generateCTPlan(players, courts, format, ev=null, matchDuration=20) {
 }
 
 // CT Ladder Break Plan (same logic as CI but for teams)
-function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[]) {
+function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreaks={}) {
   const N = teams.length, bpr = Math.max(0, N - courts*2);
   if (bpr <= 0) return Array.from({length:totalRounds}, ()=>[]);
   const totalSlots = bpr * totalRounds, base = Math.floor(totalSlots/N), extras = totalSlots % N;
@@ -405,20 +456,31 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[]) {
   const ent = {}; sorted.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
   const assigned={}, lastB={}; teams.forEach(t => { assigned[t.id]=0; lastB[t.id]=-99; });
 
-  // Seed assigned counts from locked rounds (already happened)
+  // Seed assigned counts from locked rounds (already happened), and from any Firm-locked
+  // teams within the still-recomputable range — both count toward fairness the same way.
   lockedRounds.forEach((ids,ri)=>{
     (ids||[]).forEach(id=>{ if(assigned[id]!==undefined){assigned[id]++;lastB[id]=ri;} });
   });
+  for (let r=lockedRounds.length; r<totalRounds; r++) {
+    (firmBreaks[r]||[]).forEach(id=>{ if(assigned[id]!==undefined) assigned[id]++; });
+  }
 
   const plan = [...lockedRounds]; // start with locked rounds
   for (let r = lockedRounds.length; r < totalRounds; r++) {
-    const eligible = teams.filter(t => assigned[t.id] < ent[t.id]);
-    eligible.sort((a,b) => { const rd=(ent[b.id]-assigned[b.id])-(ent[a.id]-assigned[a.id]); if(rd!==0)return rd; return (r-lastB[b.id])-(r-lastB[a.id]); });
+    const firmHere = firmBreaks[r] || [];
+    firmHere.forEach(id=>{ lastB[id]=r; });
+    const slotsLeft = Math.max(0, bpr - firmHere.length);
+    const eligible = teams.filter(t => assigned[t.id] < ent[t.id] && !firmHere.includes(t.id));
+    eligible.sort((a,b) => {
+      const rd=(ent[b.id]-assigned[b.id])-(ent[a.id]-assigned[a.id]); if(rd!==0)return rd;
+      const spacing=(r-lastB[b.id])-(r-lastB[a.id]); if(spacing!==0)return spacing;
+      return prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); // team break preference: last-resort tiebreak
+    });
     const noC = eligible.filter(t => r-lastB[t.id]>1);
-    const pool = noC.length>=bpr ? noC : eligible;
-    const chosen = pool.slice(0,bpr).map(t=>t.id);
-    chosen.forEach(id => { assigned[id]++; lastB[id]=r; });
-    plan.push(chosen);
+    const pool = noC.length>=slotsLeft ? noC : eligible;
+    const chosenExtra = pool.slice(0,slotsLeft).map(t=>t.id);
+    chosenExtra.forEach(id => { assigned[id]++; lastB[id]=r; });
+    plan.push([...firmHere, ...chosenExtra]);
   }
   return plan;
 }
@@ -441,9 +503,24 @@ function genNextCTLadder(plan) {
   });
   // Remove teams on break
   for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id));
-  // Add returning teams
+  // Add returning teams — prefer sending each team back to the court they last competed
+  // on (before their break), falling back to the neediest court if that one's still full.
   const returning = sorted.filter(t=>(lastRound.onBreakIds||[]).includes(t.id)&&!newBreakIds.includes(t.id));
-  returning.forEach(t => { const needy=Object.entries(buckets).filter(([,ts])=>ts.length<2).sort((a,b)=>a[1].length-b[1].length)[0]; if(needy)buckets[parseInt(needy[0])].push(t); });
+  const findLastCourtCT=(tid)=>{
+    for(let i=rounds.length-1;i>=0;i--){
+      for(const m of rounds[i].matchesA||[]){
+        if(m.teamA?.id===tid||m.teamB?.id===tid) return m.court;
+      }
+    }
+    return null;
+  };
+  returning.forEach(t => {
+    const lastCourt=findLastCourtCT(t.id);
+    const sameCourtHasRoom=lastCourt&&buckets[lastCourt]&&buckets[lastCourt].length<2;
+    if(sameCourtHasRoom){ buckets[lastCourt].push(t); return; }
+    const needy=Object.entries(buckets).filter(([,ts])=>ts.length<2).sort((a,b)=>a[1].length-b[1].length)[0];
+    if(needy)buckets[parseInt(needy[0])].push(t);
+  });
 
   const matches=[];
   for(let c=1;c<=courts;c++) {
@@ -1010,6 +1087,16 @@ function fitText(ctx, text, x, y, maxWidth){
   ctx.fillText(text, x, y);
 }
 
+// Preload the app logo once, as soon as this module loads, so every share-card header
+// can draw the real logo image synchronously instead of an emoji placeholder. If it hasn't
+// finished loading yet (or fails) by the time a card is drawn, the emoji is used as fallback.
+let _appLogoImg = null;
+(function preloadAppLogoOnce(){
+  const img = new Image();
+  img.onload = () => { _appLogoImg = img; };
+  img.src = "/logo-icon-192.png";
+})();
+
 function drawHeader(ctx, w, title, subtitle, communityName){
   const headerH = 108;
   const grad = ctx.createLinearGradient(0,0,w,headerH);
@@ -1017,7 +1104,15 @@ function drawHeader(ctx, w, title, subtitle, communityName){
   grad.addColorStop(1, COLORS.headerTo);
   ctx.fillStyle = grad; ctx.fillRect(0,0,w,headerH);
   ctx.fillStyle = "#fff"; ctx.textBaseline = "alphabetic";
-  ctx.font = "700 15px Arial"; ctx.fillText("🎾 Matchkeeper", 16, 26);
+  if (_appLogoImg) {
+    ctx.save();
+    roundRect(ctx, 16, 8, 20, 20, 5); ctx.clip();
+    ctx.drawImage(_appLogoImg, 16, 8, 20, 20);
+    ctx.restore();
+    ctx.font = "700 15px Arial"; ctx.fillText("Matchkeeper", 42, 24);
+  } else {
+    ctx.font = "700 15px Arial"; ctx.fillText("🎾 Matchkeeper", 16, 26);
+  }
   if(communityName){ ctx.font="600 10px Arial"; ctx.fillStyle="#E0E7FF"; ctx.textAlign="right"; ctx.fillText(communityName, w-16, 26); ctx.textAlign="left"; }
   ctx.fillStyle = "#fff"; ctx.font = "700 19px Arial";
   fitText(ctx, title, 16, 56, w-32);
@@ -2393,7 +2488,7 @@ export default function Matchkeeper() {
   }, []);
   useEffect(() => {
     if (!dataLoaded) return;
-    if (comms.length===0 && everRealRef.current.comms) { console.log("Blocked write: comms would go from real data to empty — likely a bug, not a real action"); return; }
+    if (!everRealRef.current.comms) { console.log("Blocked write: haven't confirmed real comms data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
     const json = JSON.stringify(comms);
     if (json === syncedRef.current.comms) return;
     syncedRef.current.comms = json;
@@ -2417,7 +2512,7 @@ export default function Matchkeeper() {
   }, []);
   useEffect(() => {
     if (!dataLoaded) return;
-    if (users.length===0 && everRealRef.current.users) { console.log("Blocked write: users would go from real data to empty — likely a bug, not a real action"); return; }
+    if (!everRealRef.current.users) { console.log("Blocked write: haven't confirmed real users data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
     const json = JSON.stringify(users);
     if (json === syncedRef.current.users) return;
     syncedRef.current.users = json;
@@ -2441,6 +2536,7 @@ export default function Matchkeeper() {
   }, []);
   useEffect(() => {
     if (!dataLoaded) return;
+    if (!everRealRef.current.venues) { console.log("Blocked write: haven't confirmed real venues data this session yet"); return; }
     const json = JSON.stringify(venues);
     if (json === syncedRef.current.venues) return;
     syncedRef.current.venues = json;
@@ -2464,6 +2560,7 @@ export default function Matchkeeper() {
   }, []);
   useEffect(() => {
     if (!dataLoaded) return;
+    if (!everRealRef.current.notifications) { console.log("Blocked write: haven't confirmed real notifications data this session yet"); return; }
     const json = JSON.stringify(notifications);
     if (json === syncedRef.current.notifications) return;
     syncedRef.current.notifications = json;
@@ -2487,6 +2584,7 @@ export default function Matchkeeper() {
   }, []);
   useEffect(() => {
     if (!dataLoaded) return;
+    if (!everRealRef.current.claimRequests) { console.log("Blocked write: haven't confirmed real claimRequests data this session yet"); return; }
     const json = JSON.stringify(claimRequests);
     if (json === syncedRef.current.claimRequests) return;
     syncedRef.current.claimRequests = json;
@@ -2549,7 +2647,7 @@ export default function Matchkeeper() {
 
 
   const editUser = (id, data) => {
-    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname)} : u));
+    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref} : u));
     toast2("Player updated ✓");
   };
   const deleteUser = (id) => {
@@ -3003,11 +3101,12 @@ export default function Matchkeeper() {
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
+  const setBreakPrefOverride=(cid,eid,uid,pref)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})})}));};
 
   // CI
   const startCI=(cid,eid,n,dur)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    const players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0};}).filter(Boolean);
+    const players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
   const nextRoundCI=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");};
@@ -3026,26 +3125,36 @@ export default function Matchkeeper() {
       return{...ev,plan:{...ev.plan,rounds,breakPlan:newBreakPlan}};
     })}));toast2("Swapped ✓ — tap Regenerate in Breaks tab to update future rounds");
   };
-  const editBreakCI=(cid,eid,ri,uid,shouldBreak)=>{
+  const editBreakCI=(cid,eid,ri,uid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
     const bpr=Math.max(0,ev.registrations.length-ev.courts*4);
-    const breakPlan=ev.plan.breakPlan.map((round,i)=>{
-      if(i!==ri)return round;
-      if(shouldBreak&&!round.includes(uid))return [...round,uid];
-      if(!shouldBreak)return round.filter(id=>id!==uid);
-      return round;
-    });
-    const newCount=breakPlan[ri].length;
-    if(newCount!==bpr)toast2(`Warning: R${ri+1} has ${newCount} breaks (needs ${bpr})`,"err");
-    else toast2("Break updated — tap Regenerate to apply to future rounds");
-    // Also update the current round's onBreak/onBreakIds in rounds array
-    const rounds=ev.plan.rounds.map((r,rr)=>{
-      if(rr!==ri)return r;
-      const newBreakIds=breakPlan[ri];
-      const onBreak=ev.plan.sorted.filter(p=>newBreakIds.includes(p.userId));
-      return{...r,onBreak,onBreakIds:newBreakIds};
-    });
-    setPlan(cid,eid,{...ev.plan,breakPlan,rounds});
+    const firmBreaks=ev.plan.firmBreaks||{};
+    const isFirm=(firmBreaks[ri]||[]).includes(uid);
+    const isSuggested=(ev.plan.breakPlan[ri]||[]).includes(uid)&&!isFirm;
+
+    if(!isFirm&&!isSuggested){
+      // none -> suggested: same lenient toggle as before, just a proposal
+      const breakPlan=ev.plan.breakPlan.map((round,i)=>i!==ri?round:[...round,uid]);
+      const newCount=breakPlan[ri].length;
+      if(newCount!==bpr)toast2(`Warning: R${ri+1} has ${newCount} breaks (needs ${bpr})`,"err");
+      else toast2("Break suggested — tap again to lock it Firm");
+      const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:ev.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
+      setPlan(cid,eid,{...ev.plan,breakPlan,rounds});
+    }else if(isSuggested){
+      // suggested -> firm: hard validation, only as many Firm slots as the round has break slots
+      const currentFirmCount=(firmBreaks[ri]||[]).length;
+      if(currentFirmCount+1>bpr){toast2(`Can't lock — R${ri+1} only has ${bpr} break slot(s) total`,"err");return;}
+      const newFirmBreaks={...firmBreaks,[ri]:[...(firmBreaks[ri]||[]),uid]};
+      setPlan(cid,eid,{...ev.plan,firmBreaks:newFirmBreaks});
+      toast2("Break locked as Firm 🔐 — Regenerate will keep it ✓");
+    }else{
+      // firm -> none: clear from both breakPlan and firmBreaks
+      const newFirmBreaks={...firmBreaks,[ri]:(firmBreaks[ri]||[]).filter(id=>id!==uid)};
+      const breakPlan=ev.plan.breakPlan.map((round,i)=>i!==ri?round:round.filter(id=>id!==uid));
+      const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:ev.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
+      setPlan(cid,eid,{...ev.plan,breakPlan,firmBreaks:newFirmBreaks,rounds});
+      toast2("Break cleared");
+    }
   };
   const regenerateBreaksCI=(cid,eid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
@@ -3061,6 +3170,8 @@ export default function Matchkeeper() {
   const swapCTBreak=(cid,eid,ri,tidA,tidB)=>{
     // Swap break assignment between two teams in an ungenerated round
     const ev=getEv(cid,eid);if(!ev?.plan)return;
+    const firmHere=(ev.plan.firmBreaks||{})[ri]||[];
+    if(firmHere.includes(tidA)||firmHere.includes(tidB)){toast2("That team's break is Firm-locked — unlock it first","err");return;}
     const breakPlan=ev.plan.breakPlan.map((round,i)=>{
       if(i!==ri)return round;
       const hasA=round.includes(tidA), hasB=round.includes(tidB);
@@ -3071,6 +3182,22 @@ export default function Matchkeeper() {
     });
     setPlan(cid,eid,{...ev.plan,breakPlan});
     toast2("Break swapped ✓");
+  };
+  const toggleCTBreakFirm=(cid,eid,ri,tid)=>{
+    const ev=getEv(cid,eid);if(!ev?.plan)return;
+    const firmBreaks=ev.plan.firmBreaks||{};
+    const isFirm=(firmBreaks[ri]||[]).includes(tid);
+    const onBreakNow=(ev.plan.breakPlan[ri]||[]).includes(tid);
+    if(!isFirm&&!onBreakNow){toast2("Team isn't on break this round","err");return;}
+    const newList=isFirm?(firmBreaks[ri]||[]).filter(id=>id!==tid):[...(firmBreaks[ri]||[]),tid];
+    setPlan(cid,eid,{...ev.plan,firmBreaks:{...firmBreaks,[ri]:newList}});
+    toast2(isFirm?"Break unlocked":"Break locked as Firm 🔐 — Regenerate will keep it ✓");
+  };
+  const setTeamBreakPref=(cid,eid,tid,pref)=>{
+    const ev=getEv(cid,eid);if(!ev?.plan)return;
+    const bump=t=>t.id===tid?{...t,breakPref:pref}:t;
+    setPlan(cid,eid,{...ev.plan,teams:(ev.plan.teams||[]).map(bump),sorted:(ev.plan.sorted||[]).map(bump),groupA:(ev.plan.groupA||[]).map(bump),groupB:(ev.plan.groupB||[]).map(bump)});
+    toast2("Team break preference updated ✓");
   };
   const regenCTBreaks=(cid,eid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
@@ -3092,7 +3219,7 @@ export default function Matchkeeper() {
 
     // Regenerate only the ungenerated rounds, starting fresh from where we left off
     // Pass the current state (including manually-set breaks) as the seed for fair distribution
-    const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds));
+    const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds),plan.firmBreaks||{});
     for(let i=generatedRounds;i<total;i++) newBreakPlan[i]=fresh[i];
     setPlan(cid,eid,{...plan,breakPlan:newBreakPlan});
     toast2("Break schedule regenerated ✓");
@@ -3100,7 +3227,7 @@ export default function Matchkeeper() {
 
   const startCT=(cid,eid,courts,fmt,dur)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    let players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId};}).filter(Boolean);
+    let players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
     if(players.length%2!==0){
       // Odd count — last player in registrations array goes to waiting list
@@ -3223,9 +3350,12 @@ export default function Matchkeeper() {
             onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
+            onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
             onSetMatchModeStart={delayMin=>setMatchModeStart(comm.id,event.id,delayMin)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
+            onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
+            onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
             onRegenCTBreaks={()=>regenCTBreaks(comm.id,event.id)}
             onBack={()=>go("comm",{cid:comm.id})}
             onEditEvent={()=>go("editEvent",{cid:comm.id,eid:event.id})}
@@ -3459,6 +3589,9 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
   const isMember=!!myRole;
   const hasPendingJoin=comm.joinRequests.some(r=>r.userId===me.id);
   const regs=comm.members.filter(m=>m.status!=="inactive");
+  const regularCount=regs.filter(m=>m.status==="regular").length;
+  const casualCount=regs.filter(m=>m.status==="casual").length;
+  const guestCount=regs.filter(m=>m.status==="guest").length;
   const avgU=regs.length?Math.round(regs.reduce((s,m)=>s+(users.find(u=>u.id===m.userId)?.usr||0),0)/regs.length):0;
   const tdefs=[["members","Members"],["events","Events"],["stats","Stats"],...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
@@ -3478,7 +3611,7 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
           ? <div style={{textAlign:"center",fontSize:13,fontWeight:600,color:"var(--po-dim)",background:"var(--po-inp)",borderRadius:8,padding:"10px 0"}}>⏳ Request pending approval</div>
           : <Btn label="+ Request to Join" primary onClick={onRequestJoin} style={{width:"100%"}}/>}
       </div>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>{[["Members",regs.length],["Events",comm.events.length],["Avg USR",avgU||"—"],["Requests",comm.joinRequests.length]].map(([l,v])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 0",textAlign:"center"}}><div style={{fontSize:16,fontWeight:700,color:"var(--po-text)"}}>{v}</div><div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div></div>)}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>{[["Members",regs.length],["Events",comm.events.length],["Avg USR",avgU||"—"],["Requests",comm.joinRequests.length]].map(([l,v])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 0",textAlign:"center"}}><div style={{fontSize:16,fontWeight:700,color:"var(--po-text)"}}>{v}</div><div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>{l==="Members"&&<div style={{display:"flex",justifyContent:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>{[["#34D399",regularCount],["#FBBF24",casualCount],["#F59E0B",guestCount]].filter(([,n])=>n>0).map(([c,n])=><span key={c} style={{fontSize:9,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:c,display:"inline-block"}}/>{n}</span>)}</div>}</div>)}</div>
     </Card>
     <Tabs tabs={tdefs} active={tab} onChange={setTab}/>
 
@@ -3719,10 +3852,18 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
     </div>
 
     {/* Legend */}
-    <div style={{display:"flex",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+    <div style={{display:"flex",gap:10,marginBottom:6,flexWrap:"wrap"}}>
       {[["🔒","Frozen (played)","#EF444433","#EF4444"],["🔄","Pending (generated)","#F59E0B22","#F59E0B"],["✏️","Open (editable)","#34D39911","#34D399"]].map(([icon,label,bg,cl])=>
         <div key={label} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:cl}}>
           <div style={{width:20,height:20,borderRadius:4,background:bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11}}>{icon}</div>
+          <span>{label}</span>
+        </div>
+      )}
+    </div>
+    <div style={{display:"flex",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+      {[["▶","No break","#34D399"],["🪑","Suggested","#F59E0B"],["🔐","Firm (locked)","#8B5CF6"]].map(([icon,label,cl])=>
+        <div key={label} style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:cl}}>
+          <span style={{fontSize:12}}>{icon}</span>
           <span>{label}</span>
         </div>
       )}
@@ -3769,13 +3910,14 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
               const isOpen=ri>=generatedRounds;
               const canEdit=isOpen; // only open rounds editable from breaks tab
 
-              const bg   = onB ? (isFrozen?"#EF444422":isPending?"#F59E0B22":"#F59E0B33") : (isFrozen?"#33333322":isPending?"var(--po-bdr)":"#34D39911");
-              const bdr  = onB ? (isFrozen?"#EF444455":isPending?"#F59E0B55":"#F59E0B44") : (isFrozen?"#33333344":isPending?"#1E293B44":"#34D39933");
-              const icon = onB ? "🪑" : (isFrozen?"—":isPending?"·":"▶");
+              const isFirm = isOpen && (plan.firmBreaks?.[ri]||[]).includes(u.id);
+              const bg   = isFirm ? "#8B5CF633" : onB ? (isFrozen?"#EF444422":isPending?"#F59E0B22":"#F59E0B33") : (isFrozen?"#33333322":isPending?"var(--po-bdr)":"#34D39911");
+              const bdr  = isFirm ? "#8B5CF6AA" : onB ? (isFrozen?"#EF444455":isPending?"#F59E0B55":"#F59E0B44") : (isFrozen?"#33333344":isPending?"#1E293B44":"#34D39933");
+              const icon = isFirm ? "🔐" : onB ? "🪑" : (isFrozen?"—":isPending?"·":"▶");
 
               return <td key={ri} style={{padding:"3px 4px",textAlign:"center"}}>
                 <div
-                  onClick={()=>canEdit&&onEditBreak(ri,u.id,!onB)}
+                  onClick={()=>canEdit&&onEditBreak(ri,u.id)}
                   style={{width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
                   {icon}
                 </div>
@@ -3788,14 +3930,14 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
         })}</tbody>
       </table>
     </div>
-    <div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap ✏️ open cells to edit breaks directly</div>
+    <div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to cycle: ▶ none → 🪑 suggested → 🔐 firm (locked — survives Regenerate) → back to none</div>
   </Card>;
 }
 
 // ══════════════════════════════════════════════════════
 //  CT TEAM CARD
 // ══════════════════════════════════════════════════════
-function CTTeamCard({team,group}){
+function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
   const poolColors = ["#6366F1","#06B6D4","#F472B6","#34D399","#F59E0B"];
   const isPool = group && group.startsWith("P");
   const poolNum = isPool ? parseInt(group.slice(1))-1 : (group==="A"?0:1);
@@ -3811,6 +3953,18 @@ function CTTeamCard({team,group}){
         <Bdg label={badgeLabel} color={gc}/>
       </div>
       <div style={{display:"flex",gap:10}}>{team.players.map(p=>{return <div key={p.userId||p.id} style={{display:"flex",alignItems:"center",gap:4}}><Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{p.usr}</span></div>;})}</div>
+      {showBreakPref&&(isAdmin
+        ? <div style={{display:"flex",alignItems:"center",gap:4,marginTop:6}}>
+            <span style={{fontSize:10,color:"var(--po-dim)"}}>Break:</span>
+            <select value={team.breakPref||"none"} onChange={e=>onSetTeamBreakPref&&onSetTeamBreakPref(team.id,e.target.value)} className="po-inp" style={{fontSize:10,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
+              <option value="none">No Preference</option>
+              <option value="early">Prefer Early</option>
+              <option value="mid">Prefer Mid</option>
+              <option value="late">Prefer Late</option>
+            </select>
+          </div>
+        : <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4}}>Break: {BREAK_PREF_LABELS[team.breakPref||"none"]}</div>
+      )}
     </div>
   </div></Card>;
 }
@@ -3818,11 +3972,12 @@ function CTTeamCard({team,group}){
 // ══════════════════════════════════════════════════════
 //  CT MATCHES TAB
 // ══════════════════════════════════════════════════════
-function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak}){
+function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
   const [selSwap, setSelSwap] = useState(null); // {ri, tid} for pending swap
   const teams = plan.sorted || plan.teams;
   const totalRounds = plan.maxRounds || plan.rounds.length;
   const breakPlan = plan.breakPlan || [];
+  const firmBreaks = plan.firmBreaks || {};
   const generatedCount = plan.rounds.length;
   // Teams that are currently on break in each round (from breakPlan)
   const breakSet = (ri) => new Set(breakPlan[ri]||[]);
@@ -3863,7 +4018,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak}){
   return <>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,gap:8}}>
       <div style={{fontSize:11,color:"var(--po-dim)"}}>
-        🔒 Frozen · 🔄 Generated · ✏️ Open (tap to swap)
+        🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap 🔐 to lock/unlock Firm)
       </div>
       {onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
     </div>
@@ -3894,11 +4049,13 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak}){
               const onBreak=breakSet(ri).has(t.id);
               const isGenerated=ri<generatedCount;
               const isSel=selSwap&&selSwap.ri===ri&&selSwap.tid===t.id;
-              return <td key={ri} onClick={()=>handleCellTap(ri,t)} style={cellStyle(ri,t)}>
+              const isFirm=!isGenerated&&(firmBreaks[ri]||[]).includes(t.id);
+              return <td key={ri} onClick={()=>handleCellTap(ri,t)} style={{...cellStyle(ri,t),position:"relative",background:isFirm?"#8B5CF622":cellStyle(ri,t).background}}>
                 {onBreak
-                  ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isSel?"#6366F1":"#F59E0B"}}>☕</span>
+                  ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":isSel?"#6366F1":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
+                {onBreak&&!isGenerated&&<span onClick={e=>{e.stopPropagation();onToggleFirm&&onToggleFirm(ri,t.id);}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
               </td>;
             })}
           </tr>)}
@@ -4139,7 +4296,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onEditGuestUsr,onEditEventUsr,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
+function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const [totalR,setTotalR] = useState(6);
@@ -4205,9 +4362,12 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     editEventUsr: (uid,usr) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}))
       : onEditEventUsr(uid,usr),
+    setBreakPrefOverride: (uid,pref) => sim
+      ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})}))
+      : onSetBreakPrefOverride(uid,pref),
     startCI: (n,dur) => sim
       ? simMutate(e => {
-          const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0};}).filter(Boolean);
+          const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
           return {...e, plan:{...genRound1(players, e.courts, n), roundDuration:dur}};
         })
       : onStartCI(n,dur),
@@ -4252,6 +4412,22 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
           return {...e, plan:{...e.plan, breakPlan}};
         })
       : onSwapCTBreak&&onSwapCTBreak(ri,tA,tB),
+    toggleCTBreakFirm: (ri,tid) => sim
+      ? simMutate(e => {
+          if(!e.plan) return e;
+          const firmBreaks = e.plan.firmBreaks||{};
+          const isFirm = (firmBreaks[ri]||[]).includes(tid);
+          const newList = isFirm ? (firmBreaks[ri]||[]).filter(id=>id!==tid) : [...(firmBreaks[ri]||[]), tid];
+          return {...e, plan:{...e.plan, firmBreaks:{...firmBreaks,[ri]:newList}}};
+        })
+      : onToggleCTBreakFirm&&onToggleCTBreakFirm(ri,tid),
+    setTeamBreakPref: (tid,pref) => sim
+      ? simMutate(e => {
+          if(!e.plan) return e;
+          const bump=t=>t.id===tid?{...t,breakPref:pref}:t;
+          return {...e, plan:{...e.plan, teams:(e.plan.teams||[]).map(bump), sorted:(e.plan.sorted||[]).map(bump), groupA:(e.plan.groupA||[]).map(bump), groupB:(e.plan.groupB||[]).map(bump)}};
+        })
+      : onSetTeamBreakPref&&onSetTeamBreakPref(tid,pref),
     regenCTBreaks: () => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -4265,7 +4441,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
             const r=plan.rounds[i];
             if(r.onBreak&&r.onBreak.length>0) newBreakPlan[i]=(r.onBreakIds||r.onBreak.map(t=>t.id||t.teamId));
           }
-          const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds));
+          const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds),plan.firmBreaks||{});
           for(let i=generatedRounds;i<total;i++) newBreakPlan[i]=fresh[i];
           return {...e, plan:{...plan, breakPlan:newBreakPlan}};
         })
@@ -4701,6 +4877,19 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                     </div>
                   : <div style={{fontSize:11,color:"var(--po-dim)"}}>USR {r.eventUsr??u.usr}{r.eventUsr!=null&&<span style={{color:"#F59E0B",marginLeft:4}}>📌</span>}</div>
               }
+              {isCI&&!u.isGuest&&(isAdmin&&!effEv.plan
+                ? <div style={{display:"flex",alignItems:"center",gap:4,marginTop:2}}>
+                    <span style={{fontSize:10,color:"var(--po-dim)"}}>Break:</span>
+                    <select value={r.breakPrefOverride||""} onChange={e=>act.setBreakPrefOverride(u.id,e.target.value||null)} className="po-inp" style={{fontSize:10,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
+                      <option value="">Default ({BREAK_PREF_LABELS[u.breakPref||"none"]})</option>
+                      <option value="none">No Preference</option>
+                      <option value="early">Prefer Early</option>
+                      <option value="mid">Prefer Mid</option>
+                      <option value="late">Prefer Late</option>
+                    </select>
+                  </div>
+                : <div style={{fontSize:10,color:"var(--po-dim)",marginTop:2}}>Break: {BREAK_PREF_LABELS[r.breakPrefOverride||u.breakPref||"none"]}{r.breakPrefOverride&&<span style={{color:"#F59E0B",marginLeft:3}}>📌 event-only</span>}</div>
+              )}
             </div>
             <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
               {r.addedBy&&r.addedBy!=="admin"&&!r.isGuest&&<Bdg label={`by ${r.addedBy}`} color="#6366F1"/>}
@@ -4946,20 +5135,20 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
               const poolTeams = (plan.teams||[]).filter(t=>t.poolIdx===pi);
               return <React.Fragment key={pi}>
                 <ST>Pool {pi+1} — {poolTeams.length} teams</ST>
-                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`}/>)}
+                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}
               </React.Fragment>;
             });
           })()}
         </>:<>
           <ST>Group A — {plan.groupA?.length||0} teams</ST>
-          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A"/>)}
-          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B"/>)}</>}
+          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}
+          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}</>}
         </>}
       </>}
     </>}
 
     {/* CT BREAKS (Ladder only) */}
-    {tab==="breaks"&&isCT&&isAdmin&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak}/>}
+    {tab==="breaks"&&isCT&&isAdmin&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm}/>}
 
     {/* CT MATCHES */}
     {tab==="matches"&&isCT&&isAdmin&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onSetMatchModeStart={act.setMatchModeStart}/>}
@@ -5128,7 +5317,7 @@ function ComboCard({combo, lv, eventsDesc}){
 function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
   const [tab,setTab]=useState("usr");
   const [editing,setEditing]=useState(false);
-  const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||""});
+  const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
   const [photoUploading,setPhotoUploading]=useState(false);
   const isMe = me && user.id===me.id;
   const handlePhotoSelect = async (e) => {
@@ -5159,7 +5348,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>✉️ {user.email || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>📱 {user.phone || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>
     </div>
-    {isMe&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||""});setEditing(true);}} color="#6366F1"/>}
+    {isMe&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
   </div>
   {isMe&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
@@ -5171,8 +5360,10 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
     </div>
     <Inp label="Nickname" value={ef.nickname} onChange={v=>setEf(p=>({...p,nickname:v}))}/>
     <Inp label="Phone" value={ef.phone} onChange={v=>setEf(p=>({...p,phone:v}))}/>
+    <Drp label="Break Preference" value={ef.breakPref} onChange={v=>setEf(p=>({...p,breakPref:v}))} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Used as your default whenever you join an event — admins can override it per event.</div>
     <div style={{display:"flex",gap:8,marginTop:4}}>
-      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone});setEditing(false);}} style={{flex:1}}/>
+      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref});setEditing(false);}} style={{flex:1}}/>
       <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
     </div>
   </div>}

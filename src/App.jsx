@@ -4877,7 +4877,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                     </div>
                   : <div style={{fontSize:11,color:"var(--po-dim)"}}>USR {r.eventUsr??u.usr}{r.eventUsr!=null&&<span style={{color:"#F59E0B",marginLeft:4}}>📌</span>}</div>
               }
-              {isCI&&!u.isGuest&&(isAdmin&&!effEv.plan
+              {isCI&&!u.isGuest&&(isAdmin
                 ? <div style={{display:"flex",alignItems:"center",gap:4,marginTop:2}}>
                     <span style={{fontSize:10,color:"var(--po-dim)"}}>Break:</span>
                     <select value={r.breakPrefOverride||""} onChange={e=>act.setBreakPrefOverride(u.id,e.target.value||null)} className="po-inp" style={{fontSize:10,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
@@ -5347,6 +5347,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {user.area} · {user.gov}</div>
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>✉️ {user.email || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>📱 {user.phone || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>
+      <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
     {isMe&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
   </div>
@@ -5467,7 +5468,7 @@ const SEEDED_EVENT_IDS = new Set([1,2,3]);
 function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
   const [tab,setTab]=useState("users");
   const [editing,setEditing]=useState(null);
-  const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50"});
+  const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
   const [showAdd,setShowAdd]=useState(false);
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
@@ -5508,7 +5509,7 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
   </>}
 
   {tab==="users"&&<>
-    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:""});}} style={{width:"100%",marginBottom:12}}/>
+    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none"});}} style={{width:"100%",marginBottom:12}}/>
     {showAdd&&<Card style={{marginBottom:12}}>
       <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>{editing?"Edit User":"New User"}</div>
       {[["Nickname","nickname"],["Full Name","name"]].map(([l,k])=>
@@ -5517,6 +5518,7 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
       <AreaSel gov={nf.gov} area={nf.area} onChange={set}/>
       <Inp label="Phone" value={nf.phone||""} onChange={v=>set("phone",v)}/>
       <Inp label="Initial USR (0–100)" value={nf.usr} onChange={v=>set("usr",v)}/>
+      <Drp label="Break Preference" value={nf.breakPref||"none"} onChange={v=>set("breakPref",v)} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
       <div style={{display:"flex",gap:8,marginTop:8}}>
         <Btn label="Save" primary onClick={()=>{
           if(!nf.nickname.trim())return;
@@ -5542,7 +5544,7 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
         </div>
         <div style={{display:"flex",gap:4}}>
           <SmBtn label="👁" onClick={()=>onViewProfile(u.id)} color="#6366F1"/>
-          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.usr||50),phone:u.phone||""});setShowAdd(true);}} color="#F59E0B"/>
+          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.usr||50),phone:u.phone||"",breakPref:u.breakPref||"none"});setShowAdd(true);}} color="#F59E0B"/>
           {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>}
         </div>
       </div>

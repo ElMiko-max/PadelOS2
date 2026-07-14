@@ -2296,7 +2296,7 @@ function LoginScreen(){
 //  Picking an existing player keeps their whole history (USR, past events);
 //  "That's not me" is the only path that creates a brand new profile.
 // ══════════════════════════════════════════════════════
-function ClaimProfileScreen({authUser,unclaimed,wasRejected,onClaim,onCreateNew,onSignOut}){
+function ClaimProfileScreen({authUser,unclaimed,wasRejected,onClaim,onCreateNew,onSignOut,degraded,diagText}){
   const [q,setQ] = useState("");
   const filtered = unclaimed.filter(u => u.nickname.toLowerCase().includes(q.toLowerCase()) || u.name.toLowerCase().includes(q.toLowerCase()));
   return <div style={{minHeight:"100vh",background:"#0E1117",padding:"32px 20px"}}>
@@ -2305,6 +2305,7 @@ function ClaimProfileScreen({authUser,unclaimed,wasRejected,onClaim,onCreateNew,
         <div style={{fontSize:19,fontWeight:700,color:"#F1F5F9"}}>Which one is you?</div>
         <div style={{fontSize:13,color:"#64748B",marginTop:6}}>Signed in as {authUser.email || authUser.displayName}. Pick your existing player profile so your history carries over — an admin will confirm it's really you. Only choose "That's not me" if you're genuinely new.</div>
         {wasRejected&&<div style={{fontSize:12,color:"#F87171",background:"#F8717122",border:"0.5px solid #F8717144",borderRadius:8,padding:"8px 10px",marginTop:12}}>Your last request wasn't approved. Double check you're picking the right name, or create a new profile instead.</div>}
+        {degraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginTop:12,textAlign:"left"}}>⚠️ Couldn't load the full player list right now (connection issue). This list may be incomplete. Please close the app and reopen it before picking a name or creating a new profile — don't proceed on a spotty connection.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
       </div>
 
       <input placeholder="Search your name…" value={q} onChange={e=>setQ(e.target.value)}
@@ -2456,6 +2457,10 @@ export default function Matchkeeper() {
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
   const dataLoaded = ["comms","users","venues","notifications","claimRequests","uidLinks"].every(k => loadedKeys.includes(k));
+  // Captures the real Firestore error (code + message) whenever a collection fails to load,
+  // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
+  const [loadDiag, setLoadDiag] = useState({});
+  const recordDiag = (k, info) => setLoadDiag(d => ({...d, [k]: info}));
 
   // One-time migration: earlier deploys wrote seed events to Firestore before the
   // isDemo flag existed in code. Patch events #2/#3 in the seed community so the
@@ -2481,9 +2486,9 @@ export default function Matchkeeper() {
           _eid = Math.max(_eid, ...remote.flatMap(c=>c.events.map(e=>e.id)), 0) + 1;
         }
         everRealRef.current.comms = true;
-      } else if (!everRealRef.current.comms) { syncedRef.current.comms = JSON.stringify(INIT_COMMS); setComms(INIT_COMMS); } // local fallback only — NEVER auto-write seed data to Firestore; a transient "not found" on a fresh session must not overwrite real production data. Use the manual Factory Reset button for genuine first-time setup.
+      } else if (!everRealRef.current.comms) { syncedRef.current.comms = JSON.stringify(INIT_COMMS); setComms(INIT_COMMS); recordDiag("comms","document not found — showing local seed fallback"); } // local fallback only — NEVER auto-write seed data to Firestore; a transient "not found" on a fresh session must not overwrite real production data. Use the manual Factory Reset button for genuine first-time setup.
       markLoaded("comms");
-    }, e => { console.log("Firestore comms error", e); markLoaded("comms"); });
+    }, e => { console.log("Firestore comms error", e); recordDiag("comms", `${e.code||"error"}: ${e.message||e}`); markLoaded("comms"); });
     return unsub;
   }, []);
   useEffect(() => {
@@ -2505,9 +2510,9 @@ export default function Matchkeeper() {
           _uid = Math.max(_uid, ...remote.map(u=>u.id), 0) + 1;
         }
         everRealRef.current.users = true;
-      } else if (!everRealRef.current.users) { syncedRef.current.users = JSON.stringify(INIT_USERS); setUsers(INIT_USERS); } // local fallback only — NEVER auto-write seed data to Firestore (this exact line caused a real production data loss: a fresh session misread a transient "not found" as an empty database and overwrote 18 real users with 12 seed ones)
+      } else if (!everRealRef.current.users) { syncedRef.current.users = JSON.stringify(INIT_USERS); setUsers(INIT_USERS); recordDiag("users","document not found — showing local seed fallback (12 users)"); } // local fallback only — NEVER auto-write seed data to Firestore (this exact line caused a real production data loss: a fresh session misread a transient "not found" as an empty database and overwrote 18 real users with 12 seed ones)
       markLoaded("users");
-    }, e => { console.log("Firestore users error", e); markLoaded("users"); });
+    }, e => { console.log("Firestore users error", e); recordDiag("users", `${e.code||"error"}: ${e.message||e}`); markLoaded("users"); });
     return unsub;
   }, []);
   useEffect(() => {
@@ -2531,7 +2536,7 @@ export default function Matchkeeper() {
         everRealRef.current.venues = true;
       } else if (!everRealRef.current.venues) { syncedRef.current.venues = JSON.stringify(INIT_VENUES); setVenues(INIT_VENUES); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("venues");
-    }, e => { console.log("Firestore venues error", e); markLoaded("venues"); });
+    }, e => { console.log("Firestore venues error", e); recordDiag("venues", `${e.code||"error"}: ${e.message||e}`); markLoaded("venues"); });
     return unsub;
   }, []);
   useEffect(() => {
@@ -2555,7 +2560,7 @@ export default function Matchkeeper() {
         everRealRef.current.notifications = true;
       } else if (!everRealRef.current.notifications) { syncedRef.current.notifications = JSON.stringify([]); setNotifications([]); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("notifications");
-    }, e => { console.log("Firestore notifications error", e); markLoaded("notifications"); });
+    }, e => { console.log("Firestore notifications error", e); recordDiag("notifications", `${e.code||"error"}: ${e.message||e}`); markLoaded("notifications"); });
     return unsub;
   }, []);
   useEffect(() => {
@@ -2579,7 +2584,7 @@ export default function Matchkeeper() {
         everRealRef.current.claimRequests = true;
       } else if (!everRealRef.current.claimRequests) { syncedRef.current.claimRequests = JSON.stringify([]); setClaimRequests([]); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("claimRequests");
-    }, e => { console.log("Firestore claimRequests error", e); markLoaded("claimRequests"); });
+    }, e => { console.log("Firestore claimRequests error", e); recordDiag("claimRequests", `${e.code||"error"}: ${e.message||e}`); markLoaded("claimRequests"); });
     return unsub;
   }, []);
   useEffect(() => {
@@ -2601,7 +2606,7 @@ export default function Matchkeeper() {
       snap.forEach(d => { map[d.id] = d.data().userId; });
       setUidLinks(map);
       markLoaded("uidLinks");
-    }, e => { console.log("Firestore uidLinks error", e); markLoaded("uidLinks"); });
+    }, e => { console.log("Firestore uidLinks error", e); recordDiag("uidLinks", `${e.code||"error"}: ${e.message||e}`); markLoaded("uidLinks"); });
     return unsub;
   }, []);
   const linkUidToUser = (firebaseUid, userId) => setDoc(doc(db,"padelos_links",firebaseUid), {userId}).catch(e=>console.log("Firestore write error (uidLinks)", e));
@@ -3097,7 +3102,7 @@ export default function Matchkeeper() {
   const removeFromEvent=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));toast2("Removed from event");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
-  const setMatchModeStart=(cid,eid,delayMin)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:new Date().toISOString(),matchModeDelayMin:delayMin}})}));};
+  const setMatchModeStart=(cid,eid,startAt,delayMin)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}})}));};
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
@@ -3278,6 +3283,9 @@ export default function Matchkeeper() {
     return c.events.filter(ev=>ev.visibility!=="private"||amAdmin||ev.registrations.some(r=>r.userId===me.id)).map(ev=>({...ev,commName:c.name,communityId:c.id}));
   });
 
+  const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
+  const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
+
   if (authLoading || !dataLoaded) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
@@ -3301,7 +3309,7 @@ export default function Matchkeeper() {
     const pendingUserIds = new Set(claimRequests.filter(r=>r.status==="pending").map(r=>r.userId));
     const claimedUserIds = new Set(Object.values(uidLinks));
     const unclaimed = users.filter(u => !claimedUserIds.has(u.id) && !pendingUserIds.has(u.id));
-    return <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)}/>;
+    return <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)} degraded={dataDegraded} diagText={diagText}/>;
   }
 
   return (
@@ -3335,6 +3343,7 @@ export default function Matchkeeper() {
         onSeeAllNotifs={()=>{setNotifMenu(false);setNavHistory(h=>[...h,{nav,view}]);setNav("notifications");setView({screen:"list"});}}
       />
       <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
+        {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={()=>go("comm",{cid:comm.id})} onSave={d=>saveComm(comm.id,d)}/>}
@@ -3351,7 +3360,7 @@ export default function Matchkeeper() {
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
             onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
-            onSetMatchModeStart={delayMin=>setMatchModeStart(comm.id,event.id,delayMin)}
+            onSetMatchModeStart={(startAt,delayMin)=>setMatchModeStart(comm.id,event.id,startAt,delayMin)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -4266,7 +4275,10 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
         <input type="time" value={startInput} onChange={e=>setStartInput(e.target.value)} className="po-inp"
           style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-        <Btn label="Start ▶" primary onClick={()=>onStart(minutesBetween(eventTime,startInput))}/>
+        <Btn label="Start ▶" primary onClick={()=>{
+          const startAt = new Date(`${eventDate}T${startInput}`).toISOString();
+          onStart(startAt, minutesBetween(eventTime,startInput));
+        }}/>
       </div>
     </Card>;
   }
@@ -4503,9 +4515,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     togglePaid: (uid) => sim
       ? simMutate(e=>{const p=new Set(e.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...e,paidIds:[...p]};})
       : onTogglePaid&&onTogglePaid(uid),
-    setMatchModeStart: (delayMin) => sim
-      ? simMutate(e=>({...e,plan:{...e.plan,matchModeStartAt:new Date().toISOString(),matchModeDelayMin:delayMin}}))
-      : onSetMatchModeStart&&onSetMatchModeStart(delayMin),
+    setMatchModeStart: (startAt,delayMin) => sim
+      ? simMutate(e=>({...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}}))
+      : onSetMatchModeStart&&onSetMatchModeStart(startAt,delayMin),
     updateFinance: (fields) => sim
       ? simMutate(e=>({...e,...fields}))
       : onUpdateEventFinance&&onUpdateEventFinance(fields),

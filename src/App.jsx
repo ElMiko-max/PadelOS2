@@ -11,7 +11,7 @@ import {
   signInWithPopup,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 
@@ -3102,7 +3102,25 @@ export default function Matchkeeper() {
   const removeFromEvent=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));toast2("Removed from event");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
-  const setMatchModeStart=(cid,eid,startAt,delayMin)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}})}));};
+  const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}})}));
+    if (!roundEndTimes || !roundEndTimes.length) return;
+    const comm = comms.find(c=>c.id===cid);
+    const ev = comm?.events.find(e=>e.id===eid);
+    if (!ev) return;
+    const waitlistedIds = new Set((ev.plan?.waitlisted||[]).map(w=>w.userId));
+    const userIds = ev.registrations.filter(r=>!waitlistedIds.has(r.userId)).map(r=>r.userId);
+    const entries = roundEndTimes.map(rt=>({id:`${eid}-r${rt.round}`, eventId:eid, communityId:cid, round:rt.round, endsAt:rt.endsAt, userIds, label:ev.name||"Event", sent:false}));
+    (async () => {
+      try {
+        const ref = doc(db,"padelos","matchModeSchedule");
+        const snap = await getDoc(ref);
+        const existing = snap.exists() ? JSON.parse(snap.data().value||"[]") : [];
+        const filtered = existing.filter(x=>x.eventId!==eid); // drop this event's old schedule (re-Start replaces it)
+        await setDoc(ref, {value: JSON.stringify([...filtered, ...entries])});
+      } catch (e) { console.log("matchModeSchedule write failed", e); }
+    })();
+  };
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
@@ -3360,7 +3378,7 @@ export default function Matchkeeper() {
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
             onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
-            onSetMatchModeStart={(startAt,delayMin)=>setMatchModeStart(comm.id,event.id,startAt,delayMin)}
+            onSetMatchModeStart={(startAt,delayMin,roundEndTimes)=>setMatchModeStart(comm.id,event.id,startAt,delayMin,roundEndTimes)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -4277,7 +4295,10 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
           style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
         <Btn label="Start ▶" primary onClick={()=>{
           const startAt = new Date(`${eventDate}T${startInput}`).toISOString();
-          onStart(startAt, minutesBetween(eventTime,startInput));
+          const delayMin = minutesBetween(eventTime,startInput);
+          const offsets = computeRoundEndOffsets(tr, rd, totalBookingMin, delayMin);
+          const roundEndTimes = Object.entries(offsets).map(([round,off])=>({round:+round, endsAt:new Date(new Date(startAt).getTime()+off*60000).toISOString()}));
+          onStart(startAt, delayMin, roundEndTimes);
         }}/>
       </div>
     </Card>;
@@ -4515,9 +4536,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     togglePaid: (uid) => sim
       ? simMutate(e=>{const p=new Set(e.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...e,paidIds:[...p]};})
       : onTogglePaid&&onTogglePaid(uid),
-    setMatchModeStart: (startAt,delayMin) => sim
+    setMatchModeStart: (startAt,delayMin,roundEndTimes) => sim
       ? simMutate(e=>({...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}}))
-      : onSetMatchModeStart&&onSetMatchModeStart(startAt,delayMin),
+      : onSetMatchModeStart&&onSetMatchModeStart(startAt,delayMin,roundEndTimes),
     updateFinance: (fields) => sim
       ? simMutate(e=>({...e,...fields}))
       : onUpdateEventFinance&&onUpdateEventFinance(fields),

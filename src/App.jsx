@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
+import { Capacitor } from "@capacitor/core";
+import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
@@ -9,6 +11,7 @@ import {
   sendPasswordResetEmail,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithCredential,
   updateProfile,
 } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
@@ -54,6 +57,11 @@ async function uploadProfilePhoto(userId, file){
   return await getDownloadURL(r);
 }
 const googleProvider = new GoogleAuthProvider();
+if (Capacitor.isNativePlatform()) {
+  GoogleSignIn.initialize({
+    clientId: "807847071392-ta5u29ad02r6c7ae9aelei6hq40lr5sd.apps.googleusercontent.com",
+  });
+}
 
 
 // ══════════════════════════════════════════════════════
@@ -2234,7 +2242,15 @@ function LoginScreen(){
 
   const googleSignIn = async () => {
     setErr(""); setMsg(""); setBusy(true);
-    try{ await signInWithPopup(fbAuth, googleProvider); }
+    try{
+      if (Capacitor.isNativePlatform()) {
+        const result = await GoogleSignIn.signIn();
+        const credential = GoogleAuthProvider.credential(result.idToken);
+        await signInWithCredential(fbAuth, credential);
+      } else {
+        await signInWithPopup(fbAuth, googleProvider);
+      }
+    }
     catch(e){ setErr(friendlyError(e)); }
     setBusy(false);
   };
@@ -2477,6 +2493,7 @@ export default function Matchkeeper() {
 
   // comms
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","comms"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2490,7 +2507,7 @@ export default function Matchkeeper() {
       markLoaded("comms");
     }, e => { console.log("Firestore comms error", e); recordDiag("comms", `${e.code||"error"}: ${e.message||e}`); markLoaded("comms"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.comms) { console.log("Blocked write: haven't confirmed real comms data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
@@ -2502,6 +2519,7 @@ export default function Matchkeeper() {
 
   // users
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","users"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2514,7 +2532,7 @@ export default function Matchkeeper() {
       markLoaded("users");
     }, e => { console.log("Firestore users error", e); recordDiag("users", `${e.code||"error"}: ${e.message||e}`); markLoaded("users"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.users) { console.log("Blocked write: haven't confirmed real users data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
@@ -2526,6 +2544,7 @@ export default function Matchkeeper() {
 
   // venues
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","venues"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2538,7 +2557,7 @@ export default function Matchkeeper() {
       markLoaded("venues");
     }, e => { console.log("Firestore venues error", e); recordDiag("venues", `${e.code||"error"}: ${e.message||e}`); markLoaded("venues"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.venues) { console.log("Blocked write: haven't confirmed real venues data this session yet"); return; }
@@ -2550,6 +2569,7 @@ export default function Matchkeeper() {
 
   // notifications
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","notifications"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2562,7 +2582,7 @@ export default function Matchkeeper() {
       markLoaded("notifications");
     }, e => { console.log("Firestore notifications error", e); recordDiag("notifications", `${e.code||"error"}: ${e.message||e}`); markLoaded("notifications"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.notifications) { console.log("Blocked write: haven't confirmed real notifications data this session yet"); return; }
@@ -2574,6 +2594,7 @@ export default function Matchkeeper() {
 
   // claimRequests
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","claimRequests"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2586,7 +2607,7 @@ export default function Matchkeeper() {
       markLoaded("claimRequests");
     }, e => { console.log("Firestore claimRequests error", e); recordDiag("claimRequests", `${e.code||"error"}: ${e.message||e}`); markLoaded("claimRequests"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.claimRequests) { console.log("Blocked write: haven't confirmed real claimRequests data this session yet"); return; }
@@ -2601,6 +2622,7 @@ export default function Matchkeeper() {
   // (a claim approval silently reverted) when a stale device overwrote the whole users
   // array. A per-document write here can never be clobbered by an unrelated write elsewhere.
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(collection(db,"padelos_links"), snap => {
       const map = {};
       snap.forEach(d => { map[d.id] = d.data().userId; });
@@ -2608,7 +2630,7 @@ export default function Matchkeeper() {
       markLoaded("uidLinks");
     }, e => { console.log("Firestore uidLinks error", e); recordDiag("uidLinks", `${e.code||"error"}: ${e.message||e}`); markLoaded("uidLinks"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   const linkUidToUser = (firebaseUid, userId) => setDoc(doc(db,"padelos_links",firebaseUid), {userId}).catch(e=>console.log("Firestore write error (uidLinks)", e));
 
   useEffect(() => {
@@ -3304,7 +3326,7 @@ export default function Matchkeeper() {
   const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
 
-  if (authLoading || !dataLoaded) {
+  if (authLoading || (authUser && !dataLoaded)) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
     </div>;

@@ -79,7 +79,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.03.11";
+const APP_VERSION = "V0.04.00";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2097,7 +2097,8 @@ function buildCTResultsTableCard(ev, venue, plan, ctStands, tc, communityName){
 // ── Shared UI ─────────────────────────────────────────
 function Av({u,size=36}){
   const lv=usrLv(u.usr);
-  if (u.photoURL) return <img src={u.photoURL} alt={u.nickname} style={{width:size,height:size,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:`1.5px solid ${lv.c}55`}}/>;
+  const [broken,setBroken] = useState(false);
+  if (u.photoURL && !broken) return <img src={u.photoURL} alt={u.nickname} referrerPolicy="no-referrer" onError={()=>setBroken(true)} style={{width:size,height:size,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:`1.5px solid ${lv.c}55`}}/>;
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}

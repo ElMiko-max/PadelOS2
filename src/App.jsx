@@ -4120,6 +4120,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
 function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,sim,onSetMatchModeStart}){
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
   const [scores,setScores]=useState({});
+  const [collapsedRounds,setCollapsedRounds]=useState(new Set()); // manually toggled rounds (overrides the completed-round default)
 
   function getS(ri,mi,side){return scores[`${ri}_${mi}_${side}`]||{scoreA:0,scoreB:0};}
   function setS(ri,mi,side,field,val){setScores(s=>({...s,[`${ri}_${mi}_${side}`]:{...getS(ri,mi,side),[field]:val}}));}
@@ -4219,18 +4220,29 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
     {reversedRounds.map((round,revIdx)=>{
       const ri=plan.rounds.length-1-revIdx;
       const isLatest=revIdx===0;
+      const isRoundComplete=[...round.matchesA,...(round.matchesB||[])].every(m=>m.winner);
+      const manuallySet=collapsedRounds.has(ri);
+      const toggle=()=>setCollapsedRounds(s=>{const n=new Set(s);n.has(ri)?n.delete(ri):n.add(ri);return n;});
+      // Default: completed + not latest → collapsed. A manual toggle flips that specific round's state.
+      const defaultCollapsed = isRoundComplete && !isLatest;
+      const effCollapsed = manuallySet ? !defaultCollapsed : defaultCollapsed;
       return <div key={ri} style={{marginBottom:20,opacity:isLatest?1:0.7}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-          <span style={{fontSize:14,fontWeight:700,color:isLatest?"var(--po-text)":"var(--po-dim)"}}>
-            {isLeague?`League Round ${round.roundNum}`:`Match Round ${round.roundNum}`}
-          </span>
-          {[...round.matchesA,...(round.matchesB||[])].every(m=>m.winner)&&<Bdg label="✓ Complete" color="#34D399"/>}
+        <div onClick={isRoundComplete?toggle:undefined} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,cursor:isRoundComplete?"pointer":"default"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {isRoundComplete&&<span style={{fontSize:11,color:"var(--po-dim)",transform:effCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform 0.15s"}}>▾</span>}
+            <span style={{fontSize:14,fontWeight:700,color:isLatest?"var(--po-text)":"var(--po-dim)"}}>
+              {isLeague?`League Round ${round.roundNum}`:`Match Round ${round.roundNum}`}
+            </span>
+          </div>
+          {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
         </div>
+        {effCollapsed?null:<>
         {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart}/>}
         {isLeague
           ?<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}{(round.matchesB||[]).map((m,mi)=><MatchCard key={`B${mi}`} m={m} ri={ri} mi={mi} side="B"/>)}</>
           :<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}</>
         }
+        </>}
       </div>;
     })}
   </>;
@@ -4358,6 +4370,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
   const [totalR,setTotalR] = useState(6);
   const [roundDur,setRDur] = useState(20);
   const [showAddM,setSAM]  = useState(false);
+  const [collapsedRounds,setCollapsedRounds] = useState(new Set()); // manually toggled CI rounds (overrides the completed-round default)
   const [showAddG,setSAG]  = useState(false);
   const [gf,setGf]         = useState({n:"",name:"",p:"",usr:"50"});
   const [sel,setSel]       = useState(null);
@@ -5115,14 +5128,21 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
         {[...plan.rounds].reverse().map((round,revIdx)=>{
           const ri=plan.rounds.length-1-revIdx;
           const isLatest=revIdx===0;
+          const isRoundComplete=round.matches.every(m=>m.winner!=null);
+          const manuallySet=collapsedRounds.has(ri);
+          const toggle=()=>setCollapsedRounds(s=>{const n=new Set(s);n.has(ri)?n.delete(ri):n.add(ri);return n;});
+          const defaultCollapsed = isRoundComplete && !isLatest;
+          const effCollapsed = manuallySet ? !defaultCollapsed : defaultCollapsed;
           return <div key={ri} style={{marginBottom:24,opacity:isLatest?1:0.75}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div onClick={isRoundComplete?toggle:undefined} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,cursor:isRoundComplete?"pointer":"default"}}>
               <div style={{display:"flex",alignItems:"center",gap:10}}>
+                {isRoundComplete&&<span style={{fontSize:11,color:"var(--po-dim)",transform:effCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform 0.15s"}}>▾</span>}
                 <span style={{fontSize:15,fontWeight:700,color:isLatest?"var(--po-text)":"var(--po-dim)"}}>Round {round.round}</span>
                 <Bdg label={`${plan.roundDuration||roundDur} min`} color="var(--po-dim)"/>
               </div>
-              {round.matches.every(m=>m.winner!=null)&&<Bdg label="✓ Complete" color="#34D399"/>}
+              {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
             </div>
+            {effCollapsed?null:<>
             {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onStart={act.setMatchModeStart}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}</div></div>}
             {round.matches.map((m,mi)=><Card key={mi} style={{marginBottom:8}}>
@@ -5140,6 +5160,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
               </div>
               <WinCI m={m} ri={ri} mi={mi}/>
             </Card>)}
+            </>}
           </div>;
         })}
       </>}

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
+import { PushNotifications } from "@capacitor/push-notifications";
 import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
 import { initializeApp } from "firebase/app";
 import {
@@ -35,6 +37,23 @@ const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh
 // device's push token to Firestore so the Cloud Function knows where to send pushes.
 async function enablePushNotifications(userId){
   try{
+    if (Capacitor.isNativePlatform()) {
+      let permStatus = await PushNotifications.checkPermissions();
+      if (permStatus.receive === "prompt") permStatus = await PushNotifications.requestPermissions();
+      if (permStatus.receive !== "granted") return {ok:false, reason:"denied"};
+      return await new Promise((resolve) => {
+        PushNotifications.addListener("registration", async (token) => {
+          try {
+            await setDoc(doc(db,"fcmTokens", String(userId)), {token: token.value, updatedAt:new Date().toISOString()});
+            resolve({ok:true});
+          } catch(e) { resolve({ok:false, reason:"error", detail: e?.message||String(e)}); }
+        });
+        PushNotifications.addListener("registrationError", (err) => {
+          resolve({ok:false, reason:"no-token", detail: JSON.stringify(err)});
+        });
+        PushNotifications.register();
+      });
+    }
     if (!("Notification" in window) || !("serviceWorker" in navigator)) return {ok:false, reason:"unsupported"};
     const perm = await Notification.requestPermission();
     if (perm !== "granted") return {ok:false, reason:"denied"};
@@ -79,7 +98,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.00";
+const APP_VERSION = "V0.04.04";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2379,6 +2398,13 @@ export default function Matchkeeper() {
   const linkedUserId = authUser ? uidLinks[authUser.uid] : null;
   const linkedMe = linkedUserId!=null ? (users.find(u => u.id===linkedUserId) || null) : null;
   const me = linkedMe || users[0];
+  const autoPushTriedRef = useRef(false);
+  useEffect(() => {
+    if (Capacitor.isNativePlatform() && linkedMe && !autoPushTriedRef.current) {
+      autoPushTriedRef.current = true;
+      enablePushNotifications(linkedMe.id);
+    }
+  }, [linkedMe]);
   const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
   const myLastRequest = authUser ? [...claimRequests].reverse().find(r => r.firebaseUid===authUser.uid) : null;
   const requestClaim = (userId) => {
@@ -2794,6 +2820,20 @@ export default function Matchkeeper() {
   // ────────────────────────────────────────────────────
 
   const toast2 = (msg,t="ok") => { setToast({msg,t}); setTimeout(()=>setToast(null),2600); };
+  const backPressRef = useRef(0);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const handler = CapApp.addListener("backButton", () => {
+      const now = Date.now();
+      if (now - backPressRef.current < 2000) {
+        CapApp.exitApp();
+      } else {
+        backPressRef.current = now;
+        toast2("Press back again to exit");
+      }
+    });
+    return () => { handler.then(h=>h.remove()); };
+  }, []);
   // go() defined above with history tracking
   const updC = (id,fn) => setComms(cs=>cs.map(c=>c.id===id?fn(c):c));
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
@@ -5697,6 +5737,14 @@ function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
   const [pushErrDetail,setPushErrDetail] = useState("");
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
+  const isNative = Capacitor.isNativePlatform();
+  useEffect(() => {
+    if (!isNative) return;
+    PushNotifications.checkPermissions().then(res => {
+      setPushStatus(res.receive === "granted" ? "on" : "error");
+      if (res.receive !== "granted") setPushErrDetail("Notifications permission not granted — enable it for Matchkeeper in your phone's system Settings app");
+    });
+  }, [isNative]);
   const enablePush = async () => {
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
@@ -5712,10 +5760,11 @@ function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
         <div style={{flex:1}}>
           <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Push Notifications</div>
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>
-            {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`Couldn't enable — ${pushErrDetail}`:pushStatus==="working"?"Setting up…":"Get notified even when the app is closed"}
+            {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`${isNative?"Off — ":"Couldn't enable — "}${pushErrDetail}`:pushStatus==="working"?"Setting up…":isNative?"Checking…":"Get notified even when the app is closed"}
           </div>
         </div>
-        <Btn label={pushStatus==="on"?"✓ On":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>
+        {!isNative&&<Btn label={pushStatus==="on"?"✓ On":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>}
+        {isNative&&pushStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
       </div>
       {pushStatus==="on"&&<div onClick={onSendTestNotif} style={{marginTop:12,paddingTop:12,borderTop:"0.5px solid var(--po-bdr)",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>Send myself a test notification</div>}
     </Card>

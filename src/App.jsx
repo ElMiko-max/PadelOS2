@@ -98,7 +98,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.04";
+const APP_VERSION = "V0.04.06";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3722,7 +3722,7 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
             <Card key={m.userId} style={{cursor:isAdmin?"pointer":"default"}}><div onClick={()=>isAdmin&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
               <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{isAdmin&&!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
-              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}} onClick={e=>e.stopPropagation()}>{m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>onConvertGuest(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>onToggleStatus(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>onPromote(u.id)} color="#6366F1"/>}<SmBtn label="Remove" onClick={()=>onKick(u.id)} color="#EF4444"/></div>}
+              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-start",marginTop:8,marginLeft:48}} onClick={e=>e.stopPropagation()}>{m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>onConvertGuest(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>onToggleStatus(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>onPromote(u.id)} color="#6366F1"/>}<SmBtn label="Remove" onClick={()=>onKick(u.id)} color="#EF4444"/></div>}
             </div></Card>
           );})}
         </div>;

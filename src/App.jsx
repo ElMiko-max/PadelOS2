@@ -770,7 +770,6 @@ const INIT_COMMS = [
         {userId:11,registeredAt:"2026-06-29T20:00:00.000Z", status:"registered", addedBy:null, isGuest:false},
         {userId:12,registeredAt:"2026-06-29T20:00:00.000Z", status:"registered", addedBy:null, isGuest:false},
       ],
-      checkedIn:[1,2,3,4,5,6,7,8,9,10,11,12],
       poll:null,
       plan:{
         courts:3,

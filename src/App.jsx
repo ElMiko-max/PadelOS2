@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Capacitor } from "@capacitor/core";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
 import { App as CapApp } from "@capacitor/app";
 import { PushNotifications } from "@capacitor/push-notifications";
 import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
@@ -98,7 +100,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.06";
+const APP_VERSION = "V0.04.08";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -137,8 +139,9 @@ function buildBreakPlan(players, courts, totalRounds) {
     const eligible = players.filter(p => assigned[p.userId] < ent[p.userId]);
     eligible.sort((a, b) => {
       const rd = (ent[b.userId]-assigned[b.userId])-(ent[a.userId]-assigned[a.userId]); if (rd!==0) return rd;
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: now checked right after entitlement, before spacing
       const spacing = (r-lastB[b.userId])-(r-lastB[a.userId]); if (spacing!==0) return spacing;
-      return prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); // break preference: last-resort tiebreak only
+      return 0;
     });
     const noC = eligible.filter(p => r - lastB[p.userId] > 1);
     const pool = noC.length >= bpr ? noC : eligible;
@@ -277,10 +280,10 @@ function regenerateBreakPlan(plan, playedRounds) {
     eligible.sort((a,b) => {
       const remDiff = remaining[b.userId] - remaining[a.userId];
       if (remDiff !== 0) return remDiff;
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: now checked right after entitlement, before spacing
       const consecA = r - lastBreak[a.userId] <= 1 ? 1 : 0;
       const consecB = r - lastBreak[b.userId] <= 1 ? 1 : 0;
       if (consecA !== consecB) return consecA - consecB; // avoid consecutive
-      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: soft tiebreak
       return a.usr - b.usr; // lower USR priority
     });
     const noConsec = eligible.filter(p => r - lastBreak[p.userId] > 1);
@@ -1199,10 +1202,31 @@ function canvasToFileSync(canvas, name){
 
 async function shareImages(canvases, baseName){
   const diag=[];
-  // Convert canvases to files SYNCHRONOUSLY using toDataURL
-  // This keeps us in the user gesture context so navigator.share() doesn't fail
   const files = canvases.map((c,i)=>canvasToFileSync(c,`${baseName}_${i+1}.png`));
   diag.push(`files ready: ${files.length}`);
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const savedUris = [];
+      for (const f of files) {
+        const base64 = await new Promise((resolve,reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+        const result = await Filesystem.writeFile({path:f.name, data:base64, directory:Directory.Cache});
+        savedUris.push(result.uri);
+      }
+      await Share.share({title:baseName, files:savedUris});
+      return {status:"shared", diag:["shared natively"]};
+    } catch(e) {
+      if (e && (e.message||"").toLowerCase().includes("cancel")) return {status:"shared", diag:["user cancelled"]};
+      diag.push(`native share failed: ${e.message||e}`);
+      // fall through to browser fallback below, which will just trigger a download on native too
+    }
+  }
+
   diag.push(`navigator.share: ${typeof navigator.share}`);
   diag.push(`navigator.canShare: ${typeof navigator.canShare}`);
 
@@ -2415,6 +2439,8 @@ export default function Matchkeeper() {
     }
     const id = _crid++;
     setClaimRequests(rs => [...rs, {id, userId, firebaseUid:authUser.uid, email:authUser.email, photoURL:authUser.photoURL||"", displayName:authUser.displayName||"", requestedAt:new Date().toISOString(), status:"pending"}]);
+    const claimedName = users.find(u=>u.id===userId)?.nickname || "a player";
+    notify([1], "claimRequest", null, "🙋 New claim request", `${authUser.displayName||authUser.email||"Someone"} wants to be linked as ${claimedName} — review in Requests.`);
   };
   const approveClaim = (reqId) => {
     setClaimRequests(rs => rs.map(r => r.id===reqId ? {...r, status:"approved"} : r));
@@ -2902,10 +2928,29 @@ export default function Matchkeeper() {
   const saveVenue=(d,editId=null)=>{const courts=d.courtNames.filter(Boolean).map(n=>({name:n}));if(editId){setVenues(vs=>vs.map(v=>v.id===editId?{...v,...d,courts,status:"pending_edit"}:v));toast2("Saved · Pending review");}else{const id=_vid++;setVenues(vs=>[...vs,{id,...d,courts,status:"pending"}]);toast2("Added · Pending review");}go("list");};
 
   // Event
+  const scheduleEventReminders = async (cid, eid, date, time) => {
+    if (!date || !time) return;
+    const startMs = new Date(`${date}T${time}`).getTime();
+    if (isNaN(startMs)) return;
+    const now = Date.now();
+    const offsets = [{type:"24h", ms:24*3600000}, {type:"3h", ms:3*3600000}, {type:"1h", ms:1*3600000}];
+    const entries = offsets
+      .map(o => ({id:`${eid}-${o.type}`, eventId:eid, communityId:cid, reminderType:o.type, firesAt:new Date(startMs-o.ms).toISOString(), sent:false}))
+      .filter(e => new Date(e.firesAt).getTime() > now); // skip reminders whose moment has already passed
+    if (entries.length === 0) return;
+    try {
+      const ref = doc(db,"padelos","eventReminderSchedule");
+      const snap = await getDoc(ref);
+      const existing = snap.exists() ? JSON.parse(snap.data().value||"[]") : [];
+      const filtered = existing.filter(x=>x.eventId!==eid); // drop this event's old schedule (re-edit replaces it)
+      await setDoc(ref, {value: JSON.stringify([...filtered, ...entries])});
+    } catch(e) { console.log("eventReminderSchedule write failed", e); }
+  };
   const createEvent=(cid,d)=>{
     const id=_eid++;const v=venues.find(x=>x.id===parseInt(d.venueId));
     const ev={id,communityId:cid,name:d.name,description:d.description||"",createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:parseInt(d.courts)||2,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:v?.pricePerHour||0,extraFee:v?.extraFee||0,plan:null,reservedCourts:v?.courts.length||2};
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
+    scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
     if (!d.pollMode && ev.type && ev.visibility!=="private") {
       const recipients = (comm?.members||[]).filter(m=>m.userId!==me.id).map(m=>m.userId);
@@ -2922,6 +2967,9 @@ export default function Matchkeeper() {
       if (d.timeTo!==undefined && d.timeTo!==before.timeTo) changed.push("time");
       if (d.venueId!==undefined && parseInt(d.venueId)!==before.venueId) changed.push("venue");
       if (d.courts!==undefined && parseInt(d.courts)!==before.courts) changed.push("courts");
+      if (changed.includes("date")||changed.includes("time")) {
+        scheduleEventReminders(cid, eid, d.date??before.date, d.time??before.time);
+      }
       if (changed.length>0) {
         const uniqChanged = [...new Set(changed)];
         const recipients = before.registrations.map(r=>r.userId).filter(uid=>uid!==me.id);
@@ -3674,6 +3722,7 @@ function CommStatsTab({comm, users, onViewProfile}){
 function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile}){
   const [tab,setTab]=useState("members");
   const [showInvite,setShowInvite]=useState(false);
+  const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const myRole=comm.members.find(m=>m.userId===me.id)?.role;
   const isAdmin=myRole==="owner"||myRole==="admin";
   const isMember=!!myRole;
@@ -3722,7 +3771,15 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
             <Card key={m.userId} style={{cursor:isAdmin?"pointer":"default"}}><div onClick={()=>isAdmin&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
               <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{isAdmin&&!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
-              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-start",marginTop:8,marginLeft:48}} onClick={e=>e.stopPropagation()}>{m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>onConvertGuest(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>onToggleStatus(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>onPromote(u.id)} color="#6366F1"/>}<SmBtn label="Remove" onClick={()=>onKick(u.id)} color="#EF4444"/></div>}
+              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+                {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+                  {m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>{onConvertGuest(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>{onToggleStatus(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>{onPromote(u.id);setOpenMemberMenu(null);}} color="#6366F1" style={{width:"100%"}}/>}
+                  <SmBtn label="Remove" onClick={()=>{onKick(u.id);setOpenMemberMenu(null);}} color="#EF4444" style={{width:"100%"}}/>
+                </div>}
+              </div>}
             </div></Card>
           );})}
         </div>;
@@ -3906,7 +3963,7 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
     </table>
   </div>;
 }
-function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
+function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin}){
   const bpr=Math.max(0,ev.registrations.length-tc*4);
 
   // Count completed rounds (all matches have winners)
@@ -3932,7 +3989,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
   return <Card>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Break Schedule</div>
-      {ev.status!=="completed"&&<button onMouseDown={e=>{e.preventDefault();onRegenerate();}}
+      {isAdmin&&ev.status!=="completed"&&<button onMouseDown={e=>{e.preventDefault();onRegenerate();}}
         style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:12,fontWeight:500,cursor:"pointer"}}>
         🔄 Regenerate Future
       </button>}
@@ -3964,9 +4021,9 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
       {warnings.map((w,i)=><div key={i} style={{fontSize:11,color:"#F59E0B"}}>{w}</div>)}
     </div>}
 
-    <div style={{fontSize:11,color:"#6366F1",marginBottom:10,padding:"6px 10px",background:"#6366F111",borderRadius:6}}>
+    {isAdmin&&<div style={{fontSize:11,color:"#6366F1",marginBottom:10,padding:"6px 10px",background:"#6366F111",borderRadius:6}}>
       💡 Pending columns (🔄) change via Rounds tab swap · Open columns (✏️) tap to edit here
-    </div>
+    </div>}
 
     <div style={{overflowX:"auto"}}>
       <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
@@ -3998,7 +4055,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
               const isFrozen=ri<completedRounds;
               const isPending=ri>=completedRounds&&ri<generatedRounds;
               const isOpen=ri>=generatedRounds;
-              const canEdit=isOpen; // only open rounds editable from breaks tab
+              const canEdit=isOpen&&isAdmin; // only open rounds, and only admins, may edit from the Breaks tab
 
               const isFirm = isOpen && (plan.firmBreaks?.[ri]||[]).includes(u.id);
               const bg   = isFirm ? "#8B5CF633" : onB ? (isFrozen?"#EF444422":isPending?"#F59E0B22":"#F59E0B33") : (isFrozen?"#33333322":isPending?"var(--po-bdr)":"#34D39911");
@@ -4020,7 +4077,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
         })}</tbody>
       </table>
     </div>
-    <div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to cycle: ▶ none → 🪑 suggested → 🔐 firm (locked — survives Regenerate) → back to none</div>
+    {isAdmin&&<div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to cycle: ▶ none → 🪑 suggested → 🔐 firm (locked — survives Regenerate) → back to none</div>}
   </Card>;
 }
 
@@ -4062,7 +4119,7 @@ function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
 // ══════════════════════════════════════════════════════
 //  CT MATCHES TAB
 // ══════════════════════════════════════════════════════
-function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
+function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
   const [selSwap, setSelSwap] = useState(null); // {ri, tid} for pending swap
   const teams = plan.sorted || plan.teams;
   const totalRounds = plan.maxRounds || plan.rounds.length;
@@ -4073,6 +4130,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
   const breakSet = (ri) => new Set(breakPlan[ri]||[]);
 
   function handleCellTap(ri, t){
+    if(!isAdmin) return;
     if(ri < generatedCount) return; // locked/generated — can't swap
     if(!selSwap){
       // First tap: only meaningful to tap a break slot
@@ -4090,7 +4148,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
     const onBreak = breakSet(ri).has(t.id);
     const isGenerated = ri < generatedCount;
     const isSel = selSwap&&selSwap.ri===ri&&selSwap.tid===t.id;
-    const canInteract = !isGenerated;
+    const canInteract = !isGenerated&&isAdmin;
     return {
       padding:"6px 4px", textAlign:"center",
       borderBottom:"0.5px solid var(--po-bdr)",
@@ -4108,9 +4166,9 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
   return <>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,gap:8}}>
       <div style={{fontSize:11,color:"var(--po-dim)"}}>
-        🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap 🔐 to lock/unlock Firm)
+        {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap 🔐 to lock/unlock Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
-      {onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
+      {isAdmin&&onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
     </div>
     {selSwap&&<div style={{marginBottom:8,padding:"8px 12px",background:"#6366F111",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>
       ✋ {teams.find(t=>t.id===selSwap.tid)?.name} selected — tap another team in R{selSwap.ri+1} to swap break
@@ -4145,19 +4203,19 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
                   ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":isSel?"#6366F1":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
-                {onBreak&&!isGenerated&&<span onClick={e=>{e.stopPropagation();onToggleFirm&&onToggleFirm(ri,t.id);}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
+                {onBreak&&!isGenerated&&isAdmin&&<span onClick={e=>{e.stopPropagation();onToggleFirm&&onToggleFirm(ri,t.id);}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
               </td>;
             })}
           </tr>)}
         </tbody>
       </table>
     </div>
-    {generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap ☕ then another team to swap</div>}
+    {isAdmin&&generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap ☕ then another team to swap</div>}
   </>;
 }
 
 
-function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,sim,onSetMatchModeStart}){
+function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,sim,onSetMatchModeStart,isAdmin}){
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
   const [scores,setScores]=useState({});
   const [collapsedRounds,setCollapsedRounds]=useState(new Set()); // manually toggled rounds (overrides the completed-round default)
@@ -4191,7 +4249,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
       <div style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",marginBottom:10}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</div>
       {(()=>{
         const ri2=plan.rounds.findIndex(r=>r.roundNum===plan.rounds[plan.rounds.length-1].roundNum);
-        function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;return <div onClick={()=>{if(!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:!isLeague&&onSwapCTLadder?"pointer":"default"}}><div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{team?.players?.map(p=>p.nickname).join(" & ")}</div></div>;}
+        function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}><div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{team?.players?.map(p=>p.nickname).join(" & ")}</div></div>;}
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:isLeague?16:10,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:12,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       {isLeague&&<>
@@ -4234,11 +4292,11 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
       const ladderDone=plan.rounds.length>=maxR;
       return <>
         {selT&&<div style={{fontSize:12,padding:"8px 12px",borderRadius:8,marginBottom:8,background:"#FBBF2411",border:"0.5px solid #FBBF2444",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{color:"#FBBF24"}}>✋ Team selected — tap another team or break team to swap</span><SmBtn label="✕" onClick={()=>setSelT(null)} color="#EF4444"/></div>}
-      {lastRoundDone&&!ladderDone&&<Btn label={`▶ Generate Next Match (Round ${plan.rounds.length+1} of ${maxR})`} primary onClick={onNextCTLadder} style={{width:"100%",marginBottom:12}}/>}
+      {lastRoundDone&&!ladderDone&&isAdmin&&<Btn label={`▶ Generate Next Match (Round ${plan.rounds.length+1} of ${maxR})`} primary onClick={onNextCTLadder} style={{width:"100%",marginBottom:12}}/>}
         {lastRoundDone&&ladderDone&&<div style={{padding:"12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:13,fontWeight:600,color:"#34D399",textAlign:"center",marginBottom:12}}>🏆 Event Complete — all rounds played! Check Standings.</div>}
         {onBreak.length>0&&<div style={{background:"#F59E0B0D",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:12}}>
-          <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{onBreak.map(t=>{const isSel=selT?.ri===lastRound.roundNum-1&&selT?.tid===t.id;return <div key={t.id} onClick={()=>{if(!onSwapCTLadder)return;if(selT&&selT.ri===lastRound.roundNum-1&&selT.tid!==t.id){onSwapCTLadder(lastRound.roundNum-1,selT.tid,t.id);setSelT(null);}else setSelT({ri:lastRound.roundNum-1,tid:t.id});}} style={{padding:"6px 10px",background:isSel?"#FBBF2422":"#F59E0B11",border:`1.5px solid ${isSel?"#FBBF24":"#F59E0B44"}`,borderRadius:8,cursor:onSwapCTLadder?"pointer":"default"}}>
+          <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{isAdmin&&onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{onBreak.map(t=>{const isSel=selT?.ri===lastRound.roundNum-1&&selT?.tid===t.id;return <div key={t.id} onClick={()=>{if(!isAdmin||!onSwapCTLadder)return;if(selT&&selT.ri===lastRound.roundNum-1&&selT.tid!==t.id){onSwapCTLadder(lastRound.roundNum-1,selT.tid,t.id);setSelT(null);}else setSelT({ri:lastRound.roundNum-1,tid:t.id});}} style={{padding:"6px 10px",background:isSel?"#FBBF2422":"#F59E0B11",border:`1.5px solid ${isSel?"#FBBF24":"#F59E0B44"}`,borderRadius:8,cursor:isAdmin&&onSwapCTLadder?"pointer":"default"}}>
             <div style={{fontSize:12,color:isSel?"#FBBF24":"#F59E0B",fontWeight:600}}>{t.name} ({t.avgUsr})</div>
             <div style={{fontSize:10,color:"var(--po-sub)"}}>{t.players?.map(p=>p.nickname).join(" & ")}</div>
           </div>;})}</div>
@@ -4251,7 +4309,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
       {plan.lastPromo&&<div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>
         Last: <span style={{color:"#34D399"}}>{plan.lastPromo.promoted?.map?.(t=>t?.name).join(", ")||plan.lastPromo.promoted?.name}</span> promoted · <span style={{color:"#F59E0B"}}>{plan.lastPromo.relegated?.filter(Boolean).map(t=>t?.name).join(", ")}</span> relegated
       </div>}
-      <Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>
+      {isAdmin&&<Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>}
     </>}
     {isLeague&&lastRoundDone&&plan.leagueRound>=(plan.maxRounds||99)&&<div style={{padding:"12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:13,fontWeight:600,color:"#34D399",textAlign:"center",marginBottom:12}}>🏆 Event Complete — all rounds played! Check Standings.</div>}
     {isLeague&&lastRoundDone&&plan.leagueRound>=(plan.maxRounds||99)&&<div style={{padding:"6px 10px",background:"#6366F111",borderRadius:6,fontSize:11,color:"#6366F1",marginBottom:8}}>Final standings: all teams merged by total points</div>}
@@ -4277,7 +4335,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
           {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
         </div>
         {effCollapsed?null:<>
-        {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart}/>}
+        {isLatest&&isAdmin&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart}/>}
         {isLeague
           ?<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}{(round.matchesB||[]).map((m,mi)=><MatchCard key={`B${mi}`} m={m} ri={ri} mi={mi} side="B"/>)}</>
           :<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}</>
@@ -4771,8 +4829,8 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
   }
 
   const tabs=["info","players",
-    ...(isCI&&isAdmin?(plan?["breaks","rounds","standings"]:["rounds"]):[]),
-    ...(isCT&&isAdmin?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):["teams"]):[]),
+    ...(isCI?(plan?["breaks","rounds","standings"]:(isAdmin?["rounds"]:[])):[]),
+    ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
     "manage"
   ];
   const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches"};
@@ -4791,7 +4849,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
       }):false;
       histBadge = wasLastPartner?{label:"🚩",color:"#EF4444"}:cnt>0?{label:`×${cnt}`,color:"#F59E0B"}:{label:"✨️",color:"#34D399"};
     }
-    return <div onClick={()=>!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:"pointer",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
+    return <div onClick={()=>isAdmin&&!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:isAdmin?"pointer":"default",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
       <Av u={p} size={28}/>
       <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname}</span>
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
@@ -4963,7 +5021,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{u.phone?` · ${u.phone}`:""}</span>}
               </div>
               {/* Guest USR - editable inline, saves on blur or Enter */}
-              {u.isGuest||r.isGuest
+              {(u.isGuest||r.isGuest)&&isAdmin
                 ? <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
                     <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
                     <input type="number" min="0" max="100" defaultValue={u.usr}
@@ -4973,7 +5031,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                       style={{width:52,padding:"2px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12,fontWeight:600}}/>
                     <span style={{fontSize:10,color:"var(--po-dim)"}}>/100 · tap Enter to save</span>
                   </div>
-                : isAdmin&&!effEv.plan
+                : (u.isGuest||r.isGuest)
+                  ? <div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div>
+                  : isAdmin&&!effEv.plan
                   ? <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
                       <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
                       <input type="number" min="0" max="100" defaultValue={r.eventUsr??u.usr}
@@ -5137,11 +5197,11 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     </>}
 
     {/* CI BREAKS */}
-    {tab==="breaks"&&isCI&&isAdmin&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks}/>}
+    {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} isAdmin={isAdmin}/>}
 
     {/* CI ROUNDS */}
-    {tab==="rounds"&&isCI&&isAdmin&&<>
-      {!plan&&<Card>
+    {tab==="rounds"&&isCI&&<>
+      {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Generate Round 1</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players · {tc} courts · {Math.max(0,effEv.registrations.length-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
@@ -5152,15 +5212,15 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
       {plan&&<>
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <span>✓ {plan.sorted?.length||0} players · {plan.totalRounds} rounds · {tc} courts</span>
-          {!ciR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current pairings and start over?\n\nRound 1 will be rebuilt from the current registered players. This cannot be undone."))act.startCI(plan.totalRounds,plan.roundDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>}
+          {isAdmin&&(!ciR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current pairings and start over?\n\nRound 1 will be rebuilt from the current registered players. This cannot be undone."))act.startCI(plan.totalRounds,plan.roundDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)}
         </div>
         {/* Next round button ON TOP */}
-        {canNext&&!isCompleted&&<Btn label={`▶ Generate Round ${plan.rounds.length+1} of ${plan.totalRounds}`} primary onClick={act.nextRound} style={{width:"100%",marginBottom:12}}/>}
+        {isAdmin&&canNext&&!isCompleted&&<Btn label={`▶ Generate Round ${plan.rounds.length+1} of ${plan.totalRounds}`} primary onClick={act.nextRound} style={{width:"100%",marginBottom:12}}/>}
         {plan.rounds.length>=plan.totalRounds&&plan.rounds.every(r=>r.matches.every(m=>m.winner!=null))&&<div style={{textAlign:"center",padding:"14px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:14,fontWeight:600,color:"#34D399",marginBottom:12}}>🏆 Complete — check Standings!</div>}
 
         {/* Swap hint */}
         <div style={{fontSize:12,padding:"9px 12px",borderRadius:8,marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:sel?"#FBBF2411":"var(--po-bdr)",border:`0.5px solid ${sel?"#FBBF2444":"#334155"}`}}>
-          <span style={{color:sel?"#FBBF24":"var(--po-dim)"}}>{isCompleted?"🔒 Event completed — results locked":sel?`✋ ${users.find(u=>u.id===sel.uid)?.nickname} — tap another in Round ${sel.ri+1} to swap · badges show partner history with them`:"💡 Tap player to select · tap another in same round to swap"}</span>
+          <span style={{color:sel?"#FBBF24":"var(--po-dim)"}}>{isCompleted?"🔒 Event completed — results locked":sel?`✋ ${users.find(u=>u.id===sel.uid)?.nickname} — tap another in Round ${sel.ri+1} to swap · badges show partner history with them`:isAdmin?"💡 Tap player to select · tap another in same round to swap":"Live matches, breaks, and results for this event"}</span>
           {sel&&!isCompleted&&<SmBtn label="✕" onClick={()=>setSel(null)} color="#EF4444"/>}
         </div>
 
@@ -5217,8 +5277,8 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     </>}
 
     {/* CT TEAMS */}
-    {tab==="teams"&&isCT&&isAdmin&&<>
-      {!plan&&<Card>
+    {tab==="teams"&&isCT&&<>
+      {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Form Teams & Start</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players → {Math.floor(effEv.registrations.length/6)} pools → {Math.floor(effEv.registrations.length/2)} teams</div>
         {ctCC?.warning&&<div style={{padding:"8px 12px",background:"#F59E0B11",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:12,color:"#F59E0B",marginBottom:12}}>⚠️ {ctCC.warning}</div>}
@@ -5240,9 +5300,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
       {plan&&<>
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <span>✓ {plan.teams?.length||0} teams · {plan.format==="ladder"?"Ladder":"League"} · {plan.courts} courts</span>
-          {plan.rounds.length===0||!plan.rounds[0]?.matchesA?.some(m=>m.winner)
+          {isAdmin&&(plan.rounds.length===0||!plan.rounds[0]?.matchesA?.some(m=>m.winner)
             ? (!ctR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current team formation and start over?\n\nAll teams and the current Round 1 will be cleared. Registered players stay.\n\nThis cannot be undone."))act.startCT(plan.courts,plan.format,plan.matchDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)
-            : null}
+            : null)}
         </div>
         {plan.format==="ladder"?<>
           {/* Ladder: show Pools (how teams were formed) but make clear they don't affect gameplay */}
@@ -5265,10 +5325,10 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     </>}
 
     {/* CT BREAKS (Ladder only) */}
-    {tab==="breaks"&&isCT&&isAdmin&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm}/>}
+    {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&isAdmin&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onSetMatchModeStart={act.setMatchModeStart}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onSetMatchModeStart={act.setMatchModeStart} isAdmin={isAdmin}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>

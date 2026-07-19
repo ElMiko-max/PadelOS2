@@ -92,3 +92,63 @@ exports.dispatchMatchModeAlarms = onSchedule("every 1 minutes", async () => {
 
   console.log(`[matchMode] sent ${newNotifs.length} notification(s)`);
 });
+
+// Runs every minute. Checks padelos/eventReminderSchedule for any 24h/3h/1h reminder
+// whose time has arrived, looks up who is CURRENTLY registered for that event (so
+// late registrations and cancellations are respected even though the reminder was
+// scheduled earlier), and appends entries to padelos/notifications.
+exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
+  const db = getFirestore();
+  const scheduleRef = db.collection("padelos").doc("eventReminderSchedule");
+  const scheduleSnap = await scheduleRef.get();
+  if (!scheduleSnap.exists) return;
+
+  const schedule = JSON.parse(scheduleSnap.data().value || "[]");
+  const now = Date.now();
+  const due = schedule.filter(s => !s.sent && new Date(s.firesAt).getTime() <= now);
+
+  if (due.length === 0) {
+    console.log("[eventReminder] nothing due");
+    return;
+  }
+  console.log(`[eventReminder] ${due.length} reminder(s) due, dispatching...`);
+
+  const commsSnap = await db.collection("padelos").doc("comms").get();
+  const comms = commsSnap.exists ? JSON.parse(commsSnap.data().value || "[]") : [];
+
+  const notifRef = db.collection("padelos").doc("notifications");
+  const notifSnap = await notifRef.get();
+  const notifications = notifSnap.exists ? JSON.parse(notifSnap.data().value || "[]") : [];
+
+  const labelMap = {"24h": "tomorrow", "3h": "in 3 hours", "1h": "in 1 hour"};
+  const newNotifs = [];
+  const stillValid = []; // reminders we could actually process (event found) — used to mark sent
+
+  for (const s of due) {
+    const comm = comms.find(c => c.id === s.communityId);
+    const ev = comm?.events?.find(e => e.id === s.eventId);
+    if (!ev || ev.status === "cancelled") {
+      console.log(`[eventReminder] skipping ${s.id}: event not found or cancelled`);
+      stillValid.push(s);
+      continue;
+    }
+    const userIds = (ev.registrations || []).map(r => r.userId);
+    for (const userId of userIds) {
+      newNotifs.push({
+        id: `evr-${s.id}-${userId}`,
+        userId,
+        title: "📅 Event reminder",
+        body: `${ev.name} is ${labelMap[s.reminderType] || "coming up"}${ev.time ? " — " + ev.time : ""}`,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    stillValid.push(s);
+  }
+
+  await notifRef.set({value: JSON.stringify([...notifications, ...newNotifs])});
+
+  const updatedSchedule = schedule.map(s => stillValid.includes(s) ? {...s, sent: true} : s);
+  await scheduleRef.set({value: JSON.stringify(updatedSchedule)});
+
+  console.log(`[eventReminder] sent ${newNotifs.length} notification(s)`);
+});

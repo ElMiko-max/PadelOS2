@@ -100,7 +100,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.08";
+const APP_VERSION = "V0.04.09";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -137,9 +137,12 @@ function buildBreakPlan(players, courts, totalRounds) {
   const plan = [];
   for (let r = 0; r < totalRounds; r++) {
     const eligible = players.filter(p => assigned[p.userId] < ent[p.userId]);
+    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
     eligible.sort((a, b) => {
+      const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
+      if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first, regardless of entitlement
       const rd = (ent[b.userId]-assigned[b.userId])-(ent[a.userId]-assigned[a.userId]); if (rd!==0) return rd;
-      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: now checked right after entitlement, before spacing
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // among non-anchor-matches, closer preference still wins ties
       const spacing = (r-lastB[b.userId])-(r-lastB[a.userId]); if (spacing!==0) return spacing;
       return 0;
     });
@@ -175,7 +178,8 @@ function diversePair(cp, ph, lastRoundPairs) {
 }
 function genRound1(players, courts, totalRounds) {
   const sorted = [...players].sort((a,b)=>b.usr-a.usr), breakPlan = buildBreakPlan(sorted,courts,totalRounds), onBreakIds=breakPlan[0]||[];
-  const playing=sorted.filter(p=>!onBreakIds.includes(p.userId)), onBreak=sorted.filter(p=>onBreakIds.includes(p.userId));
+  const playing=sorted.filter(p=>!onBreakIds.includes(p.userId));
+  const onBreak=sorted.filter(p=>onBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: Math.floor(sorted.findIndex(x=>x.userId===p.userId)/4)+1}));
   const matches=[]; for(let c=0;c<courts;c++){const cp=playing.slice(c*4,(c+1)*4);if(cp.length<4)break;const pair=snakePairCI(cp);matches.push({court:c+1,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
   return {rounds:[{round:1,matches,onBreak,onBreakIds}],courts,totalRounds,breakPlan,partnerHistory:{},sorted};
 }
@@ -184,15 +188,14 @@ function genNextRoundCI(plan) {
   const ph=JSON.parse(JSON.stringify(plan.partnerHistory||{}));
   const lastRoundPairs=new Set();
   lastRound.matches.forEach(m=>{[m.teamA,m.teamB].forEach(team=>{const[a,b]=team;if(!a||!b)return;if(!ph[a.userId])ph[a.userId]={};if(!ph[b.userId])ph[b.userId]={};ph[a.userId][b.userId]=(ph[a.userId][b.userId]||0)+1;ph[b.userId][a.userId]=(ph[b.userId][a.userId]||0)+1;lastRoundPairs.add(pairKey(a.userId,b.userId));});});
-  const newBreakIds=breakPlan[ri]||[], onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)), buckets={};
+  const newBreakIds=breakPlan[ri]||[], buckets={};
   for(let c=1;c<=courts;c++) buckets[c]=[];
   lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
   for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId));
-  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId));
-  // Where a returning player belongs is not "the court they last sat on" — it's the court
-  // their last ACTUAL result would have earned them (win promotes, loss relegates), applying
-  // the same movement rule as everyone else. Scans backward since they may have broken for
-  // more than one round in a row.
+  // Where a player belongs (whether returning from break, or newly going on break this round)
+  // is not "the court they last sat on" — it's the court their last ACTUAL result would have
+  // earned them (win promotes, loss relegates), applying the same movement rule as everyone
+  // else. Scans backward since they may have broken for more than one round in a row.
   const findExpectedReturnCourt=(uid)=>{
     for(let i=rounds.length-1;i>=0;i--){
       for(const m of rounds[i].matches){
@@ -206,6 +209,8 @@ function genNextRoundCI(plan) {
     }
     return null;
   };
+  const onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: findExpectedReturnCourt(p.userId)}));
+  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId));
   returning.forEach(rp=>{
     const targetCourt=findExpectedReturnCourt(rp.userId);
     const sameCourtHasRoom=targetCourt&&buckets[targetCourt]&&buckets[targetCourt].length<4;
@@ -278,9 +283,12 @@ function regenerateBreakPlan(plan, playedRounds) {
 
     const eligible = players.filter(p => remaining[p.userId] > 0 && !firmHere.includes(p.userId));
     eligible.sort((a,b) => {
+      const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
+      const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
+      if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first
       const remDiff = remaining[b.userId] - remaining[a.userId];
       if (remDiff !== 0) return remDiff;
-      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: now checked right after entitlement, before spacing
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd;
       const consecA = r - lastBreak[a.userId] <= 1 ? 1 : 0;
       const consecB = r - lastBreak[b.userId] <= 1 ? 1 : 0;
       if (consecA !== consecB) return consecA - consecB; // avoid consecutive
@@ -3244,6 +3252,22 @@ export default function Matchkeeper() {
   };
   const nextRoundCI=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");};
   const setWinCI=(cid,eid,ri,mi,w)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w})});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  const rebalanceCourtCI=(cid,eid,ri,mi)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>{
+      if(ev.id!==eid||!ev.plan)return ev;
+      const rounds=ev.plan.rounds.map((r,rr)=>{
+        if(rr!==ri)return r;
+        return {...r,matches:r.matches.map((m,mm)=>{
+          if(mm!==mi||m.winner)return m;
+          const four=[...m.teamA,...m.teamB].sort((a,b)=>b.usr-a.usr);
+          const pair=snakePairCI(four);
+          return {...m,teamA:pair.teamA,teamB:pair.teamB};
+        })};
+      });
+      return {...ev,plan:{...ev.plan,rounds}};
+    })}));
+    toast2("Court re-balanced by USR ✓");
+  };
   const swapCI=(cid,eid,ri,uidA,uidB)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
       if(ev.id!==eid||!ev.plan)return ev;
@@ -3507,6 +3531,7 @@ export default function Matchkeeper() {
             onSetWinCI={(ri,mi,w)=>setWinCI(comm.id,event.id,ri,mi,w)}
             onNextRound={()=>nextRoundCI(comm.id,event.id)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
+            onRebalanceCourt={(ri,mi)=>rebalanceCourtCI(comm.id,event.id,ri,mi)}
             onEditBreak={(ri,uid,v)=>editBreakCI(comm.id,event.id,ri,uid,v)}
             onRegenerateBreaks={()=>regenerateBreaksCI(comm.id,event.id)}
             onRemoveFromEvent={uid=>removeFromEvent(comm.id,event.id,uid)}
@@ -4461,7 +4486,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
+function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const [totalR,setTotalR] = useState(6);
@@ -4562,6 +4587,21 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
           return {...e, plan:{...e.plan, rounds}};
         })
       : onSwap(ri,a,b),
+    rebalanceCourt: (ri,mi) => sim
+      ? simMutate(e => {
+          if(!e.plan) return e;
+          const rounds=e.plan.rounds.map((r,rr)=>{
+            if(rr!==ri)return r;
+            return {...r,matches:r.matches.map((m,mm)=>{
+              if(mm!==mi||m.winner)return m;
+              const four=[...m.teamA,...m.teamB].sort((a,b)=>b.usr-a.usr);
+              const pair=snakePairCI(four);
+              return {...m,teamA:pair.teamA,teamB:pair.teamB};
+            })};
+          });
+          return {...e, plan:{...e.plan, rounds}};
+        })
+      : onRebalanceCourt(ri,mi),
     editBreak: (ri,uid,v) => sim ? null /* break editing not mirrored in sim — exit sim to make this change for real */ : onEditBreak(ri,uid,v),
     regenerateBreaks: () => sim ? null : onRegenerateBreaks(),
     swapCTBreak: (ri,tA,tB) => sim
@@ -4851,6 +4891,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     return <div onClick={()=>isAdmin&&!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:isAdmin?"pointer":"default",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
       <Av u={p} size={28}/>
       <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname}</span>
+      {p.wouldBeCourt&&<span title="Court they'd have played on by USR rank" style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       <span style={{fontSize:11,color:"var(--po-dim)"}}>{p.usr}</span>
     </div>;
@@ -5244,8 +5285,19 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
             {effCollapsed?null:<>
             {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onStart={act.setMatchModeStart}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}</div></div>}
-            {round.matches.map((m,mi)=><Card key={mi} style={{marginBottom:8}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span><Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/></div>
+            {round.matches.map((m,mi)=>{
+              const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
+              const gap=Math.abs(avgA-avgB);
+              const isRound1=ri===0;
+              return <Card key={mi} style={{marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  {isRound1&&<span title={`Balance gap: ${gap.toFixed(1)} USR`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ {gap.toFixed(0)}</span>}
+                  {isRound1&&isAdmin&&!m.winner&&<SmBtn label="🔀 Re-pair" onClick={()=>act.rebalanceCourt(ri,mi)} color="#38BDF8"/>}
+                  <Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/>
+                </div>
+              </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 30px 1fr",gap:8,alignItems:"start"}}>
                 <div style={{background:m.winner==="A"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="A"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM A <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length)})</span></div>
@@ -5258,7 +5310,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                 </div>
               </div>
               <WinCI m={m} ri={ri} mi={mi}/>
-            </Card>)}
+            </Card>;})}
             </>}
           </div>;
         })}

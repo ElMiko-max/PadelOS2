@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Capacitor } from "@capacitor/core";
+import { Geolocation } from "@capacitor/geolocation";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { App as CapApp } from "@capacitor/app";
@@ -40,6 +41,14 @@ const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh
 async function enablePushNotifications(userId){
   try{
     if (Capacitor.isNativePlatform()) {
+      await PushNotifications.createChannel({
+        id: "matchkeeper_alerts",
+        name: "Matchkeeper Alerts",
+        description: "Match reminders, round-end alarms, and event updates",
+        importance: 5, // max — shows as heads-up + lock screen
+        visibility: 1,
+        vibration: true,
+      }).catch(e=>console.log("createChannel failed", e));
       let permStatus = await PushNotifications.checkPermissions();
       if (permStatus.receive === "prompt") permStatus = await PushNotifications.requestPermissions();
       if (permStatus.receive !== "granted") return {ok:false, reason:"denied"};
@@ -77,6 +86,14 @@ async function uploadProfilePhoto(userId, file){
   await uploadBytes(r, file);
   return await getDownloadURL(r);
 }
+// Uploads an event photo and returns {id, url} — each photo gets its own storage path so multiple can coexist
+async function uploadEventPhoto(eventId, file){
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const r = storageRef(storage, `event-photos/${eventId}/${id}`);
+  await uploadBytes(r, file);
+  const url = await getDownloadURL(r);
+  return {id, url};
+}
 const googleProvider = new GoogleAuthProvider();
 if (Capacitor.isNativePlatform()) {
   GoogleSignIn.initialize({
@@ -100,7 +117,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.09";
+const APP_VERSION = "V0.04.10";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2429,11 +2446,15 @@ export default function Matchkeeper() {
   const linkedUserId = authUser ? uidLinks[authUser.uid] : null;
   const linkedMe = linkedUserId!=null ? (users.find(u => u.id===linkedUserId) || null) : null;
   const me = linkedMe || users[0];
+  const [eventCommFilter, setEventCommFilter] = useState("all");
+  useEffect(() => { if (me?.id) { const saved = localStorage.getItem(`mk_ev_filter_${me.id}`); if (saved) setEventCommFilter(saved); } }, [me?.id]);
+  useEffect(() => { if (me?.id) localStorage.setItem(`mk_ev_filter_${me.id}`, eventCommFilter); }, [eventCommFilter, me?.id]);
   const autoPushTriedRef = useRef(false);
   useEffect(() => {
     if (Capacitor.isNativePlatform() && linkedMe && !autoPushTriedRef.current) {
       autoPushTriedRef.current = true;
       enablePushNotifications(linkedMe.id);
+      Geolocation.requestPermissions().catch(e=>console.log("Location permission request failed", e));
     }
   }, [linkedMe]);
   const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
@@ -2469,6 +2490,9 @@ export default function Matchkeeper() {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
     setView({screen,...extra});
   };
+  const goComm = (cid) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"comm",cid}); };
+  const goEvent = (cid,eid) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"event",cid,eid}); };
+  const goCommList = () => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"list"}); };
   const goBack = () => {
     setNavHistory(h=>{
       if(h.length===0) return h;
@@ -2921,7 +2945,9 @@ export default function Matchkeeper() {
   }, []);
 
   // Community
-  const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});};
+  const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
+    if (me.id!==1) notify([1], "new_community", null, "🌱 New community created", `${me.nickname} created "${d.name}"`);
+  };
   const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");go("comm",{cid:id});};
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
@@ -2940,9 +2966,9 @@ export default function Matchkeeper() {
     const startMs = new Date(`${date}T${time}`).getTime();
     if (isNaN(startMs)) return;
     const now = Date.now();
-    const offsets = [{type:"24h", ms:24*3600000}, {type:"3h", ms:3*3600000}, {type:"1h", ms:1*3600000}];
+    const offsets = [{type:"24h", ms:24*3600000}, {type:"3h", ms:3*3600000}, {type:"1h", ms:1*3600000}, {type:"2m", ms:2*60000, audience:"admins"}];
     const entries = offsets
-      .map(o => ({id:`${eid}-${o.type}`, eventId:eid, communityId:cid, reminderType:o.type, firesAt:new Date(startMs-o.ms).toISOString(), sent:false}))
+      .map(o => ({id:`${eid}-${o.type}`, eventId:eid, communityId:cid, reminderType:o.type, audience:o.audience||"registrants", firesAt:new Date(startMs-o.ms).toISOString(), sent:false}))
       .filter(e => new Date(e.firesAt).getTime() > now); // skip reminders whose moment has already passed
     if (entries.length === 0) return;
     try {
@@ -2959,6 +2985,7 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
+    if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
     if (!d.pollMode && ev.type && ev.visibility!=="private") {
       const recipients = (comm?.members||[]).filter(m=>m.userId!==me.id).map(m=>m.userId);
       notify(recipients, "reg_open", ev, `🎾 New event: ${ev.name}`, `Registration is open — ${fmtD(ev.date)}`);
@@ -3218,6 +3245,8 @@ export default function Matchkeeper() {
   const resolveT=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,type:key,poll:ev.poll?{...ev.poll,resolved:true,result:key}:null})}));toast2("Type set ✓");};
   const setPlan=(cid,eid,plan)=>updC(cid,c=>({...c,events:c.events.map(ev=>ev.id===eid?{...ev,plan}:ev)}));
   const removeFromEvent=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));toast2("Removed from event");};
+  const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");};
+  const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
   const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
@@ -3489,6 +3518,7 @@ export default function Matchkeeper() {
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
       `}</style>
       <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>signOut(fbAuth)}
+        comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
         onMarkNotifRead={markNotifRead} onMarkAllNotifRead={markAllNotifRead}
         onOpenNotif={n=>{setNotifMenu(false);markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}
@@ -3535,6 +3565,8 @@ export default function Matchkeeper() {
             onEditBreak={(ri,uid,v)=>editBreakCI(comm.id,event.id,ri,uid,v)}
             onRegenerateBreaks={()=>regenerateBreaksCI(comm.id,event.id)}
             onRemoveFromEvent={uid=>removeFromEvent(comm.id,event.id,uid)}
+            onAddEventPhoto={photo=>addEventPhoto(comm.id,event.id,photo)}
+            onRemoveEventPhoto={photoId=>removeEventPhoto(comm.id,event.id,photoId)}
             onEditGuestUsr={(uid,usr)=>editGuestUsr(uid,usr)}
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
             onStartCT={(c,f,dur)=>startCT(comm.id,event.id,c,f,dur)}
@@ -3544,12 +3576,13 @@ export default function Matchkeeper() {
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
           />
         }
-        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
+        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
         {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser}/>}
-        {nav==="settings"&&<SettingsSc user={me} users={users} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser}/>}
+        {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={n=>{markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav:"notifications",view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}/>}
@@ -3570,18 +3603,11 @@ export default function Matchkeeper() {
 }
 
 function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatformAdmin,onSignOut,TH,dark,
+  comms,eventCommFilter,onSetEventCommFilter,
   notifications=[],notifMenu,setNotifMenu,onMarkNotifRead,onMarkAllNotifRead,onOpenNotif,onSeeAllNotifs}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
   const tabs = [
-    {k:"communities", l:"Communities", chip:"#FBBF24", iconColor:"#7C4A03", rot:-4, icon:(
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="8.5" cy="8.5" r="3.8" fill="currentColor"/><circle cx="8.5" cy="8.5" r="1.3" fill="#FBBF24"/>
-        <circle cx="16.5" cy="10" r="3" fill="currentColor"/><circle cx="16.5" cy="10" r="1" fill="#FBBF24"/>
-        <path d="M3 20.5c0-3.8 2.7-6.3 5.9-6.3s5.6 2.3 5.9 5.6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" fill="none"/>
-        <path d="M13.5 16.8c2.5-0.3 5 1.6 5.3 4.4" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
-      </svg>
-    )},
     {k:"events", l:"Events", chip:"#F472B6", iconColor:"#7A1042", rot:4, icon:(
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <rect x="3" y="3.5" width="18" height="17" rx="4" fill="none" stroke="currentColor" strokeWidth="2.4"/>
@@ -3589,6 +3615,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
         <circle cx="7.3" cy="14.5" r="2.1" fill="currentColor"/><circle cx="16.7" cy="8.5" r="2.1" fill="currentColor"/>
       </svg>
     )},
+    {k:"me", l:"Me", chip:"#FBBF24", iconColor:"#7C4A03", rot:-4, avatar:true},
   ];
   return <div style={{background:TH?.nav||"#0E1117",borderBottom:`0.5px solid ${TH?.border||"var(--po-bdr)"}`,padding:"0 8px",display:"flex",alignItems:"center",justifyContent:"space-between",height:60,position:"sticky",top:0,left:0,right:0,width:"100%",zIndex:50,transition:"all 0.2s",boxSizing:"border-box",gap:4}}>
     <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
@@ -3601,8 +3628,8 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
     <div style={{display:"flex",gap:6,flex:1,justifyContent:"center",minWidth:0}}>{tabs.map(t=>{
       const active = nav===t.k;
       return <button key={t.k} onClick={()=>onNav(t.k)} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px 6px 6px",borderRadius:11,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:38,background:active?"rgba(255,255,255,0.97)":"rgba(255,255,255,0.16)",transition:"all 0.15s",flexShrink:1,overflow:"hidden"}}>
-        <div style={{width:26,height:26,borderRadius:8,background:t.chip,color:t.iconColor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transform:`rotate(${t.rot}deg)`}}>
-          {React.cloneElement(t.icon,{width:17,height:17})}
+        <div style={{width:26,height:26,borderRadius:t.avatar?"50%":8,background:t.avatar?"transparent":t.chip,color:t.iconColor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transform:t.avatar?"none":`rotate(${t.rot}deg)`,overflow:"hidden"}}>
+          {t.avatar ? <Av u={me} size={26}/> : React.cloneElement(t.icon,{width:17,height:17})}
         </div>
         <span style={{color:active?"#4F46E5":"rgba(255,255,255,0.92)",whiteSpace:"nowrap"}}>{t.l}</span>
       </button>;
@@ -3638,10 +3665,23 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
       </div>}
     </div>
     <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
-      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:2}}><Av u={me} size={30}/></div>
+      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:6,display:"flex"}}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.8"/>
+          <path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3 5.6 5.6" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.8" strokeLinecap="round"/>
+        </svg>
+      </div>
       {menu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,minWidth:190,zIndex:100,boxShadow:"0 8px 32px #00000066"}}>
         <div style={{padding:"8px 10px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}><div className="po-text" style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{me.nickname}</div><div className="po-dim" style={{fontSize:11,color:"var(--po-dim)"}}>USR {me.usr} · {usrLv(me.usr).l}</div></div>
-        {[{i:"👤",l:"My Profile",fn:onProfile},...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
+        {comms&&<div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}>
+          <span style={{fontSize:12,color:"var(--po-sub)",flexShrink:0}}>🏸 Events from</span>
+          <select value={eventCommFilter||"all"} onChange={e=>{onSetEventCommFilter&&onSetEventCommFilter(e.target.value);}}
+            style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:6,padding:"4px 6px",color:"var(--po-text)",fontSize:12,minWidth:0}}>
+            <option value="all">All Communities</option>
+            {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>}
+        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
       </div>}
     </div>
   </div>;
@@ -3676,6 +3716,7 @@ function CommForm({comm,onBack,onSave}){
 
 function CommStatsTab({comm, users, onViewProfile}){
   const [view, setView] = useState("usr");
+  const [perEvent, setPerEvent] = useState(false); // false=Total, true=Per Event — only relevant for additive stats (wins, pts)
   const members = comm.members.map(m=>users.find(u=>u.id===m.userId)).filter(Boolean);
   const completedEvents = comm.events.filter(ev=>ev.status==="completed"&&ev.plan);
 
@@ -3707,22 +3748,28 @@ function CommStatsTab({comm, users, onViewProfile}){
     return {user:u, participations, wins, totalPts, totalMaxPts};
   });
 
+  const perEv=(n,s)=>s.participations>0?(n/s.participations):0;
   const views={
-    usr:{label:"🏆 USR Rank", sort:(a,b)=>b.user.usr-a.user.usr, val:s=>`USR ${s.user.usr}`, sub:s=>usrLv(s.user.usr).l},
-    events:{label:"📅 Participations", sort:(a,b)=>b.participations-a.participations, val:s=>`${s.participations} events`, sub:()=>""},
-    wins:{label:"⚡ Most Wins", sort:(a,b)=>b.wins-a.wins, val:s=>`${s.wins} wins`, sub:()=>""},
-    pts:{label:"💯 Most Points", sort:(a,b)=>b.totalPts-a.totalPts, val:s=>`${s.totalPts} pts`, sub:()=>""},
+    usr:{label:"🏆 USR Rank", sort:(a,b)=>b.user.usr-a.user.usr, val:s=>`USR ${s.user.usr}`, sub:s=>usrLv(s.user.usr).l, hasPerEvent:false},
+    events:{label:"📅 Participations", sort:(a,b)=>b.participations-a.participations, val:s=>`${s.participations} events`, sub:()=>"", hasPerEvent:false},
+    wins:{label:"⚡ Most Wins", sort:(a,b)=>perEvent?perEv(b.wins,b)-perEv(a.wins,a):b.wins-a.wins, val:s=>perEvent?`${perEv(s.wins,s).toFixed(1)} wins/ev`:`${s.wins} wins`, sub:s=>perEvent?`${s.wins} total over ${s.participations} events`:"", hasPerEvent:true},
+    pts:{label:"💯 Most Points", sort:(a,b)=>perEvent?perEv(b.totalPts,b)-perEv(a.totalPts,a):b.totalPts-a.totalPts, val:s=>perEvent?`${perEv(s.totalPts,s).toFixed(1)} pts/ev`:`${s.totalPts} pts`, sub:s=>perEvent?`${s.totalPts} total over ${s.participations} events`:"", hasPerEvent:true},
   };
 
   const sorted=[...stats].sort(views[view].sort);
 
   return <>
-    <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
-      {Object.entries(views).map(([k,v])=><button key={k} onClick={()=>setView(k)}
-        style={{padding:"7px 12px",borderRadius:8,border:`0.5px solid ${view===k?"#6366F1":"var(--po-bdr)"}`,background:view===k?"#6366F122":"var(--po-card)",color:view===k?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-        {v.label}
-      </button>)}
-    </div>
+    <select value={view} onChange={e=>setView(e.target.value)} className="po-inp"
+      style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"10px 12px",fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:10}}>
+      {Object.entries(views).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+    </select>
+    {views[view].hasPerEvent&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"8px 12px",marginBottom:12}}>
+      <span style={{fontSize:12,color:"var(--po-text)"}}>View</span>
+      <div style={{display:"flex",background:"var(--po-inp)",borderRadius:8,padding:2}}>
+        <div onClick={()=>setPerEvent(false)} style={{padding:"5px 12px",fontSize:11,fontWeight:600,borderRadius:6,cursor:"pointer",background:!perEvent?"#6366F1":"transparent",color:!perEvent?"#fff":"var(--po-dim)"}}>Total</div>
+        <div onClick={()=>setPerEvent(true)} style={{padding:"5px 12px",fontSize:11,fontWeight:600,borderRadius:6,cursor:"pointer",background:perEvent?"#6366F1":"transparent",color:perEvent?"#fff":"var(--po-dim)"}}>Per Event</div>
+      </div>
+    </div>}
     {sorted.map((s,i)=>{
       const lv=usrLv(s.user.usr);
       const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":`${i+1}.`;
@@ -3801,7 +3848,7 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
                   {m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>{onConvertGuest(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>{onToggleStatus(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>{onPromote(u.id);setOpenMemberMenu(null);}} color="#6366F1" style={{width:"100%"}}/>}
-                  <SmBtn label="Remove" onClick={()=>{onKick(u.id);setOpenMemberMenu(null);}} color="#EF4444" style={{width:"100%"}}/>
+                  <SmBtn label="Remove" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from ${comm.name}?\n\nThey'll need to re-apply to join again. Their event history stays intact.`)){onKick(u.id);setOpenMemberMenu(null);}}} color="#EF4444" style={{width:"100%"}}/>
                 </div>}
               </div>}
             </div></Card>
@@ -3814,14 +3861,21 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
       {(() => { const visEvents = comm.events.filter(ev=>ev.visibility!=="private"||isAdmin||ev.registrations.some(r=>r.userId===me.id));
       return visEvents.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No events yet</div></Card>:<>
         {(() => {
-          const upcoming=visEvents.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled"&&!ev.archived);
-          const past=visEvents.filter(ev=>(ev.status==="completed"||ev.status==="cancelled")&&!ev.archived);
-          const archived=visEvents.filter(ev=>ev.archived);
+          const now=Date.now();
+          const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T${ev.time||"23:59"}`).getTime(); return isNaN(t)||t>=now; };
+          const upcoming=visEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived);
+          const pastAll=visEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived);
+          const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
+          const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
+          const archived=visEvents.filter(ev=>ev.archived||ev.status==="cancelled");
           return <>
             {upcoming.length>0?<>{upcoming.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}</>
               :<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No upcoming events</div></Card>}
-            {past.length>0&&<CollapsibleSection label={`📁 Past Events (${past.length})`} defaultOpen={false}>
-              {past.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
+            {pastIncomplete.length>0&&<CollapsibleSection label={`⏳ Incomplete (${pastIncomplete.length})`} defaultOpen={false}>
+              {pastIncomplete.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
+            </CollapsibleSection>}
+            {pastCompleted.length>0&&<CollapsibleSection label={`✅ Completed (${pastCompleted.length})`} defaultOpen={false}>
+              {pastCompleted.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
             </CollapsibleSection>}
             {isAdmin&&archived.length>0&&<CollapsibleSection label={`📦 Archived (${archived.length})`} defaultOpen={false}>
               {archived.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
@@ -3862,7 +3916,8 @@ function EvCard({ev,me,users,onClick}){
   const sl={registration_open:"Open",completed:"Completed",cancelled:"Cancelled"};
   const tl={open:"Open Day",closed_ind:"Closed Ind.",closed_teams:"Closed Teams"};
   const creator=users?.find(u=>u.id===ev.createdBy);
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  const photoCount=ev.photos?.length||0;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -4486,12 +4541,23 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
+function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const [totalR,setTotalR] = useState(6);
   const [roundDur,setRDur] = useState(20);
   const [showAddM,setSAM]  = useState(false);
+  const [showHeaderMenu,setShowHeaderMenu] = useState(false);
+  const [showPhotos,setShowPhotos] = useState(false);
+  const [photoUploading2,setPhotoUploading2] = useState(false);
+  const handleEventPhotoSelect = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    setPhotoUploading2(true);
+    try { const photo = await uploadEventPhoto(ev.id, file); onAddEventPhoto(photo); }
+    catch(err) { console.log("Event photo upload failed", err); onToast&&onToast("Upload failed — try again","err"); }
+    setPhotoUploading2(false);
+    e.target.value = "";
+  };
   const [collapsedRounds,setCollapsedRounds] = useState(new Set()); // manually toggled CI rounds (overrides the completed-round default)
   const [showAddG,setSAG]  = useState(false);
   const [gf,setGf]         = useState({n:"",name:"",p:"",usr:"50"});
@@ -4925,16 +4991,43 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
           {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
           {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
           {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
-          {isAdmin&&<SmBtn label="✏️ Edit" onClick={onEditEvent} color="#6366F1"/>}
-          {isAdmin&&<SmBtn label="⧉ Duplicate" onClick={()=>setShowDup(o=>!o)} color="#F59E0B"/>}
-          {isAdmin&&!isCompleted&&<SmBtn label="🗑 Delete" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis cannot be undone — all registrations and data will be permanently lost.`))onDelete();}} color="#EF4444"/>}
-          {isAdmin&&isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nIt will be hidden from event lists but kept permanently in history. You can restore it later.`))onArchive();}} color="#94A3B8"/>}
-          {isAdmin&&ev.archived&&<SmBtn label="📤 Unarchive" onClick={onUnarchive} color="#34D399"/>}
-          {!isCompleted&&<SmBtn label={sharing?"⏳ Sharing...":"📤 Share Event"} onClick={handleShareBefore} color="#34D399"/>}
-          {isCompleted&&<SmBtn label={sharing?"⏳ Sharing...":"📤 Share Results"} onClick={handleShareAfter} color="#34D399"/>}
+          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          <div onClick={()=>setShowPhotos(o=>!o)} title="Photos" style={{position:"relative",width:30,height:30,borderRadius:"50%",background:showPhotos?"#6366F133":"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer"}}>
+            🖼
+            {(ev.photos?.length||0)>0&&<span style={{position:"absolute",top:-4,right:-4,background:"#6366F1",color:"#fff",fontSize:9,fontWeight:700,borderRadius:8,minWidth:15,height:15,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px"}}>{ev.photos.length}</span>}
+          </div>
+          {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+            <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+            {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:150,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+              <SmBtn label="✏️ Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}} color="#6366F1" style={{width:"100%"}}/>
+              <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
+              {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
+              {(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
+              {!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis cannot be undone — all registrations and data will be permanently lost.`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+              {isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+            </div>}
+          </div>}
         </div>
       </div>
 
+      {showPhotos&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #6366F144"}}>
+        <div style={{fontSize:12,fontWeight:600,color:"#A5B4FC",marginBottom:10}}>🖼 Photos ({ev.photos?.length||0})</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+          {(ev.photos||[]).map(p=>{
+            const uploader=users.find(u=>u.id===p.uploadedBy);
+            return <div key={p.id} style={{position:"relative",aspectRatio:"1",borderRadius:8,overflow:"hidden",background:"var(--po-card)"}}>
+              <img src={p.url} alt="" onClick={()=>window.open(p.url,"_blank")} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}}/>
+              {isAdmin&&<div onClick={()=>{if(window.confirm(`Remove this photo${uploader?` (uploaded by ${uploader.nickname})`:""}?`))onRemoveEventPhoto(p.id);}} style={{position:"absolute",top:3,right:3,width:20,height:20,borderRadius:"50%",background:"#00000099",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,cursor:"pointer"}}>🗑</div>}
+            </div>;
+          })}
+          <label style={{aspectRatio:"1",borderRadius:8,border:"1.5px dashed var(--po-bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:photoUploading2?"default":"pointer",gap:2}}>
+            <input type="file" accept="image/*" style={{display:"none"}} onChange={handleEventPhotoSelect} disabled={photoUploading2}/>
+            <span style={{fontSize:18}}>{photoUploading2?"⏳":"➕"}</span>
+            <span style={{fontSize:9,color:"var(--po-dim)"}}>{photoUploading2?"Uploading…":"Add"}</span>
+          </label>
+        </div>
+      </div>}
       {showDup&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>
         <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
@@ -4992,7 +5085,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
         {canReg&&<Btn label="I'm In ✓" primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
         {myReg&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
         {myReg&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
-        {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={act.closeEvent} style={{width:"100%"}}/>}
+        {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
@@ -5106,7 +5199,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
               {(r.isGuest||u.isGuest)&&<Bdg label={r.addedBy?`Guest · by ${r.addedBy}`:"Guest"} color="#F59E0B"/>}
               {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
-              {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>act.removeFromEvent(u.id)} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
+              {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
           </div>
         </Card>;
@@ -5466,14 +5559,23 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
 // ══════════════════════════════════════════════════════
 //  EVENTS LIST
 // ══════════════════════════════════════════════════════
-function EvList({events,me,users,comms,onOpen,onCreateEv}){
+function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   const [sub,setSub]=useState("coming");
   const [showCommPicker,setShowCommPicker]=useState(false);
-  const myIds=new Set(events.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)).map(ev=>ev.id));
-  // Coming = registration still open/active (regardless of date) — covers same-day and duplicated past-dated events
-  const coming=events.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled"&&myIds.has(ev.id));
-  const past=events.filter(ev=>(ev.status==="completed"||ev.status==="cancelled")&&!ev.archived&&myIds.has(ev.id));
-  const others=events.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled"&&!myIds.has(ev.id));
+  const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
+  const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)).map(ev=>ev.id));
+  const now=Date.now();
+  const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T${ev.time||"23:59"}`).getTime(); return isNaN(t)||t>=now; };
+  // Coming/Past is decided strictly by whether the event's date+time has passed — not by admin status.
+  // This surfaces events whose time has come and gone but were never closed (Incomplete), instead of
+  // leaving them stuck under "Coming" forever. Cancelled events don't appear in this quick view at all —
+  // they live under the community's own Archived section.
+  const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&myIds.has(ev.id));
+  const pastAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&myIds.has(ev.id));
+  const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
+  const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
+  const past=pastAll;
+  const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!myIds.has(ev.id));
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
   const isAdm=adminComms.length>0;
   const handleNewClick=()=>{ if(adminComms.length<=1){ if(adminComms.length===1)onCreateEv(adminComms[0].id); return; } setShowCommPicker(true); };
@@ -5484,9 +5586,12 @@ function EvList({events,me,users,comms,onOpen,onCreateEv}){
       {adminComms.map(c=><div key={c.id} onClick={()=>{setShowCommPicker(false);onCreateEv(c.id);}} style={{padding:"9px 10px",borderRadius:8,cursor:"pointer",fontSize:13,color:"var(--po-text)",border:"0.5px solid var(--po-bdr)",marginBottom:6}}>{c.name}</div>)}
       <div onClick={()=>setShowCommPicker(false)} style={{textAlign:"center",fontSize:12,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>Cancel</div>
     </Card>}
-    <Tabs tabs={[[`coming`,`Coming (${coming.length})`],[`past`,`Past & Closed (${past.length})`]]} active={sub} onChange={setSub}/>
+    <Tabs tabs={[[`coming`,`Coming (${coming.length})`],[`past`,`Past (${past.length})`]]} active={sub} onChange={setSub}/>
     {sub==="coming"&&<>{coming.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>📅</div>No upcoming events.</div></Card>:coming.map(ev=><Row key={ev.id} ev={ev}/>)}{others.length>0&&<><ST>Other Upcoming</ST>{others.map(ev=><Row key={ev.id} ev={ev}/>)}</>}</>}
-    {sub==="past"&&(past.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}>No past events yet.</div></Card>:past.map(ev=><Row key={ev.id} ev={ev}/>))}
+    {sub==="past"&&(past.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}>No past events yet.</div></Card>:<>
+      {pastIncomplete.length>0&&<><ST>⏳ Incomplete ({pastIncomplete.length})</ST>{pastIncomplete.map(ev=><Row key={ev.id} ev={ev}/>)}</>}
+      {pastCompleted.length>0&&<><ST>✅ Completed ({pastCompleted.length})</ST>{pastCompleted.map(ev=><Row key={ev.id} ev={ev}/>)}</>}
+    </>)}
   </>;
 }
 
@@ -5542,8 +5647,9 @@ function ComboCard({combo, lv, eventsDesc}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities}){
   const [tab,setTab]=useState("usr");
+  const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [editing,setEditing]=useState(false);
   const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
   const [photoUploading,setPhotoUploading]=useState(false);
@@ -5562,10 +5668,10 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
 
   // Build team history from all CT completed events the user participated in
 
-  return <><BBtn onBack={onBack} label="Back"/>
+  return <>{isMeTab?<div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Me</div>:<BBtn onBack={onBack} label="Back"/>}
   {viewedByAdmin&&<div style={{marginBottom:12,padding:"8px 12px",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🛡 Viewing as Platform Admin — visible only to you</div>}
   <Card><div style={{display:"flex",gap:14,alignItems:"center",marginBottom:16}}>
-    <Av u={user} size={56}/>
+    <Av u={user} size={isMeTab?68:56}/>
     <div style={{flex:1}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
         <div style={{fontWeight:700,fontSize:18,color:"var(--po-text)"}}>{user.nickname}</div>
@@ -5605,6 +5711,21 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
     )}
   </div></Card>
 
+  {isMeTab&&<>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
+      <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>My Communities</span>
+      <span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join</span>
+    </div>
+    {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></div></Card>
+      :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;
+        return <Card key={c.id} style={{cursor:"pointer",padding:"10px 14px",marginBottom:6}} onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{c.name}</span>
+            {rBdg(myRole)}
+          </div>
+        </Card>;})}
+  </>}
+
   <div style={{display:"flex",gap:6,margin:"16px 0 8px"}}>
     {[["usr","📈 USR History"],["teams","👥 Teams"]].map(([k,l])=>
       <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"9px",borderRadius:8,border:`0.5px solid ${tab===k?"#6366F1":"var(--po-bdr)"}`,background:tab===k?"#6366F122":"var(--po-inp)",color:tab===k?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600,cursor:"pointer"}}>{l}</button>
@@ -5631,7 +5752,32 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
         const deltaColor = delta>0?"#34D399":delta<0?"#EF4444":"var(--po-dim)";
         const deltaArrow = delta>0?"↑":delta<0?"↓":"—";
         const isCTEvent = h.type==="ct";
-        return <div key={i} style={{display:"grid",gridTemplateColumns:"68px 1fr 44px 64px",gap:2,padding:"10px 12px",borderBottom:i<usrHist.length-1?"0.5px solid var(--po-bdr)":"none",alignItems:"center"}}>
+        const hostComm = isMeTab ? comms.find(c=>c.events.some(e=>e.id===h.eventId)) : null;
+        const hostEvent = hostComm?.events.find(e=>e.id===h.eventId);
+        const isExpanded = expandedHist===h.eventId;
+        let extraStats = null;
+        if (isExpanded && hostEvent?.plan) {
+          if (hostEvent.type==="closed_ind") {
+            const stands = calcCIStandings(hostEvent.plan, [user]);
+            const s = stands.find(s=>s.user.id===user.id);
+            if (s) {
+              let finalCourt = null;
+              for (let ri=hostEvent.plan.rounds.length-1; ri>=0 && finalCourt===null; ri--) {
+                for (const m of hostEvent.plan.rounds[ri].matches) {
+                  if (m.teamA.some(p=>p.userId===user.id)||m.teamB.some(p=>p.userId===user.id)) { finalCourt=m.court; break; }
+                }
+              }
+              extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt};
+            }
+          } else if (hostEvent.type==="closed_teams") {
+            const stands = calcCTStandings(hostEvent.plan);
+            const team = hostEvent.plan.teams?.find(t=>t.players?.some(p=>p.userId===user.id));
+            const s = team&&stands.find(s=>s.team?.id===team.id);
+            if (s) extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt:null, isTeam:true};
+          }
+        }
+        return <div key={i} style={{borderBottom:i<usrHist.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+        <div onClick={()=>hostComm&&setExpandedHist(o=>o===h.eventId?null:h.eventId)} style={{display:"grid",gridTemplateColumns:"68px 1fr 44px 64px",gap:2,padding:"10px 12px",alignItems:"center",cursor:hostComm?"pointer":"default"}}>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(h.date)}</div>
           <div>
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4}}>
@@ -5645,6 +5791,17 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
             <span style={{fontSize:12,color:"var(--po-dim)"}}>{prevUsr} </span>
             <span style={{fontSize:13,fontWeight:700,color:deltaColor}}>{deltaArrow}{Math.abs(delta)>0?Math.abs(delta):""}</span>
           </div>
+        </div>
+        {isExpanded&&<div style={{padding:"4px 12px 12px"}}>
+          {extraStats?<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
+            {[["Wins",extraStats.wins],["Points",extraStats.pts],["Breaks",extraStats.breaks],[extraStats.isTeam?"Team":"Final Court",extraStats.isTeam?"—":(extraStats.finalCourt?`C${extraStats.finalCourt}`:"—")]].map(([l,v])=>
+              <div key={l} style={{background:"var(--po-inp)",borderRadius:6,padding:"6px 2px",textAlign:"center"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
+                <div style={{fontSize:9,color:"var(--po-dim)"}}>{l}</div>
+              </div>)}
+          </div>:<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>No detailed stats available for this event.</div>}
+          {hostComm&&<div onClick={()=>onOpenEvent&&onOpenEvent(hostComm.id,h.eventId)} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",textAlign:"center"}}>Open event →</div>}
+        </div>}
         </div>;
       })}
     </Card>}
@@ -5843,7 +6000,7 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
   </>;
 }
 
-function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
+function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onBack}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null

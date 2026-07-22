@@ -117,7 +117,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.10";
+const APP_VERSION = "V0.04.12";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3533,7 +3533,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
-          <EvDetail key={event.id} ev={event} comm={comm} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)}
+          <EvDetail key={event.id} ev={event} comm={comm} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
             onDuplicate={(newDate,keepPlayers,newTime,newTimeTo)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
@@ -3666,9 +3666,9 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
     </div>
     <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
       <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:6,display:"flex"}}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <circle cx="12" cy="12" r="3" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.8"/>
-          <path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3 5.6 5.6" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.8" strokeLinecap="round"/>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7"/>
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82A1.65 1.65 0 003 13.09H3a2 2 0 010-4h0a1.65 1.65 0 001.51-1A1.65 1.65 0 004.18 6.2l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V2a2 2 0 014 0v0a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V8a1.65 1.65 0 001.51 1H21a2 2 0 010 4h0a1.65 1.65 0 00-1.6 1z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
       </div>
       {menu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,minWidth:190,zIndex:100,boxShadow:"0 8px 32px #00000066"}}>
@@ -3863,11 +3863,13 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
         {(() => {
           const now=Date.now();
           const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T${ev.time||"23:59"}`).getTime(); return isNaN(t)||t>=now; };
-          const upcoming=visEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived);
-          const pastAll=visEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived);
+          const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
+          const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
+          const upcoming=visEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
+          const pastAll=visEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
           const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
           const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
-          const archived=visEvents.filter(ev=>ev.archived||ev.status==="cancelled");
+          const archived=visEvents.filter(ev=>ev.archived||ev.status==="cancelled").sort(byNewestFirst);
           return <>
             {upcoming.length>0?<>{upcoming.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}</>
               :<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No upcoming events</div></Card>}
@@ -3917,7 +3919,7 @@ function EvCard({ev,me,users,onClick}){
   const tl={open:"Open Day",closed_ind:"Closed Ind.",closed_teams:"Closed Teams"};
   const creator=users?.find(u=>u.id===ev.createdBy);
   const photoCount=ev.photos?.length||0;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -4541,20 +4543,24 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
+function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const [totalR,setTotalR] = useState(6);
   const [roundDur,setRDur] = useState(20);
   const [showAddM,setSAM]  = useState(false);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
-  const [showPhotos,setShowPhotos] = useState(false);
   const [photoUploading2,setPhotoUploading2] = useState(false);
+  const [photoUploadError,setPhotoUploadError] = useState("");
   const handleEventPhotoSelect = async (e) => {
     const file = e.target.files[0]; if (!file) return;
-    setPhotoUploading2(true);
+    setPhotoUploading2(true); setPhotoUploadError("");
     try { const photo = await uploadEventPhoto(ev.id, file); onAddEventPhoto(photo); }
-    catch(err) { console.log("Event photo upload failed", err); onToast&&onToast("Upload failed — try again","err"); }
+    catch(err) {
+      console.log("Event photo upload failed", err);
+      setPhotoUploadError(`${err.code||"error"}: ${err.message||err}`);
+      onToast&&onToast("Upload failed — see details below","err");
+    }
     setPhotoUploading2(false);
     e.target.value = "";
   };
@@ -4936,9 +4942,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
   const tabs=["info","players",
     ...(isCI?(plan?["breaks","rounds","standings"]:(isAdmin?["rounds"]:[])):[]),
     ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
-    "manage"
+    "manage","photos"
   ];
-  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches"};
+  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches",photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
   function PChip({p,ri}){
@@ -4973,30 +4979,21 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     </div>;}
 
   return <>
-    <BBtn onBack={onBack} label={comm.name} sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
+    <BBtn onBack={onBack} label="Back" sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
     {isAdmin&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice Session</div><div style={{fontSize:11,color:"var(--po-dim)"}}>Try out registrations, matches & scores — nothing is saved</div></div><SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/></div>}
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
         <div>
-          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>{ev.isDemo&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+          {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>🏸 {comm.name}</div>}
           {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
           <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
           {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by {creator.nickname}</div>:null;})()}
           {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
-          {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
-          {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
-          {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
-          {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
-          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
-          {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
-          <div onClick={()=>setShowPhotos(o=>!o)} title="Photos" style={{position:"relative",width:30,height:30,borderRadius:"50%",background:showPhotos?"#6366F133":"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer"}}>
-            🖼
-            {(ev.photos?.length||0)>0&&<span style={{position:"absolute",top:-4,right:-4,background:"#6366F1",color:"#fff",fontSize:9,fontWeight:700,borderRadius:8,minWidth:15,height:15,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px"}}>{ev.photos.length}</span>}
-          </div>
           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
             <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
             {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:150,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -5008,26 +5005,14 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
               {isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
             </div>}
           </div>}
+          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
+          {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
+          {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
+          {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
         </div>
       </div>
-
-      {showPhotos&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #6366F144"}}>
-        <div style={{fontSize:12,fontWeight:600,color:"#A5B4FC",marginBottom:10}}>🖼 Photos ({ev.photos?.length||0})</div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
-          {(ev.photos||[]).map(p=>{
-            const uploader=users.find(u=>u.id===p.uploadedBy);
-            return <div key={p.id} style={{position:"relative",aspectRatio:"1",borderRadius:8,overflow:"hidden",background:"var(--po-card)"}}>
-              <img src={p.url} alt="" onClick={()=>window.open(p.url,"_blank")} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}}/>
-              {isAdmin&&<div onClick={()=>{if(window.confirm(`Remove this photo${uploader?` (uploaded by ${uploader.nickname})`:""}?`))onRemoveEventPhoto(p.id);}} style={{position:"absolute",top:3,right:3,width:20,height:20,borderRadius:"50%",background:"#00000099",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,cursor:"pointer"}}>🗑</div>}
-            </div>;
-          })}
-          <label style={{aspectRatio:"1",borderRadius:8,border:"1.5px dashed var(--po-bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:photoUploading2?"default":"pointer",gap:2}}>
-            <input type="file" accept="image/*" style={{display:"none"}} onChange={handleEventPhotoSelect} disabled={photoUploading2}/>
-            <span style={{fontSize:18}}>{photoUploading2?"⏳":"➕"}</span>
-            <span style={{fontSize:9,color:"var(--po-dim)"}}>{photoUploading2?"Uploading…":"Add"}</span>
-          </label>
-        </div>
-      </div>}
       {showDup&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>
         <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
@@ -5329,6 +5314,25 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
       </>}
     </>}
 
+    {/* PHOTOS */}
+    {tab==="photos"&&<Card>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+        {(ev.photos||[]).map(p=>{
+          const uploader=users.find(u=>u.id===p.uploadedBy);
+          return <div key={p.id} style={{position:"relative",aspectRatio:"1",borderRadius:8,overflow:"hidden",background:"var(--po-inp)"}}>
+            <img src={p.url} alt="" onClick={()=>window.open(p.url,"_blank")} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}}/>
+            {isAdmin&&<div onClick={()=>{if(window.confirm(`Remove this photo${uploader?` (uploaded by ${uploader.nickname})`:""}?`))onRemoveEventPhoto(p.id);}} style={{position:"absolute",top:3,right:3,width:20,height:20,borderRadius:"50%",background:"#00000099",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,cursor:"pointer"}}>🗑</div>}
+          </div>;
+        })}
+        <label style={{aspectRatio:"1",borderRadius:8,border:"1.5px dashed var(--po-bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:photoUploading2?"default":"pointer",gap:2}}>
+          <input type="file" accept="image/*" style={{display:"none"}} onChange={handleEventPhotoSelect} disabled={photoUploading2}/>
+          <span style={{fontSize:18}}>{photoUploading2?"⏳":"➕"}</span>
+          <span style={{fontSize:9,color:"var(--po-dim)"}}>{photoUploading2?"Uploading…":"Add"}</span>
+        </label>
+      </div>
+      {photoUploadError&&<div style={{marginTop:10,fontSize:11,color:"#EF4444",background:"#EF444411",borderRadius:6,padding:"8px 10px"}}>⚠️ {photoUploadError}</div>}
+    </Card>}
+
     {/* CI BREAKS */}
     {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} isAdmin={isAdmin}/>}
 
@@ -5562,6 +5566,8 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
 function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   const [sub,setSub]=useState("coming");
   const [showCommPicker,setShowCommPicker]=useState(false);
+  const [incompleteOpen,setIncompleteOpen]=useState(true);
+  const [completedOpen,setCompletedOpen]=useState(false);
   const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
   const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)).map(ev=>ev.id));
   const now=Date.now();
@@ -5570,16 +5576,18 @@ function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   // This surfaces events whose time has come and gone but were never closed (Incomplete), instead of
   // leaving them stuck under "Coming" forever. Cancelled events don't appear in this quick view at all —
   // they live under the community's own Archived section.
-  const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&myIds.has(ev.id));
-  const pastAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&myIds.has(ev.id));
+  const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
+  const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
+  const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
+  const pastAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
   const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
   const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
   const past=pastAll;
-  const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!myIds.has(ev.id));
+  const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&!myIds.has(ev.id)).sort(byNewestFirst);
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
   const isAdm=adminComms.length>0;
   const handleNewClick=()=>{ if(adminComms.length<=1){ if(adminComms.length===1)onCreateEv(adminComms[0].id); return; } setShowCommPicker(true); };
-  function Row({ev}){return <div><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:3}}>{ev.commName}</div><EvCard ev={ev} me={me} users={users} onClick={()=>onOpen(ev.communityId,ev.id)}/></div>;}
+  function Row({ev}){return <EvCard ev={ev} me={me} users={users} onClick={()=>onOpen(ev.communityId,ev.id)}/>;}
   return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>{isAdm&&<Btn label="+ New" primary onClick={handleNewClick}/>}</div>
     {showCommPicker&&<Card style={{marginBottom:12}}>
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Which community?</div>
@@ -5589,8 +5597,20 @@ function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
     <Tabs tabs={[[`coming`,`Coming (${coming.length})`],[`past`,`Past (${past.length})`]]} active={sub} onChange={setSub}/>
     {sub==="coming"&&<>{coming.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>📅</div>No upcoming events.</div></Card>:coming.map(ev=><Row key={ev.id} ev={ev}/>)}{others.length>0&&<><ST>Other Upcoming</ST>{others.map(ev=><Row key={ev.id} ev={ev}/>)}</>}</>}
     {sub==="past"&&(past.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}>No past events yet.</div></Card>:<>
-      {pastIncomplete.length>0&&<><ST>⏳ Incomplete ({pastIncomplete.length})</ST>{pastIncomplete.map(ev=><Row key={ev.id} ev={ev}/>)}</>}
-      {pastCompleted.length>0&&<><ST>✅ Completed ({pastCompleted.length})</ST>{pastCompleted.map(ev=><Row key={ev.id} ev={ev}/>)}</>}
+      {pastIncomplete.length>0&&<>
+        <div onClick={()=>setIncompleteOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",margin:"16px 0 8px"}}>
+          <span style={{fontSize:11,color:"var(--po-dim)",transform:incompleteOpen?"none":"rotate(-90deg)",transition:"transform 0.15s"}}>▾</span>
+          <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)",textTransform:"uppercase",letterSpacing:0.5}}>⏳ Incomplete ({pastIncomplete.length})</span>
+        </div>
+        {incompleteOpen&&pastIncomplete.map(ev=><Row key={ev.id} ev={ev}/>)}
+      </>}
+      {pastCompleted.length>0&&<>
+        <div onClick={()=>setCompletedOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",margin:"16px 0 8px"}}>
+          <span style={{fontSize:11,color:"var(--po-dim)",transform:completedOpen?"none":"rotate(-90deg)",transition:"transform 0.15s"}}>▾</span>
+          <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)",textTransform:"uppercase",letterSpacing:0.5}}>✅ Completed ({pastCompleted.length})</span>
+        </div>
+        {completedOpen&&pastCompleted.map(ev=><Row key={ev.id} ev={ev}/>)}
+      </>}
     </>)}
   </>;
 }
@@ -6013,6 +6033,20 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
       if (res.receive !== "granted") setPushErrDetail("Notifications permission not granted — enable it for Matchkeeper in your phone's system Settings app");
     });
   }, [isNative]);
+  const [locStatus,setLocStatus] = useState("idle"); // idle | working | on | off | error
+  useEffect(() => {
+    if (!isNative) return;
+    Geolocation.checkPermissions().then(res => {
+      setLocStatus(res.location === "granted" ? "on" : "error");
+    }).catch(()=>setLocStatus("error"));
+  }, [isNative]);
+  const enableLoc = async () => {
+    setLocStatus("working");
+    try {
+      const res = await Geolocation.requestPermissions();
+      setLocStatus(res.location === "granted" ? "on" : "error");
+    } catch(e) { console.log("Location permission request failed", e); setLocStatus("error"); }
+  };
   const enablePush = async () => {
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
@@ -6031,11 +6065,24 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
             {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`${isNative?"Off — ":"Couldn't enable — "}${pushErrDetail}`:pushStatus==="working"?"Setting up…":isNative?"Checking…":"Get notified even when the app is closed"}
           </div>
         </div>
-        {!isNative&&<Btn label={pushStatus==="on"?"✓ On":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>}
+        {(!isNative||pushStatus==="error")&&<Btn label={pushStatus==="on"?"✓ On":pushStatus==="error"?"Try Again":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>}
         {isNative&&pushStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
       </div>
       {pushStatus==="on"&&<div onClick={onSendTestNotif} style={{marginTop:12,paddingTop:12,borderTop:"0.5px solid var(--po-bdr)",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>Send myself a test notification</div>}
     </Card>
+    {isNative&&<Card style={{marginBottom:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:20}}>📍</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Location Access</div>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>
+            {locStatus==="on"?"Enabled on this device ✓":locStatus==="error"?"Off — needed for venue distance & directions":locStatus==="working"?"Requesting…":"Checking…"}
+          </div>
+        </div>
+        {(locStatus==="error"||locStatus==="off")&&<Btn label="Enable" primary onClick={enableLoc} style={{flexShrink:0}}/>}
+        {locStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
+      </div>
+    </Card>}
     <ST>Preferences</ST>
     <Card style={{padding:0,overflow:"hidden"}}>
       {/* Dark Mode Toggle */}

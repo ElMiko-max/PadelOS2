@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Geolocation } from "@capacitor/geolocation";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { App as CapApp } from "@capacitor/app";
 import { PushNotifications } from "@capacitor/push-notifications";
 import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
+
+// Native Android plugin (see /android/.../MatchModePlugin.kt) — persistent Match Mode
+// notification: shows live courts/teams for the current round, lets the organizer tap a
+// winner per court, and Generate Next Round once every court is done. No-op on web/non-native.
+const MatchMode = registerPlugin("MatchMode");
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
@@ -117,13 +122,55 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.04.12";
+const APP_VERSION = "V0.05.00";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
   { key:"closed_ind",   label:"Closed Individuals",  desc:"Competitive · rotating partners · ranked" },
   { key:"closed_teams", label:"Closed Teams",        desc:"Fixed teams · compete throughout" },
 ];
+
+// ── AI Event Name Suggester (IDEA-022) ────────────────────────────
+// Client-side template + randomizer. No network call, no API cost — deliberately kept
+// simple/offline per Product Bible's "Operational Simplicity" principle.
+const EVNAME_MOTIVATIONAL = ["Smash","Rally","Ace","Grind","Showdown","Clash","Hustle","Sprint","Battle","Fiesta","Warriors","Legends","Frenzy","Thunder","Blitz"];
+const EVNAME_DAYPARTS = { morning:"Morning", afternoon:"Afternoon", evening:"Evening", night:"Night" };
+const evNameDaypart = (time) => {
+  const h = parseInt((time||"18:00").split(":")[0],10);
+  if(isNaN(h)) return "Evening";
+  if(h<12) return EVNAME_DAYPARTS.morning;
+  if(h<17) return EVNAME_DAYPARTS.afternoon;
+  if(h<21) return EVNAME_DAYPARTS.evening;
+  return EVNAME_DAYPARTS.night;
+};
+const evNameWeekday = (date) => { const d=new Date(date); return isNaN(d.getTime())?"":d.toLocaleDateString("en-GB",{weekday:"long"}); };
+function suggestEventName({date,time,venueName,commName}){
+  const day = evNameWeekday(date);
+  const part = evNameDaypart(time);
+  const word = EVNAME_MOTIVATIONAL[Math.floor(Math.random()*EVNAME_MOTIVATIONAL.length)];
+  const templates = [
+    () => `${day} ${part} ${word}`.trim(),
+    () => venueName ? `${word} at ${venueName}` : `${day} ${word}`,
+    () => commName ? `${commName} ${word}` : `${part} ${word}`,
+    () => `${day} ${word}${venueName?` — ${venueName}`:""}`,
+    () => `${part} ${word} ${day?`· ${day}`:""}`.trim(),
+  ];
+  const pick = templates[Math.floor(Math.random()*templates.length)];
+  return pick().replace(/\s+/g," ").trim();
+}
+
+// ── Match Mode Persistent Notification bridge (native Android only) ─────────
+// Builds the payload the MatchMode plugin needs to render the notification: one
+// row per court, each with the two team names and whether it already has a winner.
+const mmTeamLabel = (team) => (team||[]).map(p=>p.nickname).join(" & ");
+function mmBuildRoundPayload(round){
+  return (round?.matches||[]).map(m=>({
+    court: m.court,
+    teamA: mmTeamLabel(m.teamA),
+    teamB: mmTeamLabel(m.teamB),
+    winner: m.winner || null, // "A" | "B" | null
+  }));
+}
 
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
@@ -2336,6 +2383,7 @@ function LoginScreen(){
       <div style={{textAlign:"center",marginBottom:24}}>
         <img src="/logo-icon-192.png" width={56} height={56} style={{borderRadius:16,margin:"0 auto 12px",display:"block"}} alt="Matchkeeper"/>
         <div style={{fontSize:20,fontWeight:700,color:"#F1F5F9"}}>Matchkeeper</div>
+        <div style={{fontSize:11,color:"#475569",marginTop:1}}>{APP_VERSION}</div>
         <div style={{fontSize:13,color:"#64748B",marginTop:2}}>{mode==="signup"?"Create your account":"Sign in to continue"}</div>
       </div>
 
@@ -3530,7 +3578,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={()=>go("comm",{cid:comm.id})} onSave={d=>saveComm(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}/>}
-        {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
+        {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
           <EvDetail key={event.id} ev={event} comm={comm} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
@@ -3923,11 +3971,17 @@ function EvCard({ev,me,users,onClick}){
 }
 
 // ── Event Create Form ─────────────────────────────────
-function EventForm({venues,onBack,onCreate}){
+function EventForm({venues,onBack,onCreate,commName}){
   const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",rotationMin:"20",pollMode:false,eventType:"open",visibility:"public"});
-  const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId)),c=parseInt(f.courts)||0,maxC=v?v.courts.length:10,tot=v?(v.pricePerHour*c+v.extraFee*c):0;
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId)),c=parseInt(f.courts)||0,maxC=v?v.courts.length:10;
+  const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; return Math.max(0.5, ((h2*60+m2)-(h1*60+m1))/60); })();
+  const tot=v?Math.round((v.pricePerHour+v.extraFee)*c*durHrs):0;
+  const doSuggestName=()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,commName}));
   return <><BBtn onBack={onBack} label="Community"/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>New Event</div><Card>
-    <Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Friday Night Padel"/>
+    <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
+      <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Friday Night Padel"/></div>
+      <button type="button" onClick={doSuggestName} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
+    </div>
     <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls, court 3 booked separately" multiline/>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
       <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
@@ -4833,8 +4887,48 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
   const canReg = !myReg&&effEv.status==="registration_open"&&(!inRW||isReg||isAdmin);
   const isDay  = sim||effEv.date===today;
   const plan   = effEv.plan;
-  const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
   const isCompleted = effEv.status==="completed";
+
+  // ── Match Mode Persistent Notification (native Android, CI events, admin only) ──
+  // Starts the foreground-service notification once Match Mode begins, refreshes it
+  // whenever a new round is generated, and tears it down when the event ends. The
+  // notification itself calls back into this same generation/result logic — no
+  // duplicated match-generation code lives on the native side.
+  const mmRoundCountRef = useRef(0);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim || !plan) return;
+    const started = !!plan.matchModeStartAt;
+    if (!started || isCompleted) { MatchMode.stop().catch(()=>{}); mmRoundCountRef.current = 0; return; }
+    const ri = plan.rounds.length - 1;
+    const round = plan.rounds[ri];
+    if (!round) return;
+    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, courts: mmBuildRoundPayload(round) };
+    if (mmRoundCountRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
+    else MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
+    mmRoundCountRef.current = plan.rounds.length;
+  }, [Capacitor.isNativePlatform() && isAdmin && isCI && plan?.matchModeStartAt, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matches?.map(m=>m.winner)||[]), isCompleted]);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim || !plan) return;
+    let winSub, genSub, cancelled = false;
+    (async () => {
+      const w = await MatchMode.addListener("courtWinner", ({ court, team }) => {
+        const ri = plan?.rounds?.length ? plan.rounds.length - 1 : -1;
+        const mi = plan?.rounds?.[ri]?.matches?.findIndex(m=>m.court===court);
+        if (ri>=0 && mi>=0) onSetWinCI(ri, mi, team);
+      });
+      const g = await MatchMode.addListener("generateNextRound", () => {
+        const ri = plan?.rounds?.length ? plan.rounds.length - 1 : -1;
+        const round = plan?.rounds?.[ri];
+        if (round && round.matches.every(m=>m.winner!=null)) onNextRound();
+      });
+      if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
+    })().catch(e=>console.log("MatchMode.addListener failed", e));
+    return () => { cancelled = true; winSub?.remove(); genSub?.remove(); };
+  }, [plan, isAdmin, isCI, onSetWinCI, onNextRound]);
+
+
+  const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
 
   // CT calc
   const ctCC   = isCT?calcCTCourts(effEv.registrations.length,effEv.reservedCourts||effEv.courts||2):null;

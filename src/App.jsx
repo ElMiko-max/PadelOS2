@@ -163,6 +163,7 @@ function suggestEventName({date,time,venueName,commName}){
 // Builds the payload the MatchMode plugin needs to render the notification: one
 // row per court, each with the two team names and whether it already has a winner.
 const mmTeamLabel = (team) => (team||[]).map(p=>p.nickname).join(" & ");
+const mmBreakLabel = (round) => (round?.onBreak||[]).map(p=>p.nickname).join(", ");
 function mmBuildRoundPayload(round){
   return (round?.matches||[]).map(m=>({
     court: m.court,
@@ -3910,7 +3911,7 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
       return visEvents.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No events yet</div></Card>:<>
         {(() => {
           const now=Date.now();
-          const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T${ev.time||"23:59"}`).getTime(); return isNaN(t)||t>=now; };
+          const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
           const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
           const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
           const upcoming=visEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
@@ -3989,7 +3990,7 @@ function EventForm({venues,onBack,onCreate,commName}){
       <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
     </div>
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{v.courts.length} courts · {v.pricePerHour} EGP/hr{v.extraFee>0?` · +${v.extraFee} booking`:""}</div>}</div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[10,15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]].map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&EVENT_TYPES.map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
@@ -4502,7 +4503,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   const [now,setNow]         = useState(Date.now());
   const [startInput,setStartInput] = useState(addMinutesToTime(eventTime,5)||"");
   const [flash,setFlash]     = useState(false);
-  const prevSlotRef = React.useRef(1);
+  const prevSlotRef = React.useRef(null);
   const rd = roundDuration || 20; // defensive fallback — legacy/seed plans may predate this field
   const tr = totalRounds || 1;
   const started = !!plan.matchModeStartAt;
@@ -4527,6 +4528,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   const remaining = started ? Math.max(0, Math.round((endAt-now)/1000)) : null;
   const restDur = started && offsets ? (offsets[2]!==undefined ? offsets[2]-offsets[1] : rd) : rd;
   const isCompressed = started && slot>1 && Math.round(restDur)<rd;
+  if (prevSlotRef.current === null) prevSlotRef.current = slotRaw; // seed on mount — no whistle for "just arrived mid-round"
 
   useEffect(() => {
     const iv = setInterval(()=>setNow(Date.now()), 1000); // ticks off the device's real clock, always
@@ -4600,8 +4602,17 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
-  const [totalR,setTotalR] = useState(6);
-  const [roundDur,setRDur] = useState(20);
+  const suggestedRoundDur = ev.rotationMin||20;
+  const suggestedTotalR = (()=>{
+    if(!ev.time||!ev.timeTo) return 6;
+    const [h1,m1]=ev.time.split(":").map(Number);
+    const [h2,m2]=(ev.timeTo||"").split(":").map(Number);
+    if(isNaN(h2)) return 6;
+    let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60;
+    return Math.max(1, Math.round(mins/(suggestedRoundDur||20)));
+  })();
+  const [totalR,setTotalR] = useState(suggestedTotalR);
+  const [roundDur,setRDur] = useState(suggestedRoundDur);
   const [showAddM,setSAM]  = useState(false);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [photoUploading2,setPhotoUploading2] = useState(false);
@@ -4625,7 +4636,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
   const [showResultsTable,setShowResultsTable] = useState(false);
   const [ctC,setCtC]       = useState(null);
   const [ctF,setCtF]       = useState("league");
-  const [ctDur,setCtDur]   = useState(20);
+  const [ctDur,setCtDur]   = useState(ev.rotationMin||20);
   const [simSnapshot,setSimSnapshot] = useState(null); // deep clone of `ev` taken when sim starts; discarded on exit
   const [simEv,setSimEv]   = useState(null);           // local working copy mutated only while sim is active
 
@@ -4902,11 +4913,40 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
     const ri = plan.rounds.length - 1;
     const round = plan.rounds[ri];
     if (!round) return;
-    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, courts: mmBuildRoundPayload(round) };
-    if (mmRoundCountRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
-    else MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
+    const tr = plan.totalRounds || 1;
+    const rd = plan.roundDuration || plan.matchDuration || 20;
+    const delayMin = plan.matchModeDelayMin ?? 0;
+    const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
+    const slot = Math.min(ri+1, tr);
+    const whistleAt = new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000;
+    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round) };
+    if (mmRoundCountRef.current === 0) {
+      MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
+      // Schedule every round's whistle upfront, right now — not one at a time as rounds
+      // get generated. The whistle is purely a function of (start time, round count,
+      // round duration); it shouldn't need "a new round was generated" or "results came
+      // in" to know when the NEXT one rings.
+      const startMs = new Date(plan.matchModeStartAt).getTime();
+      const schedule = [];
+      for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
+      MatchMode.scheduleWhistles({ eventId: effEv.id, schedule }).catch(e=>console.log("scheduleWhistles failed", e));
+    } else {
+      MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
+    }
     mmRoundCountRef.current = plan.rounds.length;
   }, [Capacitor.isNativePlatform() && isAdmin && isCI && plan?.matchModeStartAt, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matches?.map(m=>m.winner)||[]), isCompleted]);
+
+  // Safety net: the native foreground service can get killed independently of this
+  // component (e.g. app swiped away while locked). When the app comes back to the
+  // foreground, force a fresh push of the current round state so the notification
+  // (and its Generate Next Round button) reliably reflect reality even if a background
+  // tap was missed or the service died in the meantime.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim) return;
+    let sub;
+    CapApp.addListener("resume", () => { mmRoundCountRef.current = 0; }).then(h=>sub=h);
+    return () => { sub?.remove(); };
+  }, [isAdmin, isCI, sim]);
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim || !plan) return;
@@ -5436,8 +5476,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Generate Round 1</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players · {tc} courts · {Math.max(0,effEv.registrations.length-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Total rounds:</span>{[4,5,6,7,8].map(n=><SmBtn key={n} label={`${n}`} onClick={()=>setTotalR(n)} active={totalR===n} color="#6366F1"/>)}</div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4,flexWrap:"wrap"}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Total rounds:</span>{[3,4,5,6,7,8].map(n=><SmBtn key={n} label={`${n}`} onClick={()=>setTotalR(n)} active={totalR===n} color="#6366F1"/>)}</div>
+        <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:16}}>💡 Suggested for this event's booking window ({roundDur}m rounds): {suggestedTotalR} rounds{totalR!==suggestedTotalR?` — you're currently set to ${totalR}`:""}</div>
         {effEv.registrations.length<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur)} style={{width:"100%"}}/>}
       </Card>}
       {plan&&<>
@@ -5535,7 +5576,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
         </div>
         <div style={{marginBottom:16}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Match duration:</div>
-          <div style={{display:"flex",gap:8}}>{[15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
+          <div style={{display:"flex",gap:8}}>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
         </div>
         <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur)} style={{width:"100%"}}/>
       </Card>}
@@ -5665,7 +5706,7 @@ function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
   const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)).map(ev=>ev.id));
   const now=Date.now();
-  const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T${ev.time||"23:59"}`).getTime(); return isNaN(t)||t>=now; };
+  const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
   // Coming/Past is decided strictly by whether the event's date+time has passed — not by admin status.
   // This surfaces events whose time has come and gone but were never closed (Incomplete), instead of
   // leaving them stuck under "Coming" forever. Cancelled events don't appear in this quick view at all —

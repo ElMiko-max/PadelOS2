@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.00";
+const APP_VERSION = "V0.05.06";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3060,7 +3060,7 @@ export default function Matchkeeper() {
       }
     }
   };
-  const duplicateEvent=(cid,eid,newDate,keepPlayers,newTime,newTimeTo)=>{
+  const duplicateEvent=(cid,eid,newDate,keepPlayers,newTime,newTimeTo,newName)=>{
     const ev=getEv(cid,eid);if(!ev){toast2("Event not found","err");return;}
     const id=_eid++;
     const v=venues.find(x=>x.id===ev.venueId);
@@ -3071,7 +3071,7 @@ export default function Matchkeeper() {
     const copy={
       // ── Header — carried over from the original event ──
       id, communityId:cid,
-      name:ev.name,
+      name:newName&&newName.trim()?newName.trim():ev.name,
       description: ev.description ? `${ev.description}\n${dupNote}` : dupNote,
       createdBy:ev.createdBy,
       date:newDate,
@@ -3328,7 +3328,7 @@ export default function Matchkeeper() {
     const players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
-  const nextRoundCI=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");};
+  const nextRoundCI=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){toast2("⚠️ Can't generate — some courts don't have a result yet");return;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");};
   const setWinCI=(cid,eid,ri,mi,w)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w})});return{...ev,plan:{...ev.plan,rounds}};})}));};
   const rebalanceCourtCI=(cid,eid,ri,mi)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
@@ -3583,7 +3583,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
           <EvDetail key={event.id} ev={event} comm={comm} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
-            onDuplicate={(newDate,keepPlayers,newTime,newTimeTo)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo)}
+            onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
@@ -4010,7 +4010,10 @@ function EventEditForm({ev,venues,onBack,onSave}){
   return <><BBtn onBack={onBack} label={ev.name}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Edit Event</div>
     <Card>
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>ℹ️ {isCompleted?"This event is completed — date/time can still be corrected, but courts and type are locked to protect historical results.":lockedType?"Type is locked — a plan has already been generated for this event.":"Players and plan stay unchanged unless you change the event type."}</div>
-      <Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Monday at Galleria"/>
+      <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
+        <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Monday at Galleria"/></div>
+        <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
+      </div>
       <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls" multiline/>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
         <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
@@ -4499,9 +4502,9 @@ function computeRoundEndOffsets(totalRounds, roundDuration, totalBookingMin, del
 // ══════════════════════════════════════════════════════
 //  MATCH MODE — countdown widget shown atop the active round
 // ══════════════════════════════════════════════════════
-function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,unitLabel,sim,onStart}){
+function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,eventId,unitLabel,sim,onStart}){
   const [now,setNow]         = useState(Date.now());
-  const [startInput,setStartInput] = useState(addMinutesToTime(eventTime,5)||"");
+  const [startInput,setStartInput] = useState(()=>{ const n=new Date(); return `${String(n.getHours()).padStart(2,"0")}:${String(n.getMinutes()).padStart(2,"0")}`; });
   const [flash,setFlash]     = useState(false);
   const prevSlotRef = React.useRef(null);
   const rd = roundDuration || 20; // defensive fallback — legacy/seed plans may predate this field
@@ -4530,6 +4533,21 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   const isCompressed = started && slot>1 && Math.round(restDur)<rd;
   if (prevSlotRef.current === null) prevSlotRef.current = slotRaw; // seed on mount — no whistle for "just arrived mid-round"
 
+  const [firedRounds,setFiredRounds] = useState([]);
+
+  // Polls the native durable "did this round's alarm actually ring" record — this works
+  // even if the app was fully closed at the moment some of them fired. Also listens live
+  // for instant updates when the app happens to be open when one rings.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !started || !eventId) return;
+    let sub, stopped = false;
+    const poll = () => MatchMode.getFiredWhistles({eventId:String(eventId)}).then(r=>{ if(!stopped) setFiredRounds(r?.rounds||[]); }).catch(()=>{});
+    poll();
+    const iv = setInterval(poll, 5000);
+    MatchMode.addListener("whistleFired", ()=>poll()).then(h=>sub=h);
+    return () => { stopped=true; clearInterval(iv); sub?.remove(); };
+  }, [started, eventId]);
+
   useEffect(() => {
     const iv = setInterval(()=>setNow(Date.now()), 1000); // ticks off the device's real clock, always
     return () => clearInterval(iv);
@@ -4542,7 +4560,6 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   useEffect(() => {
     if (slotRaw>prevSlotRef.current) {
       prevSlotRef.current = slotRaw;
-      playWhistle();
       setFlash(true);
       const t = setTimeout(()=>setFlash(false), 2500);
       return () => clearTimeout(t);
@@ -4584,7 +4601,8 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   const mm = String(Math.floor(remaining/60)).padStart(2,"0");
   const ss = String(remaining%60).padStart(2,"0");
   const endClock = endAt ? new Date(endAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit",hour12:true}) : null;
-  return <Card style={{marginBottom:10,background:flash?"#EF444422":"#6366F111",border:`0.5px solid ${flash?"#EF444466":"#6366F144"}`}}>
+  return <>
+  <Card style={{marginBottom:10,background:flash?"#EF444422":"#6366F111",border:`0.5px solid ${flash?"#EF444466":"#6366F144"}`}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <div>
         <div style={{fontSize:11,color:flash?"#EF4444":"#A5B4FC",fontWeight:600}}>{flash?"⏰ Time's up!":endClock?`⏱ ${unitLabel||"Round"} ${slot} ends at ${endClock}`:`⏱ ${unitLabel||"Round"} ${slot} ends in`}</div>
@@ -4593,7 +4611,20 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
       </div>
       {flash&&<SmBtn label="🔔 Replay" onClick={playWhistle} color="#EF4444"/>}
     </div>
-  </Card>;
+  </Card>
+  {Capacitor.isNativePlatform()&&eventId&&offsets&&<Card style={{marginBottom:10}}>
+    <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>🔔 Native whistle schedule</div>
+    {Array.from({length:tr},(_,i)=>i+1).map(r=>{
+      const rEndsAt = new Date(plan.matchModeStartAt).getTime() + (offsets[r]||r*rd)*60000;
+      const rClock = new Date(rEndsAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit",hour12:true});
+      const isFired = firedRounds.includes(r);
+      return <div key={r} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderTop:r>1?"0.5px solid var(--po-bdr)":"none"}}>
+        <span style={{fontSize:12,color:"var(--po-text)"}}>{unitLabel||"Round"} {r} — {rClock}</span>
+        <span style={{fontSize:13,color:isFired?"#34D399":"var(--po-dim)",fontWeight:700}}>{isFired?"✓":"⏳"}</span>
+      </div>;
+    })}
+  </Card>}
+  </>;
 }
 
 // ══════════════════════════════════════════════════════
@@ -4919,7 +4950,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
     const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
     const slot = Math.min(ri+1, tr);
     const whistleAt = new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000;
-    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round) };
+    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), isLastRound: (ri+1)>=tr, breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round) };
     if (mmRoundCountRef.current === 0) {
       MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
       // Schedule every round's whistle upfront, right now — not one at a time as rounds
@@ -4931,6 +4962,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
       for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
       MatchMode.scheduleWhistles({ eventId: effEv.id, schedule }).catch(e=>console.log("scheduleWhistles failed", e));
     } else {
+      console.log("[MatchModeDiag] pushing MatchMode.update, courts=", JSON.stringify(payload.courts));
       MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
     }
     mmRoundCountRef.current = plan.rounds.length;
@@ -4953,15 +4985,22 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
     let winSub, genSub, cancelled = false;
     (async () => {
       const w = await MatchMode.addListener("courtWinner", ({ court, team }) => {
+        console.log("[MatchModeDiag] courtWinner event received in JS", court, team);
         const ri = plan?.rounds?.length ? plan.rounds.length - 1 : -1;
         const mi = plan?.rounds?.[ri]?.matches?.findIndex(m=>m.court===court);
+        console.log("[MatchModeDiag] resolved ri="+ri+" mi="+mi);
         if (ri>=0 && mi>=0) onSetWinCI(ri, mi, team);
       });
       const g = await MatchMode.addListener("generateNextRound", () => {
-        const ri = plan?.rounds?.length ? plan.rounds.length - 1 : -1;
-        const round = plan?.rounds?.[ri];
-        if (round && round.matches.every(m=>m.winner!=null)) onNextRound();
+        console.log("[MatchModeDiag] generateNextRound event received in JS");
+        // Deferred to the next tick: if this arrives in the same burst as courtWinner
+        // events (e.g. several native taps were queued while backgrounded and all
+        // deliver together the moment the app wakes up), React may not have flushed the
+        // just-set winners into state yet. nextRoundCI reads fresh data at call time, but
+        // only as fresh as the last committed render — this gives that a moment to land.
+        setTimeout(()=>onNextRound(), 400);
       });
+      console.log("[MatchModeDiag] listeners registered successfully");
       if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
     })().catch(e=>console.log("MatchMode.addListener failed", e));
     return () => { cancelled = true; winSub?.remove(); genSub?.remove(); };
@@ -4996,6 +5035,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
   const [dupTime,setDupTime] = useState(ev.time);
   const [dupTimeTo,setDupTimeTo] = useState(ev.timeTo||"");
   const [dupKeepPlayers,setDupKeepPlayers] = useState(false);
+  const [dupName,setDupName] = useState(ev.name);
   const [shareDiag,setShareDiag] = useState(null);
 
   const sharePlayers = effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
@@ -5149,6 +5189,11 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
       </div>
       {showDup&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+          <input type="text" value={dupName} onChange={e=>setDupName(e.target.value)} placeholder="Event name" className="po-inp"
+            style={{flex:1,padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+          <button type="button" onClick={()=>setDupName(suggestEventName({date:dupDate,time:dupTime,venueName:venues.find(v2=>v2.id===ev.venueId)?.name}))} title="Suggest a name" style={{padding:"8px 10px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨</button>
+        </div>
         <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
           style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,marginBottom:10,boxSizing:"border-box"}}/>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
@@ -5172,7 +5217,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
             <div style={{fontSize:10,color:"var(--po-dim)"}}>{dupKeepPlayers?"Same players will be pre-registered":"New event starts with no players"}</div>
           </div>
         </div>
-        <Btn label="Create Copy" primary onClick={()=>{if(dupDate&&dupTime){onDuplicate(dupDate,dupKeepPlayers,dupTime,dupTimeTo);setShowDup(false);}}} style={{width:"100%"}}/>
+        <Btn label="Create Copy" primary onClick={()=>{if(dupDate&&dupTime){onDuplicate(dupDate,dupKeepPlayers,dupTime,dupTimeTo,dupName);setShowDup(false);}}} style={{width:"100%"}}/>
         <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Creates a fresh copy of "{ev.name}" with no results — same venue, courts, and type.</div>
       </div>}
 
@@ -5515,7 +5560,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
               {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
             </div>
             {effCollapsed?null:<>
-            {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onStart={act.setMatchModeStart}/>}
+            {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}</div></div>}
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;

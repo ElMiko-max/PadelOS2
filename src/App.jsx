@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.06";
+const APP_VERSION = "V0.05.09";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4937,10 +4937,20 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
   // notification itself calls back into this same generation/result logic — no
   // duplicated match-generation code lives on the native side.
   const mmRoundCountRef = useRef(0);
+  const mmEverStartedRef = useRef(false);
   useEffect(() => {
     if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim || !plan) return;
     const started = !!plan.matchModeStartAt;
-    if (!started || isCompleted) { MatchMode.stop().catch(()=>{}); mmRoundCountRef.current = 0; return; }
+    if (started) mmEverStartedRef.current = true;
+    // Don't treat "!started" as a real stop signal unless we've actually confirmed Match
+    // Mode running before in this session. On a cold app open, the very first render can
+    // briefly show stale/cached data (before Firestore's real sync lands) with no
+    // matchModeStartAt yet — treating that as "stop everything" was cancelling every
+    // scheduled whistle on every single app reopen, permanently losing any round whose
+    // alarm time fell inside that few-second window. isCompleted is a real, trustworthy
+    // signal regardless, since an event doesn't flicker in and out of "completed".
+    if (isCompleted || (!started && mmEverStartedRef.current)) { MatchMode.stop().catch(()=>{}); mmRoundCountRef.current = 0; return; }
+    if (!started) return;
     const ri = plan.rounds.length - 1;
     const round = plan.rounds[ri];
     if (!round) return;

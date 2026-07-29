@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.13";
+const APP_VERSION = "V0.05.14";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4523,7 +4523,7 @@ function computeRoundEndOffsets(totalRounds, roundDuration, totalBookingMin, del
 // ══════════════════════════════════════════════════════
 //  MATCH MODE — countdown widget shown atop the active round
 // ══════════════════════════════════════════════════════
-function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,eventId,unitLabel,sim,onStart,onStop}){
+function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,eventId,unitLabel,sim,onStart,onStop,isCompleted}){
   const [now,setNow]         = useState(Date.now());
   const [startInput,setStartInput] = useState(()=>{ const n=new Date(); return `${String(n.getHours()).padStart(2,"0")}:${String(n.getMinutes()).padStart(2,"0")}`; });
   const [flash,setFlash]     = useState(false);
@@ -4588,6 +4588,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   }, [slotRaw]);
 
   if (!started) {
+    if (isCompleted) return null; // event finished, Match Mode was never used — nothing to show
     if (tooEarly) {
       const evClock = new Date(eventStartMs).toLocaleString([], {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
       return <Card style={{marginBottom:10,background:"#33415511",border:"0.5px solid var(--po-bdr)"}}>
@@ -4612,11 +4613,32 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
     </Card>;
   }
 
-  if (eventOver) {
-    return <Card style={{marginBottom:10,background:"#EF444422",border:"0.5px solid #EF444466"}}>
-      <div style={{fontSize:11,color:"#EF4444",fontWeight:600}}>🏁 Booking time is up</div>
-      <div style={{fontSize:12,color:"var(--po-dim)",marginTop:4}}>All {tr} scheduled rounds have run their course.</div>
-    </Card>;
+  // Historical reference list of every round's whistle time — shown whenever Match Mode
+  // was actually used for this event, regardless of whether it's still live, the booking
+  // window is over, or the event itself is already closed. Also shown on the web version
+  // (informational only — web can't schedule the native alarm, but the times themselves
+  // are still useful to see, and any ✓ recorded natively will still show once synced).
+  const scheduleList = eventId&&offsets ? <Card style={{marginBottom:10}}>
+    <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>🔔 Native whistle schedule</div>
+    {Array.from({length:tr},(_,i)=>i+1).map(r=>{
+      const rEndsAt = new Date(plan.matchModeStartAt).getTime() + (offsets[r]||r*rd)*60000;
+      const rClock = new Date(rEndsAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit",hour12:true});
+      const isFired = firedRounds.includes(r);
+      return <div key={r} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderTop:r>1?"0.5px solid var(--po-bdr)":"none"}}>
+        <span style={{fontSize:12,color:"var(--po-text)"}}>{unitLabel||"Round"} {r} — {rClock}</span>
+        <span style={{fontSize:13,color:isFired?"#34D399":"var(--po-dim)",fontWeight:700}}>{isFired?"✓":"⏳"}</span>
+      </div>;
+    })}
+  </Card> : null;
+
+  if (isCompleted || eventOver) {
+    return <>
+      <Card style={{marginBottom:10,background:"#EF444422",border:"0.5px solid #EF444466"}}>
+        <div style={{fontSize:11,color:"#EF4444",fontWeight:600}}>🏁 {isCompleted?"Event completed":"Booking time is up"}</div>
+        <div style={{fontSize:12,color:"var(--po-dim)",marginTop:4}}>All {tr} scheduled rounds have run their course.</div>
+      </Card>
+      {scheduleList}
+    </>;
   }
 
   const mm = String(Math.floor(remaining/60)).padStart(2,"0");
@@ -4636,18 +4658,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
       </div>
     </div>
   </Card>
-  {Capacitor.isNativePlatform()&&eventId&&offsets&&<Card style={{marginBottom:10}}>
-    <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>🔔 Native whistle schedule</div>
-    {Array.from({length:tr},(_,i)=>i+1).map(r=>{
-      const rEndsAt = new Date(plan.matchModeStartAt).getTime() + (offsets[r]||r*rd)*60000;
-      const rClock = new Date(rEndsAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit",hour12:true});
-      const isFired = firedRounds.includes(r);
-      return <div key={r} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderTop:r>1?"0.5px solid var(--po-bdr)":"none"}}>
-        <span style={{fontSize:12,color:"var(--po-text)"}}>{unitLabel||"Round"} {r} — {rClock}</span>
-        <span style={{fontSize:13,color:isFired?"#34D399":"var(--po-dim)",fontWeight:700}}>{isFired?"✓":"⏳"}</span>
-      </div>;
-    })}
-  </Card>}
+  {scheduleList}
   </>;
 }
 
@@ -5603,7 +5614,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
               {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
             </div>
             {effCollapsed?null:<>
-            {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode}/>}
+            {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode} isCompleted={isCompleted}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}</div></div>}
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;

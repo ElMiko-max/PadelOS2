@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.14";
+const APP_VERSION = "V0.05.17";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -5031,16 +5031,29 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
     return () => { sub?.remove(); };
   }, [isAdmin, isCI, sim]);
 
+  // Keep refs pointing at the latest plan/callbacks WITHOUT tearing down the native
+  // listeners below — this is what actually fixes Generate/winner taps getting lost.
+  // Logcat showed the listener-registration effect re-running (remove+re-add) roughly
+  // every 3 seconds, because its dependency array included `plan` and the callback props
+  // directly — both get a new identity on nearly every render. That left real gaps where
+  // NO listener was attached at all; any native tap landing in one of those gaps was
+  // silently lost. Refs let the effect below register once and stay registered.
+  const planRef = useRef(plan);
+  const onSetWinCIRef = useRef(onSetWinCI);
+  const onNextRoundRef = useRef(onNextRound);
+  useEffect(() => { planRef.current = plan; onSetWinCIRef.current = onSetWinCI; onNextRoundRef.current = onNextRound; });
+
   useEffect(() => {
-    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim || !plan) return;
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim) return;
     let winSub, genSub, cancelled = false;
     (async () => {
       const w = await MatchMode.addListener("courtWinner", ({ court, team }) => {
         console.log("[MatchModeDiag] courtWinner event received in JS", court, team);
-        const ri = plan?.rounds?.length ? plan.rounds.length - 1 : -1;
-        const mi = plan?.rounds?.[ri]?.matches?.findIndex(m=>m.court===court);
+        const p = planRef.current;
+        const ri = p?.rounds?.length ? p.rounds.length - 1 : -1;
+        const mi = p?.rounds?.[ri]?.matches?.findIndex(m=>m.court===court);
         console.log("[MatchModeDiag] resolved ri="+ri+" mi="+mi);
-        if (ri>=0 && mi>=0) onSetWinCI(ri, mi, team);
+        if (ri>=0 && mi>=0) onSetWinCIRef.current(ri, mi, team);
       });
       const g = await MatchMode.addListener("generateNextRound", () => {
         console.log("[MatchModeDiag] generateNextRound event received in JS");
@@ -5049,7 +5062,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
         // this retries quietly a few times before giving up and showing the warning.
         const attempts = [300, 800, 1500, 2500, 4000, 6000, 8000, 10000];
         const tryGenerate = (i) => {
-          const ok = onNextRound(i < attempts.length - 1); // silent except on the last try
+          const ok = onNextRoundRef.current(i < attempts.length - 1); // silent except on the last try
           if (!ok && i < attempts.length - 1) setTimeout(()=>tryGenerate(i+1), attempts[i+1]-attempts[i]);
         };
         setTimeout(()=>tryGenerate(0), attempts[0]);
@@ -5058,7 +5071,8 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
       if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
     })().catch(e=>console.log("MatchMode.addListener failed", e));
     return () => { cancelled = true; winSub?.remove(); genSub?.remove(); };
-  }, [plan, isAdmin, isCI, onSetWinCI, onNextRound]);
+  }, [isAdmin, isCI, sim]);
+
 
 
   const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};

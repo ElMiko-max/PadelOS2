@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.09";
+const APP_VERSION = "V0.05.13";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2504,6 +2504,7 @@ export default function Matchkeeper() {
       autoPushTriedRef.current = true;
       enablePushNotifications(linkedMe.id);
       Geolocation.requestPermissions().catch(e=>console.log("Location permission request failed", e));
+      MatchMode.ensureExactAlarmPermission().catch(e=>console.log("Exact alarm permission request failed", e));
     }
   }, [linkedMe]);
   const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
@@ -3317,6 +3318,22 @@ export default function Matchkeeper() {
       } catch (e) { console.log("matchModeSchedule write failed", e); }
     })();
   };
+  // Manually ends a Match Mode session — clears matchModeStartAt, which the native sync
+  // effect picks up as a real stop signal (cancels the notification + all scheduled
+  // whistles). Useful for cutting a test run short without closing the whole event.
+  const stopMatchMode=(cid,eid)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}})}));
+    toast2("Match Mode stopped");
+  };
+  // Records "whistles are already scheduled for this exact Match Mode start time" durably
+  // in Firestore — this is what lets us schedule the native alarms exactly ONCE per real
+  // session, regardless of how many times the app is closed/reopened in between. A plain
+  // component ref resets on every remount (every time the event screen is reopened),
+  // which was causing a full re-schedule (and, worse, cancellation of still-pending
+  // alarms) on every single app reopen.
+  const markWhistlesScheduled=(cid,eid,startAt)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,mmScheduledFor:startAt}})}));
+  };
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
@@ -3328,7 +3345,7 @@ export default function Matchkeeper() {
     const players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
-  const nextRoundCI=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){toast2("⚠️ Can't generate — some courts don't have a result yet");return;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");};
+  const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");return true;};
   const setWinCI=(cid,eid,ri,mi,w)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w})});return{...ev,plan:{...ev.plan,rounds}};})}));};
   const rebalanceCourtCI=(cid,eid,ri,mi)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
@@ -3592,6 +3609,8 @@ export default function Matchkeeper() {
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
             onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
             onSetMatchModeStart={(startAt,delayMin,roundEndTimes)=>setMatchModeStart(comm.id,event.id,startAt,delayMin,roundEndTimes)}
+            onStopMatchMode={()=>stopMatchMode(comm.id,event.id)}
+            onMarkWhistlesScheduled={(startAt)=>markWhistlesScheduled(comm.id,event.id,startAt)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -3608,7 +3627,7 @@ export default function Matchkeeper() {
             onCloseEvent={()=>closeEvent(comm.id,event.id)}
             onStartCI={(n,dur)=>startCI(comm.id,event.id,n,dur)}
             onSetWinCI={(ri,mi,w)=>setWinCI(comm.id,event.id,ri,mi,w)}
-            onNextRound={()=>nextRoundCI(comm.id,event.id)}
+            onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
             onRebalanceCourt={(ri,mi)=>rebalanceCourtCI(comm.id,event.id,ri,mi)}
             onEditBreak={(ri,uid,v)=>editBreakCI(comm.id,event.id,ri,uid,v)}
@@ -4490,19 +4509,21 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
 // on the booking's end time. Falls back to (rounds × duration) when no end time is set,
 // which still compresses proportionally to the delay.
 function computeRoundEndOffsets(totalRounds, roundDuration, totalBookingMin, delayMin){
-  const offsets = {1: roundDuration};
-  if (totalRounds<=1) return offsets;
+  const offsets = {};
   const bookingMin = totalBookingMin || (totalRounds*roundDuration);
-  const remainingMin = bookingMin - delayMin - roundDuration;
-  const restDur = Math.max(1, remainingMin/(totalRounds-1)); // never compress below 1 min/round
-  for (let n=2; n<=totalRounds; n++) offsets[n] = offsets[n-1] + restDur;
+  // Round 1 is no longer treated as fixed-length — the whole remaining window (after
+  // the delay is subtracted) is split evenly across every round, round 1 included, so a
+  // late start compresses ALL rounds proportionally instead of only rounds 2+.
+  const remainingMin = Math.max(totalRounds, bookingMin - delayMin); // never compress below 1 min/round total
+  const evenDur = remainingMin/totalRounds;
+  for (let n=1; n<=totalRounds; n++) offsets[n] = n*evenDur;
   return offsets;
 }
 
 // ══════════════════════════════════════════════════════
 //  MATCH MODE — countdown widget shown atop the active round
 // ══════════════════════════════════════════════════════
-function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,eventId,unitLabel,sim,onStart}){
+function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,eventId,unitLabel,sim,onStart,onStop}){
   const [now,setNow]         = useState(Date.now());
   const [startInput,setStartInput] = useState(()=>{ const n=new Date(); return `${String(n.getHours()).padStart(2,"0")}:${String(n.getMinutes()).padStart(2,"0")}`; });
   const [flash,setFlash]     = useState(false);
@@ -4530,7 +4551,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   const endAt = started ? new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000 : null;
   const remaining = started ? Math.max(0, Math.round((endAt-now)/1000)) : null;
   const restDur = started && offsets ? (offsets[2]!==undefined ? offsets[2]-offsets[1] : rd) : rd;
-  const isCompressed = started && slot>1 && Math.round(restDur)<rd;
+  const isCompressed = started && Math.round(restDur)<rd;
   if (prevSlotRef.current === null) prevSlotRef.current = slotRaw; // seed on mount — no whistle for "just arrived mid-round"
 
   const [firedRounds,setFiredRounds] = useState([]);
@@ -4609,7 +4630,10 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
         <div style={{fontSize:26,fontWeight:800,color:flash?"#EF4444":"var(--po-text)",fontVariantNumeric:"tabular-nums"}}>{mm}:{ss}</div>
         {isCompressed&&<div style={{fontSize:10,color:"#F59E0B",marginTop:4}}>⚠️ Compressed to ~{Math.round(restDur)}min to catch up from the {delayMin}min delay</div>}
       </div>
-      {flash&&<SmBtn label="🔔 Replay" onClick={playWhistle} color="#EF4444"/>}
+      <div style={{display:"flex",gap:6}}>
+        {flash&&<SmBtn label="🔔 Replay" onClick={playWhistle} color="#EF4444"/>}
+        {onStop&&<SmBtn label="🛑 Stop" onClick={()=>{if(window.confirm("Stop Match Mode? This ends the live timer/notification for this event."))onStop();}} color="#EF4444"/>}
+      </div>
     </div>
   </Card>
   {Capacitor.isNativePlatform()&&eventId&&offsets&&<Card style={{marginBottom:10}}>
@@ -4630,7 +4654,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
+function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -4963,19 +4987,25 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
     const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), isLastRound: (ri+1)>=tr, breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round) };
     if (mmRoundCountRef.current === 0) {
       MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
-      // Schedule every round's whistle upfront, right now — not one at a time as rounds
-      // get generated. The whistle is purely a function of (start time, round count,
-      // round duration); it shouldn't need "a new round was generated" or "results came
-      // in" to know when the NEXT one rings.
-      const startMs = new Date(plan.matchModeStartAt).getTime();
-      const schedule = [];
-      for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
-      MatchMode.scheduleWhistles({ eventId: effEv.id, schedule }).catch(e=>console.log("scheduleWhistles failed", e));
     } else {
       console.log("[MatchModeDiag] pushing MatchMode.update, courts=", JSON.stringify(payload.courts));
       MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
     }
     mmRoundCountRef.current = plan.rounds.length;
+    // Schedule every round's whistle upfront, exactly once per real Match Mode start —
+    // gated by a Firestore-durable flag (not the ref above, which resets on every app
+    // reopen/remount and was causing a full re-schedule — and cancellation of
+    // still-pending alarms — every single time the app was closed and reopened). The
+    // whistle is purely a function of (start time, round count, round duration); it
+    // shouldn't need "a new round was generated" or "results came in" to know when the
+    // next one rings, and it shouldn't repeat just because the screen reopened.
+    if (plan.mmScheduledFor !== plan.matchModeStartAt) {
+      const startMs = new Date(plan.matchModeStartAt).getTime();
+      const schedule = [];
+      for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles failed", e));
+      onMarkWhistlesScheduled?.(plan.matchModeStartAt);
+    }
   }, [Capacitor.isNativePlatform() && isAdmin && isCI && plan?.matchModeStartAt, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matches?.map(m=>m.winner)||[]), isCompleted]);
 
   // Safety net: the native foreground service can get killed independently of this
@@ -5003,12 +5033,15 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
       });
       const g = await MatchMode.addListener("generateNextRound", () => {
         console.log("[MatchModeDiag] generateNextRound event received in JS");
-        // Deferred to the next tick: if this arrives in the same burst as courtWinner
-        // events (e.g. several native taps were queued while backgrounded and all
-        // deliver together the moment the app wakes up), React may not have flushed the
-        // just-set winners into state yet. nextRoundCI reads fresh data at call time, but
-        // only as fresh as the last committed render — this gives that a moment to land.
-        setTimeout(()=>onNextRound(), 400);
+        // A single fixed delay isn't enough when this fires during a cold app resume
+        // (the whole app can still be mounting/loading its data at that moment) — so
+        // this retries quietly a few times before giving up and showing the warning.
+        const attempts = [300, 800, 1500, 2500, 4000, 6000, 8000, 10000];
+        const tryGenerate = (i) => {
+          const ok = onNextRound(i < attempts.length - 1); // silent except on the last try
+          if (!ok && i < attempts.length - 1) setTimeout(()=>tryGenerate(i+1), attempts[i+1]-attempts[i]);
+        };
+        setTimeout(()=>tryGenerate(0), attempts[0]);
       });
       console.log("[MatchModeDiag] listeners registered successfully");
       if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
@@ -5570,7 +5603,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
               {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
             </div>
             {effCollapsed?null:<>
-            {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart}/>}
+            {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}</div></div>}
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;

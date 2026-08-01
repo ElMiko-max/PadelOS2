@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.17";
+const APP_VERSION = "V0.05.18";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -176,7 +176,11 @@ function mmBuildRoundPayload(round){
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
 const BREAK_PREF_LABELS = {none:"No Preference", early:"Early", mid:"Mid", late:"Late"};
-const breakPts = (tc) => Math.floor((tc + 1) / 2);
+const breakPts = (tc) => {
+  const base = Math.floor((tc + 1) / 2);
+  const topCourtWin = courtPts(1, tc); // always equals tc
+  return base === topCourtWin ? base - 1 : base; // e.g. 1 court: base=1=topCourtWin=1 → break=0
+};
 // Distance from a player's preferred break window to round r — lower is more preferred.
 // Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
 function prefDist(pref, r, totalRounds) {
@@ -5982,7 +5986,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   {isMeTab&&<>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
       <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>My Communities</span>
-      <span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join</span>
+      <span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join / Create</span>
     </div>
     {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></div></Card>
       :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;

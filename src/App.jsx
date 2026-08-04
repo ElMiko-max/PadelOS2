@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.18";
+const APP_VERSION = "V0.05.20";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -424,9 +424,16 @@ function calcCTCourts(playerCount, reservedCourts) {
   return { min:cappedMin, max:cappedMax, warning:max>reservedCourts?`Ideal: ${max} courts but only ${reservedCourts} reserved`:null };
 }
 
-function segmentPools(players) {
+function segmentPools(players, topPoolSizeOverride) {
   const sorted = [...players].sort((a,b) => b.usr - a.usr);
-  const N = sorted.length, numPools = Math.max(1, Math.floor(N/6));
+  const N = sorted.length;
+  // Manual override: only meaningful for a clean 2-pool split (the common ambiguous case,
+  // e.g. 14 players = 8+6 — should the top 8 or the top 6 be the elite group?). Both sizes
+  // must be even (teams need pairs) and must sum to N.
+  if (topPoolSizeOverride && topPoolSizeOverride%2===0 && topPoolSizeOverride<N && (N-topPoolSizeOverride)%2===0) {
+    return [sorted.slice(0,topPoolSizeOverride), sorted.slice(topPoolSizeOverride)];
+  }
+  const numPools = Math.max(1, Math.floor(N/6));
   const base = Math.floor(N/numPools), extra = N - base*numPools;
   const pools = []; let idx = 0;
   for (let i = 0; i < numPools; i++) {
@@ -437,6 +444,15 @@ function segmentPools(players) {
     pools.push(sorted.slice(idx, idx+size)); idx += size;
   }
   return pools;
+}
+
+// For a 2-pool split, returns the alternative top-pool size (e.g. auto gives [8,6] → the
+// admin can also choose 6 as the top/elite pool size instead). Returns null when there's
+// no meaningful alternative (equal pools, or more than 2 pools).
+function altTopPoolSize(players) {
+  const pools = segmentPools(players);
+  if (pools.length !== 2 || pools[0].length === pools[1].length) return null;
+  return pools[1].length;
 }
 
 function snakeTeams(poolPlayers, poolIdx, startId) {
@@ -453,8 +469,8 @@ function snakeTeams(poolPlayers, poolIdx, startId) {
   return teams;
 }
 
-function formCTTeams(players) {
-  const pools = segmentPools(players); const teams = []; let teamId = 1;
+function formCTTeams(players, topPoolSizeOverride) {
+  const pools = segmentPools(players, topPoolSizeOverride); const teams = []; let teamId = 1;
   pools.forEach((pool,pi) => { const pt=snakeTeams(pool,pi,teamId); teams.push(...pt); teamId+=pt.length; });
   return { teams, pools, numPools:pools.length };
 }
@@ -514,8 +530,8 @@ function calcMaxRounds(ev, format, groupA, groupB, courts, matchDuration=20) {
   return Math.max(1, Math.floor(totalMins / leagueRoundMins));
 }
 
-function generateCTPlan(players, courts, format, ev=null, matchDuration=20) {
-  const { teams, pools } = formCTTeams(players);
+function generateCTPlan(players, courts, format, ev=null, matchDuration=20, topPoolSizeOverride) {
+  const { teams, pools } = formCTTeams(players, topPoolSizeOverride);
   const groupA = teams.filter(t => t.poolIdx === 0);
   const groupB = teams.filter(t => t.poolIdx > 0);
   const courtsA = Math.max(1, Math.round(courts * groupA.length / teams.length));
@@ -3455,6 +3471,36 @@ export default function Matchkeeper() {
     setPlan(cid,eid,{...ev.plan,teams:(ev.plan.teams||[]).map(bump),sorted:(ev.plan.sorted||[]).map(bump),groupA:(ev.plan.groupA||[]).map(bump),groupB:(ev.plan.groupB||[]).map(bump)});
     toast2("Team break preference updated ✓");
   };
+  // Manual admin swap of two players between two teams (Teams tab, before Round 1 locks)
+  // — mirrors the tap-a-player-to-swap pattern already used for CI. Teams are embedded by
+  // value inside plan.teams, groupA/groupB, sorted, and every already-generated round's
+  // matches, so every one of those needs the updated team object, not just plan.teams.
+  const swapCTTeamPlayers=(cid,eid,teamIdA,userIdA,teamIdB,userIdB)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>{
+      if(ev.id!==eid||!ev.plan)return ev;
+      const plan=ev.plan;
+      const teamA=plan.teams.find(t=>t.id===teamIdA), teamB=plan.teams.find(t=>t.id===teamIdB);
+      if(!teamA||!teamB||teamA.id===teamB.id)return ev;
+      const pA=teamA.players.find(p=>(p.userId||p.id)===userIdA);
+      const pB=teamB.players.find(p=>(p.userId||p.id)===userIdB);
+      if(!pA||!pB)return ev;
+      const newTeamA={...teamA,players:teamA.players.map(p=>(p.userId||p.id)===userIdA?pB:p)};
+      const newTeamB={...teamB,players:teamB.players.map(p=>(p.userId||p.id)===userIdB?pA:p)};
+      newTeamA.avgUsr=Math.round((newTeamA.players[0].usr+newTeamA.players[1].usr)/2);
+      newTeamB.avgUsr=Math.round((newTeamB.players[0].usr+newTeamB.players[1].usr)/2);
+      const replaceTeam=t=>t?.id===teamIdA?newTeamA:t?.id===teamIdB?newTeamB:t;
+      const newTeams=plan.teams.map(replaceTeam);
+      const newRounds=plan.rounds.map(r=>({...r,
+        matchesA:(r.matchesA||[]).map(m=>({...m,teamA:replaceTeam(m.teamA),teamB:replaceTeam(m.teamB)})),
+        matchesB:(r.matchesB||[]).map(m=>({...m,teamA:replaceTeam(m.teamA),teamB:replaceTeam(m.teamB)})),
+        onBreak:(r.onBreak||[]).map(replaceTeam),
+      }));
+      return {...ev,plan:{...plan,teams:newTeams,
+        groupA:plan.groupA?.map(replaceTeam),groupB:plan.groupB?.map(replaceTeam),sorted:plan.sorted?.map(replaceTeam),
+        rounds:newRounds}};
+    })}));
+    toast2("Teams updated ✓");
+  };
   const regenCTBreaks=(cid,eid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
     const plan=ev.plan;
@@ -3481,7 +3527,7 @@ export default function Matchkeeper() {
     toast2("Break schedule regenerated ✓");
   };
 
-  const startCT=(cid,eid,courts,fmt,dur)=>{
+  const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
     const ev=getEv(cid,eid);if(!ev)return;
     let players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
@@ -3494,7 +3540,7 @@ export default function Matchkeeper() {
       players=players.filter(p=>(p.userId||p.id)!==(waitlisted.userId||waitlisted.id));
       toast2(`${waitlisted.nickname} moved to waiting list — need even number for team formation`,"err");
     }
-    const newPlan={...generateCTPlan(players,courts,fmt,ev,dur||20),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
+    const newPlan={...generateCTPlan(players,courts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
     setPlan(cid,eid,newPlan);
     toast2(`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
@@ -3615,6 +3661,7 @@ export default function Matchkeeper() {
             onSetMatchModeStart={(startAt,delayMin,roundEndTimes)=>setMatchModeStart(comm.id,event.id,startAt,delayMin,roundEndTimes)}
             onStopMatchMode={()=>stopMatchMode(comm.id,event.id)}
             onMarkWhistlesScheduled={(startAt)=>markWhistlesScheduled(comm.id,event.id,startAt)}
+            onSwapCTTeamPlayers={(teamIdA,userIdA,teamIdB,userIdB)=>swapCTTeamPlayers(comm.id,event.id,teamIdA,userIdA,teamIdB,userIdB)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -3641,7 +3688,7 @@ export default function Matchkeeper() {
             onRemoveEventPhoto={photoId=>removeEventPhoto(comm.id,event.id,photoId)}
             onEditGuestUsr={(uid,usr)=>editGuestUsr(uid,usr)}
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
-            onStartCT={(c,f,dur)=>startCT(comm.id,event.id,c,f,dur)}
+            onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
             onNextCTLadder={()=>nextCTLadder(comm.id,event.id)}
@@ -4246,7 +4293,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin}){
 // ══════════════════════════════════════════════════════
 //  CT TEAM CARD
 // ══════════════════════════════════════════════════════
-function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
+function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit,selectedUserId,onPlayerTap}){
   const poolColors = ["#6366F1","#06B6D4","#F472B6","#34D399","#F59E0B"];
   const isPool = group && group.startsWith("P");
   const poolNum = isPool ? parseInt(group.slice(1))-1 : (group==="A"?0:1);
@@ -4261,7 +4308,13 @@ function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
         <span style={{fontSize:12,color:"var(--po-dim)"}}>({team.avgUsr})</span>
         <Bdg label={badgeLabel} color={gc}/>
       </div>
-      <div style={{display:"flex",gap:10}}>{team.players.map(p=>{return <div key={p.userId||p.id} style={{display:"flex",alignItems:"center",gap:4}}><Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{p.usr}</span></div>;})}</div>
+      <div style={{display:"flex",gap:10}}>{team.players.map(p=>{
+        const uid=p.userId||p.id, isSel=selectedUserId===uid;
+        return <div key={uid} onClick={canEdit?()=>onPlayerTap(team.id,uid):undefined}
+          style={{display:"flex",alignItems:"center",gap:4,cursor:canEdit?"pointer":"default",padding:isSel?"2px 6px":"2px 0",borderRadius:6,background:isSel?"#FBBF2422":"transparent",border:isSel?"0.5px solid #FBBF2466":"0.5px solid transparent"}}>
+          <Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:isSel?"#FBBF24":"var(--po-sub)",fontWeight:isSel?700:400}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{p.usr}</span>
+        </div>;
+      })}</div>
       {showBreakPref&&(isAdmin
         ? <div style={{display:"flex",alignItems:"center",gap:4,marginTop:6}}>
             <span style={{fontSize:10,color:"var(--po-dim)"}}>Break:</span>
@@ -4669,20 +4722,22 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled}){
+function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
-  const suggestedTotalR = (()=>{
-    if(!ev.time||!ev.timeTo) return 6;
+  const eventBookingMins = (()=>{
+    if(!ev.time||!ev.timeTo) return 120;
     const [h1,m1]=ev.time.split(":").map(Number);
     const [h2,m2]=(ev.timeTo||"").split(":").map(Number);
-    if(isNaN(h2)) return 6;
+    if(isNaN(h2)) return 120;
     let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60;
-    return Math.max(1, Math.round(mins/(suggestedRoundDur||20)));
+    return mins;
   })();
-  const [totalR,setTotalR] = useState(suggestedTotalR);
   const [roundDur,setRDur] = useState(suggestedRoundDur);
+  // Total rounds is fully derived from the event's real booking window ÷ round duration —
+  // no manual round-count picker; changing the duration recomputes this automatically.
+  const totalR = Math.max(1, Math.round(eventBookingMins/(roundDur||20)));
   const [showAddM,setSAM]  = useState(false);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [photoUploading2,setPhotoUploading2] = useState(false);
@@ -4703,8 +4758,10 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
   const [showAddG,setSAG]  = useState(false);
   const [gf,setGf]         = useState({n:"",name:"",p:"",usr:"50"});
   const [sel,setSel]       = useState(null);
+  const [ctSel,setCtSel]   = useState(null); // {teamId,userId} — for tap-a-player-to-swap between teams
   const [showResultsTable,setShowResultsTable] = useState(false);
   const [ctC,setCtC]       = useState(null);
+  const [ctTopPoolSize,setCtTopPoolSize] = useState(null); // null = auto (top-ranked players → the auto-computed bigger pool)
   const [ctF,setCtF]       = useState("league");
   const [ctDur,setCtDur]   = useState(ev.rotationMin||20);
   const [simSnapshot,setSimSnapshot] = useState(null); // deep clone of `ev` taken when sim starts; discarded on exit
@@ -4859,12 +4916,13 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
           return {...e, plan:{...plan, breakPlan:newBreakPlan}};
         })
       : onRegenCTBreaks&&onRegenCTBreaks(),
-    startCT: (c,f,dur) => sim
+    swapCTTeamPlayers: (teamIdA,userIdA,teamIdB,userIdB) => onSwapCTTeamPlayers&&onSwapCTTeamPlayers(teamIdA,userIdA,teamIdB,userIdB),
+    startCT: (c,f,dur,topPoolSizeOverride) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId};}).filter(Boolean);
-          return {...e, plan: generateCTPlan(players, c, f, e, dur)};
+          return {...e, plan: generateCTPlan(players, c, f, e, dur, topPoolSizeOverride)};
         })
-      : onStartCT(c,f,dur),
+      : onStartCT(c,f,dur,topPoolSizeOverride),
     setWinCT: (ri,mi,side,w,sA,sB) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -4969,6 +5027,15 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
   const isDay  = sim||effEv.date===today;
   const plan   = effEv.plan;
   const isCompleted = effEv.status==="completed";
+
+  // First tap selects a player; a second tap on a player from a DIFFERENT team swaps them.
+  // Tapping the same player again, or another player on the SAME team, just clears/reselects.
+  const handleCTPlayerTap = (teamId, userId) => {
+    if (!ctSel) { setCtSel({teamId,userId}); return; }
+    if (ctSel.teamId===teamId) { setCtSel(ctSel.userId===userId?null:{teamId,userId}); return; }
+    act.swapCTTeamPlayers(ctSel.teamId, ctSel.userId, teamId, userId);
+    setCtSel(null);
+  };
 
   // ── Match Mode Persistent Notification (native Android, CI events, admin only) ──
   // Starts the foreground-service notification once Match Mode begins, refreshes it
@@ -5594,8 +5661,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players · {tc} courts · {Math.max(0,effEv.registrations.length-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4,flexWrap:"wrap"}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Total rounds:</span>{[3,4,5,6,7,8].map(n=><SmBtn key={n} label={`${n}`} onClick={()=>setTotalR(n)} active={totalR===n} color="#6366F1"/>)}</div>
-        <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:16}}>💡 Suggested for this event's booking window ({roundDur}m rounds): {suggestedTotalR} rounds{totalR!==suggestedTotalR?` — you're currently set to ${totalR}`:""}</div>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:16}}>💡 {totalR} rounds fit this event's booking window automatically ({roundDur}m each)</div>
         {effEv.registrations.length<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur)} style={{width:"100%"}}/>}
       </Card>}
       {plan&&<>
@@ -5695,15 +5761,43 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Match duration:</div>
           <div style={{display:"flex",gap:8}}>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
         </div>
-        <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur)} style={{width:"100%"}}/>
+        {(()=>{
+          const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
+          if(!alt) return null;
+          const autoTop=autoPools[0]?.length, autoBottom=autoPools[1]?.length;
+          return <div style={{marginBottom:16}}>
+            <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Which group should be the top-ranked (elite) group?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setCtTopPoolSize(null)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${!ctTopPoolSize?"#6366F1":"var(--po-bdr)"}`,background:!ctTopPoolSize?"#6366F122":"var(--po-inp)",color:!ctTopPoolSize?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {autoTop} <span style={{opacity:0.6}}>(default)</span></button>
+              <button onClick={()=>setCtTopPoolSize(alt)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${ctTopPoolSize===alt?"#6366F1":"var(--po-bdr)"}`,background:ctTopPoolSize===alt?"#6366F122":"var(--po-inp)",color:ctTopPoolSize===alt?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {alt}</button>
+            </div>
+            <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{ctTopPoolSize?`Top ${alt} players → smaller elite group of ${alt} · remaining ${autoTop} → the other group`:`Top ${autoTop} players → the bigger group of ${autoTop} · remaining ${autoBottom} → the other group`}. The bigger group gets priority on courts each round.</div>
+          </div>;
+        })()}
+        <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur,ctTopPoolSize)} style={{width:"100%"}}/>
       </Card>}
       {plan&&<>
+        {isAdmin&&!ctR1Locked&&(()=>{
+          const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
+          if(!alt) return null;
+          const autoTop=autoPools[0]?.length;
+          return <Card style={{marginBottom:10}}>
+            <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Top-ranked (elite) group size — change and hit Regenerate to apply:</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setCtTopPoolSize(null)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${!ctTopPoolSize?"#6366F1":"var(--po-bdr)"}`,background:!ctTopPoolSize?"#6366F122":"var(--po-inp)",color:!ctTopPoolSize?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {autoTop} <span style={{opacity:0.6}}>(default)</span></button>
+              <button onClick={()=>setCtTopPoolSize(alt)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${ctTopPoolSize===alt?"#6366F1":"var(--po-bdr)"}`,background:ctTopPoolSize===alt?"#6366F122":"var(--po-inp)",color:ctTopPoolSize===alt?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {alt}</button>
+            </div>
+          </Card>;
+        })()}
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <span>✓ {plan.teams?.length||0} teams · {plan.format==="ladder"?"Ladder":"League"} · {plan.courts} courts</span>
           {isAdmin&&(plan.rounds.length===0||!plan.rounds[0]?.matchesA?.some(m=>m.winner)
-            ? (!ctR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current team formation and start over?\n\nAll teams and the current Round 1 will be cleared. Registered players stay.\n\nThis cannot be undone."))act.startCT(plan.courts,plan.format,plan.matchDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)
+            ? (!ctR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current team formation and start over?\n\nAll teams and the current Round 1 will be cleared. Registered players stay.\n\nThis cannot be undone."))act.startCT(plan.courts,plan.format,plan.matchDuration,ctTopPoolSize);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)
             : null)}
         </div>
+        {isAdmin&&!ctR1Locked&&<div style={{padding:"8px 12px",background:"#6366F111",border:"0.5px solid #6366F133",borderRadius:8,fontSize:11,color:"var(--po-dim)",marginBottom:12}}>💡 {ctSel?`✋ Selected — tap a player on another team to swap`:`Tap a player, then tap another player on a different team to swap them`}</div>}
         {plan.format==="ladder"?<>
           {/* Ladder: show Pools (how teams were formed) but make clear they don't affect gameplay */}
           {(() => {
@@ -5712,14 +5806,14 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
               const poolTeams = (plan.teams||[]).filter(t=>t.poolIdx===pi);
               return <React.Fragment key={pi}>
                 <ST>Pool {pi+1} — {poolTeams.length} teams</ST>
-                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}
+                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}
               </React.Fragment>;
             });
           })()}
         </>:<>
           <ST>Group A — {plan.groupA?.length||0} teams</ST>
-          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}
-          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}</>}
+          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}
+          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}</>}
         </>}
       </>}
     </>}

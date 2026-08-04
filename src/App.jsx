@@ -1261,6 +1261,9 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
   const barHByRank=[240,160,110]; // big — fills the space instead of leaving it empty
+  // Every font scales by rank too — 1st is biggest, 2nd a step down, 3rd smaller still.
+  const medalFontByRank=[52,42,36], nameFontByRank=[32,25,20], playersFontByRank=[17,14,12],
+        usrFontByRank=[14,12,10], valueFontByRank=[22,17,14], rankNumFontByRank=[34,26,20];
   const order=[1,0,2].filter(i=>top3[i]);
   const colW=(w-96)/3, baseY=h-90;
 
@@ -1269,25 +1272,25 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
     const barH=barHByRank[rank];
     const cx = 48 + colW*pos + colW/2;
     let ty = baseY - barH - 34;
-    ctx.font = "44px Arial"; ctx.textAlign="center";
+    ctx.font = `${medalFontByRank[rank]}px Arial`; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
-    ty -= 34;
-    ctx.fillStyle = COLORS.text; ctx.font="800 26px Arial"; // names much bigger — this is the headline info
+    ty -= medalFontByRank[rank]*0.75;
+    ctx.fillStyle = COLORS.text; ctx.font=`800 ${nameFontByRank[rank]}px Arial`; // names — the headline info
     fitTextCentered(ctx, e.name, cx, ty, colW-16);
     if(e.players&&e.players.length>0){
-      ty -= 20; ctx.fillStyle = COLORS.dim; ctx.font="14px Arial";
+      ty -= nameFontByRank[rank]*0.75; ctx.fillStyle = COLORS.dim; ctx.font=`${playersFontByRank[rank]}px Arial`;
       fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-16);
     }
-    if(e.usrLine){ ty -= 17; ctx.fillStyle = COLORS.dim; ctx.font="12px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); }
-    ty -= 22;
-    ctx.fillStyle = colors[rank]; ctx.font="800 18px Arial";
+    if(e.usrLine){ ty -= playersFontByRank[rank]*1.2; ctx.fillStyle = COLORS.dim; ctx.font=`${usrFontByRank[rank]}px Arial`; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); }
+    ty -= usrFontByRank[rank]*1.5;
+    ctx.fillStyle = colors[rank]; ctx.font=`800 ${valueFontByRank[rank]}px Arial`;
     ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty);
 
     ctx.fillStyle = `${colors[rank]}33`;
     roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.fill();
     ctx.strokeStyle = `${colors[rank]}88`; ctx.lineWidth=2;
     roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.stroke();
-    ctx.fillStyle = colors[rank]; ctx.font="800 30px Arial";
+    ctx.fillStyle = colors[rank]; ctx.font=`800 ${rankNumFontByRank[rank]}px Arial`;
     ctx.fillText(`${rank+1}`, cx, baseY-barH/2+8);
     ctx.textAlign="left";
   });

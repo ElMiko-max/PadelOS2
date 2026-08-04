@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.26";
+const APP_VERSION = "V0.05.27";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1249,9 +1249,8 @@ function drawFooter(ctx, w, h){
 }
 
 // Standalone, landscape podium share card — separate from the full standings list.
-// Fixed-height info row (medal/name/players/USR line all at the SAME y per column) with
-// only the bars varying in height below — this is what actually fixes the "staggered,
-// messy" look from stacking info directly above each differently-sized bar.
+// Matches the in-app Podium's approved look: info (medal, avatars, name, USR, value)
+// stacked directly above each bar, bars varying in height by rank.
 function buildPodiumCard(ev, venue, top3, communityName, title){
   const w = 1000, h = 560;
   const {c, ctx} = makeCard(w, h);
@@ -1259,34 +1258,59 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   let y = drawHeader(ctx, w, title||"🏆 Champions", ev.name, communityName);
   y += 20;
   y = drawEventStrip(ctx, w, y, ev, venue);
-  y += 24;
+  y += 20;
 
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
-  const barHByRank=[170,110,74];
+  const barHByRank=[190,130,90];
   const order=[1,0,2].filter(i=>top3[i]);
   const colW=(w-64)/3, baseY=h-70;
-  const infoY = y; // fixed — same for every column regardless of bar height
+
+  // Draws one avatar circle (colored ring + initials — matches the in-app Av fallback,
+  // since loading real photos into Canvas here would need async image loading this
+  // synchronous card-building flow doesn't currently support).
+  function drawAvatarCircle(cx, cyc, r, user){
+    const lv = usrLv(user.usr||0);
+    ctx.beginPath(); ctx.arc(cx, cyc, r, 0, Math.PI*2);
+    ctx.fillStyle = lv.c+"22"; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = lv.c+"88"; ctx.stroke();
+    ctx.fillStyle = lv.c; ctx.font = `700 ${Math.round(r*0.7)}px Arial`; ctx.textAlign="center";
+    ctx.fillText(user.avatar||ini2(user.nickname||"?"), cx, cyc+r*0.25);
+  }
 
   order.forEach((rank,pos)=>{
     const e=top3[rank]; if(!e) return;
     const barH=barHByRank[rank];
     const cx = 32 + colW*pos + colW/2;
-    let ty = infoY + 34;
-    ctx.font = "44px Arial"; ctx.textAlign="center";
+    let ty = baseY - barH - 30;
+    ctx.font = "36px Arial"; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
-    ty += 40;
-    ctx.fillStyle = COLORS.text; ctx.font="800 20px Arial";
-    fitTextCentered(ctx, e.name, cx, ty, colW-20);
-    ty += 22;
+    ty -= 8;
+
+    // Avatars: single (CI) or overlapping pair (CT)
+    const avatarR = rank===0?32:26;
     if(e.players&&e.players.length>0){
-      ctx.fillStyle = COLORS.dim; ctx.font="13px Arial";
-      fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-20);
-      ty += 18;
+      const n=e.players.length, spread=avatarR*1.3;
+      ty -= avatarR*2+6;
+      e.players.forEach((p,pi)=>{ drawAvatarCircle(cx-((n-1)*spread)/2+pi*spread, ty+avatarR, avatarR, p); });
+      ty -= 4;
+    } else if(e.avatarUser){
+      ty -= avatarR*2+6;
+      drawAvatarCircle(cx, ty+avatarR, avatarR, e.avatarUser);
+      ty -= 4;
     }
-    if(e.usrLine){ ctx.fillStyle = COLORS.dim; ctx.font="12px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-20); ty += 18; }
-    ctx.fillStyle = colors[rank]; ctx.font="800 16px Arial";
-    ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty+18);
+
+    ty -= 22;
+    ctx.fillStyle = COLORS.text; ctx.font="800 18px Arial";
+    fitTextCentered(ctx, e.name, cx, ty, colW-20);
+    if(e.players&&e.players.length>0){
+      ty -= 17; ctx.fillStyle = COLORS.dim; ctx.font="12px Arial";
+      fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-20);
+    }
+    if(e.usrLine){ ty -= 16; ctx.fillStyle = COLORS.dim; ctx.font="11px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-20); }
+    ty -= 20;
+    ctx.fillStyle = colors[rank]; ctx.font="800 15px Arial";
+    ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty);
 
     ctx.fillStyle = `${colors[rank]}33`;
     roundRect(ctx, 32+colW*pos+16, baseY-barH, colW-32, barH, 8); ctx.fill();
@@ -5417,7 +5441,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
         if(ciStands.length>0) cards.push(buildPodiumCard(effEv,venue,ciStands.slice(0,3).map(s=>{
           const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;
           const delta=Math.round(s.user.usr-before);
-          return{name:s.user.nickname,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
+          return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
         }),comm.name));
         cards.push(buildStandingsCard(effEv,venue,ciStands,tc,plan,comm.name));
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));

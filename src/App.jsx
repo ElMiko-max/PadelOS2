@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.24";
+const APP_VERSION = "V0.05.25";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1665,7 +1665,7 @@ function drawEventStrip(ctx, w, y, ev, venue){
 
 // Draws a 1-2-3 podium strip (top3 in RANK order) for the share-image standings cards.
 // Returns the podium's total height so callers can size the card correctly up front.
-const PODIUM_H = 172;
+const PODIUM_H = 192;
 function drawPodium(ctx, w, y, top3){
   if(!top3||top3.length===0) return y;
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
@@ -1676,17 +1676,17 @@ function drawPodium(ctx, w, y, top3){
     const e=top3[rank]; if(!e) return;
     const barH=barHByRank[rank];
     const cx = 16 + colW*pos + colW/2;
-    let ty = baseY-barH-30;
+    let ty = baseY-barH-34;
     ctx.font = "24px Arial"; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
-    ty -= 18;
+    ty -= 20;
     ctx.fillStyle = COLORS.text; ctx.font="700 12px Arial";
     fitTextCentered(ctx, e.name, cx, ty, colW-10);
     if(e.players&&e.players.length>0){
-      ty -= 12; ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
+      ty -= 13; ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
       fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-10);
     }
-    if(e.usrLine){ ty -= 12; ctx.fillStyle = COLORS.dim; ctx.font="8px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-10); }
+    if(e.usrLine){ ty -= 13; ctx.fillStyle = COLORS.dim; ctx.font="8px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-10); }
     ctx.fillStyle = colors[rank]; ctx.font="700 11px Arial";
     ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, baseY-barH+2);
     ctx.fillStyle = `${colors[rank]}33`;
@@ -1894,10 +1894,8 @@ function buildLeaguePoolsCard(ev, venue, plan, communityName){
 
       // Court badge
       ctx.fillStyle = gc+"22"; roundRect(ctx, 20, y+10, 28, 24, 6); ctx.fill();
-      ctx.fillStyle = gc; ctx.font="700 9px Arial"; ctx.textAlign="center";
-      ctx.fillText("C"+m.court, 34, y+18);
-      ctx.font="500 7px Arial";
-      ctx.fillText("ORT", 34, y+28);
+      ctx.fillStyle = gc; ctx.font="700 12px Arial"; ctx.textAlign="center";
+      ctx.fillText("C"+m.court, 34, y+26);
       ctx.textAlign="left";
 
       // Team names
@@ -2084,14 +2082,16 @@ function buildLadderBreakTableCard(ev, venue, plan, tc, communityName){
 
 function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
   const w = CARD_W;
-  const groupColors = ["#6366F1","#06B6D4"];
-  const groups = [
-    {label:"Group A", courts:plan.courtsA, matches:(plan.rounds||[]).flatMap(r=>r.matchesA||[])},
-    {label:"Group B", courts:plan.courtsB, matches:(plan.rounds||[]).flatMap(r=>r.matchesB||[])},
-  ].filter(g=>g.matches.length>0);
+  const groupColors = {A:"#6366F1",B:"#06B6D4"};
+  const rounds = (plan.rounds||[]).map(r=>({
+    roundNum: r.roundNum,
+    matches: [...(r.matchesA||[]).map(m=>({...m,side:"A"})), ...(r.matchesB||[]).map(m=>({...m,side:"B"}))]
+      .sort((a,b)=>a.court-b.court||(a.winner?1:0)-(b.winner?1:0)),
+  })).filter(r=>r.matches.length>0);
+  const hasBothGroups = (plan.groupB?.length||0) > 0;
 
   let estH = 108 + 16 + 48;
-  groups.forEach(g=>{ estH += 28 + g.matches.length*48; });
+  rounds.forEach(r=>{ estH += 28 + r.matches.length*48; });
   const h = estH + 30;
   const {c, ctx} = makeCard(w, h);
   ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
@@ -2099,23 +2099,24 @@ function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
   y += 16;
   y = drawEventStrip(ctx, w, y, ev, venue);
 
-  groups.forEach((g, gi)=>{
-    const gc = groupColors[gi % groupColors.length];
-    ctx.fillStyle = gc; roundRect(ctx, 14, y, w-28, 22, 7); ctx.fill();
+  rounds.forEach((r)=>{
+    ctx.fillStyle = COLORS.accent; roundRect(ctx, 14, y, w-28, 22, 7); ctx.fill();
     ctx.fillStyle = "#fff"; ctx.font="700 10px Arial";
-    ctx.fillText(`${g.label} — ${g.matches.length} matches`, 22, y+15);
+    ctx.fillText(`League Round ${r.roundNum} — ${r.matches.length} matches`, 22, y+15);
     y += 28;
 
-    g.matches.forEach((m,i)=>{
+    r.matches.forEach((m,i)=>{
+      const gc = groupColors[m.side]||COLORS.accent;
       const won_A = m.winner==="A", won_B = m.winner==="B";
       ctx.fillStyle = i%2===0 ? COLORS.card : COLORS.cardAlt;
       roundRect(ctx, 14, y, w-28, 42, 9); ctx.fill();
       ctx.strokeStyle = COLORS.border; roundRect(ctx, 14, y, w-28, 42, 9); ctx.stroke();
 
-      // Court badge
+      // Court badge (+ small group tag underneath, only if both groups exist this event)
       ctx.fillStyle = gc+"22"; roundRect(ctx, 20, y+7, 28, 28, 6); ctx.fill();
-      ctx.fillStyle = gc; ctx.font="700 9px Arial"; ctx.textAlign="center";
-      ctx.fillText("C"+m.court, 34, y+17); ctx.font="500 7px Arial"; ctx.fillText("ORT",34,y+27);
+      ctx.fillStyle = gc; ctx.font="700 12px Arial"; ctx.textAlign="center";
+      ctx.fillText("C"+m.court, 34, hasBothGroups?y+20:y+25);
+      if(hasBothGroups){ ctx.font="700 7px Arial"; ctx.fillText("GRP "+m.side, 34, y+30); }
       ctx.textAlign="left";
 
       // Team A

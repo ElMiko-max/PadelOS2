@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.30";
+const APP_VERSION = "V0.05.31";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1281,8 +1281,8 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
     ctx.fillText(medals[rank], cx, ty);
     ty -= medalFontByRank[rank] + 14;
     ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFontByRank[rank]}px Arial`;
-    fitTextCentered(ctx, headline, cx, ty, colW-16);
-    ty -= headlineFontByRank[rank]*1.45;
+    const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFontByRank[rank]*1.05);
+    ty -= headlineFontByRank[rank]*1.45 + (headlineLines>1 ? headlineFontByRank[rank]*1.05 : 0);
     if(hasTeam){
       ctx.fillStyle = COLORS.dim; ctx.font=`${teamFontByRank[rank]}px Arial`;
       fitTextCentered(ctx, e.name, cx, ty, colW-16);
@@ -1759,6 +1759,30 @@ function fitTextCentered(ctx,text,cx,y,maxW){
   ctx.textAlign="center";
   let t=text||""; while(ctx.measureText(t).width>maxW && t.length>1) t=t.slice(0,-2)+"…";
   ctx.fillText(t,cx,y);
+}
+
+// Wraps to a 2nd line instead of truncating — used for names, since cutting someone's
+// name off with "…" reads badly. yBottom is the baseline of the LOWER line (closest to
+// whatever sits below it); returns the number of lines actually drawn (1 or 2) so the
+// caller can reserve extra vertical space when it wraps.
+function fitTextWrapCentered(ctx,text,cx,yBottom,maxW,lineH){
+  ctx.textAlign="center";
+  const t=text||"";
+  if(ctx.measureText(t).width<=maxW){ ctx.fillText(t,cx,yBottom); return 1; }
+  let top,bottom;
+  if(t.includes(" & ")){
+    const i=t.indexOf(" & ");
+    top=t.slice(0,i).trim(); bottom=("& "+t.slice(i+3)).trim();
+  } else {
+    const words=t.split(" "); const mid=Math.ceil(words.length/2);
+    top=words.slice(0,mid).join(" "); bottom=words.slice(mid).join(" ")||top;
+    if(!words.slice(mid).length){ top=t; bottom=""; }
+  }
+  while(ctx.measureText(top).width>maxW && top.length>1) top=top.slice(0,-2)+"…";
+  while(ctx.measureText(bottom).width>maxW && bottom.length>1) bottom=bottom.slice(0,-2)+"…";
+  ctx.fillText(bottom,cx,yBottom);
+  if(top) ctx.fillText(top,cx,yBottom-lineH);
+  return top?2:1;
 }
 
 function buildStandingsCard(ev,venue,ciStands,tc,plan,communityName){

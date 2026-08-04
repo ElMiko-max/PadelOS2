@@ -1256,38 +1256,38 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   let y = drawHeader(ctx, w, title||"🏆 Champions", ev.name, communityName);
   y += 20;
   y = drawEventStrip(ctx, w, y, ev, venue);
-  y += 60; // clear separation before the podium — this is what the info stack was colliding with
+  y += 115; // clear, generous separation before the podium
 
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
-  const barHByRank=[110,74,52]; // modest — the podium doesn't need to fill the whole card
+  const barHByRank=[240,160,110]; // big — fills the space instead of leaving it empty
   const order=[1,0,2].filter(i=>top3[i]);
-  const colW=(w-96)/3, baseY=y+280; // fixed podium zone height, independent of card size
+  const colW=(w-96)/3, baseY=h-90;
 
   order.forEach((rank,pos)=>{
     const e=top3[rank]; if(!e) return;
     const barH=barHByRank[rank];
     const cx = 48 + colW*pos + colW/2;
-    let ty = baseY - barH - 26;
-    ctx.font = "30px Arial"; ctx.textAlign="center";
+    let ty = baseY - barH - 34;
+    ctx.font = "44px Arial"; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
-    ty -= 22;
-    ctx.fillStyle = COLORS.text; ctx.font="800 15px Arial";
+    ty -= 34;
+    ctx.fillStyle = COLORS.text; ctx.font="800 26px Arial"; // names much bigger — this is the headline info
     fitTextCentered(ctx, e.name, cx, ty, colW-16);
     if(e.players&&e.players.length>0){
-      ty -= 15; ctx.fillStyle = COLORS.dim; ctx.font="10px Arial";
+      ty -= 20; ctx.fillStyle = COLORS.dim; ctx.font="14px Arial";
       fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-16);
     }
-    if(e.usrLine){ ty -= 14; ctx.fillStyle = COLORS.dim; ctx.font="9px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); }
-    ty -= 16;
-    ctx.fillStyle = colors[rank]; ctx.font="800 13px Arial";
+    if(e.usrLine){ ty -= 17; ctx.fillStyle = COLORS.dim; ctx.font="12px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); }
+    ty -= 22;
+    ctx.fillStyle = colors[rank]; ctx.font="800 18px Arial";
     ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty);
 
     ctx.fillStyle = `${colors[rank]}33`;
     roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.fill();
     ctx.strokeStyle = `${colors[rank]}88`; ctx.lineWidth=2;
     roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.stroke();
-    ctx.fillStyle = colors[rank]; ctx.font="800 22px Arial";
+    ctx.fillStyle = colors[rank]; ctx.font="800 30px Arial";
     ctx.fillText(`${rank+1}`, cx, baseY-barH/2+8);
     ctx.textAlign="left";
   });

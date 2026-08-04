@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.22";
+const APP_VERSION = "V0.05.23";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1663,14 +1663,49 @@ function drawEventStrip(ctx, w, y, ev, venue){
   return y + 48;
 }
 
+// Draws a 1-2-3 podium strip (top3 in RANK order) for the share-image standings cards.
+// Returns the podium's total height so callers can size the card correctly up front.
+const PODIUM_H = 148;
+function drawPodium(ctx, w, y, top3){
+  if(!top3||top3.length===0) return y;
+  const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"], barH=[70,48,36];
+  const order=[1,0,2].filter(i=>top3[i]); // visual: 2nd, 1st, 3rd
+  const colW=(w-32)/3, baseY=y+PODIUM_H-14;
+  order.forEach((rank,pos)=>{
+    const e=top3[rank]; if(!e) return;
+    const cx = 16 + colW*pos + colW/2;
+    ctx.font = "24px Arial"; ctx.textAlign="center";
+    ctx.fillText(medals[rank], cx, baseY-barH[pos]-30);
+    ctx.fillStyle = COLORS.text; ctx.font="700 12px Arial";
+    fitTextCentered(ctx, e.name, cx, baseY-barH[pos]-12, colW-10);
+    ctx.fillStyle = colors[rank]; ctx.font="700 11px Arial";
+    ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, baseY-barH[pos]+2);
+    ctx.fillStyle = `${colors[rank]}33`;
+    roundRect(ctx, 16+colW*pos+8, baseY-barH[pos], colW-16, barH[pos], 6); ctx.fill();
+    ctx.strokeStyle = `${colors[rank]}77`;
+    roundRect(ctx, 16+colW*pos+8, baseY-barH[pos], colW-16, barH[pos], 6); ctx.stroke();
+    ctx.fillStyle = colors[rank]; ctx.font="800 18px Arial";
+    ctx.fillText(`${rank+1}`, cx, baseY-barH[pos]/2+6);
+    ctx.textAlign="left";
+  });
+  return y + PODIUM_H;
+}
+function fitTextCentered(ctx,text,cx,y,maxW){
+  ctx.textAlign="center";
+  let t=text||""; while(ctx.measureText(t).width>maxW && t.length>1) t=t.slice(0,-2)+"…";
+  ctx.fillText(t,cx,y);
+}
+
 function buildStandingsCard(ev,venue,ciStands,tc,plan,communityName){
   const w = CARD_W;
-  const h = 108 + 16 + 48 + ciStands.length*52 + 30;
+  const hasPodium = ciStands.length>0;
+  const h = 108 + 16 + 48 + (hasPodium?PODIUM_H:0) + ciStands.length*52 + 30;
   const {c, ctx} = makeCard(w, h);
   ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
   let y = drawHeader(ctx, w, "Final standings", `${plan.rounds.length} rounds`, communityName);
   y += 16;
   y = drawEventStrip(ctx, w, y, ev, venue);
+  if(hasPodium) y = drawPodium(ctx, w, y, ciStands.slice(0,3).map(s=>({name:s.user.nickname,value:s.pts,valueLabel:"pts"})));
 
   ciStands.forEach((s,i)=>{
     const maxPts = personalMaxCI(s.breaks, plan.rounds.length, tc);
@@ -2108,12 +2143,14 @@ function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
 
 function buildCTStandingsCard(ev, venue, ctStands, format, communityName){
   const w = CARD_W;
-  const h = 108 + 16 + 48 + ctStands.length*52 + 30;
+  const hasPodium = ctStands.length>0;
+  const h = 108 + 16 + 48 + (hasPodium?PODIUM_H:0) + ctStands.length*52 + 30;
   const {c, ctx} = makeCard(w, h);
   ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
   let y = drawHeader(ctx, w, "Final standings", format==="ladder"?"Ladder":"League", communityName);
   y += 16;
   y = drawEventStrip(ctx, w, y, ev, venue);
+  if(hasPodium) y = drawPodium(ctx, w, y, ctStands.slice(0,3).map(s=>({name:s.team?.name,value:format==="ladder"?s.pts:s.wins,valueLabel:format==="ladder"?"pts":"wins"})));
 
   ctStands.forEach((s,i)=>{
     const isTop = i===0;
@@ -2237,6 +2274,27 @@ function Av({u,size=36}){
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}
+
+// top3: array of up to 3 {name, avatarUser, value, valueLabel} in RANK order (1st, 2nd, 3rd).
+function Podium({top3,title}){
+  if(!top3||top3.length===0) return null;
+  const order=[1,0,2].filter(i=>top3[i]); // visual order: 2nd left, 1st center, 3rd right
+  const heights=[96,130,76], medals=["🥈","🥇","🥉"], colors=["#94A3B8","#FBBF24","#CD7C2F"];
+  return <Card style={{marginBottom:12,background:"linear-gradient(180deg,#6366F111,transparent)"}}>
+    <div style={{textAlign:"center",fontSize:13,fontWeight:700,color:"var(--po-text)",marginBottom:14}}>🏆 {title||"Final Standings"}</div>
+    <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:8}}>
+      {order.map((rank,pos)=>{const e=top3[rank]; if(!e) return null; return <div key={rank} style={{display:"flex",flexDirection:"column",alignItems:"center",width:90}}>
+        <div style={{fontSize:22,marginBottom:4}}>{medals[rank]}</div>
+        {e.avatarUser?<Av u={e.avatarUser} size={rank===0?48:38}/>:null}
+        <div style={{fontSize:12,fontWeight:700,color:"var(--po-text)",marginTop:6,textAlign:"center",lineHeight:1.2}}>{e.name}</div>
+        <div style={{fontSize:11,color:colors[rank],fontWeight:700,marginTop:2}}>{e.value}{e.valueLabel?` ${e.valueLabel}`:""}</div>
+        <div style={{width:"100%",height:heights[pos],background:`${colors[rank]}22`,border:`0.5px solid ${colors[rank]}55`,borderRadius:"8px 8px 0 0",marginTop:8,display:"flex",alignItems:"flex-start",justifyContent:"center",paddingTop:8}}>
+          <span style={{fontSize:20,fontWeight:800,color:colors[rank]}}>{rank+1}</span>
+        </div>
+      </div>;})}
+    </div>
+  </Card>;
+}
 function Btn({label,onClick,primary,danger,disabled,style={}}){
   const bg=primary?"#6366F1":danger?"#EF444422":"transparent", bc=primary?"#6366F1":danger?"#EF4444":"var(--po-bdr)", cl=primary?"#fff":danger?"#EF4444":"var(--po-sub)";
   return <button onClick={onClick} disabled={disabled} style={{padding:"9px 16px",borderRadius:8,border:`0.5px solid ${bc}`,background:disabled?"var(--po-bdr)":bg,color:disabled?"var(--po-dim)":cl,fontSize:13,fontWeight:500,cursor:disabled?"default":"pointer",opacity:disabled?0.6:1,...style}}>{label}</button>;
@@ -4552,7 +4610,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
         {effCollapsed?null:<>
         {isLatest&&isAdmin&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} eventId={eventId} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart} onStop={onStopMatchMode}/>}
         {isLeague
-          ?<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}{(round.matchesB||[]).map((m,mi)=><MatchCard key={`B${mi}`} m={m} ri={ri} mi={mi} side="B"/>)}</>
+          ?<>{[...round.matchesA].sort((a,b)=>a.court-b.court||(a.winner?1:0)-(b.winner?1:0)).map((m,mi)=><MatchCard key={`A${m.court}-${mi}`} m={m} ri={ri} mi={round.matchesA.indexOf(m)} side="A"/>)}{[...(round.matchesB||[])].sort((a,b)=>a.court-b.court||(a.winner?1:0)-(b.winner?1:0)).map((m,mi)=><MatchCard key={`B${m.court}-${mi}`} m={m} ri={ri} mi={round.matchesB.indexOf(m)} side="B"/>)}</>
           :<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}</>
         }
         </>}
@@ -5774,6 +5832,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
 
     {/* CI STANDINGS */}
     {tab==="standings"&&isCI&&<>
+      {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>({name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts"}))}/>}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
       {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
         {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
@@ -5800,6 +5859,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
         <div style={{marginBottom:16}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Match duration:</div>
           <div style={{display:"flex",gap:8}}>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
         {(()=>{
           const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
@@ -5866,6 +5926,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>
+      {isCompleted&&ctStands.length>0&&<Podium top3={ctStands.slice(0,3).map(s=>({name:s.team?.name,value:plan?.format==="ladder"?s.pts:s.wins,valueLabel:plan?.format==="ladder"?"pts":"wins"}))}/>}
       {/* Scoring info bar */}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>
         {plan?.format==="ladder"

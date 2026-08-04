@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.27";
+const APP_VERSION = "V0.05.28";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1248,76 +1248,47 @@ function drawFooter(ctx, w, h){
   ctx.textAlign="left";
 }
 
-// Standalone, landscape podium share card — separate from the full standings list.
-// Matches the in-app Podium's approved look: info (medal, avatars, name, USR, value)
-// stacked directly above each bar, bars varying in height by rank.
+// Standalone, square podium share card — separate from the full standings list.
 function buildPodiumCard(ev, venue, top3, communityName, title){
-  const w = 1000, h = 560;
+  const w = 800, h = 800;
   const {c, ctx} = makeCard(w, h);
   ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
   let y = drawHeader(ctx, w, title||"🏆 Champions", ev.name, communityName);
   y += 20;
   y = drawEventStrip(ctx, w, y, ev, venue);
-  y += 20;
+  y += 60; // clear separation before the podium — this is what the info stack was colliding with
 
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
-  const barHByRank=[190,130,90];
+  const barHByRank=[110,74,52]; // modest — the podium doesn't need to fill the whole card
   const order=[1,0,2].filter(i=>top3[i]);
-  const colW=(w-64)/3, baseY=h-70;
-
-  // Draws one avatar circle (colored ring + initials — matches the in-app Av fallback,
-  // since loading real photos into Canvas here would need async image loading this
-  // synchronous card-building flow doesn't currently support).
-  function drawAvatarCircle(cx, cyc, r, user){
-    const lv = usrLv(user.usr||0);
-    ctx.beginPath(); ctx.arc(cx, cyc, r, 0, Math.PI*2);
-    ctx.fillStyle = lv.c+"22"; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = lv.c+"88"; ctx.stroke();
-    ctx.fillStyle = lv.c; ctx.font = `700 ${Math.round(r*0.7)}px Arial`; ctx.textAlign="center";
-    ctx.fillText(user.avatar||ini2(user.nickname||"?"), cx, cyc+r*0.25);
-  }
+  const colW=(w-96)/3, baseY=y+280; // fixed podium zone height, independent of card size
 
   order.forEach((rank,pos)=>{
     const e=top3[rank]; if(!e) return;
     const barH=barHByRank[rank];
-    const cx = 32 + colW*pos + colW/2;
-    let ty = baseY - barH - 30;
-    ctx.font = "36px Arial"; ctx.textAlign="center";
+    const cx = 48 + colW*pos + colW/2;
+    let ty = baseY - barH - 26;
+    ctx.font = "30px Arial"; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
-    ty -= 8;
-
-    // Avatars: single (CI) or overlapping pair (CT)
-    const avatarR = rank===0?32:26;
-    if(e.players&&e.players.length>0){
-      const n=e.players.length, spread=avatarR*1.3;
-      ty -= avatarR*2+6;
-      e.players.forEach((p,pi)=>{ drawAvatarCircle(cx-((n-1)*spread)/2+pi*spread, ty+avatarR, avatarR, p); });
-      ty -= 4;
-    } else if(e.avatarUser){
-      ty -= avatarR*2+6;
-      drawAvatarCircle(cx, ty+avatarR, avatarR, e.avatarUser);
-      ty -= 4;
-    }
-
     ty -= 22;
-    ctx.fillStyle = COLORS.text; ctx.font="800 18px Arial";
-    fitTextCentered(ctx, e.name, cx, ty, colW-20);
+    ctx.fillStyle = COLORS.text; ctx.font="800 15px Arial";
+    fitTextCentered(ctx, e.name, cx, ty, colW-16);
     if(e.players&&e.players.length>0){
-      ty -= 17; ctx.fillStyle = COLORS.dim; ctx.font="12px Arial";
-      fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-20);
+      ty -= 15; ctx.fillStyle = COLORS.dim; ctx.font="10px Arial";
+      fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-16);
     }
-    if(e.usrLine){ ty -= 16; ctx.fillStyle = COLORS.dim; ctx.font="11px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-20); }
-    ty -= 20;
-    ctx.fillStyle = colors[rank]; ctx.font="800 15px Arial";
+    if(e.usrLine){ ty -= 14; ctx.fillStyle = COLORS.dim; ctx.font="9px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); }
+    ty -= 16;
+    ctx.fillStyle = colors[rank]; ctx.font="800 13px Arial";
     ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty);
 
     ctx.fillStyle = `${colors[rank]}33`;
-    roundRect(ctx, 32+colW*pos+16, baseY-barH, colW-32, barH, 8); ctx.fill();
+    roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.fill();
     ctx.strokeStyle = `${colors[rank]}88`; ctx.lineWidth=2;
-    roundRect(ctx, 32+colW*pos+16, baseY-barH, colW-32, barH, 8); ctx.stroke();
-    ctx.fillStyle = colors[rank]; ctx.font="800 32px Arial";
-    ctx.fillText(`${rank+1}`, cx, baseY-barH/2+10);
+    roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.stroke();
+    ctx.fillStyle = colors[rank]; ctx.font="800 22px Arial";
+    ctx.fillText(`${rank+1}`, cx, baseY-barH/2+8);
     ctx.textAlign="left";
   });
   drawFooter(ctx, w, h);

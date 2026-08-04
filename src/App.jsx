@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.20";
+const APP_VERSION = "V0.05.22";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4430,7 +4430,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
 }
 
 
-function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,sim,onSetMatchModeStart,isAdmin}){
+function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
   const [scores,setScores]=useState({});
   const [collapsedRounds,setCollapsedRounds]=useState(new Set()); // manually toggled rounds (overrides the completed-round default)
@@ -4550,7 +4550,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
           {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
         </div>
         {effCollapsed?null:<>
-        {isLatest&&isAdmin&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart}/>}
+        {isLatest&&isAdmin&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} eventId={eventId} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart} onStop={onStopMatchMode}/>}
         {isLeague
           ?<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}{(round.matchesB||[]).map((m,mi)=><MatchCard key={`B${mi}`} m={m} ri={ri} mi={mi} side="B"/>)}</>
           :<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}</>
@@ -5089,6 +5089,46 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
       onMarkWhistlesScheduled?.(plan.matchModeStartAt);
     }
   }, [Capacitor.isNativePlatform() && isAdmin && isCI && plan?.matchModeStartAt, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matches?.map(m=>m.winner)||[]), isCompleted]);
+
+  // ── Match Mode for CT events (native Android, admin only) — schedule + whistle only ──
+  // CT's data shape (teams, pre-generated league schedules vs round-by-round ladder) is
+  // different enough from CI that court-by-court win-recording/Generate from the
+  // notification isn't included here — this covers the schedule list + the actual native
+  // alarms, which is what was asked for. The notification shows round number + countdown
+  // only, no interactive court buttons (courts: [] means no Generate button either).
+  const mmCTStartedRef = useRef(0);
+  const mmCTEverStartedRef = useRef(false);
+  const [mmCTTick,setMmCTTick] = useState(0);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCT || sim || !plan?.matchModeStartAt) return;
+    const iv = setInterval(() => setMmCTTick(t=>t+1), 30000);
+    return () => clearInterval(iv);
+  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt]);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCT || sim || !plan) return;
+    const started = !!plan.matchModeStartAt;
+    if (started) mmCTEverStartedRef.current = true;
+    if (isCompleted || (!started && mmCTEverStartedRef.current)) { MatchMode.stop().catch(()=>{}); mmCTStartedRef.current = 0; return; }
+    if (!started) return;
+    const rd = plan.matchDuration || plan.roundDuration || 20;
+    const tr = Math.max(1, Math.round(durationHrs*60/rd));
+    const delayMin = plan.matchModeDelayMin ?? 0;
+    const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
+    const startMs = new Date(plan.matchModeStartAt).getTime();
+    const elapsedMin = (Date.now()-startMs)/60000;
+    let slot = 1; while (offsets[slot]!==undefined && offsets[slot]<=elapsedMin) slot++;
+    slot = Math.min(slot, tr);
+    const whistleAt = startMs + (offsets[slot]||slot*rd)*60000;
+    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: slot>=tr, breakPlayers: "", courts: [] };
+    if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
+    else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
+    mmCTStartedRef.current = slot;
+    if (plan.mmScheduledFor !== plan.matchModeStartAt) {
+      const schedule = []; for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles (CT) failed", e));
+      onMarkWhistlesScheduled?.(plan.matchModeStartAt);
+    }
+  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick]);
 
   // Safety net: the native foreground service can get killed independently of this
   // component (e.g. app swiped away while locked). When the app comes back to the
@@ -5822,7 +5862,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,on
     {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onSetMatchModeStart={act.setMatchModeStart} isAdmin={isAdmin}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>
@@ -5915,7 +5955,7 @@ function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   const [incompleteOpen,setIncompleteOpen]=useState(true);
   const [completedOpen,setCompletedOpen]=useState(false);
   const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
-  const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)).map(ev=>ev.id));
+  const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)||ev.createdBy===me.id).map(ev=>ev.id));
   const now=Date.now();
   const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
   // Coming/Past is decided strictly by whether the event's date+time has passed — not by admin status.

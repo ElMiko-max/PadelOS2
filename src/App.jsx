@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.05.29";
+const APP_VERSION = "V0.05.30";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1249,6 +1249,9 @@ function drawFooter(ctx, w, h){
 }
 
 // Standalone, square podium share card — separate from the full standings list.
+// Design approved via a tested PNG mockup — sizes/spacing below are taken directly from
+// that working version (no header overlap, player names are the biggest/most prominent
+// element, medals included).
 function buildPodiumCard(ev, venue, top3, communityName, title){
   const w = 800, h = 800;
   const {c, ctx} = makeCard(w, h);
@@ -1256,33 +1259,36 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   let y = drawHeader(ctx, w, title||"🏆 Champions", ev.name, communityName);
   y += 20;
   y = drawEventStrip(ctx, w, y, ev, venue);
-  y += 115; // clear, generous separation before the podium
 
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
-  const barHByRank=[240,160,110]; // big — fills the space instead of leaving it empty
-  // Every font scales by rank too — 1st is biggest, 2nd a step down, 3rd smaller still.
-  const medalFontByRank=[52,42,36], nameFontByRank=[32,25,20], playersFontByRank=[17,14,12],
+  const barHByRank=[190,125,85];
+  // Player names (or the person's own name for CI) are the headline — biggest font of all.
+  // Team name (CT only) is secondary/smaller. Every size steps down by rank.
+  const medalFontByRank=[56,40,34], headlineFontByRank=[30,22,18], teamFontByRank=[17,14,12],
         usrFontByRank=[14,12,10], valueFontByRank=[22,17,14], rankNumFontByRank=[34,26,20];
   const order=[1,0,2].filter(i=>top3[i]);
-  const colW=(w-96)/3, baseY=h-90;
+  const colW=(w-96)/3, baseY=760; // fixed — matches the tested mockup, safely clears the header/strip
 
   order.forEach((rank,pos)=>{
     const e=top3[rank]; if(!e) return;
     const barH=barHByRank[rank];
     const cx = 48 + colW*pos + colW/2;
-    let ty = baseY - barH - 34;
+    const hasTeam = e.players && e.players.length>0;
+    const headline = hasTeam ? e.players.map(p=>p.nickname).join(" & ") : e.name;
+    let ty = baseY - barH - 20;
     ctx.font = `${medalFontByRank[rank]}px Arial`; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
-    ty -= medalFontByRank[rank]*0.75;
-    ctx.fillStyle = COLORS.text; ctx.font=`800 ${nameFontByRank[rank]}px Arial`; // names — the headline info
-    fitTextCentered(ctx, e.name, cx, ty, colW-16);
-    if(e.players&&e.players.length>0){
-      ty -= nameFontByRank[rank]*0.75; ctx.fillStyle = COLORS.dim; ctx.font=`${playersFontByRank[rank]}px Arial`;
-      fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-16);
+    ty -= medalFontByRank[rank] + 14;
+    ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFontByRank[rank]}px Arial`;
+    fitTextCentered(ctx, headline, cx, ty, colW-16);
+    ty -= headlineFontByRank[rank]*1.45;
+    if(hasTeam){
+      ctx.fillStyle = COLORS.dim; ctx.font=`${teamFontByRank[rank]}px Arial`;
+      fitTextCentered(ctx, e.name, cx, ty, colW-16);
+      ty -= teamFontByRank[rank]*1.55;
     }
-    if(e.usrLine){ ty -= playersFontByRank[rank]*1.2; ctx.fillStyle = COLORS.dim; ctx.font=`${usrFontByRank[rank]}px Arial`; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); }
-    ty -= usrFontByRank[rank]*1.5;
+    if(e.usrLine){ ctx.fillStyle = COLORS.dim; ctx.font=`${usrFontByRank[rank]}px Arial`; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); ty -= usrFontByRank[rank]*1.7; }
     ctx.fillStyle = colors[rank]; ctx.font=`800 ${valueFontByRank[rank]}px Arial`;
     ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty);
 

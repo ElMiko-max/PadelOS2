@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.07";
+const APP_VERSION = "V0.06.08";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -500,6 +500,24 @@ function calcDreamOrFunnyMatch(stats, kind){
   if(eligibleOpponents.length<2) return null;
   const opps = kind==="dream" ? [eligibleOpponents[0],eligibleOpponents[1]] : [eligibleOpponents[eligibleOpponents.length-1],eligibleOpponents[eligibleOpponents.length-2]];
   return {partner, opponents:opps};
+}
+// Dream/Funny Match is one player's personal view of a matchup, not a court-wide fact — two
+// different players on the very same court can each have their own (or no) reason this
+// specific composition matters to them. Checked independently per player: does THIS exact
+// pairing (their teammate + the two people across the net) match what calcDreamOrFunnyMatch
+// already picked out as their #1 partner vs toughest/easiest two opponents?
+function personalMatchBadge(comms, playerId, myTeamIds, oppTeamIds){
+  const partnerId = myTeamIds.find(id=>id!==playerId);
+  if(partnerId==null) return {isDream:false, isFunny:false};
+  const oppSet = new Set(oppTeamIds);
+  const sameOpp = arr => arr.length===oppSet.size && arr.every(id=>oppSet.has(id));
+  const stats = calcPartnerOpponentStats(comms, playerId);
+  const dream = calcDreamOrFunnyMatch(stats,"dream");
+  const funny = calcDreamOrFunnyMatch(stats,"funny");
+  return {
+    isDream: !!(dream && dream.partner.userId===partnerId && sameOpp(dream.opponents.map(o=>o.userId))),
+    isFunny: !!(funny && funny.partner.userId===partnerId && sameOpp(funny.opponents.map(o=>o.userId))),
+  };
 }
 // General head-to-head record between two exact sides (Closed Individuals: 2-player sets;
 // Closed Teams: single team IDs), regardless of which side was historically "teamA" vs
@@ -4782,7 +4800,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
     const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
-    const H2HRow=()=>h2h.meetings>0?<div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginBottom:8}}>🤝 {h2h.meetings} meeting{h2h.meetings!==1?"s":""} — <b style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</b> : <b style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</b></div>:null;
+    const H2HRow=()=>h2h.meetings>0?<div style={{textAlign:"center",marginBottom:8,fontSize:11,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)",color:h2h.sideAWinRate>h2h.sideBWinRate?gcA:h2h.sideBWinRate>h2h.sideAWinRate?gcB:"var(--po-dim)"}}>📊 {h2h.sideAWinRate===h2h.sideBWinRate?"Even history":`Team ${h2h.sideAWinRate>h2h.sideBWinRate?"A":"B"} favored ${Math.round(Math.max(h2h.sideAWinRate,h2h.sideBWinRate)*100)}%`} <span style={{fontWeight:400,color:"var(--po-dim)"}}>({h2h.meetings} meeting{h2h.meetings!==1?"s":""})</span></div>:null;
     if(m.winner){return <Card style={{marginBottom:8,border:"0.5px solid #34D39444"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <span style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
@@ -4801,7 +4819,15 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
       <div style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",marginBottom:10}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</div>
       {(()=>{
         const ri2=plan.rounds.findIndex(r=>r.roundNum===plan.rounds[plan.rounds.length-1].roundNum);
-        function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}><div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{team?.players?.map(p=>p.nickname).join(" & ")}</div></div>;}
+        const oppTeam=m.teamA===team?m.teamB:m.teamA;
+        function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;
+          const myIds=(team?.players||[]).map(p=>p.userId), oppIds=(oppTeam?.players||[]).map(p=>p.userId);
+          return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}>
+            <div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div>
+            <div style={{fontSize:11,color:"var(--po-dim)",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4}}>
+              {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname}{badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
+            </div>
+          </div>;}
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:isLeague?16:10,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:12,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       <H2HRow/>
@@ -5650,7 +5676,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
   const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches",photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
-  function PChip({p,ri}){
+  function PChip({p,ri,matchBadge}){
     const lv=usrLv(p.usr),isSel=sel?.ri===ri&&sel?.uid===p.userId,isTgt=sel&&sel.ri===ri&&sel.uid!==p.userId;
     let histBadge=null;
     if(isTgt&&plan){
@@ -5666,6 +5692,8 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     return <div onClick={()=>isAdmin&&!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:isAdmin?"pointer":"default",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
       <Av u={p} size={28}/>
       <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname}</span>
+      {matchBadge?.isDream&&<span title="ماتش جامد — this is their Dream Match" style={{fontSize:12}}>🔥</span>}
+      {matchBadge?.isFunny&&<span title="ماتش مسخرة — this is their Funny Match" style={{fontSize:12}}>😂</span>}
       {p.wouldBeCourt&&<span title="Court they'd have played on by USR rank" style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       <span style={{fontSize:11,color:"var(--po-dim)"}}>{p.usr}</span>
@@ -6103,18 +6131,18 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
                   <Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/>
                 </div>
               </div>
+              {h2h.meetings>0&&<div style={{textAlign:"center",marginBottom:10,fontSize:11,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)",color:h2h.sideAWinRate>h2h.sideBWinRate?"#A5B4FC":h2h.sideBWinRate>h2h.sideAWinRate?"#67E8F9":"var(--po-dim)"}}>📊 {h2h.sideAWinRate===h2h.sideBWinRate?"Even history":`Team ${h2h.sideAWinRate>h2h.sideBWinRate?"A":"B"} favored ${Math.round(Math.max(h2h.sideAWinRate,h2h.sideBWinRate)*100)}%`} <span style={{fontWeight:400,color:"var(--po-dim)"}}>({h2h.meetings} meeting{h2h.meetings!==1?"s":""})</span></div>}
               <div style={{display:"grid",gridTemplateColumns:"1fr 30px 1fr",gap:8,alignItems:"start"}}>
                 <div style={{background:m.winner==="A"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="A"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM A <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length)})</span></div>
-                  {m.teamA.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}
+                  {m.teamA.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamA.map(x=>x.userId),m.teamB.map(x=>x.userId))}/>)}
                 </div>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",paddingTop:24}}><span style={{fontSize:10,color:"#334155",fontWeight:700}}>VS</span></div>
                 <div style={{background:m.winner==="B"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="B"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM B <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length)})</span></div>
-                  {m.teamB.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}
+                  {m.teamB.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamB.map(x=>x.userId),m.teamA.map(x=>x.userId))}/>)}
                 </div>
               </div>
-              {h2h.meetings>0&&<div style={{textAlign:"center",marginTop:8,fontSize:11,color:"var(--po-dim)"}}>🤝 {h2h.meetings} meeting{h2h.meetings!==1?"s":""} — <b style={{color:"#A5B4FC"}}>{Math.round(h2h.sideAWinRate*100)}%</b> : <b style={{color:"#67E8F9"}}>{Math.round(h2h.sideBWinRate*100)}%</b></div>}
               <WinCI m={m} ri={ri} mi={mi}/>
             </Card>;})}
             </>}

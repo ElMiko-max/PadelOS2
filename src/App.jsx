@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.10";
+const APP_VERSION = "V0.06.11";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4817,8 +4817,12 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
       <div style={{display:"flex",justifyContent:"flex-end",marginTop:6}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>
     </Card>;}
 
+    const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
     return <Card style={{marginBottom:8}}>
-      <div style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",marginBottom:10}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <span style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
+        {h2h.meetings===0&&avgA!==avgB&&<span title={`USR gap: ${usrGap} (${m.teamA?.name} avg ${avgA} vs ${m.teamB?.name} avg ${avgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:usrGap<=5?"#34D399":usrGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {avgA>avgB?m.teamA?.name:m.teamB?.name} +{Math.round((usrGap/((avgA+avgB)/2))*100)}%</span>}
+      </div>
       {(()=>{
         const ri2=plan.rounds.findIndex(r=>r.roundNum===plan.rounds[plan.rounds.length-1].roundNum);
         function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;

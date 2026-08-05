@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.08";
+const APP_VERSION = "V0.06.09";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4800,7 +4800,9 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
     const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
-    const H2HRow=()=>h2h.meetings>0?<div style={{textAlign:"center",marginBottom:8,fontSize:11,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)",color:h2h.sideAWinRate>h2h.sideBWinRate?gcA:h2h.sideBWinRate>h2h.sideAWinRate?gcB:"var(--po-dim)"}}>📊 {h2h.sideAWinRate===h2h.sideBWinRate?"Even history":`Team ${h2h.sideAWinRate>h2h.sideBWinRate?"A":"B"} favored ${Math.round(Math.max(h2h.sideAWinRate,h2h.sideBWinRate)*100)}%`} <span style={{fontWeight:400,color:"var(--po-dim)"}}>({h2h.meetings} meeting{h2h.meetings!==1?"s":""})</span></div>:null;
+    const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:8,fontSize:13,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)"}}>
+      <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:11}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:11,color:"var(--po-dim)"}}>({h2h.meetings} n.)</span>
+    </div>;
     if(m.winner){return <Card style={{marginBottom:8,border:"0.5px solid #34D39444"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <span style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
@@ -6126,12 +6128,14 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
-                  {!m.winner&&avgA!==avgB&&<span title={`USR gap: ${gap.toFixed(1)} (Team A avg ${avgA.toFixed(0)} vs Team B avg ${avgB.toFixed(0)})`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ Team {avgA>avgB?"A":"B"} +{Math.round((gap/((avgA+avgB)/2))*100)}%</span>}
+                  {h2h.meetings===0&&!m.winner&&avgA!==avgB&&<span title={`USR gap: ${gap.toFixed(1)} (Team A avg ${avgA.toFixed(0)} vs Team B avg ${avgB.toFixed(0)}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ Team {avgA>avgB?"A":"B"} +{Math.round((gap/((avgA+avgB)/2))*100)}%</span>}
                   {isAdmin&&!m.winner&&<SmBtn label="🔀 Re-pair" onClick={()=>act.rebalanceCourt(ri,mi)} color="#38BDF8"/>}
                   <Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/>
                 </div>
               </div>
-              {h2h.meetings>0&&<div style={{textAlign:"center",marginBottom:10,fontSize:11,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)",color:h2h.sideAWinRate>h2h.sideBWinRate?"#A5B4FC":h2h.sideBWinRate>h2h.sideAWinRate?"#67E8F9":"var(--po-dim)"}}>📊 {h2h.sideAWinRate===h2h.sideBWinRate?"Even history":`Team ${h2h.sideAWinRate>h2h.sideBWinRate?"A":"B"} favored ${Math.round(Math.max(h2h.sideAWinRate,h2h.sideBWinRate)*100)}%`} <span style={{fontWeight:400,color:"var(--po-dim)"}}>({h2h.meetings} meeting{h2h.meetings!==1?"s":""})</span></div>}
+              {h2h.meetings>0&&<div style={{textAlign:"center",marginBottom:10,fontSize:13,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)"}}>
+                <span style={{color:"#A5B4FC"}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:11}}>📊</span> <span style={{color:"#67E8F9"}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:11,color:"var(--po-dim)"}}>({h2h.meetings} n.)</span>
+              </div>}
               <div style={{display:"grid",gridTemplateColumns:"1fr 30px 1fr",gap:8,alignItems:"start"}}>
                 <div style={{background:m.winner==="A"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="A"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM A <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length)})</span></div>

@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.04";
+const APP_VERSION = "V0.06.05";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -410,9 +410,12 @@ function personalMaxCI(breaks, generatedRounds, tc){
 }
 
 // ════════════════════════════════════════════════════
-//  PARTNER / OPPONENT REPORTS (Closed Individuals only)
-//  Live-computed from official (closed) event history already held
-//  in memory — nothing here is persisted. Same official-results-only
+//  PARTNER / OPPONENT REPORTS — unified across Closed Individuals AND
+//  Closed Teams. "Partner" means whoever was on your side of the net for
+//  a given match, regardless of whether that pairing rotated every round
+//  (CI) or was fixed for the whole event (CT) — same relationship, same
+//  counter. Live-computed from official (closed) event history already
+//  held in memory — nothing here is persisted. Same official-results-only
 //  rule as the USR engine: only ev.status==="completed" counts.
 // ════════════════════════════════════════════════════
 const REPORT_MIN_MATCHES = 3;
@@ -421,32 +424,54 @@ function calcPartnerOpponentStats(comms, userId, opts){
   const recentOnly = opts && opts.recentOnly;
   const cutoffTime = recentOnly ? Date.now()-REPORT_RECENT_DAYS*24*60*60*1000 : null;
   const partners = {}, opponents = {};
+  const recordPartner=(partner,ev,won,oppNames,score,type)=>{
+    if(!partners[partner.userId]) partners[partner.userId]={userId:partner.userId,nickname:partner.nickname,matches:0,wins:0,history:[]};
+    const rec=partners[partner.userId];
+    rec.matches++; if(won) rec.wins++;
+    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,against:oppNames,score});
+  };
+  const recordOpponent=(opp,ev,won,partnerName,score,type)=>{
+    if(!opponents[opp.userId]) opponents[opp.userId]={userId:opp.userId,nickname:opp.nickname,matches:0,losses:0,history:[]};
+    const rec=opponents[opp.userId];
+    rec.matches++; if(!won) rec.losses++;
+    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,partnerName,score});
+  };
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_ind"||ev.status!=="completed"||!ev.plan) return;
+    if(ev.status!=="completed"||!ev.plan) return;
     if(cutoffTime && new Date(ev.date).getTime()<cutoffTime) return;
-    ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
-      if(!m.winner) return;
-      const inA=m.teamA.some(p=>p.userId===userId), inB=m.teamB.some(p=>p.userId===userId);
-      if(!inA&&!inB) return;
-      const myTeam=inA?m.teamA:m.teamB, oppTeam=inA?m.teamB:m.teamA;
-      const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
-      const partner=myTeam.find(p=>p.userId!==userId);
-      if(partner){
-        if(!partners[partner.userId]) partners[partner.userId]={userId:partner.userId,nickname:partner.nickname,matches:0,wins:0,lastDate:null,lastEventId:null,lastEventName:null};
-        const rec=partners[partner.userId];
-        rec.matches++; if(won) rec.wins++;
-        if(!rec.lastDate||ev.date>rec.lastDate){rec.lastDate=ev.date;rec.lastEventId=ev.id;rec.lastEventName=ev.name;}
-      }
-      oppTeam.forEach(opp=>{
-        if(!opponents[opp.userId]) opponents[opp.userId]={userId:opp.userId,nickname:opp.nickname,matches:0,losses:0,lastDate:null,lastEventId:null,lastEventName:null};
-        const rec=opponents[opp.userId];
-        rec.matches++; if(!won) rec.losses++;
-        if(!rec.lastDate||ev.date>rec.lastDate){rec.lastDate=ev.date;rec.lastEventId=ev.id;rec.lastEventName=ev.name;}
+    if(ev.type==="closed_ind"){
+      ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
+        if(!m.winner) return;
+        const inA=m.teamA.some(p=>p.userId===userId), inB=m.teamB.some(p=>p.userId===userId);
+        if(!inA&&!inB) return;
+        const myTeam=inA?m.teamA:m.teamB, oppTeam=inA?m.teamB:m.teamA;
+        const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+        const partner=myTeam.find(p=>p.userId!==userId);
+        const oppNames=oppTeam.map(p=>p.nickname);
+        if(partner) recordPartner(partner,ev,won,oppNames,null,"ci");
+        oppTeam.forEach(opp=>recordOpponent(opp,ev,won,partner?.nickname,null,"ci"));
+      }));
+    }else if(ev.type==="closed_teams"){
+      const hasScore=ev.plan.format==="league";
+      ev.plan.rounds.forEach(r=>{
+        [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
+          if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
+          const inA=m.teamA.players.some(p=>p.userId===userId), inB=m.teamB.players.some(p=>p.userId===userId);
+          if(!inA&&!inB) return;
+          const myPlayers=inA?m.teamA.players:m.teamB.players, oppPlayers=inA?m.teamB.players:m.teamA.players;
+          const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+          const partner=myPlayers.find(p=>p.userId!==userId);
+          const oppNames=oppPlayers.map(p=>p.nickname);
+          const score=hasScore?{for:inA?m.scoreA:m.scoreB, against:inA?m.scoreB:m.scoreA}:null;
+          if(partner) recordPartner(partner,ev,won,oppNames,score,"ct");
+          oppPlayers.forEach(opp=>recordOpponent(opp,ev,won,partner?.nickname,score,"ct"));
+        });
       });
-    }));
+    }
   }));
-  const partnersArr = Object.values(partners).map(p=>({...p, winRate: p.matches?p.wins/p.matches:0}));
-  const opponentsArr = Object.values(opponents).map(o=>({...o, loseRate: o.matches?o.losses/o.matches:0}));
+  const sortHist=h=>[...h].sort((a,b)=>b.date.localeCompare(a.date));
+  const partnersArr = Object.values(partners).map(p=>({...p, winRate: p.matches?p.wins/p.matches:0, history:sortHist(p.history)}));
+  const opponentsArr = Object.values(opponents).map(o=>({...o, loseRate: o.matches?o.losses/o.matches:0, history:sortHist(o.history)}));
   return {
     partnersRanked: partnersArr.filter(p=>p.matches>=REPORT_MIN_MATCHES).sort((a,b)=>b.winRate-a.winRate||b.matches-a.matches),
     partnersInsufficient: partnersArr.filter(p=>p.matches<REPORT_MIN_MATCHES).sort((a,b)=>b.matches-a.matches),
@@ -499,21 +524,28 @@ function calcHeadToHeadCI(comms, sideAIds, sideBIds, opts){
   }));
   return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
 }
-// Same idea for Closed Teams — sides are just team IDs (teams are fixed, no per-player
-// breakdown needed). Scans both matchesA and matchesB across every round (ladder and league
-// formats both use this shape).
-function calcHeadToHeadCT(comms, teamAId, teamBId, opts){
+// Same idea for Closed Teams. IMPORTANT: team.id is only unique *within one event* —
+// formCTTeams() resets its counter to 1 every time teams are generated, so "team.id===1" in
+// two different events is very likely two completely different pairs of players. Sides here
+// must therefore be matched by the team's actual player-id set (like CI), never by team.id,
+// or history from unrelated teams would get silently conflated the moment a second CT event
+// completes. Scans both matchesA and matchesB across every round (ladder and league formats
+// both use this shape).
+function calcHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
   const excludeEventId = opts && opts.excludeEventId;
+  const setA = new Set(sideAPlayerIds), setB = new Set(sideBPlayerIds);
+  const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
     if(ev.type!=="closed_teams"||ev.status!=="completed"||!ev.plan) return;
     if(excludeEventId!=null&&ev.id===excludeEventId) return;
     ev.plan.rounds.forEach(r=>{
       [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
-        if(!m.winner) return;
+        if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
+        const idsA=m.teamA.players.map(p=>p.userId), idsB=m.teamB.players.map(p=>p.userId);
         let sideAIsMatchTeamA;
-        if(m.teamA.id===teamAId&&m.teamB.id===teamBId) sideAIsMatchTeamA=true;
-        else if(m.teamA.id===teamBId&&m.teamB.id===teamAId) sideAIsMatchTeamA=false;
+        if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
+        else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
         else return;
         meetings++;
         const matchTeamAWon = m.winner==="A";
@@ -3648,7 +3680,19 @@ export default function Matchkeeper() {
         return {...r,matches:r.matches.map((m,mm)=>{
           if(mm!==mi||m.winner)return m;
           const four=[...m.teamA,...m.teamB].sort((a,b)=>b.usr-a.usr);
-          const pair=snakePairCI(four);
+          let pair;
+          if(ri===0){
+            pair=snakePairCI(four);
+          }else{
+            // Rounds after the first must stay partner-diversity-aware, same as normal
+            // generation — a naive USR re-snake here could recreate the exact pairing the
+            // player just came from, undermining the "avoid repeat partners" rule.
+            const ph=ev.plan.partnerHistory||{};
+            const lastRoundPairs=new Set();
+            const prevRound=ev.plan.rounds[ri-1];
+            if(prevRound)prevRound.matches.forEach(pm=>{[pm.teamA,pm.teamB].forEach(team=>{const[a,b]=team;if(a&&b)lastRoundPairs.add(pairKey(a.userId,b.userId));});});
+            pair=diversePair(four,ph,lastRoundPairs);
+          }
           return {...m,teamA:pair.teamA,teamB:pair.teamB};
         })};
       });
@@ -4720,7 +4764,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
 
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
-    const h2h=calcHeadToHeadCT(comms||[], m.teamA?.id, m.teamB?.id, {excludeEventId:eventId});
+    const h2h=calcHeadToHeadCT(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
     const H2HRow=()=>h2h.meetings>0?<div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginBottom:8}}>🤝 {h2h.meetings} meeting{h2h.meetings!==1?"s":""} — <b style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</b> : <b style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</b></div>:null;
     if(m.winner){return <Card style={{marginBottom:8,border:"0.5px solid #34D39444"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -6032,14 +6076,13 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
               const gap=Math.abs(avgA-avgB);
-              const isRound1=ri===0;
               const h2h=calcHeadToHeadCI(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id});
               return <Card key={mi} style={{marginBottom:8}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
-                  {isRound1&&<span title={`Balance gap: ${gap.toFixed(1)} USR`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ {gap.toFixed(0)}</span>}
-                  {isRound1&&isAdmin&&!m.winner&&<SmBtn label="🔀 Re-pair" onClick={()=>act.rebalanceCourt(ri,mi)} color="#38BDF8"/>}
+                  {!m.winner&&avgA!==avgB&&<span title={`USR gap: ${gap.toFixed(1)} (Team A avg ${avgA.toFixed(0)} vs Team B avg ${avgB.toFixed(0)})`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ Team {avgA>avgB?"A":"B"} +{Math.round((gap/((avgA+avgB)/2))*100)}%</span>}
+                  {isAdmin&&!m.winner&&<SmBtn label="🔀 Re-pair" onClick={()=>act.rebalanceCourt(ri,mi)} color="#38BDF8"/>}
                   <Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/>
                 </div>
               </div>
@@ -6357,6 +6400,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   const [tab,setTab]=useState("usr");
   const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [recentOnly,setRecentOnly]=useState(false);
+  const [expandedRow,setExpandedRow]=useState(null); // `${kind}-${userId}` for the open Partners/Opponents row, or null
   const [editing,setEditing]=useState(false);
   const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
   const [photoUploading,setPhotoUploading]=useState(false);
@@ -6554,19 +6598,46 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const funny = calcDreamOrFunnyMatch(stats,"funny");
     const dreamH2H = dream ? calcHeadToHeadCI(comms, [user.id, dream.partner.userId], dream.opponents.map(o=>o.userId)) : null;
     const funnyH2H = funny ? calcHeadToHeadCI(comms, [user.id, funny.partner.userId], funny.opponents.map(o=>o.userId)) : null;
-    const PairRow = ({rank,name,rate,num,den,goodColor}) =>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px"}}>
-        <span style={{fontSize:13,color:"var(--po-text)"}}>{rank}. {name}</span>
-        <span style={{fontSize:13,fontWeight:700,color:goodColor}}>{Math.round(rate*100)}% <span style={{fontSize:10,fontWeight:400,color:"var(--po-dim)"}}>({num}/{den})</span></span>
+    const PairRow = ({rowKey,kind,rank,name,rate,num,den,goodColor,history}) => {
+      const isOpen = expandedRow===rowKey;
+      return <div>
+        <div onClick={()=>setExpandedRow(o=>o===rowKey?null:rowKey)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",cursor:"pointer"}}>
+          <span style={{fontSize:13,color:"var(--po-text)"}}>{rank}. {name} <span style={{fontSize:9,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span></span>
+          <span style={{fontSize:13,fontWeight:700,color:goodColor}}>{Math.round(rate*100)}% <span style={{fontSize:10,fontWeight:400,color:"var(--po-dim)"}}>({num}/{den})</span></span>
+        </div>
+        {isOpen&&<div style={{padding:"0 12px 10px"}}>
+          {history.map((h,hi)=><div key={hi} style={{padding:"7px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
+              <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
+              <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
+            </div>
+            <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`vs ${h.against.join(" & ")}`:`with ${h.partnerName||"—"}`}</div>
+          </div>)}
+        </div>}
       </div>;
-    const InsufficientList = ({items,label}) => items.length===0?null:
+    };
+    const InsufficientList = ({items,label,kind}) => items.length===0?null:
       <details style={{marginBottom:14}}>
         <summary style={{fontSize:11,color:"var(--po-dim)",cursor:"pointer",padding:"4px 0"}}>بيانات غير كافية — {label} ({items.length})</summary>
         <Card style={{padding:0,overflow:"hidden",marginTop:6}}>
-          {items.map((p,i)=><div key={p.userId} style={{padding:"8px 12px",borderBottom:i<items.length-1?"0.5px solid var(--po-bdr)":"none",display:"flex",justifyContent:"space-between",fontSize:12}}>
-            <span style={{color:"var(--po-text)"}}>{p.nickname}</span>
-            <span style={{color:"var(--po-dim)"}}>{p.matches} match{p.matches!==1?"es":""}</span>
-          </div>)}
+          {items.map((p,i)=>{
+            const rowKey=`insuff-${kind}-${p.userId}`, isOpen=expandedRow===rowKey;
+            return <div key={p.userId} style={{borderBottom:i<items.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+              <div onClick={()=>setExpandedRow(o=>o===rowKey?null:rowKey)} style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",fontSize:12,cursor:"pointer"}}>
+                <span style={{color:"var(--po-text)"}}>{p.nickname} <span style={{fontSize:9,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span></span>
+                <span style={{color:"var(--po-dim)"}}>{p.matches} match{p.matches!==1?"es":""}</span>
+              </div>
+              {isOpen&&<div style={{padding:"0 12px 8px"}}>
+                {p.history.map((h,hi)=><div key={hi} style={{padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
+                    <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
+                    <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
+                  </div>
+                  <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`vs ${h.against.join(" & ")}`:`with ${h.partnerName||"—"}`}</div>
+                </div>)}
+              </div>}
+            </div>;
+          })}
         </Card>
       </details>;
     return <>
@@ -6578,7 +6649,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       </div>
 
       {totalPairs===0
-        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No Closed Individuals match history yet.</div></Card>
+        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No match history yet.</div></Card>
         : <>
           {dream&&<Card style={{marginBottom:10,border:"0.5px solid #F59E0B44",background:"#F59E0B0A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش الأحلام — Dream Match</div>
@@ -6596,23 +6667,23 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             {stats.partnersRanked.length===0
               ? <div style={{padding:"14px 12px",textAlign:"center",fontSize:12,color:"var(--po-dim)"}}>No ranked partners yet ({REPORT_MIN_MATCHES}+ matches together needed).</div>
               : stats.partnersRanked.map((p,i)=><div key={p.userId} style={{borderBottom:i<stats.partnersRanked.length-1?"0.5px solid var(--po-bdr)":"none"}}>
-                  <PairRow rank={i+1} name={p.nickname} rate={p.winRate} num={p.wins} den={p.matches} goodColor="#34D399"/>
+                  <PairRow rowKey={`partner-${p.userId}`} kind="partner" rank={i+1} name={p.nickname} rate={p.winRate} num={p.wins} den={p.matches} goodColor="#34D399" history={p.history}/>
                 </div>)}
           </Card>
-          <InsufficientList items={stats.partnersInsufficient} label="partners"/>
+          <InsufficientList items={stats.partnersInsufficient} label="partners" kind="partner"/>
 
           <ST>⚔️ Opponents Lose Rate</ST>
           <Card style={{padding:0,overflow:"hidden"}}>
             {stats.opponentsRanked.length===0
               ? <div style={{padding:"14px 12px",textAlign:"center",fontSize:12,color:"var(--po-dim)"}}>No ranked opponents yet ({REPORT_MIN_MATCHES}+ matches against needed).</div>
               : stats.opponentsRanked.map((o,i)=><div key={o.userId} style={{borderBottom:i<stats.opponentsRanked.length-1?"0.5px solid var(--po-bdr)":"none"}}>
-                  <PairRow rank={i+1} name={o.nickname} rate={o.loseRate} num={o.losses} den={o.matches} goodColor="#EF4444"/>
+                  <PairRow rowKey={`opponent-${o.userId}`} kind="opponent" rank={i+1} name={o.nickname} rate={o.loseRate} num={o.losses} den={o.matches} goodColor="#EF4444" history={o.history}/>
                 </div>)}
           </Card>
-          <InsufficientList items={stats.opponentsInsufficient} label="opponents"/>
+          <InsufficientList items={stats.opponentsInsufficient} label="opponents" kind="opponent"/>
 
           <div style={{marginTop:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>
-            Official (closed) Closed Individuals matches only · Minimum {REPORT_MIN_MATCHES} matches together/against to be ranked · Dream/Funny Match hidden until you have enough data
+            Official (closed) matches only, Closed Individuals and Closed Teams combined · Minimum {REPORT_MIN_MATCHES} matches together/against to be ranked · Tap a row for match-by-match history · Dream/Funny Match hidden until you have enough data
           </div>
         </>}
     </>;

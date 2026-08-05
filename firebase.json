@@ -4,6 +4,12 @@
      },
      "hosting": {
        "public": "dist",
-       "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
+       "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+       "headers": [
+         {
+           "source": "/releases/**",
+           "headers": [{ "key": "Cache-Control", "value": "no-cache, max-age=0, must-revalidate" }]
+         }
+       ]
      }
    }

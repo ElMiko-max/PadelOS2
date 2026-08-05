@@ -457,16 +457,22 @@ function calcPartnerOpponentStats(comms, userId, opts){
 // Dream Match: player + #1 partner vs #1+#2 opponents. Funny Match: player + weakest
 // partner vs weakest 2 opponents. Both hide entirely (return null) if any slot lacks a
 // ranked (>=3 match) entry — per spec, no placeholder message, just absent.
+// A player can independently rank as both a top partner and a tough/easy opponent — those
+// come from different match subsets (played together vs played against) — but they can't
+// stand on both sides of the same hypothetical match. Once the partner is fixed, they're
+// excluded from the opponent pool and the next-best candidate takes their place instead.
 function calcDreamOrFunnyMatch(stats, kind){
   const {partnersRanked, opponentsRanked} = stats;
   if(partnersRanked.length<1||opponentsRanked.length<2) return null;
   const partner = kind==="dream" ? partnersRanked[0] : partnersRanked[partnersRanked.length-1];
-  const opps = kind==="dream" ? [opponentsRanked[0],opponentsRanked[1]] : [opponentsRanked[opponentsRanked.length-1],opponentsRanked[opponentsRanked.length-2]];
+  const eligibleOpponents = opponentsRanked.filter(o=>o.userId!==partner.userId);
+  if(eligibleOpponents.length<2) return null;
+  const opps = kind==="dream" ? [eligibleOpponents[0],eligibleOpponents[1]] : [eligibleOpponents[eligibleOpponents.length-1],eligibleOpponents[eligibleOpponents.length-2]];
   return {partner, opponents:opps};
 }
-// Last-meeting indicator (Dream Match only): the exact same 4 players in the exact same
-// teamA-vs-teamB configuration (player+partner vs the two opponents), most recent result.
-// Hidden (null) if that exact combination never happened.
+// Last-meeting indicator (Dream Match and Funny Match): the exact same 4 players in the
+// exact same teamA-vs-teamB configuration (player+partner vs the two opponents), most
+// recent result. Hidden (null) if that exact combination never happened.
 function calcLastMeeting(comms, userId, partnerId, opponentIds){
   const oppSet = new Set(opponentIds);
   let last = null;
@@ -6508,7 +6514,8 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const totalPairs = stats.partnersRanked.length+stats.partnersInsufficient.length+stats.opponentsRanked.length+stats.opponentsInsufficient.length;
     const dream = calcDreamOrFunnyMatch(stats,"dream");
     const funny = calcDreamOrFunnyMatch(stats,"funny");
-    const lastMeeting = dream ? calcLastMeeting(comms, user.id, dream.partner.userId, dream.opponents.map(o=>o.userId)) : null;
+    const dreamLastMeeting = dream ? calcLastMeeting(comms, user.id, dream.partner.userId, dream.opponents.map(o=>o.userId)) : null;
+    const funnyLastMeeting = funny ? calcLastMeeting(comms, user.id, funny.partner.userId, funny.opponents.map(o=>o.userId)) : null;
     const PairRow = ({rank,name,rate,num,den,goodColor}) =>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px"}}>
         <span style={{fontSize:13,color:"var(--po-text)"}}>{rank}. {name}</span>
@@ -6537,12 +6544,13 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         : <>
           {dream&&<Card style={{marginBottom:10,border:"0.5px solid #F59E0B44",background:"#F59E0B0A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش الأحلام — Dream Match</div>
-            <div style={{fontSize:13,color:"var(--po-text)"}}>You &amp; <b>{dream.partner.nickname}</b> vs <b>{dream.opponents.map(o=>o.nickname).join(" &amp; ")}</b></div>
-            {lastMeeting&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(lastMeeting.date)}): {lastMeeting.won?"✅ you won":"❌ you lost"}</div>}
+            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{dream.partner.nickname}</b> vs <b>{dream.opponents.map(o=>o.nickname).join(" & ")}</b></div>
+            {dreamLastMeeting&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(dreamLastMeeting.date)}): {dreamLastMeeting.won?"✅ you won":"❌ you lost"}</div>}
           </Card>}
           {funny&&<Card style={{marginBottom:14,border:"0.5px solid #06B6D444",background:"#06B6D40A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>🎭 ماتش المسخرة — Funny Match</div>
-            <div style={{fontSize:13,color:"var(--po-text)"}}>You &amp; <b>{funny.partner.nickname}</b> vs <b>{funny.opponents.map(o=>o.nickname).join(" &amp; ")}</b></div>
+            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{funny.partner.nickname}</b> vs <b>{funny.opponents.map(o=>o.nickname).join(" & ")}</b></div>
+            {funnyLastMeeting&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(funnyLastMeeting.date)}): {funnyLastMeeting.won?"✅ you won":"❌ you lost"}</div>}
           </Card>}
 
           <ST>🤝 Partners Win Rate</ST>

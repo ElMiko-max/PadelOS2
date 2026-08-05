@@ -33,7 +33,7 @@
   - `_03 npx cap open android.bat` → فتح Android Studio
   - `_04 Record Android Log.bat` → تسجيل logcat في `Downloads\test_log.txt`
 - **GitHub remote:** `https://github.com/ElMiko-max/PadelOS2.git` (origin, main branch)
-- **Firebase project:** `padelos-6f999` — Hosting مفعّل بس لتوزيع ملفات الـ APK (`public/releases/` → `dist/releases/`)، مش للويب أبق نفسه بعد. رابط الـ Hosting: `https://padelos-6f999.web.app`
+- **Firebase project:** `padelos-6f999` — Hosting مفعّل بس لتوزيع ملفات الـ APK (`dist/releases/`)، مش للويب أبق نفسه بعد. رابط الـ Hosting: `https://padelos-6f999.web.app`
 
 ## 4. قاعدة تبليغ المسار
 
@@ -53,7 +53,9 @@
 6. أقول المسار بالظبط لأي ملف تجربة جاهز (الويب build أو الـ APK) — قاعدة #4.
 7. **تسليم الـ APK فعليًا:**
    - **أول حاجة:** أعمل rename للـ APK عشان يعكس اسم البرنامج ورقم النسخة، بالصيغة: `Matchkeeper-V0.0X.YY-debug.apk`.
-   - **الطريقة الأساسية (موثوقة، مجربة):** أرفعه على Firebase Hosting بتاعت المشروع (`public/releases/` → بيتنقل تلقائي لـ `dist/releases/` وقت الـ build → `firebase deploy --only hosting`) وأديه لينك مباشر بالصيغة `https://padelos-6f999.web.app/releases/Matchkeeper-V0.0X.YY-debug.apk` — الأدمن بيفتحه من متصفح الموبايل في أي وقت، من غير ما يحتاج اللابتوب يكون شغال أو حتى مفتوح. **ملحوظة أمان:** اللينك ده عام (public) — أي حد معاه اللينك يقدر يحمّله، مفيش باسورد عليه.
+   - **⚠️ ممنوع تمامًا حط أي ملف APK جوه `public/`.** `public/` هو مصدر الويب app نفسه — أي حاجة فيه بتتنقل لـ `dist/` وقت `npm run build`، **وبعدين `cap sync` بينقل `dist/` بالكامل جوه الأندرويد نفسه** (`android/app/src/main/assets/public/`). لو الـ APK كان قاعد في `public/` وقت الـ build الجاي، هيتحط جوه الـ APK الجديد نفسه — وده باج حقيقي حصل بالفعل في V0.06.02 (كل نسخة كانت بتحتوي كل النسخ اللي قبلها، وصل الحجم لـ 56 ميجا من 11 ميجا الأصلية، وGitHub حذّر إنه أكبر من الحد المسموح).
+   - **الترتيب الصحيح دايمًا:** (1) `npm run build` (2) `npx cap sync` (3) `gradlew assembleDebug` — في اللحظة دي `dist/` و`android/assets` نضيفين تمامًا من أي APK — **(4) بعد كده بس** انسخ الـ APK الجديد لـ `dist/releases/Matchkeeper-V0.0X.YY-debug.apk` مباشرة (من غير ما يعدي على `public/` خالص) **(5)** `firebase deploy --only hosting` فورًا من غير ما تعمل `npm run build` تاني بعد النسخ (لإن ده هيمسح الـ APK اللي حطيته في `dist/`).
+   - أديه لينك مباشر بالصيغة `https://padelos-6f999.web.app/releases/Matchkeeper-V0.0X.YY-debug.apk` — الأدمن بيفتحه من متصفح الموبايل في أي وقت، من غير ما يحتاج اللابتوب يكون شغال أو حتى مفتوح. **ملحوظة أمان:** اللينك ده عام (public) — أي حد معاه اللينك يقدر يحمّله، مفيش باسورد عليه.
    - **الطريقة الاحتياطية:** أبعته كمان جوه محادثة Claude (عن طريق أداة إرسال الملفات) كخيار إضافي — لكن جُرّب وطلع مش موثوق دايمًا (بيفضل "downloading..." من غير ما يخلص) خصوصًا للملفات الكبيرة زي الـ APK، فمتعتمدش عليه لوحده.
    - **مش متاح حاليًا:** إرسال بالإيميل أو تيليجرام — مفيش أداة عندي لأي منهم. لو الأدمن عايز ده مستقبلًا، محتاج setup منفصل (زي Telegram Bot API token) قبل ما يبقى ممكن.
 

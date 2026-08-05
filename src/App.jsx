@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.05";
+const APP_VERSION = "V0.06.06";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -430,11 +430,11 @@ function calcPartnerOpponentStats(comms, userId, opts){
     rec.matches++; if(won) rec.wins++;
     rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,against:oppNames,score});
   };
-  const recordOpponent=(opp,ev,won,partnerName,score,type)=>{
+  const recordOpponent=(opp,ev,won,partnerName,oppPartnerName,score,type)=>{
     if(!opponents[opp.userId]) opponents[opp.userId]={userId:opp.userId,nickname:opp.nickname,matches:0,losses:0,history:[]};
     const rec=opponents[opp.userId];
     rec.matches++; if(!won) rec.losses++;
-    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,partnerName,score});
+    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,partnerName,oppPartnerName,score});
   };
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
     if(ev.status!=="completed"||!ev.plan) return;
@@ -449,7 +449,10 @@ function calcPartnerOpponentStats(comms, userId, opts){
         const partner=myTeam.find(p=>p.userId!==userId);
         const oppNames=oppTeam.map(p=>p.nickname);
         if(partner) recordPartner(partner,ev,won,oppNames,null,"ci");
-        oppTeam.forEach(opp=>recordOpponent(opp,ev,won,partner?.nickname,null,"ci"));
+        oppTeam.forEach(opp=>{
+          const oppPartner=oppTeam.find(p=>p.userId!==opp.userId);
+          recordOpponent(opp,ev,won,partner?.nickname,oppPartner?.nickname,null,"ci");
+        });
       }));
     }else if(ev.type==="closed_teams"){
       const hasScore=ev.plan.format==="league";
@@ -464,7 +467,10 @@ function calcPartnerOpponentStats(comms, userId, opts){
           const oppNames=oppPlayers.map(p=>p.nickname);
           const score=hasScore?{for:inA?m.scoreA:m.scoreB, against:inA?m.scoreB:m.scoreA}:null;
           if(partner) recordPartner(partner,ev,won,oppNames,score,"ct");
-          oppPlayers.forEach(opp=>recordOpponent(opp,ev,won,partner?.nickname,score,"ct"));
+          oppPlayers.forEach(opp=>{
+            const oppPartner=oppPlayers.find(p=>p.userId!==opp.userId);
+            recordOpponent(opp,ev,won,partner?.nickname,oppPartner?.nickname,score,"ct");
+          });
         });
       });
     }
@@ -555,6 +561,17 @@ function calcHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
       });
     });
   }));
+  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
+}
+// These 4 players facing off in this exact split is the same real-world question whether it
+// happened as a rotating CI pairing or as fixed CT teams — same "did we ever meet" answer the
+// unified Partners/Opponents reports already give. Merges both engines into one result.
+function calcHeadToHead(comms, sideAIds, sideBIds, opts){
+  const ci = calcHeadToHeadCI(comms, sideAIds, sideBIds, opts);
+  const ct = calcHeadToHeadCT(comms, sideAIds, sideBIds, opts);
+  const meetings = ci.meetings+ct.meetings;
+  const sideAWins = ci.sideAWins+ct.sideAWins, sideBWins = ci.sideBWins+ct.sideBWins;
+  const last = !ci.last ? ct.last : !ct.last ? ci.last : (ci.last.date>=ct.last.date ? ci.last : ct.last);
   return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
 }
 
@@ -4764,7 +4781,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
 
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
-    const h2h=calcHeadToHeadCT(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
+    const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
     const H2HRow=()=>h2h.meetings>0?<div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginBottom:8}}>🤝 {h2h.meetings} meeting{h2h.meetings!==1?"s":""} — <b style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</b> : <b style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</b></div>:null;
     if(m.winner){return <Card style={{marginBottom:8,border:"0.5px solid #34D39444"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -6076,7 +6093,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
               const gap=Math.abs(avgA-avgB);
-              const h2h=calcHeadToHeadCI(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id});
+              const h2h=calcHeadToHead(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id});
               return <Card key={mi} style={{marginBottom:8}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>
@@ -6544,6 +6561,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
           </div>
         </div>
         {isExpanded&&<div style={{padding:"4px 12px 12px"}}>
+          {hostComm&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>🏸 {hostComm.name}</div>}
           {extraStats?<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
             {[["Wins",extraStats.wins],["Points",extraStats.pts],["Breaks",extraStats.breaks],[extraStats.isTeam?"Team":"Final Court",extraStats.isTeam?"—":(extraStats.finalCourt?`C${extraStats.finalCourt}`:"—")]].map(([l,v])=>
               <div key={l} style={{background:"var(--po-inp)",borderRadius:6,padding:"6px 2px",textAlign:"center"}}>
@@ -6596,8 +6614,8 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const totalPairs = stats.partnersRanked.length+stats.partnersInsufficient.length+stats.opponentsRanked.length+stats.opponentsInsufficient.length;
     const dream = calcDreamOrFunnyMatch(stats,"dream");
     const funny = calcDreamOrFunnyMatch(stats,"funny");
-    const dreamH2H = dream ? calcHeadToHeadCI(comms, [user.id, dream.partner.userId], dream.opponents.map(o=>o.userId)) : null;
-    const funnyH2H = funny ? calcHeadToHeadCI(comms, [user.id, funny.partner.userId], funny.opponents.map(o=>o.userId)) : null;
+    const dreamH2H = dream ? calcHeadToHead(comms, [user.id, dream.partner.userId], dream.opponents.map(o=>o.userId)) : null;
+    const funnyH2H = funny ? calcHeadToHead(comms, [user.id, funny.partner.userId], funny.opponents.map(o=>o.userId)) : null;
     const PairRow = ({rowKey,kind,rank,name,rate,num,den,goodColor,history}) => {
       const isOpen = expandedRow===rowKey;
       return <div>
@@ -6611,7 +6629,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
               <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
             </div>
-            <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`vs ${h.against.join(" & ")}`:`with ${h.partnerName||"—"}`}</div>
+            <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`You & ${name} vs ${h.against.join(" & ")}`:`You & ${h.partnerName||"—"} vs ${name} & ${h.oppPartnerName||"—"}`}</div>
           </div>)}
         </div>}
       </div>;
@@ -6633,7 +6651,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
                     <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
                     <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
                   </div>
-                  <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`vs ${h.against.join(" & ")}`:`with ${h.partnerName||"—"}`}</div>
+                  <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`You & ${p.nickname} vs ${h.against.join(" & ")}`:`You & ${h.partnerName||"—"} vs ${p.nickname} & ${h.oppPartnerName||"—"}`}</div>
                 </div>)}
               </div>}
             </div>;
@@ -6652,12 +6670,12 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No match history yet.</div></Card>
         : <>
           {dream&&<Card style={{marginBottom:10,border:"0.5px solid #F59E0B44",background:"#F59E0B0A"}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش الأحلام — Dream Match</div>
+            <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش جامد — Dream Match</div>
             <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{dream.partner.nickname}</b> vs <b>{dream.opponents.map(o=>o.nickname).join(" & ")}</b></div>
             {dreamH2H&&dreamH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(dreamH2H.last.date)}): {dreamH2H.last.sideAWon?"✅ you won":"❌ you lost"}{dreamH2H.meetings>1&&<> · {dreamH2H.meetings} meetings, you've won {Math.round(dreamH2H.sideAWinRate*100)}%</>}</div>}
           </Card>}
           {funny&&<Card style={{marginBottom:14,border:"0.5px solid #06B6D444",background:"#06B6D40A"}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>🎭 ماتش المسخرة — Funny Match</div>
+            <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>😂 ماتش يضحك — Funny Match</div>
             <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{funny.partner.nickname}</b> vs <b>{funny.opponents.map(o=>o.nickname).join(" & ")}</b></div>
             {funnyH2H&&funnyH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(funnyH2H.last.date)}): {funnyH2H.last.sideAWon?"✅ you won":"❌ you lost"}{funnyH2H.meetings>1&&<> · {funnyH2H.meetings} meetings, you've won {Math.round(funnyH2H.sideAWinRate*100)}%</>}</div>}
           </Card>}

@@ -1,4 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
+import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Geolocation } from "@capacitor/geolocation";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
+import { App as CapApp } from "@capacitor/app";
+import { PushNotifications } from "@capacitor/push-notifications";
+import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
+
+// Native Android plugin (see /android/.../MatchModePlugin.kt) — persistent Match Mode
+// notification: shows live courts/teams for the current round, lets the organizer tap a
+// winner per court, and Generate Next Round once every court is done. No-op on web/non-native.
+const MatchMode = registerPlugin("MatchMode");
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
@@ -9,6 +21,7 @@ import {
   sendPasswordResetEmail,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithCredential,
   updateProfile,
 } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
@@ -32,6 +45,31 @@ const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh
 // device's push token to Firestore so the Cloud Function knows where to send pushes.
 async function enablePushNotifications(userId){
   try{
+    if (Capacitor.isNativePlatform()) {
+      await PushNotifications.createChannel({
+        id: "matchkeeper_alerts",
+        name: "Matchkeeper Alerts",
+        description: "Match reminders, round-end alarms, and event updates",
+        importance: 5, // max — shows as heads-up + lock screen
+        visibility: 1,
+        vibration: true,
+      }).catch(e=>console.log("createChannel failed", e));
+      let permStatus = await PushNotifications.checkPermissions();
+      if (permStatus.receive === "prompt") permStatus = await PushNotifications.requestPermissions();
+      if (permStatus.receive !== "granted") return {ok:false, reason:"denied"};
+      return await new Promise((resolve) => {
+        PushNotifications.addListener("registration", async (token) => {
+          try {
+            await setDoc(doc(db,"fcmTokens", String(userId)), {token: token.value, updatedAt:new Date().toISOString()});
+            resolve({ok:true});
+          } catch(e) { resolve({ok:false, reason:"error", detail: e?.message||String(e)}); }
+        });
+        PushNotifications.addListener("registrationError", (err) => {
+          resolve({ok:false, reason:"no-token", detail: JSON.stringify(err)});
+        });
+        PushNotifications.register();
+      });
+    }
     if (!("Notification" in window) || !("serviceWorker" in navigator)) return {ok:false, reason:"unsupported"};
     const perm = await Notification.requestPermission();
     if (perm !== "granted") return {ok:false, reason:"denied"};
@@ -53,7 +91,20 @@ async function uploadProfilePhoto(userId, file){
   await uploadBytes(r, file);
   return await getDownloadURL(r);
 }
+// Uploads an event photo and returns {id, url} — each photo gets its own storage path so multiple can coexist
+async function uploadEventPhoto(eventId, file){
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const r = storageRef(storage, `event-photos/${eventId}/${id}`);
+  await uploadBytes(r, file);
+  const url = await getDownloadURL(r);
+  return {id, url};
+}
 const googleProvider = new GoogleAuthProvider();
+if (Capacitor.isNativePlatform()) {
+  GoogleSignIn.initialize({
+    clientId: "807847071392-ta5u29ad02r6c7ae9aelei6hq40lr5sd.apps.googleusercontent.com",
+  });
+}
 
 
 // ══════════════════════════════════════════════════════
@@ -71,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.03.11";
+const APP_VERSION = "V0.06.00";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -79,10 +130,57 @@ const EVENT_TYPES = [
   { key:"closed_teams", label:"Closed Teams",        desc:"Fixed teams · compete throughout" },
 ];
 
+// ── AI Event Name Suggester (IDEA-022) ────────────────────────────
+// Client-side template + randomizer. No network call, no API cost — deliberately kept
+// simple/offline per Product Bible's "Operational Simplicity" principle.
+const EVNAME_MOTIVATIONAL = ["Smash","Rally","Ace","Grind","Showdown","Clash","Hustle","Sprint","Battle","Fiesta","Warriors","Legends","Frenzy","Thunder","Blitz"];
+const EVNAME_DAYPARTS = { morning:"Morning", afternoon:"Afternoon", evening:"Evening", night:"Night" };
+const evNameDaypart = (time) => {
+  const h = parseInt((time||"18:00").split(":")[0],10);
+  if(isNaN(h)) return "Evening";
+  if(h<12) return EVNAME_DAYPARTS.morning;
+  if(h<17) return EVNAME_DAYPARTS.afternoon;
+  if(h<21) return EVNAME_DAYPARTS.evening;
+  return EVNAME_DAYPARTS.night;
+};
+const evNameWeekday = (date) => { const d=new Date(date); return isNaN(d.getTime())?"":d.toLocaleDateString("en-GB",{weekday:"long"}); };
+function suggestEventName({date,time,venueName,commName}){
+  const day = evNameWeekday(date);
+  const part = evNameDaypart(time);
+  const word = EVNAME_MOTIVATIONAL[Math.floor(Math.random()*EVNAME_MOTIVATIONAL.length)];
+  const templates = [
+    () => `${day} ${part} ${word}`.trim(),
+    () => venueName ? `${word} at ${venueName}` : `${day} ${word}`,
+    () => commName ? `${commName} ${word}` : `${part} ${word}`,
+    () => `${day} ${word}${venueName?` — ${venueName}`:""}`,
+    () => `${part} ${word} ${day?`· ${day}`:""}`.trim(),
+  ];
+  const pick = templates[Math.floor(Math.random()*templates.length)];
+  return pick().replace(/\s+/g," ").trim();
+}
+
+// ── Match Mode Persistent Notification bridge (native Android only) ─────────
+// Builds the payload the MatchMode plugin needs to render the notification: one
+// row per court, each with the two team names and whether it already has a winner.
+const mmTeamLabel = (team) => (team||[]).map(p=>p.nickname).join(" & ");
+const mmBreakLabel = (round) => (round?.onBreak||[]).map(p=>p.nickname).join(", ");
+function mmBuildRoundPayload(round){
+  return (round?.matches||[]).map(m=>({
+    court: m.court,
+    teamA: mmTeamLabel(m.teamA),
+    teamB: mmTeamLabel(m.teamB),
+    winner: m.winner || null, // "A" | "B" | null
+  }));
+}
+
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
 const BREAK_PREF_LABELS = {none:"No Preference", early:"Early", mid:"Mid", late:"Late"};
-const breakPts = (tc) => Math.floor((tc + 1) / 2);
+const breakPts = (tc) => {
+  const base = Math.floor((tc + 1) / 2);
+  const topCourtWin = courtPts(1, tc); // always equals tc
+  return base === topCourtWin ? base - 1 : base; // e.g. 1 court: base=1=topCourtWin=1 → break=0
+};
 // Distance from a player's preferred break window to round r — lower is more preferred.
 // Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
 function prefDist(pref, r, totalRounds) {
@@ -108,10 +206,14 @@ function buildBreakPlan(players, courts, totalRounds) {
   const plan = [];
   for (let r = 0; r < totalRounds; r++) {
     const eligible = players.filter(p => assigned[p.userId] < ent[p.userId]);
+    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
     eligible.sort((a, b) => {
+      const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
+      if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first, regardless of entitlement
       const rd = (ent[b.userId]-assigned[b.userId])-(ent[a.userId]-assigned[a.userId]); if (rd!==0) return rd;
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // among non-anchor-matches, closer preference still wins ties
       const spacing = (r-lastB[b.userId])-(r-lastB[a.userId]); if (spacing!==0) return spacing;
-      return prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); // break preference: last-resort tiebreak only
+      return 0;
     });
     const noC = eligible.filter(p => r - lastB[p.userId] > 1);
     const pool = noC.length >= bpr ? noC : eligible;
@@ -145,7 +247,8 @@ function diversePair(cp, ph, lastRoundPairs) {
 }
 function genRound1(players, courts, totalRounds) {
   const sorted = [...players].sort((a,b)=>b.usr-a.usr), breakPlan = buildBreakPlan(sorted,courts,totalRounds), onBreakIds=breakPlan[0]||[];
-  const playing=sorted.filter(p=>!onBreakIds.includes(p.userId)), onBreak=sorted.filter(p=>onBreakIds.includes(p.userId));
+  const playing=sorted.filter(p=>!onBreakIds.includes(p.userId));
+  const onBreak=sorted.filter(p=>onBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: Math.floor(sorted.findIndex(x=>x.userId===p.userId)/4)+1}));
   const matches=[]; for(let c=0;c<courts;c++){const cp=playing.slice(c*4,(c+1)*4);if(cp.length<4)break;const pair=snakePairCI(cp);matches.push({court:c+1,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
   return {rounds:[{round:1,matches,onBreak,onBreakIds}],courts,totalRounds,breakPlan,partnerHistory:{},sorted};
 }
@@ -154,15 +257,14 @@ function genNextRoundCI(plan) {
   const ph=JSON.parse(JSON.stringify(plan.partnerHistory||{}));
   const lastRoundPairs=new Set();
   lastRound.matches.forEach(m=>{[m.teamA,m.teamB].forEach(team=>{const[a,b]=team;if(!a||!b)return;if(!ph[a.userId])ph[a.userId]={};if(!ph[b.userId])ph[b.userId]={};ph[a.userId][b.userId]=(ph[a.userId][b.userId]||0)+1;ph[b.userId][a.userId]=(ph[b.userId][a.userId]||0)+1;lastRoundPairs.add(pairKey(a.userId,b.userId));});});
-  const newBreakIds=breakPlan[ri]||[], onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)), buckets={};
+  const newBreakIds=breakPlan[ri]||[], buckets={};
   for(let c=1;c<=courts;c++) buckets[c]=[];
   lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
   for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId));
-  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId));
-  // Where a returning player belongs is not "the court they last sat on" — it's the court
-  // their last ACTUAL result would have earned them (win promotes, loss relegates), applying
-  // the same movement rule as everyone else. Scans backward since they may have broken for
-  // more than one round in a row.
+  // Where a player belongs (whether returning from break, or newly going on break this round)
+  // is not "the court they last sat on" — it's the court their last ACTUAL result would have
+  // earned them (win promotes, loss relegates), applying the same movement rule as everyone
+  // else. Scans backward since they may have broken for more than one round in a row.
   const findExpectedReturnCourt=(uid)=>{
     for(let i=rounds.length-1;i>=0;i--){
       for(const m of rounds[i].matches){
@@ -176,6 +278,8 @@ function genNextRoundCI(plan) {
     }
     return null;
   };
+  const onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: findExpectedReturnCourt(p.userId)}));
+  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId));
   returning.forEach(rp=>{
     const targetCourt=findExpectedReturnCourt(rp.userId);
     const sameCourtHasRoom=targetCourt&&buckets[targetCourt]&&buckets[targetCourt].length<4;
@@ -248,12 +352,15 @@ function regenerateBreakPlan(plan, playedRounds) {
 
     const eligible = players.filter(p => remaining[p.userId] > 0 && !firmHere.includes(p.userId));
     eligible.sort((a,b) => {
+      const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
+      const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
+      if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first
       const remDiff = remaining[b.userId] - remaining[a.userId];
       if (remDiff !== 0) return remDiff;
+      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd;
       const consecA = r - lastBreak[a.userId] <= 1 ? 1 : 0;
       const consecB = r - lastBreak[b.userId] <= 1 ? 1 : 0;
       if (consecA !== consecB) return consecA - consecB; // avoid consecutive
-      const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // break preference: soft tiebreak
       return a.usr - b.usr; // lower USR priority
     });
     const noConsec = eligible.filter(p => r - lastBreak[p.userId] > 1);
@@ -317,9 +424,16 @@ function calcCTCourts(playerCount, reservedCourts) {
   return { min:cappedMin, max:cappedMax, warning:max>reservedCourts?`Ideal: ${max} courts but only ${reservedCourts} reserved`:null };
 }
 
-function segmentPools(players) {
+function segmentPools(players, topPoolSizeOverride) {
   const sorted = [...players].sort((a,b) => b.usr - a.usr);
-  const N = sorted.length, numPools = Math.max(1, Math.floor(N/6));
+  const N = sorted.length;
+  // Manual override: only meaningful for a clean 2-pool split (the common ambiguous case,
+  // e.g. 14 players = 8+6 — should the top 8 or the top 6 be the elite group?). Both sizes
+  // must be even (teams need pairs) and must sum to N.
+  if (topPoolSizeOverride && topPoolSizeOverride%2===0 && topPoolSizeOverride<N && (N-topPoolSizeOverride)%2===0) {
+    return [sorted.slice(0,topPoolSizeOverride), sorted.slice(topPoolSizeOverride)];
+  }
+  const numPools = Math.max(1, Math.floor(N/6));
   const base = Math.floor(N/numPools), extra = N - base*numPools;
   const pools = []; let idx = 0;
   for (let i = 0; i < numPools; i++) {
@@ -330,6 +444,15 @@ function segmentPools(players) {
     pools.push(sorted.slice(idx, idx+size)); idx += size;
   }
   return pools;
+}
+
+// For a 2-pool split, returns the alternative top-pool size (e.g. auto gives [8,6] → the
+// admin can also choose 6 as the top/elite pool size instead). Returns null when there's
+// no meaningful alternative (equal pools, or more than 2 pools).
+function altTopPoolSize(players) {
+  const pools = segmentPools(players);
+  if (pools.length !== 2 || pools[0].length === pools[1].length) return null;
+  return pools[1].length;
 }
 
 function snakeTeams(poolPlayers, poolIdx, startId) {
@@ -346,8 +469,8 @@ function snakeTeams(poolPlayers, poolIdx, startId) {
   return teams;
 }
 
-function formCTTeams(players) {
-  const pools = segmentPools(players); const teams = []; let teamId = 1;
+function formCTTeams(players, topPoolSizeOverride) {
+  const pools = segmentPools(players, topPoolSizeOverride); const teams = []; let teamId = 1;
   pools.forEach((pool,pi) => { const pt=snakeTeams(pool,pi,teamId); teams.push(...pt); teamId+=pt.length; });
   return { teams, pools, numPools:pools.length };
 }
@@ -407,8 +530,8 @@ function calcMaxRounds(ev, format, groupA, groupB, courts, matchDuration=20) {
   return Math.max(1, Math.floor(totalMins / leagueRoundMins));
 }
 
-function generateCTPlan(players, courts, format, ev=null, matchDuration=20) {
-  const { teams, pools } = formCTTeams(players);
+function generateCTPlan(players, courts, format, ev=null, matchDuration=20, topPoolSizeOverride) {
+  const { teams, pools } = formCTTeams(players, topPoolSizeOverride);
   const groupA = teams.filter(t => t.poolIdx === 0);
   const groupB = teams.filter(t => t.poolIdx > 0);
   const courtsA = Math.max(1, Math.round(courts * groupA.length / teams.length));
@@ -740,7 +863,6 @@ const INIT_COMMS = [
         {userId:11,registeredAt:"2026-06-29T20:00:00.000Z", status:"registered", addedBy:null, isGuest:false},
         {userId:12,registeredAt:"2026-06-29T20:00:00.000Z", status:"registered", addedBy:null, isGuest:false},
       ],
-      checkedIn:[1,2,3,4,5,6,7,8,9,10,11,12],
       poll:null,
       plan:{
         courts:3,
@@ -1126,6 +1248,62 @@ function drawFooter(ctx, w, h){
   ctx.textAlign="left";
 }
 
+// Standalone, square podium share card — separate from the full standings list.
+// Design approved via a tested PNG mockup — sizes/spacing below are taken directly from
+// that working version (no header overlap, player names are the biggest/most prominent
+// element, medals included).
+function buildPodiumCard(ev, venue, top3, communityName, title){
+  const w = 800, h = 800;
+  const {c, ctx} = makeCard(w, h);
+  ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
+  let y = drawHeader(ctx, w, title||"🏆 Champions", ev.name, communityName);
+  y += 20;
+  y = drawEventStrip(ctx, w, y, ev, venue);
+
+  if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
+  const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
+  const barHByRank=[190,125,85];
+  // Player names (or the person's own name for CI) are the headline — biggest font of all.
+  // Team name (CT only) is secondary/smaller. Every size steps down by rank.
+  const medalFontByRank=[56,40,34], headlineFontByRank=[30,22,18], teamFontByRank=[17,14,12],
+        usrFontByRank=[14,12,10], valueFontByRank=[22,17,14], rankNumFontByRank=[34,26,20];
+  const order=[1,0,2].filter(i=>top3[i]);
+  const colW=(w-96)/3, baseY=760; // fixed — matches the tested mockup, safely clears the header/strip
+
+  order.forEach((rank,pos)=>{
+    const e=top3[rank]; if(!e) return;
+    const barH=barHByRank[rank];
+    const cx = 48 + colW*pos + colW/2;
+    const hasTeam = e.players && e.players.length>0;
+    const headline = hasTeam ? e.players.map(p=>p.nickname).join(" & ") : e.name;
+    let ty = baseY - barH - 20;
+    ctx.font = `${medalFontByRank[rank]}px Arial`; ctx.textAlign="center";
+    ctx.fillText(medals[rank], cx, ty);
+    ty -= medalFontByRank[rank] + 14;
+    ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFontByRank[rank]}px Arial`;
+    const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFontByRank[rank]*1.05);
+    ty -= headlineFontByRank[rank]*1.45 + (headlineLines>1 ? headlineFontByRank[rank]*1.05 : 0);
+    if(hasTeam){
+      ctx.fillStyle = COLORS.dim; ctx.font=`${teamFontByRank[rank]}px Arial`;
+      fitTextCentered(ctx, e.name, cx, ty, colW-16);
+      ty -= teamFontByRank[rank]*1.55;
+    }
+    if(e.usrLine){ ctx.fillStyle = COLORS.dim; ctx.font=`${usrFontByRank[rank]}px Arial`; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); ty -= usrFontByRank[rank]*1.7; }
+    ctx.fillStyle = colors[rank]; ctx.font=`800 ${valueFontByRank[rank]}px Arial`;
+    ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, ty);
+
+    ctx.fillStyle = `${colors[rank]}33`;
+    roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.fill();
+    ctx.strokeStyle = `${colors[rank]}88`; ctx.lineWidth=2;
+    roundRect(ctx, 48+colW*pos+8, baseY-barH, colW-16, barH, 8); ctx.stroke();
+    ctx.fillStyle = colors[rank]; ctx.font=`800 ${rankNumFontByRank[rank]}px Arial`;
+    ctx.fillText(`${rank+1}`, cx, baseY-barH/2+8);
+    ctx.textAlign="left";
+  });
+  drawFooter(ctx, w, h);
+  return c;
+}
+
 function drawCardBase(ctx,w,h,title,subtitle){
   // Legacy signature kept for compatibility; delegates to the new light theme.
   ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
@@ -1172,10 +1350,31 @@ function canvasToFileSync(canvas, name){
 
 async function shareImages(canvases, baseName){
   const diag=[];
-  // Convert canvases to files SYNCHRONOUSLY using toDataURL
-  // This keeps us in the user gesture context so navigator.share() doesn't fail
   const files = canvases.map((c,i)=>canvasToFileSync(c,`${baseName}_${i+1}.png`));
   diag.push(`files ready: ${files.length}`);
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const savedUris = [];
+      for (const f of files) {
+        const base64 = await new Promise((resolve,reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+        const result = await Filesystem.writeFile({path:f.name, data:base64, directory:Directory.Cache});
+        savedUris.push(result.uri);
+      }
+      await Share.share({title:baseName, files:savedUris});
+      return {status:"shared", diag:["shared natively"]};
+    } catch(e) {
+      if (e && (e.message||"").toLowerCase().includes("cancel")) return {status:"shared", diag:["user cancelled"]};
+      diag.push(`native share failed: ${e.message||e}`);
+      // fall through to browser fallback below, which will just trigger a download on native too
+    }
+  }
+
   diag.push(`navigator.share: ${typeof navigator.share}`);
   diag.push(`navigator.canShare: ${typeof navigator.canShare}`);
 
@@ -1520,6 +1719,72 @@ function drawEventStrip(ctx, w, y, ev, venue){
   return y + 48;
 }
 
+// Draws a 1-2-3 podium strip (top3 in RANK order) for the share-image standings cards.
+// Returns the podium's total height so callers can size the card correctly up front.
+const PODIUM_H = 192;
+function drawPodium(ctx, w, y, top3){
+  if(!top3||top3.length===0) return y;
+  const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
+  const barHByRank=[92,62,44]; // indexed by RANK (0=1st=tallest), not visual position
+  const order=[1,0,2].filter(i=>top3[i]); // visual: 2nd, 1st, 3rd
+  const colW=(w-32)/3, baseY=y+PODIUM_H-14;
+  order.forEach((rank,pos)=>{
+    const e=top3[rank]; if(!e) return;
+    const barH=barHByRank[rank];
+    const cx = 16 + colW*pos + colW/2;
+    let ty = baseY-barH-34;
+    ctx.font = "24px Arial"; ctx.textAlign="center";
+    ctx.fillText(medals[rank], cx, ty);
+    ty -= 20;
+    ctx.fillStyle = COLORS.text; ctx.font="700 12px Arial";
+    fitTextCentered(ctx, e.name, cx, ty, colW-10);
+    if(e.players&&e.players.length>0){
+      ty -= 13; ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
+      fitTextCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, ty, colW-10);
+    }
+    if(e.usrLine){ ty -= 13; ctx.fillStyle = COLORS.dim; ctx.font="8px Arial"; fitTextCentered(ctx, e.usrLine, cx, ty, colW-10); }
+    ctx.fillStyle = colors[rank]; ctx.font="700 11px Arial";
+    ctx.fillText(`${e.value}${e.valueLabel?" "+e.valueLabel:""}`, cx, baseY-barH+2);
+    ctx.fillStyle = `${colors[rank]}33`;
+    roundRect(ctx, 16+colW*pos+8, baseY-barH, colW-16, barH, 6); ctx.fill();
+    ctx.strokeStyle = `${colors[rank]}77`;
+    roundRect(ctx, 16+colW*pos+8, baseY-barH, colW-16, barH, 6); ctx.stroke();
+    ctx.fillStyle = colors[rank]; ctx.font="800 18px Arial";
+    ctx.fillText(`${rank+1}`, cx, baseY-barH/2+6);
+    ctx.textAlign="left";
+  });
+  return y + PODIUM_H;
+}
+function fitTextCentered(ctx,text,cx,y,maxW){
+  ctx.textAlign="center";
+  let t=text||""; while(ctx.measureText(t).width>maxW && t.length>1) t=t.slice(0,-2)+"…";
+  ctx.fillText(t,cx,y);
+}
+
+// Wraps to a 2nd line instead of truncating — used for names, since cutting someone's
+// name off with "…" reads badly. yBottom is the baseline of the LOWER line (closest to
+// whatever sits below it); returns the number of lines actually drawn (1 or 2) so the
+// caller can reserve extra vertical space when it wraps.
+function fitTextWrapCentered(ctx,text,cx,yBottom,maxW,lineH){
+  ctx.textAlign="center";
+  const t=text||"";
+  if(ctx.measureText(t).width<=maxW){ ctx.fillText(t,cx,yBottom); return 1; }
+  let top,bottom;
+  if(t.includes(" & ")){
+    const i=t.indexOf(" & ");
+    top=t.slice(0,i).trim(); bottom=("& "+t.slice(i+3)).trim();
+  } else {
+    const words=t.split(" "); const mid=Math.ceil(words.length/2);
+    top=words.slice(0,mid).join(" "); bottom=words.slice(mid).join(" ")||top;
+    if(!words.slice(mid).length){ top=t; bottom=""; }
+  }
+  while(ctx.measureText(top).width>maxW && top.length>1) top=top.slice(0,-2)+"…";
+  while(ctx.measureText(bottom).width>maxW && bottom.length>1) bottom=bottom.slice(0,-2)+"…";
+  ctx.fillText(bottom,cx,yBottom);
+  if(top) ctx.fillText(top,cx,yBottom-lineH);
+  return top?2:1;
+}
+
 function buildStandingsCard(ev,venue,ciStands,tc,plan,communityName){
   const w = CARD_W;
   const h = 108 + 16 + 48 + ciStands.length*52 + 30;
@@ -1707,10 +1972,8 @@ function buildLeaguePoolsCard(ev, venue, plan, communityName){
 
       // Court badge
       ctx.fillStyle = gc+"22"; roundRect(ctx, 20, y+10, 28, 24, 6); ctx.fill();
-      ctx.fillStyle = gc; ctx.font="700 9px Arial"; ctx.textAlign="center";
-      ctx.fillText("C"+m.court, 34, y+18);
-      ctx.font="500 7px Arial";
-      ctx.fillText("ORT", 34, y+28);
+      ctx.fillStyle = gc; ctx.font="700 12px Arial"; ctx.textAlign="center";
+      ctx.fillText("C"+m.court, 34, y+26);
       ctx.textAlign="left";
 
       // Team names
@@ -1897,14 +2160,16 @@ function buildLadderBreakTableCard(ev, venue, plan, tc, communityName){
 
 function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
   const w = CARD_W;
-  const groupColors = ["#6366F1","#06B6D4"];
-  const groups = [
-    {label:"Group A", courts:plan.courtsA, matches:(plan.rounds||[]).flatMap(r=>r.matchesA||[])},
-    {label:"Group B", courts:plan.courtsB, matches:(plan.rounds||[]).flatMap(r=>r.matchesB||[])},
-  ].filter(g=>g.matches.length>0);
+  const groupColors = {A:"#6366F1",B:"#06B6D4"};
+  const rounds = (plan.rounds||[]).map(r=>({
+    roundNum: r.roundNum,
+    matches: [...(r.matchesA||[]).map(m=>({...m,side:"A"})), ...(r.matchesB||[]).map(m=>({...m,side:"B"}))]
+      .sort((a,b)=>a.court-b.court||(a.winner?1:0)-(b.winner?1:0)),
+  })).filter(r=>r.matches.length>0);
+  const hasBothGroups = (plan.groupB?.length||0) > 0;
 
   let estH = 108 + 16 + 48;
-  groups.forEach(g=>{ estH += 28 + g.matches.length*48; });
+  rounds.forEach(r=>{ estH += 28 + r.matches.length*64; });
   const h = estH + 30;
   const {c, ctx} = makeCard(w, h);
   ctx.fillStyle = COLORS.bg; ctx.fillRect(0,0,w,h);
@@ -1912,49 +2177,56 @@ function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
   y += 16;
   y = drawEventStrip(ctx, w, y, ev, venue);
 
-  groups.forEach((g, gi)=>{
-    const gc = groupColors[gi % groupColors.length];
-    ctx.fillStyle = gc; roundRect(ctx, 14, y, w-28, 22, 7); ctx.fill();
+  rounds.forEach((r)=>{
+    ctx.fillStyle = COLORS.accent; roundRect(ctx, 14, y, w-28, 22, 7); ctx.fill();
     ctx.fillStyle = "#fff"; ctx.font="700 10px Arial";
-    ctx.fillText(`${g.label} — ${g.matches.length} matches`, 22, y+15);
+    ctx.fillText(`League Round ${r.roundNum} — ${r.matches.length} matches`, 22, y+15);
     y += 28;
 
-    g.matches.forEach((m,i)=>{
+    r.matches.forEach((m,i)=>{
+      const gc = groupColors[m.side]||COLORS.accent;
       const won_A = m.winner==="A", won_B = m.winner==="B";
       ctx.fillStyle = i%2===0 ? COLORS.card : COLORS.cardAlt;
-      roundRect(ctx, 14, y, w-28, 42, 9); ctx.fill();
-      ctx.strokeStyle = COLORS.border; roundRect(ctx, 14, y, w-28, 42, 9); ctx.stroke();
+      roundRect(ctx, 14, y, w-28, 58, 9); ctx.fill();
+      ctx.strokeStyle = COLORS.border; roundRect(ctx, 14, y, w-28, 58, 9); ctx.stroke();
 
-      // Court badge
-      ctx.fillStyle = gc+"22"; roundRect(ctx, 20, y+7, 28, 28, 6); ctx.fill();
-      ctx.fillStyle = gc; ctx.font="700 9px Arial"; ctx.textAlign="center";
-      ctx.fillText("C"+m.court, 34, y+17); ctx.font="500 7px Arial"; ctx.fillText("ORT",34,y+27);
+      // Court badge (+ small group tag underneath, only if both groups exist this event)
+      ctx.fillStyle = gc+"22"; roundRect(ctx, 20, y+15, 28, 28, 6); ctx.fill();
+      ctx.fillStyle = gc; ctx.font="700 12px Arial"; ctx.textAlign="center";
+      ctx.fillText("C"+m.court, 34, hasBothGroups?y+28:y+33);
+      if(hasBothGroups){ ctx.font="700 7px Arial"; ctx.fillText("GRP "+m.side, 34, y+38); }
       ctx.textAlign="left";
 
       // Team A
       const nameW = w-28-80;
+      const playersA = (m.teamA?.players||[]).map(p=>p.nickname).join(" & ");
       ctx.fillStyle = won_A ? COLORS.green : COLORS.text;
       ctx.font = won_A ? "700 11px Arial" : "600 11px Arial";
-      fitText(ctx, (won_A?"✓ ":"")+m.teamA?.name, 58, y+18, nameW);
+      fitText(ctx, (won_A?"✓ ":"")+m.teamA?.name, 58, y+16, nameW);
+      ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
+      fitText(ctx, playersA, 58, y+27, nameW);
 
       // Score
       if(m.winner){
         const score = `${m.scoreA??0}–${m.scoreB??0}`;
         ctx.fillStyle = COLORS.dim; ctx.font="700 10px Arial"; ctx.textAlign="right";
-        ctx.fillText(score, w-22, y+18); ctx.textAlign="left";
+        ctx.fillText(score, w-22, y+30); ctx.textAlign="left";
       }
 
       // Team B
+      const playersB = (m.teamB?.players||[]).map(p=>p.nickname).join(" & ");
       ctx.fillStyle = won_B ? COLORS.green : COLORS.sub;
       ctx.font = won_B ? "700 11px Arial" : "11px Arial";
-      fitText(ctx, (won_B?"✓ ":"")+m.teamB?.name, 58, y+34, nameW);
+      fitText(ctx, (won_B?"✓ ":"")+m.teamB?.name, 58, y+44, nameW);
+      ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
+      fitText(ctx, playersB, 58, y+55, nameW);
 
       if(!m.winner){
         ctx.fillStyle = COLORS.dim; ctx.font="9px Arial"; ctx.textAlign="right";
-        ctx.fillText("pending", w-22, y+26); ctx.textAlign="left";
+        ctx.fillText("pending", w-22, y+30); ctx.textAlign="left";
       }
 
-      y += 48;
+      y += 64;
     });
     y += 6;
   });
@@ -1963,7 +2235,7 @@ function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
   return c;
 }
 
-function buildCTStandingsCard(ev, venue, ctStands, format, communityName){
+function buildCTStandingsCard(ev, venue, ctStands, format, communityName, users){
   const w = CARD_W;
   const h = 108 + 16 + 48 + ctStands.length*52 + 30;
   const {c, ctx} = makeCard(w, h);
@@ -2089,10 +2361,38 @@ function buildCTResultsTableCard(ev, venue, plan, ctStands, tc, communityName){
 // ── Shared UI ─────────────────────────────────────────
 function Av({u,size=36}){
   const lv=usrLv(u.usr);
-  if (u.photoURL) return <img src={u.photoURL} alt={u.nickname} style={{width:size,height:size,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:`1.5px solid ${lv.c}55`}}/>;
+  const [broken,setBroken] = useState(false);
+  if (u.photoURL && !broken) return <img src={u.photoURL} alt={u.nickname} referrerPolicy="no-referrer" onError={()=>setBroken(true)} style={{width:size,height:size,borderRadius:"50%",flexShrink:0,objectFit:"cover",border:`1.5px solid ${lv.c}55`}}/>;
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}
+
+// top3: array of up to 3 {name, avatarUser, players, value, valueLabel, usrLine} in RANK order (1st, 2nd, 3rd).
+// avatarUser: single user (CI). players: array of users (CT, shows each member's avatar+name).
+// usrLine: pre-formatted string like "USR 62 (+3)" or "Avg USR 58 (+2)".
+function Podium({top3,title}){
+  if(!top3||top3.length===0) return null;
+  const order=[1,0,2].filter(i=>top3[i]); // visual order: 2nd left, 1st center, 3rd right
+  const heights=[96,130,76], medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
+  return <Card style={{marginBottom:12,background:"linear-gradient(180deg,#6366F111,transparent)"}}>
+    <div style={{textAlign:"center",fontSize:13,fontWeight:700,color:"var(--po-text)",marginBottom:14}}>🏆 {title||"Final Standings"}</div>
+    <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:8}}>
+      {order.map((rank,pos)=>{const e=top3[rank]; if(!e) return null; return <div key={rank} style={{display:"flex",flexDirection:"column",alignItems:"center",width:100}}>
+        <div style={{fontSize:22,marginBottom:4}}>{medals[rank]}</div>
+        {e.players&&e.players.length>0
+          ? <div style={{display:"flex",gap:-6}}>{e.players.map((p,pi)=><div key={p.id||pi} style={{marginLeft:pi>0?-8:0,border:"2px solid var(--po-bg)",borderRadius:"50%"}}><Av u={p} size={rank===0?38:32}/></div>)}</div>
+          : e.avatarUser?<Av u={e.avatarUser} size={rank===0?48:38}/>:null}
+        <div style={{fontSize:12,fontWeight:700,color:"var(--po-text)",marginTop:6,textAlign:"center",lineHeight:1.2}}>{e.name}</div>
+        {e.players&&e.players.length>0&&<div style={{fontSize:9,color:"var(--po-dim)",textAlign:"center",lineHeight:1.2}}>{e.players.map(p=>p.nickname).join(" & ")}</div>}
+        {e.usrLine&&<div style={{fontSize:9,color:"var(--po-dim)",marginTop:1}}>{e.usrLine}</div>}
+        <div style={{fontSize:11,color:colors[rank],fontWeight:700,marginTop:2}}>{e.value}{e.valueLabel?` ${e.valueLabel}`:""}</div>
+        <div style={{width:"100%",height:heights[pos],background:`${colors[rank]}22`,border:`0.5px solid ${colors[rank]}55`,borderRadius:"8px 8px 0 0",marginTop:8,display:"flex",alignItems:"flex-start",justifyContent:"center",paddingTop:8}}>
+          <span style={{fontSize:20,fontWeight:800,color:colors[rank]}}>{rank+1}</span>
+        </div>
+      </div>;})}
+    </div>
+  </Card>;
+}
 function Btn({label,onClick,primary,danger,disabled,style={}}){
   const bg=primary?"#6366F1":danger?"#EF444422":"transparent", bc=primary?"#6366F1":danger?"#EF4444":"var(--po-bdr)", cl=primary?"#fff":danger?"#EF4444":"var(--po-sub)";
   return <button onClick={onClick} disabled={disabled} style={{padding:"9px 16px",borderRadius:8,border:`0.5px solid ${bc}`,background:disabled?"var(--po-bdr)":bg,color:disabled?"var(--po-dim)":cl,fontSize:13,fontWeight:500,cursor:disabled?"default":"pointer",opacity:disabled?0.6:1,...style}}>{label}</button>;
@@ -2234,7 +2534,15 @@ function LoginScreen(){
 
   const googleSignIn = async () => {
     setErr(""); setMsg(""); setBusy(true);
-    try{ await signInWithPopup(fbAuth, googleProvider); }
+    try{
+      if (Capacitor.isNativePlatform()) {
+        const result = await GoogleSignIn.signIn();
+        const credential = GoogleAuthProvider.credential(result.idToken);
+        await signInWithCredential(fbAuth, credential);
+      } else {
+        await signInWithPopup(fbAuth, googleProvider);
+      }
+    }
     catch(e){ setErr(friendlyError(e)); }
     setBusy(false);
   };
@@ -2252,6 +2560,7 @@ function LoginScreen(){
       <div style={{textAlign:"center",marginBottom:24}}>
         <img src="/logo-icon-192.png" width={56} height={56} style={{borderRadius:16,margin:"0 auto 12px",display:"block"}} alt="Matchkeeper"/>
         <div style={{fontSize:20,fontWeight:700,color:"#F1F5F9"}}>Matchkeeper</div>
+        <div style={{fontSize:11,color:"#475569",marginTop:1}}>{APP_VERSION}</div>
         <div style={{fontSize:13,color:"#64748B",marginTop:2}}>{mode==="signup"?"Create your account":"Sign in to continue"}</div>
       </div>
 
@@ -2362,6 +2671,18 @@ export default function Matchkeeper() {
   const linkedUserId = authUser ? uidLinks[authUser.uid] : null;
   const linkedMe = linkedUserId!=null ? (users.find(u => u.id===linkedUserId) || null) : null;
   const me = linkedMe || users[0];
+  const [eventCommFilter, setEventCommFilter] = useState("all");
+  useEffect(() => { if (me?.id) { const saved = localStorage.getItem(`mk_ev_filter_${me.id}`); if (saved) setEventCommFilter(saved); } }, [me?.id]);
+  useEffect(() => { if (me?.id) localStorage.setItem(`mk_ev_filter_${me.id}`, eventCommFilter); }, [eventCommFilter, me?.id]);
+  const autoPushTriedRef = useRef(false);
+  useEffect(() => {
+    if (Capacitor.isNativePlatform() && linkedMe && !autoPushTriedRef.current) {
+      autoPushTriedRef.current = true;
+      enablePushNotifications(linkedMe.id);
+      Geolocation.requestPermissions().catch(e=>console.log("Location permission request failed", e));
+      MatchMode.ensureExactAlarmPermission().catch(e=>console.log("Exact alarm permission request failed", e));
+    }
+  }, [linkedMe]);
   const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
   const myLastRequest = authUser ? [...claimRequests].reverse().find(r => r.firebaseUid===authUser.uid) : null;
   const requestClaim = (userId) => {
@@ -2372,6 +2693,8 @@ export default function Matchkeeper() {
     }
     const id = _crid++;
     setClaimRequests(rs => [...rs, {id, userId, firebaseUid:authUser.uid, email:authUser.email, photoURL:authUser.photoURL||"", displayName:authUser.displayName||"", requestedAt:new Date().toISOString(), status:"pending"}]);
+    const claimedName = users.find(u=>u.id===userId)?.nickname || "a player";
+    notify([1], "claimRequest", null, "🙋 New claim request", `${authUser.displayName||authUser.email||"Someone"} wants to be linked as ${claimedName} — review in Requests.`);
   };
   const approveClaim = (reqId) => {
     setClaimRequests(rs => rs.map(r => r.id===reqId ? {...r, status:"approved"} : r));
@@ -2393,6 +2716,9 @@ export default function Matchkeeper() {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
     setView({screen,...extra});
   };
+  const goComm = (cid) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"comm",cid}); };
+  const goEvent = (cid,eid) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"event",cid,eid}); };
+  const goCommList = () => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"list"}); };
   const goBack = () => {
     setNavHistory(h=>{
       if(h.length===0) return h;
@@ -2477,6 +2803,7 @@ export default function Matchkeeper() {
 
   // comms
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","comms"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2490,7 +2817,7 @@ export default function Matchkeeper() {
       markLoaded("comms");
     }, e => { console.log("Firestore comms error", e); recordDiag("comms", `${e.code||"error"}: ${e.message||e}`); markLoaded("comms"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.comms) { console.log("Blocked write: haven't confirmed real comms data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
@@ -2502,6 +2829,7 @@ export default function Matchkeeper() {
 
   // users
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","users"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2514,7 +2842,7 @@ export default function Matchkeeper() {
       markLoaded("users");
     }, e => { console.log("Firestore users error", e); recordDiag("users", `${e.code||"error"}: ${e.message||e}`); markLoaded("users"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.users) { console.log("Blocked write: haven't confirmed real users data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
@@ -2526,6 +2854,7 @@ export default function Matchkeeper() {
 
   // venues
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","venues"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2538,7 +2867,7 @@ export default function Matchkeeper() {
       markLoaded("venues");
     }, e => { console.log("Firestore venues error", e); recordDiag("venues", `${e.code||"error"}: ${e.message||e}`); markLoaded("venues"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.venues) { console.log("Blocked write: haven't confirmed real venues data this session yet"); return; }
@@ -2550,6 +2879,7 @@ export default function Matchkeeper() {
 
   // notifications
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","notifications"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2562,7 +2892,7 @@ export default function Matchkeeper() {
       markLoaded("notifications");
     }, e => { console.log("Firestore notifications error", e); recordDiag("notifications", `${e.code||"error"}: ${e.message||e}`); markLoaded("notifications"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.notifications) { console.log("Blocked write: haven't confirmed real notifications data this session yet"); return; }
@@ -2574,6 +2904,7 @@ export default function Matchkeeper() {
 
   // claimRequests
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","claimRequests"), snap => {
       if (snap.exists()) {
         const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
@@ -2586,7 +2917,7 @@ export default function Matchkeeper() {
       markLoaded("claimRequests");
     }, e => { console.log("Firestore claimRequests error", e); recordDiag("claimRequests", `${e.code||"error"}: ${e.message||e}`); markLoaded("claimRequests"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   useEffect(() => {
     if (!dataLoaded) return;
     if (!everRealRef.current.claimRequests) { console.log("Blocked write: haven't confirmed real claimRequests data this session yet"); return; }
@@ -2601,6 +2932,7 @@ export default function Matchkeeper() {
   // (a claim approval silently reverted) when a stale device overwrote the whole users
   // array. A per-document write here can never be clobbered by an unrelated write elsewhere.
   useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(collection(db,"padelos_links"), snap => {
       const map = {};
       snap.forEach(d => { map[d.id] = d.data().userId; });
@@ -2608,7 +2940,7 @@ export default function Matchkeeper() {
       markLoaded("uidLinks");
     }, e => { console.log("Firestore uidLinks error", e); recordDiag("uidLinks", `${e.code||"error"}: ${e.message||e}`); markLoaded("uidLinks"); });
     return unsub;
-  }, []);
+  }, [authUser]);
   const linkUidToUser = (firebaseUid, userId) => setDoc(doc(db,"padelos_links",firebaseUid), {userId}).catch(e=>console.log("Firestore write error (uidLinks)", e));
 
   useEffect(() => {
@@ -2771,6 +3103,20 @@ export default function Matchkeeper() {
   // ────────────────────────────────────────────────────
 
   const toast2 = (msg,t="ok") => { setToast({msg,t}); setTimeout(()=>setToast(null),2600); };
+  const backPressRef = useRef(0);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const handler = CapApp.addListener("backButton", () => {
+      const now = Date.now();
+      if (now - backPressRef.current < 2000) {
+        CapApp.exitApp();
+      } else {
+        backPressRef.current = now;
+        toast2("Press back again to exit");
+      }
+    });
+    return () => { handler.then(h=>h.remove()); };
+  }, []);
   // go() defined above with history tracking
   const updC = (id,fn) => setComms(cs=>cs.map(c=>c.id===id?fn(c):c));
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
@@ -2825,7 +3171,9 @@ export default function Matchkeeper() {
   }, []);
 
   // Community
-  const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});};
+  const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
+    if (me.id!==1) notify([1], "new_community", null, "🌱 New community created", `${me.nickname} created "${d.name}"`);
+  };
   const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");go("comm",{cid:id});};
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
@@ -2839,11 +3187,31 @@ export default function Matchkeeper() {
   const saveVenue=(d,editId=null)=>{const courts=d.courtNames.filter(Boolean).map(n=>({name:n}));if(editId){setVenues(vs=>vs.map(v=>v.id===editId?{...v,...d,courts,status:"pending_edit"}:v));toast2("Saved · Pending review");}else{const id=_vid++;setVenues(vs=>[...vs,{id,...d,courts,status:"pending"}]);toast2("Added · Pending review");}go("list");};
 
   // Event
+  const scheduleEventReminders = async (cid, eid, date, time) => {
+    if (!date || !time) return;
+    const startMs = new Date(`${date}T${time}`).getTime();
+    if (isNaN(startMs)) return;
+    const now = Date.now();
+    const offsets = [{type:"24h", ms:24*3600000}, {type:"3h", ms:3*3600000}, {type:"1h", ms:1*3600000}, {type:"2m", ms:2*60000, audience:"admins"}];
+    const entries = offsets
+      .map(o => ({id:`${eid}-${o.type}`, eventId:eid, communityId:cid, reminderType:o.type, audience:o.audience||"registrants", firesAt:new Date(startMs-o.ms).toISOString(), sent:false}))
+      .filter(e => new Date(e.firesAt).getTime() > now); // skip reminders whose moment has already passed
+    if (entries.length === 0) return;
+    try {
+      const ref = doc(db,"padelos","eventReminderSchedule");
+      const snap = await getDoc(ref);
+      const existing = snap.exists() ? JSON.parse(snap.data().value||"[]") : [];
+      const filtered = existing.filter(x=>x.eventId!==eid); // drop this event's old schedule (re-edit replaces it)
+      await setDoc(ref, {value: JSON.stringify([...filtered, ...entries])});
+    } catch(e) { console.log("eventReminderSchedule write failed", e); }
+  };
   const createEvent=(cid,d)=>{
     const id=_eid++;const v=venues.find(x=>x.id===parseInt(d.venueId));
     const ev={id,communityId:cid,name:d.name,description:d.description||"",createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:parseInt(d.courts)||2,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:v?.pricePerHour||0,extraFee:v?.extraFee||0,plan:null,reservedCourts:v?.courts.length||2};
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
+    scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
+    if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
     if (!d.pollMode && ev.type && ev.visibility!=="private") {
       const recipients = (comm?.members||[]).filter(m=>m.userId!==me.id).map(m=>m.userId);
       notify(recipients, "reg_open", ev, `🎾 New event: ${ev.name}`, `Registration is open — ${fmtD(ev.date)}`);
@@ -2859,6 +3227,9 @@ export default function Matchkeeper() {
       if (d.timeTo!==undefined && d.timeTo!==before.timeTo) changed.push("time");
       if (d.venueId!==undefined && parseInt(d.venueId)!==before.venueId) changed.push("venue");
       if (d.courts!==undefined && parseInt(d.courts)!==before.courts) changed.push("courts");
+      if (changed.includes("date")||changed.includes("time")) {
+        scheduleEventReminders(cid, eid, d.date??before.date, d.time??before.time);
+      }
       if (changed.length>0) {
         const uniqChanged = [...new Set(changed)];
         const recipients = before.registrations.map(r=>r.userId).filter(uid=>uid!==me.id);
@@ -2866,7 +3237,7 @@ export default function Matchkeeper() {
       }
     }
   };
-  const duplicateEvent=(cid,eid,newDate,keepPlayers,newTime,newTimeTo)=>{
+  const duplicateEvent=(cid,eid,newDate,keepPlayers,newTime,newTimeTo,newName)=>{
     const ev=getEv(cid,eid);if(!ev){toast2("Event not found","err");return;}
     const id=_eid++;
     const v=venues.find(x=>x.id===ev.venueId);
@@ -2877,7 +3248,7 @@ export default function Matchkeeper() {
     const copy={
       // ── Header — carried over from the original event ──
       id, communityId:cid,
-      name:ev.name,
+      name:newName&&newName.trim()?newName.trim():ev.name,
       description: ev.description ? `${ev.description}\n${dupNote}` : dupNote,
       createdBy:ev.createdBy,
       date:newDate,
@@ -3100,6 +3471,8 @@ export default function Matchkeeper() {
   const resolveT=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,type:key,poll:ev.poll?{...ev.poll,resolved:true,result:key}:null})}));toast2("Type set ✓");};
   const setPlan=(cid,eid,plan)=>updC(cid,c=>({...c,events:c.events.map(ev=>ev.id===eid?{...ev,plan}:ev)}));
   const removeFromEvent=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));toast2("Removed from event");};
+  const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");};
+  const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
   const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
@@ -3121,6 +3494,22 @@ export default function Matchkeeper() {
       } catch (e) { console.log("matchModeSchedule write failed", e); }
     })();
   };
+  // Manually ends a Match Mode session — clears matchModeStartAt, which the native sync
+  // effect picks up as a real stop signal (cancels the notification + all scheduled
+  // whistles). Useful for cutting a test run short without closing the whole event.
+  const stopMatchMode=(cid,eid)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}})}));
+    toast2("Match Mode stopped");
+  };
+  // Records "whistles are already scheduled for this exact Match Mode start time" durably
+  // in Firestore — this is what lets us schedule the native alarms exactly ONCE per real
+  // session, regardless of how many times the app is closed/reopened in between. A plain
+  // component ref resets on every remount (every time the event screen is reopened),
+  // which was causing a full re-schedule (and, worse, cancellation of still-pending
+  // alarms) on every single app reopen.
+  const markWhistlesScheduled=(cid,eid,startAt)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,mmScheduledFor:startAt}})}));
+  };
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
@@ -3132,8 +3521,24 @@ export default function Matchkeeper() {
     const players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
-  const nextRoundCI=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");};
+  const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");return true;};
   const setWinCI=(cid,eid,ri,mi,w)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w})});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  const rebalanceCourtCI=(cid,eid,ri,mi)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>{
+      if(ev.id!==eid||!ev.plan)return ev;
+      const rounds=ev.plan.rounds.map((r,rr)=>{
+        if(rr!==ri)return r;
+        return {...r,matches:r.matches.map((m,mm)=>{
+          if(mm!==mi||m.winner)return m;
+          const four=[...m.teamA,...m.teamB].sort((a,b)=>b.usr-a.usr);
+          const pair=snakePairCI(four);
+          return {...m,teamA:pair.teamA,teamB:pair.teamB};
+        })};
+      });
+      return {...ev,plan:{...ev.plan,rounds}};
+    })}));
+    toast2("Court re-balanced by USR ✓");
+  };
   const swapCI=(cid,eid,ri,uidA,uidB)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
       if(ev.id!==eid||!ev.plan)return ev;
@@ -3222,6 +3627,36 @@ export default function Matchkeeper() {
     setPlan(cid,eid,{...ev.plan,teams:(ev.plan.teams||[]).map(bump),sorted:(ev.plan.sorted||[]).map(bump),groupA:(ev.plan.groupA||[]).map(bump),groupB:(ev.plan.groupB||[]).map(bump)});
     toast2("Team break preference updated ✓");
   };
+  // Manual admin swap of two players between two teams (Teams tab, before Round 1 locks)
+  // — mirrors the tap-a-player-to-swap pattern already used for CI. Teams are embedded by
+  // value inside plan.teams, groupA/groupB, sorted, and every already-generated round's
+  // matches, so every one of those needs the updated team object, not just plan.teams.
+  const swapCTTeamPlayers=(cid,eid,teamIdA,userIdA,teamIdB,userIdB)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>{
+      if(ev.id!==eid||!ev.plan)return ev;
+      const plan=ev.plan;
+      const teamA=plan.teams.find(t=>t.id===teamIdA), teamB=plan.teams.find(t=>t.id===teamIdB);
+      if(!teamA||!teamB||teamA.id===teamB.id)return ev;
+      const pA=teamA.players.find(p=>(p.userId||p.id)===userIdA);
+      const pB=teamB.players.find(p=>(p.userId||p.id)===userIdB);
+      if(!pA||!pB)return ev;
+      const newTeamA={...teamA,players:teamA.players.map(p=>(p.userId||p.id)===userIdA?pB:p)};
+      const newTeamB={...teamB,players:teamB.players.map(p=>(p.userId||p.id)===userIdB?pA:p)};
+      newTeamA.avgUsr=Math.round((newTeamA.players[0].usr+newTeamA.players[1].usr)/2);
+      newTeamB.avgUsr=Math.round((newTeamB.players[0].usr+newTeamB.players[1].usr)/2);
+      const replaceTeam=t=>t?.id===teamIdA?newTeamA:t?.id===teamIdB?newTeamB:t;
+      const newTeams=plan.teams.map(replaceTeam);
+      const newRounds=plan.rounds.map(r=>({...r,
+        matchesA:(r.matchesA||[]).map(m=>({...m,teamA:replaceTeam(m.teamA),teamB:replaceTeam(m.teamB)})),
+        matchesB:(r.matchesB||[]).map(m=>({...m,teamA:replaceTeam(m.teamA),teamB:replaceTeam(m.teamB)})),
+        onBreak:(r.onBreak||[]).map(replaceTeam),
+      }));
+      return {...ev,plan:{...plan,teams:newTeams,
+        groupA:plan.groupA?.map(replaceTeam),groupB:plan.groupB?.map(replaceTeam),sorted:plan.sorted?.map(replaceTeam),
+        rounds:newRounds}};
+    })}));
+    toast2("Teams updated ✓");
+  };
   const regenCTBreaks=(cid,eid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
     const plan=ev.plan;
@@ -3248,7 +3683,7 @@ export default function Matchkeeper() {
     toast2("Break schedule regenerated ✓");
   };
 
-  const startCT=(cid,eid,courts,fmt,dur)=>{
+  const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
     const ev=getEv(cid,eid);if(!ev)return;
     let players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
@@ -3261,7 +3696,7 @@ export default function Matchkeeper() {
       players=players.filter(p=>(p.userId||p.id)!==(waitlisted.userId||waitlisted.id));
       toast2(`${waitlisted.nickname} moved to waiting list — need even number for team formation`,"err");
     }
-    const newPlan={...generateCTPlan(players,courts,fmt,ev,dur||20),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
+    const newPlan={...generateCTPlan(players,courts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
     setPlan(cid,eid,newPlan);
     toast2(`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
@@ -3304,7 +3739,7 @@ export default function Matchkeeper() {
   const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
 
-  if (authLoading || !dataLoaded) {
+  if (authLoading || (authUser && !dataLoaded)) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
     </div>;
@@ -3354,7 +3789,8 @@ export default function Matchkeeper() {
         select.po-inp option{background:var(--po-card);color:var(--po-text);}
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
       `}</style>
-      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>signOut(fbAuth)}
+      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>signOut(fbAuth)}
+        comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
         onMarkNotifRead={markNotifRead} onMarkAllNotifRead={markAllNotifRead}
         onOpenNotif={n=>{setNotifMenu(false);markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}
@@ -3366,11 +3802,11 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={()=>go("comm",{cid:comm.id})} onSave={d=>saveComm(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}/>}
-        {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
+        {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
-          <EvDetail key={event.id} ev={event} comm={comm} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)}
-            onDuplicate={(newDate,keepPlayers,newTime,newTimeTo)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo)}
+          <EvDetail key={event.id} ev={event} comm={comm} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
+            onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
@@ -3379,6 +3815,9 @@ export default function Matchkeeper() {
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
             onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
             onSetMatchModeStart={(startAt,delayMin,roundEndTimes)=>setMatchModeStart(comm.id,event.id,startAt,delayMin,roundEndTimes)}
+            onStopMatchMode={()=>stopMatchMode(comm.id,event.id)}
+            onMarkWhistlesScheduled={(startAt)=>markWhistlesScheduled(comm.id,event.id,startAt)}
+            onSwapCTTeamPlayers={(teamIdA,userIdA,teamIdB,userIdB)=>swapCTTeamPlayers(comm.id,event.id,teamIdA,userIdA,teamIdB,userIdB)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -3395,26 +3834,30 @@ export default function Matchkeeper() {
             onCloseEvent={()=>closeEvent(comm.id,event.id)}
             onStartCI={(n,dur)=>startCI(comm.id,event.id,n,dur)}
             onSetWinCI={(ri,mi,w)=>setWinCI(comm.id,event.id,ri,mi,w)}
-            onNextRound={()=>nextRoundCI(comm.id,event.id)}
+            onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
+            onRebalanceCourt={(ri,mi)=>rebalanceCourtCI(comm.id,event.id,ri,mi)}
             onEditBreak={(ri,uid,v)=>editBreakCI(comm.id,event.id,ri,uid,v)}
             onRegenerateBreaks={()=>regenerateBreaksCI(comm.id,event.id)}
             onRemoveFromEvent={uid=>removeFromEvent(comm.id,event.id,uid)}
+            onAddEventPhoto={photo=>addEventPhoto(comm.id,event.id,photo)}
+            onRemoveEventPhoto={photoId=>removeEventPhoto(comm.id,event.id,photoId)}
             onEditGuestUsr={(uid,usr)=>editGuestUsr(uid,usr)}
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
-            onStartCT={(c,f,dur)=>startCT(comm.id,event.id,c,f,dur)}
+            onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
             onNextCTLadder={()=>nextCTLadder(comm.id,event.id)}
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
           />
         }
-        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
+        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
         {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser}/>}
-        {nav==="settings"&&<SettingsSc user={me} users={users} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser}/>}
+        {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={n=>{markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav:"notifications",view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}/>}
@@ -3434,19 +3877,12 @@ export default function Matchkeeper() {
   );
 }
 
-function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatformAdmin,onSignOut,TH,dark,
+function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,onSettings,onPlatformAdmin,onSignOut,TH,dark,
+  comms,eventCommFilter,onSetEventCommFilter,
   notifications=[],notifMenu,setNotifMenu,onMarkNotifRead,onMarkAllNotifRead,onOpenNotif,onSeeAllNotifs}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
   const tabs = [
-    {k:"communities", l:"Communities", chip:"#FBBF24", iconColor:"#7C4A03", rot:-4, icon:(
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="8.5" cy="8.5" r="3.8" fill="currentColor"/><circle cx="8.5" cy="8.5" r="1.3" fill="#FBBF24"/>
-        <circle cx="16.5" cy="10" r="3" fill="currentColor"/><circle cx="16.5" cy="10" r="1" fill="#FBBF24"/>
-        <path d="M3 20.5c0-3.8 2.7-6.3 5.9-6.3s5.6 2.3 5.9 5.6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" fill="none"/>
-        <path d="M13.5 16.8c2.5-0.3 5 1.6 5.3 4.4" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" fill="none"/>
-      </svg>
-    )},
     {k:"events", l:"Events", chip:"#F472B6", iconColor:"#7A1042", rot:4, icon:(
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <rect x="3" y="3.5" width="18" height="17" rx="4" fill="none" stroke="currentColor" strokeWidth="2.4"/>
@@ -3454,6 +3890,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
         <circle cx="7.3" cy="14.5" r="2.1" fill="currentColor"/><circle cx="16.7" cy="8.5" r="2.1" fill="currentColor"/>
       </svg>
     )},
+    {k:"me", l:"Me", chip:"#FBBF24", iconColor:"#7C4A03", rot:-4, avatar:true},
   ];
   return <div style={{background:TH?.nav||"#0E1117",borderBottom:`0.5px solid ${TH?.border||"var(--po-bdr)"}`,padding:"0 8px",display:"flex",alignItems:"center",justifyContent:"space-between",height:60,position:"sticky",top:0,left:0,right:0,width:"100%",zIndex:50,transition:"all 0.2s",boxSizing:"border-box",gap:4}}>
     <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
@@ -3466,8 +3903,8 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
     <div style={{display:"flex",gap:6,flex:1,justifyContent:"center",minWidth:0}}>{tabs.map(t=>{
       const active = nav===t.k;
       return <button key={t.k} onClick={()=>onNav(t.k)} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px 6px 6px",borderRadius:11,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:38,background:active?"rgba(255,255,255,0.97)":"rgba(255,255,255,0.16)",transition:"all 0.15s",flexShrink:1,overflow:"hidden"}}>
-        <div style={{width:26,height:26,borderRadius:8,background:t.chip,color:t.iconColor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transform:`rotate(${t.rot}deg)`}}>
-          {React.cloneElement(t.icon,{width:17,height:17})}
+        <div style={{width:26,height:26,borderRadius:t.avatar?"50%":8,background:t.avatar?"transparent":t.chip,color:t.iconColor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transform:t.avatar?"none":`rotate(${t.rot}deg)`,overflow:"hidden"}}>
+          {t.avatar ? <Av u={me} size={26}/> : React.cloneElement(t.icon,{width:17,height:17})}
         </div>
         <span style={{color:active?"#4F46E5":"rgba(255,255,255,0.92)",whiteSpace:"nowrap"}}>{t.l}</span>
       </button>;
@@ -3503,10 +3940,23 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onVenues,onSettings,onPlatf
       </div>}
     </div>
     <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
-      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:2}}><Av u={me} size={30}/></div>
+      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:6,display:"flex"}}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7"/>
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82A1.65 1.65 0 003 13.09H3a2 2 0 010-4h0a1.65 1.65 0 001.51-1A1.65 1.65 0 004.18 6.2l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V2a2 2 0 014 0v0a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V8a1.65 1.65 0 001.51 1H21a2 2 0 010 4h0a1.65 1.65 0 00-1.6 1z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
       {menu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,minWidth:190,zIndex:100,boxShadow:"0 8px 32px #00000066"}}>
         <div style={{padding:"8px 10px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}><div className="po-text" style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{me.nickname}</div><div className="po-dim" style={{fontSize:11,color:"var(--po-dim)"}}>USR {me.usr} · {usrLv(me.usr).l}</div></div>
-        {[{i:"👤",l:"My Profile",fn:onProfile},...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
+        {comms&&<div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}>
+          <span style={{fontSize:12,color:"var(--po-sub)",flexShrink:0}}>🏸 Events from</span>
+          <select value={eventCommFilter||"all"} onChange={e=>{onSetEventCommFilter&&onSetEventCommFilter(e.target.value);}}
+            style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:6,padding:"4px 6px",color:"var(--po-text)",fontSize:12,minWidth:0}}>
+            <option value="all">All Communities</option>
+            {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>}
+        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
       </div>}
     </div>
   </div>;
@@ -3541,6 +3991,7 @@ function CommForm({comm,onBack,onSave}){
 
 function CommStatsTab({comm, users, onViewProfile}){
   const [view, setView] = useState("usr");
+  const [perEvent, setPerEvent] = useState(false); // false=Total, true=Per Event — only relevant for additive stats (wins, pts)
   const members = comm.members.map(m=>users.find(u=>u.id===m.userId)).filter(Boolean);
   const completedEvents = comm.events.filter(ev=>ev.status==="completed"&&ev.plan);
 
@@ -3572,22 +4023,28 @@ function CommStatsTab({comm, users, onViewProfile}){
     return {user:u, participations, wins, totalPts, totalMaxPts};
   });
 
+  const perEv=(n,s)=>s.participations>0?(n/s.participations):0;
   const views={
-    usr:{label:"🏆 USR Rank", sort:(a,b)=>b.user.usr-a.user.usr, val:s=>`USR ${s.user.usr}`, sub:s=>usrLv(s.user.usr).l},
-    events:{label:"📅 Participations", sort:(a,b)=>b.participations-a.participations, val:s=>`${s.participations} events`, sub:()=>""},
-    wins:{label:"⚡ Most Wins", sort:(a,b)=>b.wins-a.wins, val:s=>`${s.wins} wins`, sub:()=>""},
-    pts:{label:"💯 Most Points", sort:(a,b)=>b.totalPts-a.totalPts, val:s=>`${s.totalPts} pts`, sub:()=>""},
+    usr:{label:"🏆 USR Rank", sort:(a,b)=>b.user.usr-a.user.usr, val:s=>`USR ${s.user.usr}`, sub:s=>usrLv(s.user.usr).l, hasPerEvent:false},
+    events:{label:"📅 Participations", sort:(a,b)=>b.participations-a.participations, val:s=>`${s.participations} events`, sub:()=>"", hasPerEvent:false},
+    wins:{label:"⚡ Most Wins", sort:(a,b)=>perEvent?perEv(b.wins,b)-perEv(a.wins,a):b.wins-a.wins, val:s=>perEvent?`${perEv(s.wins,s).toFixed(1)} wins/ev`:`${s.wins} wins`, sub:s=>perEvent?`${s.wins} total over ${s.participations} events`:"", hasPerEvent:true},
+    pts:{label:"💯 Most Points", sort:(a,b)=>perEvent?perEv(b.totalPts,b)-perEv(a.totalPts,a):b.totalPts-a.totalPts, val:s=>perEvent?`${perEv(s.totalPts,s).toFixed(1)} pts/ev`:`${s.totalPts} pts`, sub:s=>perEvent?`${s.totalPts} total over ${s.participations} events`:"", hasPerEvent:true},
   };
 
   const sorted=[...stats].sort(views[view].sort);
 
   return <>
-    <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
-      {Object.entries(views).map(([k,v])=><button key={k} onClick={()=>setView(k)}
-        style={{padding:"7px 12px",borderRadius:8,border:`0.5px solid ${view===k?"#6366F1":"var(--po-bdr)"}`,background:view===k?"#6366F122":"var(--po-card)",color:view===k?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600,cursor:"pointer"}}>
-        {v.label}
-      </button>)}
-    </div>
+    <select value={view} onChange={e=>setView(e.target.value)} className="po-inp"
+      style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"10px 12px",fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:10}}>
+      {Object.entries(views).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+    </select>
+    {views[view].hasPerEvent&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"8px 12px",marginBottom:12}}>
+      <span style={{fontSize:12,color:"var(--po-text)"}}>View</span>
+      <div style={{display:"flex",background:"var(--po-inp)",borderRadius:8,padding:2}}>
+        <div onClick={()=>setPerEvent(false)} style={{padding:"5px 12px",fontSize:11,fontWeight:600,borderRadius:6,cursor:"pointer",background:!perEvent?"#6366F1":"transparent",color:!perEvent?"#fff":"var(--po-dim)"}}>Total</div>
+        <div onClick={()=>setPerEvent(true)} style={{padding:"5px 12px",fontSize:11,fontWeight:600,borderRadius:6,cursor:"pointer",background:perEvent?"#6366F1":"transparent",color:perEvent?"#fff":"var(--po-dim)"}}>Per Event</div>
+      </div>
+    </div>}
     {sorted.map((s,i)=>{
       const lv=usrLv(s.user.usr);
       const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":`${i+1}.`;
@@ -3611,6 +4068,7 @@ function CommStatsTab({comm, users, onViewProfile}){
 function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile}){
   const [tab,setTab]=useState("members");
   const [showInvite,setShowInvite]=useState(false);
+  const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const myRole=comm.members.find(m=>m.userId===me.id)?.role;
   const isAdmin=myRole==="owner"||myRole==="admin";
   const isMember=!!myRole;
@@ -3659,7 +4117,15 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
             <Card key={m.userId} style={{cursor:isAdmin?"pointer":"default"}}><div onClick={()=>isAdmin&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
               <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{isAdmin&&!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
-              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}} onClick={e=>e.stopPropagation()}>{m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>onConvertGuest(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>onToggleStatus(u.id)} color="#34D399"/>}{m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>onPromote(u.id)} color="#6366F1"/>}<SmBtn label="Remove" onClick={()=>onKick(u.id)} color="#EF4444"/></div>}
+              {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+                {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+                  {m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>{onConvertGuest(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>{onToggleStatus(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>{onPromote(u.id);setOpenMemberMenu(null);}} color="#6366F1" style={{width:"100%"}}/>}
+                  <SmBtn label="Remove" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from ${comm.name}?\n\nThey'll need to re-apply to join again. Their event history stays intact.`)){onKick(u.id);setOpenMemberMenu(null);}}} color="#EF4444" style={{width:"100%"}}/>
+                </div>}
+              </div>}
             </div></Card>
           );})}
         </div>;
@@ -3670,14 +4136,23 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
       {(() => { const visEvents = comm.events.filter(ev=>ev.visibility!=="private"||isAdmin||ev.registrations.some(r=>r.userId===me.id));
       return visEvents.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No events yet</div></Card>:<>
         {(() => {
-          const upcoming=visEvents.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled"&&!ev.archived);
-          const past=visEvents.filter(ev=>(ev.status==="completed"||ev.status==="cancelled")&&!ev.archived);
-          const archived=visEvents.filter(ev=>ev.archived);
+          const now=Date.now();
+          const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
+          const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
+          const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
+          const upcoming=visEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
+          const pastAll=visEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
+          const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
+          const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
+          const archived=visEvents.filter(ev=>ev.archived||ev.status==="cancelled").sort(byNewestFirst);
           return <>
             {upcoming.length>0?<>{upcoming.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}</>
               :<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No upcoming events</div></Card>}
-            {past.length>0&&<CollapsibleSection label={`📁 Past Events (${past.length})`} defaultOpen={false}>
-              {past.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
+            {pastIncomplete.length>0&&<CollapsibleSection label={`⏳ Incomplete (${pastIncomplete.length})`} defaultOpen={false}>
+              {pastIncomplete.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
+            </CollapsibleSection>}
+            {pastCompleted.length>0&&<CollapsibleSection label={`✅ Completed (${pastCompleted.length})`} defaultOpen={false}>
+              {pastCompleted.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
             </CollapsibleSection>}
             {isAdmin&&archived.length>0&&<CollapsibleSection label={`📦 Archived (${archived.length})`} defaultOpen={false}>
               {archived.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
@@ -3718,15 +4193,22 @@ function EvCard({ev,me,users,onClick}){
   const sl={registration_open:"Open",completed:"Completed",cancelled:"Cancelled"};
   const tl={open:"Open Day",closed_ind:"Closed Ind.",closed_teams:"Closed Teams"};
   const creator=users?.find(u=>u.id===ev.createdBy);
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  const photoCount=ev.photos?.length||0;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
-function EventForm({venues,onBack,onCreate}){
+function EventForm({venues,onBack,onCreate,commName}){
   const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",rotationMin:"20",pollMode:false,eventType:"open",visibility:"public"});
-  const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId)),c=parseInt(f.courts)||0,maxC=v?v.courts.length:10,tot=v?(v.pricePerHour*c+v.extraFee*c):0;
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId)),c=parseInt(f.courts)||0,maxC=v?v.courts.length:10;
+  const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; return Math.max(0.5, ((h2*60+m2)-(h1*60+m1))/60); })();
+  const tot=v?Math.round((v.pricePerHour+v.extraFee)*c*durHrs):0;
+  const doSuggestName=()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,commName}));
   return <><BBtn onBack={onBack} label="Community"/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>New Event</div><Card>
-    <Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Friday Night Padel"/>
+    <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
+      <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Friday Night Padel"/></div>
+      <button type="button" onClick={doSuggestName} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
+    </div>
     <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls, court 3 booked separately" multiline/>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
       <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
@@ -3734,7 +4216,7 @@ function EventForm({venues,onBack,onCreate}){
       <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
     </div>
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{v.courts.length} courts · {v.pricePerHour} EGP/hr{v.extraFee>0?` · +${v.extraFee} booking`:""}</div>}</div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[10,15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]].map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&EVENT_TYPES.map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
@@ -3754,7 +4236,10 @@ function EventEditForm({ev,venues,onBack,onSave}){
   return <><BBtn onBack={onBack} label={ev.name}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Edit Event</div>
     <Card>
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>ℹ️ {isCompleted?"This event is completed — date/time can still be corrected, but courts and type are locked to protect historical results.":lockedType?"Type is locked — a plan has already been generated for this event.":"Players and plan stay unchanged unless you change the event type."}</div>
-      <Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Monday at Galleria"/>
+      <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
+        <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Monday at Galleria"/></div>
+        <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
+      </div>
       <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls" multiline/>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
         <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
@@ -3843,7 +4328,7 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
     </table>
   </div>;
 }
-function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
+function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin}){
   const bpr=Math.max(0,ev.registrations.length-tc*4);
 
   // Count completed rounds (all matches have winners)
@@ -3869,7 +4354,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
   return <Card>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Break Schedule</div>
-      {ev.status!=="completed"&&<button onMouseDown={e=>{e.preventDefault();onRegenerate();}}
+      {isAdmin&&ev.status!=="completed"&&<button onMouseDown={e=>{e.preventDefault();onRegenerate();}}
         style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:12,fontWeight:500,cursor:"pointer"}}>
         🔄 Regenerate Future
       </button>}
@@ -3901,9 +4386,9 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
       {warnings.map((w,i)=><div key={i} style={{fontSize:11,color:"#F59E0B"}}>{w}</div>)}
     </div>}
 
-    <div style={{fontSize:11,color:"#6366F1",marginBottom:10,padding:"6px 10px",background:"#6366F111",borderRadius:6}}>
+    {isAdmin&&<div style={{fontSize:11,color:"#6366F1",marginBottom:10,padding:"6px 10px",background:"#6366F111",borderRadius:6}}>
       💡 Pending columns (🔄) change via Rounds tab swap · Open columns (✏️) tap to edit here
-    </div>
+    </div>}
 
     <div style={{overflowX:"auto"}}>
       <table style={{borderCollapse:"collapse",minWidth:"100%"}}>
@@ -3935,7 +4420,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
               const isFrozen=ri<completedRounds;
               const isPending=ri>=completedRounds&&ri<generatedRounds;
               const isOpen=ri>=generatedRounds;
-              const canEdit=isOpen; // only open rounds editable from breaks tab
+              const canEdit=isOpen&&isAdmin; // only open rounds, and only admins, may edit from the Breaks tab
 
               const isFirm = isOpen && (plan.firmBreaks?.[ri]||[]).includes(u.id);
               const bg   = isFirm ? "#8B5CF633" : onB ? (isFrozen?"#EF444422":isPending?"#F59E0B22":"#F59E0B33") : (isFrozen?"#33333322":isPending?"var(--po-bdr)":"#34D39911");
@@ -3957,14 +4442,14 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate}){
         })}</tbody>
       </table>
     </div>
-    <div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to cycle: ▶ none → 🪑 suggested → 🔐 firm (locked — survives Regenerate) → back to none</div>
+    {isAdmin&&<div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to cycle: ▶ none → 🪑 suggested → 🔐 firm (locked — survives Regenerate) → back to none</div>}
   </Card>;
 }
 
 // ══════════════════════════════════════════════════════
 //  CT TEAM CARD
 // ══════════════════════════════════════════════════════
-function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
+function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit,selectedUserId,onPlayerTap}){
   const poolColors = ["#6366F1","#06B6D4","#F472B6","#34D399","#F59E0B"];
   const isPool = group && group.startsWith("P");
   const poolNum = isPool ? parseInt(group.slice(1))-1 : (group==="A"?0:1);
@@ -3979,7 +4464,13 @@ function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
         <span style={{fontSize:12,color:"var(--po-dim)"}}>({team.avgUsr})</span>
         <Bdg label={badgeLabel} color={gc}/>
       </div>
-      <div style={{display:"flex",gap:10}}>{team.players.map(p=>{return <div key={p.userId||p.id} style={{display:"flex",alignItems:"center",gap:4}}><Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{p.usr}</span></div>;})}</div>
+      <div style={{display:"flex",gap:10}}>{team.players.map(p=>{
+        const uid=p.userId||p.id, isSel=selectedUserId===uid;
+        return <div key={uid} onClick={canEdit?()=>onPlayerTap(team.id,uid):undefined}
+          style={{display:"flex",alignItems:"center",gap:4,cursor:canEdit?"pointer":"default",padding:isSel?"2px 6px":"2px 0",borderRadius:6,background:isSel?"#FBBF2422":"transparent",border:isSel?"0.5px solid #FBBF2466":"0.5px solid transparent"}}>
+          <Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:isSel?"#FBBF24":"var(--po-sub)",fontWeight:isSel?700:400}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{p.usr}</span>
+        </div>;
+      })}</div>
       {showBreakPref&&(isAdmin
         ? <div style={{display:"flex",alignItems:"center",gap:4,marginTop:6}}>
             <span style={{fontSize:10,color:"var(--po-dim)"}}>Break:</span>
@@ -3999,7 +4490,7 @@ function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref}){
 // ══════════════════════════════════════════════════════
 //  CT MATCHES TAB
 // ══════════════════════════════════════════════════════
-function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
+function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
   const [selSwap, setSelSwap] = useState(null); // {ri, tid} for pending swap
   const teams = plan.sorted || plan.teams;
   const totalRounds = plan.maxRounds || plan.rounds.length;
@@ -4010,6 +4501,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
   const breakSet = (ri) => new Set(breakPlan[ri]||[]);
 
   function handleCellTap(ri, t){
+    if(!isAdmin) return;
     if(ri < generatedCount) return; // locked/generated — can't swap
     if(!selSwap){
       // First tap: only meaningful to tap a break slot
@@ -4027,7 +4519,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
     const onBreak = breakSet(ri).has(t.id);
     const isGenerated = ri < generatedCount;
     const isSel = selSwap&&selSwap.ri===ri&&selSwap.tid===t.id;
-    const canInteract = !isGenerated;
+    const canInteract = !isGenerated&&isAdmin;
     return {
       padding:"6px 4px", textAlign:"center",
       borderBottom:"0.5px solid var(--po-bdr)",
@@ -4045,9 +4537,9 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
   return <>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,gap:8}}>
       <div style={{fontSize:11,color:"var(--po-dim)"}}>
-        🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap 🔐 to lock/unlock Firm)
+        {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap 🔐 to lock/unlock Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
-      {onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
+      {isAdmin&&onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
     </div>
     {selSwap&&<div style={{marginBottom:8,padding:"8px 12px",background:"#6366F111",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>
       ✋ {teams.find(t=>t.id===selSwap.tid)?.name} selected — tap another team in R{selSwap.ri+1} to swap break
@@ -4082,21 +4574,22 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm}){
                   ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":isSel?"#6366F1":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
-                {onBreak&&!isGenerated&&<span onClick={e=>{e.stopPropagation();onToggleFirm&&onToggleFirm(ri,t.id);}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
+                {onBreak&&!isGenerated&&isAdmin&&<span onClick={e=>{e.stopPropagation();onToggleFirm&&onToggleFirm(ri,t.id);}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
               </td>;
             })}
           </tr>)}
         </tbody>
       </table>
     </div>
-    {generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap ☕ then another team to swap</div>}
+    {isAdmin&&generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap ☕ then another team to swap</div>}
   </>;
 }
 
 
-function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,sim,onSetMatchModeStart}){
+function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
   const [scores,setScores]=useState({});
+  const [collapsedRounds,setCollapsedRounds]=useState(new Set()); // manually toggled rounds (overrides the completed-round default)
 
   function getS(ri,mi,side){return scores[`${ri}_${mi}_${side}`]||{scoreA:0,scoreB:0};}
   function setS(ri,mi,side,field,val){setScores(s=>({...s,[`${ri}_${mi}_${side}`]:{...getS(ri,mi,side),[field]:val}}));}
@@ -4127,7 +4620,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
       <div style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",marginBottom:10}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</div>
       {(()=>{
         const ri2=plan.rounds.findIndex(r=>r.roundNum===plan.rounds[plan.rounds.length-1].roundNum);
-        function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;return <div onClick={()=>{if(!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:!isLeague&&onSwapCTLadder?"pointer":"default"}}><div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{team?.players?.map(p=>p.nickname).join(" & ")}</div></div>;}
+        function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}><div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{team?.players?.map(p=>p.nickname).join(" & ")}</div></div>;}
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:isLeague?16:10,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:12,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       {isLeague&&<>
@@ -4170,11 +4663,11 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
       const ladderDone=plan.rounds.length>=maxR;
       return <>
         {selT&&<div style={{fontSize:12,padding:"8px 12px",borderRadius:8,marginBottom:8,background:"#FBBF2411",border:"0.5px solid #FBBF2444",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{color:"#FBBF24"}}>✋ Team selected — tap another team or break team to swap</span><SmBtn label="✕" onClick={()=>setSelT(null)} color="#EF4444"/></div>}
-      {lastRoundDone&&!ladderDone&&<Btn label={`▶ Generate Next Match (Round ${plan.rounds.length+1} of ${maxR})`} primary onClick={onNextCTLadder} style={{width:"100%",marginBottom:12}}/>}
+      {lastRoundDone&&!ladderDone&&isAdmin&&<Btn label={`▶ Generate Next Match (Round ${plan.rounds.length+1} of ${maxR})`} primary onClick={onNextCTLadder} style={{width:"100%",marginBottom:12}}/>}
         {lastRoundDone&&ladderDone&&<div style={{padding:"12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:13,fontWeight:600,color:"#34D399",textAlign:"center",marginBottom:12}}>🏆 Event Complete — all rounds played! Check Standings.</div>}
         {onBreak.length>0&&<div style={{background:"#F59E0B0D",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:12}}>
-          <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{onBreak.map(t=>{const isSel=selT?.ri===lastRound.roundNum-1&&selT?.tid===t.id;return <div key={t.id} onClick={()=>{if(!onSwapCTLadder)return;if(selT&&selT.ri===lastRound.roundNum-1&&selT.tid!==t.id){onSwapCTLadder(lastRound.roundNum-1,selT.tid,t.id);setSelT(null);}else setSelT({ri:lastRound.roundNum-1,tid:t.id});}} style={{padding:"6px 10px",background:isSel?"#FBBF2422":"#F59E0B11",border:`1.5px solid ${isSel?"#FBBF24":"#F59E0B44"}`,borderRadius:8,cursor:onSwapCTLadder?"pointer":"default"}}>
+          <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{isAdmin&&onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{onBreak.map(t=>{const isSel=selT?.ri===lastRound.roundNum-1&&selT?.tid===t.id;return <div key={t.id} onClick={()=>{if(!isAdmin||!onSwapCTLadder)return;if(selT&&selT.ri===lastRound.roundNum-1&&selT.tid!==t.id){onSwapCTLadder(lastRound.roundNum-1,selT.tid,t.id);setSelT(null);}else setSelT({ri:lastRound.roundNum-1,tid:t.id});}} style={{padding:"6px 10px",background:isSel?"#FBBF2422":"#F59E0B11",border:`1.5px solid ${isSel?"#FBBF24":"#F59E0B44"}`,borderRadius:8,cursor:isAdmin&&onSwapCTLadder?"pointer":"default"}}>
             <div style={{fontSize:12,color:isSel?"#FBBF24":"#F59E0B",fontWeight:600}}>{t.name} ({t.avgUsr})</div>
             <div style={{fontSize:10,color:"var(--po-sub)"}}>{t.players?.map(p=>p.nickname).join(" & ")}</div>
           </div>;})}</div>
@@ -4187,7 +4680,7 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
       {plan.lastPromo&&<div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>
         Last: <span style={{color:"#34D399"}}>{plan.lastPromo.promoted?.map?.(t=>t?.name).join(", ")||plan.lastPromo.promoted?.name}</span> promoted · <span style={{color:"#F59E0B"}}>{plan.lastPromo.relegated?.filter(Boolean).map(t=>t?.name).join(", ")}</span> relegated
       </div>}
-      <Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>
+      {isAdmin&&<Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>}
     </>}
     {isLeague&&lastRoundDone&&plan.leagueRound>=(plan.maxRounds||99)&&<div style={{padding:"12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:13,fontWeight:600,color:"#34D399",textAlign:"center",marginBottom:12}}>🏆 Event Complete — all rounds played! Check Standings.</div>}
     {isLeague&&lastRoundDone&&plan.leagueRound>=(plan.maxRounds||99)&&<div style={{padding:"6px 10px",background:"#6366F111",borderRadius:6,fontSize:11,color:"#6366F1",marginBottom:8}}>Final standings: all teams merged by total points</div>}
@@ -4196,18 +4689,29 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
     {reversedRounds.map((round,revIdx)=>{
       const ri=plan.rounds.length-1-revIdx;
       const isLatest=revIdx===0;
+      const isRoundComplete=[...round.matchesA,...(round.matchesB||[])].every(m=>m.winner);
+      const manuallySet=collapsedRounds.has(ri);
+      const toggle=()=>setCollapsedRounds(s=>{const n=new Set(s);n.has(ri)?n.delete(ri):n.add(ri);return n;});
+      // Default: completed + not latest → collapsed. A manual toggle flips that specific round's state.
+      const defaultCollapsed = isRoundComplete && !isLatest;
+      const effCollapsed = manuallySet ? !defaultCollapsed : defaultCollapsed;
       return <div key={ri} style={{marginBottom:20,opacity:isLatest?1:0.7}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-          <span style={{fontSize:14,fontWeight:700,color:isLatest?"var(--po-text)":"var(--po-dim)"}}>
-            {isLeague?`League Round ${round.roundNum}`:`Match Round ${round.roundNum}`}
-          </span>
-          {[...round.matchesA,...(round.matchesB||[])].every(m=>m.winner)&&<Bdg label="✓ Complete" color="#34D399"/>}
+        <div onClick={isRoundComplete?toggle:undefined} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,cursor:isRoundComplete?"pointer":"default"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {isRoundComplete&&<span style={{fontSize:11,color:"var(--po-dim)",transform:effCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform 0.15s"}}>▾</span>}
+            <span style={{fontSize:14,fontWeight:700,color:isLatest?"var(--po-text)":"var(--po-dim)"}}>
+              {isLeague?`League Round ${round.roundNum}`:`Match Round ${round.roundNum}`}
+            </span>
+          </div>
+          {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
         </div>
-        {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart}/>}
+        {effCollapsed?null:<>
+        {isLatest&&isAdmin&&<MatchTimerWidget plan={plan} roundDuration={plan.matchDuration||plan.roundDuration} totalRounds={Math.max(1,Math.round(totalBookingMin/(plan.matchDuration||plan.roundDuration||20)))} totalBookingMin={totalBookingMin} eventDate={eventDate} eventTime={eventTime} eventId={eventId} unitLabel="Match" sim={sim} onStart={onSetMatchModeStart} onStop={onStopMatchMode}/>}
         {isLeague
-          ?<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}{(round.matchesB||[]).map((m,mi)=><MatchCard key={`B${mi}`} m={m} ri={ri} mi={mi} side="B"/>)}</>
+          ?<>{[...round.matchesA].sort((a,b)=>a.court-b.court||(a.winner?1:0)-(b.winner?1:0)).map((m,mi)=><MatchCard key={`A${m.court}-${mi}`} m={m} ri={ri} mi={round.matchesA.indexOf(m)} side="A"/>)}{[...(round.matchesB||[])].sort((a,b)=>a.court-b.court||(a.winner?1:0)-(b.winner?1:0)).map((m,mi)=><MatchCard key={`B${m.court}-${mi}`} m={m} ri={ri} mi={round.matchesB.indexOf(m)} side="B"/>)}</>
           :<>{round.matchesA.map((m,mi)=><MatchCard key={`A${mi}`} m={m} ri={ri} mi={mi} side="A"/>)}</>
         }
+        </>}
       </div>;
     })}
   </>;
@@ -4218,23 +4722,25 @@ function CTMatchesTab({plan,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadde
 // on the booking's end time. Falls back to (rounds × duration) when no end time is set,
 // which still compresses proportionally to the delay.
 function computeRoundEndOffsets(totalRounds, roundDuration, totalBookingMin, delayMin){
-  const offsets = {1: roundDuration};
-  if (totalRounds<=1) return offsets;
+  const offsets = {};
   const bookingMin = totalBookingMin || (totalRounds*roundDuration);
-  const remainingMin = bookingMin - delayMin - roundDuration;
-  const restDur = Math.max(1, remainingMin/(totalRounds-1)); // never compress below 1 min/round
-  for (let n=2; n<=totalRounds; n++) offsets[n] = offsets[n-1] + restDur;
+  // Round 1 is no longer treated as fixed-length — the whole remaining window (after
+  // the delay is subtracted) is split evenly across every round, round 1 included, so a
+  // late start compresses ALL rounds proportionally instead of only rounds 2+.
+  const remainingMin = Math.max(totalRounds, bookingMin - delayMin); // never compress below 1 min/round total
+  const evenDur = remainingMin/totalRounds;
+  for (let n=1; n<=totalRounds; n++) offsets[n] = n*evenDur;
   return offsets;
 }
 
 // ══════════════════════════════════════════════════════
 //  MATCH MODE — countdown widget shown atop the active round
 // ══════════════════════════════════════════════════════
-function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,unitLabel,sim,onStart}){
+function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventDate,eventTime,eventId,unitLabel,sim,onStart,onStop,isCompleted}){
   const [now,setNow]         = useState(Date.now());
-  const [startInput,setStartInput] = useState(addMinutesToTime(eventTime,5)||"");
+  const [startInput,setStartInput] = useState(()=>{ const n=new Date(); return `${String(n.getHours()).padStart(2,"0")}:${String(n.getMinutes()).padStart(2,"0")}`; });
   const [flash,setFlash]     = useState(false);
-  const prevSlotRef = React.useRef(1);
+  const prevSlotRef = React.useRef(null);
   const rd = roundDuration || 20; // defensive fallback — legacy/seed plans may predate this field
   const tr = totalRounds || 1;
   const started = !!plan.matchModeStartAt;
@@ -4258,7 +4764,23 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   const endAt = started ? new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000 : null;
   const remaining = started ? Math.max(0, Math.round((endAt-now)/1000)) : null;
   const restDur = started && offsets ? (offsets[2]!==undefined ? offsets[2]-offsets[1] : rd) : rd;
-  const isCompressed = started && slot>1 && Math.round(restDur)<rd;
+  const isCompressed = started && Math.round(restDur)<rd;
+  if (prevSlotRef.current === null) prevSlotRef.current = slotRaw; // seed on mount — no whistle for "just arrived mid-round"
+
+  const [firedRounds,setFiredRounds] = useState([]);
+
+  // Polls the native durable "did this round's alarm actually ring" record — this works
+  // even if the app was fully closed at the moment some of them fired. Also listens live
+  // for instant updates when the app happens to be open when one rings.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !started || !eventId) return;
+    let sub, stopped = false;
+    const poll = () => MatchMode.getFiredWhistles({eventId:String(eventId)}).then(r=>{ if(!stopped) setFiredRounds(r?.rounds||[]); }).catch(()=>{});
+    poll();
+    const iv = setInterval(poll, 5000);
+    MatchMode.addListener("whistleFired", ()=>poll()).then(h=>sub=h);
+    return () => { stopped=true; clearInterval(iv); sub?.remove(); };
+  }, [started, eventId]);
 
   useEffect(() => {
     const iv = setInterval(()=>setNow(Date.now()), 1000); // ticks off the device's real clock, always
@@ -4272,7 +4794,6 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   useEffect(() => {
     if (slotRaw>prevSlotRef.current) {
       prevSlotRef.current = slotRaw;
-      playWhistle();
       setFlash(true);
       const t = setTimeout(()=>setFlash(false), 2500);
       return () => clearTimeout(t);
@@ -4280,6 +4801,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
   }, [slotRaw]);
 
   if (!started) {
+    if (isCompleted) return null; // event finished, Match Mode was never used — nothing to show
     if (tooEarly) {
       const evClock = new Date(eventStartMs).toLocaleString([], {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
       return <Card style={{marginBottom:10,background:"#33415511",border:"0.5px solid var(--po-bdr)"}}>
@@ -4304,44 +4826,100 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
     </Card>;
   }
 
-  if (eventOver) {
-    return <Card style={{marginBottom:10,background:"#EF444422",border:"0.5px solid #EF444466"}}>
-      <div style={{fontSize:11,color:"#EF4444",fontWeight:600}}>🏁 Booking time is up</div>
-      <div style={{fontSize:12,color:"var(--po-dim)",marginTop:4}}>All {tr} scheduled rounds have run their course.</div>
-    </Card>;
+  // Historical reference list of every round's whistle time — shown whenever Match Mode
+  // was actually used for this event, regardless of whether it's still live, the booking
+  // window is over, or the event itself is already closed. Also shown on the web version
+  // (informational only — web can't schedule the native alarm, but the times themselves
+  // are still useful to see, and any ✓ recorded natively will still show once synced).
+  const scheduleList = eventId&&offsets ? <Card style={{marginBottom:10}}>
+    <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>🔔 Native whistle schedule</div>
+    {Array.from({length:tr},(_,i)=>i+1).map(r=>{
+      const rEndsAt = new Date(plan.matchModeStartAt).getTime() + (offsets[r]||r*rd)*60000;
+      const rClock = new Date(rEndsAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit",hour12:true});
+      const isFired = firedRounds.includes(r);
+      return <div key={r} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderTop:r>1?"0.5px solid var(--po-bdr)":"none"}}>
+        <span style={{fontSize:12,color:"var(--po-text)"}}>{unitLabel||"Round"} {r} — {rClock}</span>
+        <span style={{fontSize:13,color:isFired?"#34D399":"var(--po-dim)",fontWeight:700}}>{isFired?"✓":"⏳"}</span>
+      </div>;
+    })}
+  </Card> : null;
+
+  if (isCompleted || eventOver) {
+    return <>
+      <Card style={{marginBottom:10,background:"#EF444422",border:"0.5px solid #EF444466"}}>
+        <div style={{fontSize:11,color:"#EF4444",fontWeight:600}}>🏁 {isCompleted?"Event completed":"Booking time is up"}</div>
+        <div style={{fontSize:12,color:"var(--po-dim)",marginTop:4}}>All {tr} scheduled rounds have run their course.</div>
+      </Card>
+      {scheduleList}
+    </>;
   }
 
   const mm = String(Math.floor(remaining/60)).padStart(2,"0");
   const ss = String(remaining%60).padStart(2,"0");
   const endClock = endAt ? new Date(endAt).toLocaleTimeString([], {hour:"numeric",minute:"2-digit",hour12:true}) : null;
-  return <Card style={{marginBottom:10,background:flash?"#EF444422":"#6366F111",border:`0.5px solid ${flash?"#EF444466":"#6366F144"}`}}>
+  return <>
+  <Card style={{marginBottom:10,background:flash?"#EF444422":"#6366F111",border:`0.5px solid ${flash?"#EF444466":"#6366F144"}`}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
       <div>
         <div style={{fontSize:11,color:flash?"#EF4444":"#A5B4FC",fontWeight:600}}>{flash?"⏰ Time's up!":endClock?`⏱ ${unitLabel||"Round"} ${slot} ends at ${endClock}`:`⏱ ${unitLabel||"Round"} ${slot} ends in`}</div>
         <div style={{fontSize:26,fontWeight:800,color:flash?"#EF4444":"var(--po-text)",fontVariantNumeric:"tabular-nums"}}>{mm}:{ss}</div>
         {isCompressed&&<div style={{fontSize:10,color:"#F59E0B",marginTop:4}}>⚠️ Compressed to ~{Math.round(restDur)}min to catch up from the {delayMin}min delay</div>}
       </div>
-      {flash&&<SmBtn label="🔔 Replay" onClick={playWhistle} color="#EF4444"/>}
+      <div style={{display:"flex",gap:6}}>
+        {flash&&<SmBtn label="🔔 Replay" onClick={playWhistle} color="#EF4444"/>}
+        {onStop&&<SmBtn label="🛑 Stop" onClick={()=>{if(window.confirm("Stop Match Mode? This ends the live timer/notification for this event."))onStop();}} color="#EF4444"/>}
+      </div>
     </div>
-  </Card>;
+  </Card>
+  {scheduleList}
+  </>;
 }
 
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart}){
+function EvDetail({ev,comm,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
-  const [totalR,setTotalR] = useState(6);
-  const [roundDur,setRDur] = useState(20);
+  const suggestedRoundDur = ev.rotationMin||20;
+  const eventBookingMins = (()=>{
+    if(!ev.time||!ev.timeTo) return 120;
+    const [h1,m1]=ev.time.split(":").map(Number);
+    const [h2,m2]=(ev.timeTo||"").split(":").map(Number);
+    if(isNaN(h2)) return 120;
+    let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60;
+    return mins;
+  })();
+  const [roundDur,setRDur] = useState(suggestedRoundDur);
+  // Total rounds is fully derived from the event's real booking window ÷ round duration —
+  // no manual round-count picker; changing the duration recomputes this automatically.
+  const totalR = Math.max(1, Math.round(eventBookingMins/(roundDur||20)));
   const [showAddM,setSAM]  = useState(false);
+  const [showHeaderMenu,setShowHeaderMenu] = useState(false);
+  const [photoUploading2,setPhotoUploading2] = useState(false);
+  const [photoUploadError,setPhotoUploadError] = useState("");
+  const handleEventPhotoSelect = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    setPhotoUploading2(true); setPhotoUploadError("");
+    try { const photo = await uploadEventPhoto(ev.id, file); onAddEventPhoto(photo); }
+    catch(err) {
+      console.log("Event photo upload failed", err);
+      setPhotoUploadError(`${err.code||"error"}: ${err.message||err}`);
+      onToast&&onToast("Upload failed — see details below","err");
+    }
+    setPhotoUploading2(false);
+    e.target.value = "";
+  };
+  const [collapsedRounds,setCollapsedRounds] = useState(new Set()); // manually toggled CI rounds (overrides the completed-round default)
   const [showAddG,setSAG]  = useState(false);
   const [gf,setGf]         = useState({n:"",name:"",p:"",usr:"50"});
   const [sel,setSel]       = useState(null);
+  const [ctSel,setCtSel]   = useState(null); // {teamId,userId} — for tap-a-player-to-swap between teams
   const [showResultsTable,setShowResultsTable] = useState(false);
   const [ctC,setCtC]       = useState(null);
+  const [ctTopPoolSize,setCtTopPoolSize] = useState(null); // null = auto (top-ranked players → the auto-computed bigger pool)
   const [ctF,setCtF]       = useState("league");
-  const [ctDur,setCtDur]   = useState(20);
+  const [ctDur,setCtDur]   = useState(ev.rotationMin||20);
   const [simSnapshot,setSimSnapshot] = useState(null); // deep clone of `ev` taken when sim starts; discarded on exit
   const [simEv,setSimEv]   = useState(null);           // local working copy mutated only while sim is active
 
@@ -4429,6 +5007,21 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
           return {...e, plan:{...e.plan, rounds}};
         })
       : onSwap(ri,a,b),
+    rebalanceCourt: (ri,mi) => sim
+      ? simMutate(e => {
+          if(!e.plan) return e;
+          const rounds=e.plan.rounds.map((r,rr)=>{
+            if(rr!==ri)return r;
+            return {...r,matches:r.matches.map((m,mm)=>{
+              if(mm!==mi||m.winner)return m;
+              const four=[...m.teamA,...m.teamB].sort((a,b)=>b.usr-a.usr);
+              const pair=snakePairCI(four);
+              return {...m,teamA:pair.teamA,teamB:pair.teamB};
+            })};
+          });
+          return {...e, plan:{...e.plan, rounds}};
+        })
+      : onRebalanceCourt(ri,mi),
     editBreak: (ri,uid,v) => sim ? null /* break editing not mirrored in sim — exit sim to make this change for real */ : onEditBreak(ri,uid,v),
     regenerateBreaks: () => sim ? null : onRegenerateBreaks(),
     swapCTBreak: (ri,tA,tB) => sim
@@ -4479,12 +5072,13 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
           return {...e, plan:{...plan, breakPlan:newBreakPlan}};
         })
       : onRegenCTBreaks&&onRegenCTBreaks(),
-    startCT: (c,f,dur) => sim
+    swapCTTeamPlayers: (teamIdA,userIdA,teamIdB,userIdB) => onSwapCTTeamPlayers&&onSwapCTTeamPlayers(teamIdA,userIdA,teamIdB,userIdB),
+    startCT: (c,f,dur,topPoolSizeOverride) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId};}).filter(Boolean);
-          return {...e, plan: generateCTPlan(players, c, f, e, dur)};
+          return {...e, plan: generateCTPlan(players, c, f, e, dur, topPoolSizeOverride)};
         })
-      : onStartCT(c,f,dur),
+      : onStartCT(c,f,dur,topPoolSizeOverride),
     setWinCT: (ri,mi,side,w,sA,sB) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -4588,8 +5182,167 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
   const canReg = !myReg&&effEv.status==="registration_open"&&(!inRW||isReg||isAdmin);
   const isDay  = sim||effEv.date===today;
   const plan   = effEv.plan;
-  const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
   const isCompleted = effEv.status==="completed";
+
+  // First tap selects a player; a second tap on a player from a DIFFERENT team swaps them.
+  // Tapping the same player again, or another player on the SAME team, just clears/reselects.
+  const handleCTPlayerTap = (teamId, userId) => {
+    if (!ctSel) { setCtSel({teamId,userId}); return; }
+    if (ctSel.teamId===teamId) { setCtSel(ctSel.userId===userId?null:{teamId,userId}); return; }
+    act.swapCTTeamPlayers(ctSel.teamId, ctSel.userId, teamId, userId);
+    setCtSel(null);
+  };
+
+  // ── Match Mode Persistent Notification (native Android, CI events, admin only) ──
+  // Starts the foreground-service notification once Match Mode begins, refreshes it
+  // whenever a new round is generated, and tears it down when the event ends. The
+  // notification itself calls back into this same generation/result logic — no
+  // duplicated match-generation code lives on the native side.
+  const mmRoundCountRef = useRef(0);
+  const mmEverStartedRef = useRef(false);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim || !plan) return;
+    const started = !!plan.matchModeStartAt;
+    if (started) mmEverStartedRef.current = true;
+    // Don't treat "!started" as a real stop signal unless we've actually confirmed Match
+    // Mode running before in this session. On a cold app open, the very first render can
+    // briefly show stale/cached data (before Firestore's real sync lands) with no
+    // matchModeStartAt yet — treating that as "stop everything" was cancelling every
+    // scheduled whistle on every single app reopen, permanently losing any round whose
+    // alarm time fell inside that few-second window. isCompleted is a real, trustworthy
+    // signal regardless, since an event doesn't flicker in and out of "completed".
+    if (isCompleted || (!started && mmEverStartedRef.current)) { MatchMode.stop().catch(()=>{}); mmRoundCountRef.current = 0; return; }
+    if (!started) return;
+    const ri = plan.rounds.length - 1;
+    const round = plan.rounds[ri];
+    if (!round) return;
+    const tr = plan.totalRounds || 1;
+    const rd = plan.roundDuration || plan.matchDuration || 20;
+    const delayMin = plan.matchModeDelayMin ?? 0;
+    const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
+    const slot = Math.min(ri+1, tr);
+    const whistleAt = new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000;
+    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), isLastRound: (ri+1)>=tr, breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round) };
+    if (mmRoundCountRef.current === 0) {
+      MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
+    } else {
+      console.log("[MatchModeDiag] pushing MatchMode.update, courts=", JSON.stringify(payload.courts));
+      MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
+    }
+    mmRoundCountRef.current = plan.rounds.length;
+    // Schedule every round's whistle upfront, exactly once per real Match Mode start —
+    // gated by a Firestore-durable flag (not the ref above, which resets on every app
+    // reopen/remount and was causing a full re-schedule — and cancellation of
+    // still-pending alarms — every single time the app was closed and reopened). The
+    // whistle is purely a function of (start time, round count, round duration); it
+    // shouldn't need "a new round was generated" or "results came in" to know when the
+    // next one rings, and it shouldn't repeat just because the screen reopened.
+    if (plan.mmScheduledFor !== plan.matchModeStartAt) {
+      const startMs = new Date(plan.matchModeStartAt).getTime();
+      const schedule = [];
+      for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles failed", e));
+      onMarkWhistlesScheduled?.(plan.matchModeStartAt);
+    }
+  }, [Capacitor.isNativePlatform() && isAdmin && isCI && plan?.matchModeStartAt, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matches?.map(m=>m.winner)||[]), isCompleted]);
+
+  // ── Match Mode for CT events (native Android, admin only) — schedule + whistle only ──
+  // CT's data shape (teams, pre-generated league schedules vs round-by-round ladder) is
+  // different enough from CI that court-by-court win-recording/Generate from the
+  // notification isn't included here — this covers the schedule list + the actual native
+  // alarms, which is what was asked for. The notification shows round number + countdown
+  // only, no interactive court buttons (courts: [] means no Generate button either).
+  const mmCTStartedRef = useRef(0);
+  const mmCTEverStartedRef = useRef(false);
+  const [mmCTTick,setMmCTTick] = useState(0);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCT || sim || !plan?.matchModeStartAt) return;
+    const iv = setInterval(() => setMmCTTick(t=>t+1), 30000);
+    return () => clearInterval(iv);
+  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt]);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCT || sim || !plan) return;
+    const started = !!plan.matchModeStartAt;
+    if (started) mmCTEverStartedRef.current = true;
+    if (isCompleted || (!started && mmCTEverStartedRef.current)) { MatchMode.stop().catch(()=>{}); mmCTStartedRef.current = 0; return; }
+    if (!started) return;
+    const rd = plan.matchDuration || plan.roundDuration || 20;
+    const tr = Math.max(1, Math.round(durationHrs*60/rd));
+    const delayMin = plan.matchModeDelayMin ?? 0;
+    const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
+    const startMs = new Date(plan.matchModeStartAt).getTime();
+    const elapsedMin = (Date.now()-startMs)/60000;
+    let slot = 1; while (offsets[slot]!==undefined && offsets[slot]<=elapsedMin) slot++;
+    slot = Math.min(slot, tr);
+    const whistleAt = startMs + (offsets[slot]||slot*rd)*60000;
+    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: slot>=tr, breakPlayers: "", courts: [] };
+    if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
+    else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
+    mmCTStartedRef.current = slot;
+    if (plan.mmScheduledFor !== plan.matchModeStartAt) {
+      const schedule = []; for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles (CT) failed", e));
+      onMarkWhistlesScheduled?.(plan.matchModeStartAt);
+    }
+  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick]);
+
+  // Safety net: the native foreground service can get killed independently of this
+  // component (e.g. app swiped away while locked). When the app comes back to the
+  // foreground, force a fresh push of the current round state so the notification
+  // (and its Generate Next Round button) reliably reflect reality even if a background
+  // tap was missed or the service died in the meantime.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim) return;
+    let sub;
+    CapApp.addListener("resume", () => { mmRoundCountRef.current = 0; }).then(h=>sub=h);
+    return () => { sub?.remove(); };
+  }, [isAdmin, isCI, sim]);
+
+  // Keep refs pointing at the latest plan/callbacks WITHOUT tearing down the native
+  // listeners below — this is what actually fixes Generate/winner taps getting lost.
+  // Logcat showed the listener-registration effect re-running (remove+re-add) roughly
+  // every 3 seconds, because its dependency array included `plan` and the callback props
+  // directly — both get a new identity on nearly every render. That left real gaps where
+  // NO listener was attached at all; any native tap landing in one of those gaps was
+  // silently lost. Refs let the effect below register once and stay registered.
+  const planRef = useRef(plan);
+  const onSetWinCIRef = useRef(onSetWinCI);
+  const onNextRoundRef = useRef(onNextRound);
+  useEffect(() => { planRef.current = plan; onSetWinCIRef.current = onSetWinCI; onNextRoundRef.current = onNextRound; });
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim) return;
+    let winSub, genSub, cancelled = false;
+    (async () => {
+      const w = await MatchMode.addListener("courtWinner", ({ court, team }) => {
+        console.log("[MatchModeDiag] courtWinner event received in JS", court, team);
+        const p = planRef.current;
+        const ri = p?.rounds?.length ? p.rounds.length - 1 : -1;
+        const mi = p?.rounds?.[ri]?.matches?.findIndex(m=>m.court===court);
+        console.log("[MatchModeDiag] resolved ri="+ri+" mi="+mi);
+        if (ri>=0 && mi>=0) onSetWinCIRef.current(ri, mi, team);
+      });
+      const g = await MatchMode.addListener("generateNextRound", () => {
+        console.log("[MatchModeDiag] generateNextRound event received in JS");
+        // A single fixed delay isn't enough when this fires during a cold app resume
+        // (the whole app can still be mounting/loading its data at that moment) — so
+        // this retries quietly a few times before giving up and showing the warning.
+        const attempts = [300, 800, 1500, 2500, 4000, 6000, 8000, 10000];
+        const tryGenerate = (i) => {
+          const ok = onNextRoundRef.current(i < attempts.length - 1); // silent except on the last try
+          if (!ok && i < attempts.length - 1) setTimeout(()=>tryGenerate(i+1), attempts[i+1]-attempts[i]);
+        };
+        setTimeout(()=>tryGenerate(0), attempts[0]);
+      });
+      console.log("[MatchModeDiag] listeners registered successfully");
+      if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
+    })().catch(e=>console.log("MatchMode.addListener failed", e));
+    return () => { cancelled = true; winSub?.remove(); genSub?.remove(); };
+  }, [isAdmin, isCI, sim]);
+
+
+
+  const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
 
   // CT calc
   const ctCC   = isCT?calcCTCourts(effEv.registrations.length,effEv.reservedCourts||effEv.courts||2):null;
@@ -4617,6 +5370,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
   const [dupTime,setDupTime] = useState(ev.time);
   const [dupTimeTo,setDupTimeTo] = useState(ev.timeTo||"");
   const [dupKeepPlayers,setDupKeepPlayers] = useState(false);
+  const [dupName,setDupName] = useState(ev.name);
   const [shareDiag,setShareDiag] = useState(null);
 
   const sharePlayers = effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
@@ -4675,13 +5429,25 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     try{
       let cards=[];
       if(isCT&&plan){
-        cards=[buildCTStandingsCard(effEv,venue,ctStands,plan.format,comm.name)];
+        if(ctStands.length>0) cards.push(buildPodiumCard(effEv,venue,ctStands.slice(0,3).map(s=>{
+          const teamPlayers=(s.team?.players||[]).map(p=>users.find(u=>u.id===(p.userId||p.id))||p);
+          const before=s.team?.avgUsr??0;
+          const after=teamPlayers.length?Math.round(teamPlayers.reduce((sum,p)=>sum+(p.usr||0),0)/teamPlayers.length):before;
+          const delta=Math.round(after-before);
+          return {name:s.team?.name,players:teamPlayers,value:plan.format==="ladder"?s.pts:s.wins,valueLabel:plan.format==="ladder"?"pts":"wins",usrLine:`Avg USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
+        }),comm.name));
+        cards.push(buildCTStandingsCard(effEv,venue,ctStands,plan.format,comm.name,users));
         if(plan.format==="ladder"&&plan.rounds?.length>0)
           cards.push(buildCTResultsTableCard(effEv,venue,plan,ctStands,tc,comm.name));
         if(plan.format==="league"&&plan.rounds?.length>0)
           cards.push(buildLeagueMatchResultsCard(effEv,venue,plan,comm.name));
       } else {
-        cards=[buildStandingsCard(effEv,venue,ciStands,tc,plan,comm.name)];
+        if(ciStands.length>0) cards.push(buildPodiumCard(effEv,venue,ciStands.slice(0,3).map(s=>{
+          const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;
+          const delta=Math.round(s.user.usr-before);
+          return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
+        }),comm.name));
+        cards.push(buildStandingsCard(effEv,venue,ciStands,tc,plan,comm.name));
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));
         if(plan) cards.push(buildRoundResultsCard(effEv,venue,plan,comm.name));
       }
@@ -4695,11 +5461,11 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
   }
 
   const tabs=["info","players",
-    ...(isCI&&isAdmin?(plan?["breaks","rounds","standings"]:["rounds"]):[]),
-    ...(isCT&&isAdmin?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):["teams"]):[]),
-    "manage"
+    ...(isCI?(plan?["breaks","rounds","standings"]:(isAdmin?["rounds"]:[])):[]),
+    ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
+    "manage","photos"
   ];
-  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches"};
+  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches",photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
   function PChip({p,ri}){
@@ -4715,9 +5481,10 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
       }):false;
       histBadge = wasLastPartner?{label:"🚩",color:"#EF4444"}:cnt>0?{label:`×${cnt}`,color:"#F59E0B"}:{label:"✨️",color:"#34D399"};
     }
-    return <div onClick={()=>!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:"pointer",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
+    return <div onClick={()=>isAdmin&&!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:isAdmin?"pointer":"default",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
       <Av u={p} size={28}/>
       <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname}</span>
+      {p.wouldBeCourt&&<span title="Court they'd have played on by USR rank" style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       <span style={{fontSize:11,color:"var(--po-dim)"}}>{p.usr}</span>
     </div>;
@@ -4733,36 +5500,47 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     </div>;}
 
   return <>
-    <BBtn onBack={onBack} label={comm.name} sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
+    <BBtn onBack={onBack} label="Back" sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
     {isAdmin&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice Session</div><div style={{fontSize:11,color:"var(--po-dim)"}}>Try out registrations, matches & scores — nothing is saved</div></div><SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/></div>}
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
         <div>
-          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>{ev.isDemo&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+          {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>🏸 {comm.name}</div>}
           {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
           <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
           {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by {creator.nickname}</div>:null;})()}
           {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
+          {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+            <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+            {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:150,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+              <SmBtn label="✏️ Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}} color="#6366F1" style={{width:"100%"}}/>
+              <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
+              {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
+              {(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
+              {!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis cannot be undone — all registrations and data will be permanently lost.`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+              {isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+            </div>}
+          </div>}
+          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
           {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
           {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
           {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
           {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
-          {isAdmin&&<SmBtn label="✏️ Edit" onClick={onEditEvent} color="#6366F1"/>}
-          {isAdmin&&<SmBtn label="⧉ Duplicate" onClick={()=>setShowDup(o=>!o)} color="#F59E0B"/>}
-          {isAdmin&&!isCompleted&&<SmBtn label="🗑 Delete" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis cannot be undone — all registrations and data will be permanently lost.`))onDelete();}} color="#EF4444"/>}
-          {isAdmin&&isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nIt will be hidden from event lists but kept permanently in history. You can restore it later.`))onArchive();}} color="#94A3B8"/>}
-          {isAdmin&&ev.archived&&<SmBtn label="📤 Unarchive" onClick={onUnarchive} color="#34D399"/>}
-          {!isCompleted&&<SmBtn label={sharing?"⏳ Sharing...":"📤 Share Event"} onClick={handleShareBefore} color="#34D399"/>}
-          {isCompleted&&<SmBtn label={sharing?"⏳ Sharing...":"📤 Share Results"} onClick={handleShareAfter} color="#34D399"/>}
         </div>
       </div>
-
       {showDup&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+          <input type="text" value={dupName} onChange={e=>setDupName(e.target.value)} placeholder="Event name" className="po-inp"
+            style={{flex:1,padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+          <button type="button" onClick={()=>setDupName(suggestEventName({date:dupDate,time:dupTime,venueName:venues.find(v2=>v2.id===ev.venueId)?.name}))} title="Suggest a name" style={{padding:"8px 10px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨</button>
+        </div>
         <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
           style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,marginBottom:10,boxSizing:"border-box"}}/>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
@@ -4786,7 +5564,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
             <div style={{fontSize:10,color:"var(--po-dim)"}}>{dupKeepPlayers?"Same players will be pre-registered":"New event starts with no players"}</div>
           </div>
         </div>
-        <Btn label="Create Copy" primary onClick={()=>{if(dupDate&&dupTime){onDuplicate(dupDate,dupKeepPlayers,dupTime,dupTimeTo);setShowDup(false);}}} style={{width:"100%"}}/>
+        <Btn label="Create Copy" primary onClick={()=>{if(dupDate&&dupTime){onDuplicate(dupDate,dupKeepPlayers,dupTime,dupTimeTo,dupName);setShowDup(false);}}} style={{width:"100%"}}/>
         <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Creates a fresh copy of "{ev.name}" with no results — same venue, courts, and type.</div>
       </div>}
 
@@ -4818,7 +5596,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
         {canReg&&<Btn label="I'm In ✓" primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
         {myReg&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
         {myReg&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
-        {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={act.closeEvent} style={{width:"100%"}}/>}
+        {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
@@ -4887,7 +5665,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{u.phone?` · ${u.phone}`:""}</span>}
               </div>
               {/* Guest USR - editable inline, saves on blur or Enter */}
-              {u.isGuest||r.isGuest
+              {(u.isGuest||r.isGuest)&&isAdmin
                 ? <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
                     <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
                     <input type="number" min="0" max="100" defaultValue={u.usr}
@@ -4897,7 +5675,9 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                       style={{width:52,padding:"2px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12,fontWeight:600}}/>
                     <span style={{fontSize:10,color:"var(--po-dim)"}}>/100 · tap Enter to save</span>
                   </div>
-                : isAdmin&&!effEv.plan
+                : (u.isGuest||r.isGuest)
+                  ? <div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div>
+                  : isAdmin&&!effEv.plan
                   ? <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
                       <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
                       <input type="number" min="0" max="100" defaultValue={r.eventUsr??u.usr}
@@ -4930,7 +5710,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
               {(r.isGuest||u.isGuest)&&<Bdg label={r.addedBy?`Guest · by ${r.addedBy}`:"Guest"} color="#F59E0B"/>}
               {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
-              {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>act.removeFromEvent(u.id)} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
+              {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
           </div>
         </Card>;
@@ -5060,31 +5840,50 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
       </>}
     </>}
 
+    {/* PHOTOS */}
+    {tab==="photos"&&<Card>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+        {(ev.photos||[]).map(p=>{
+          const uploader=users.find(u=>u.id===p.uploadedBy);
+          return <div key={p.id} style={{position:"relative",aspectRatio:"1",borderRadius:8,overflow:"hidden",background:"var(--po-inp)"}}>
+            <img src={p.url} alt="" onClick={()=>window.open(p.url,"_blank")} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}}/>
+            {isAdmin&&<div onClick={()=>{if(window.confirm(`Remove this photo${uploader?` (uploaded by ${uploader.nickname})`:""}?`))onRemoveEventPhoto(p.id);}} style={{position:"absolute",top:3,right:3,width:20,height:20,borderRadius:"50%",background:"#00000099",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,cursor:"pointer"}}>🗑</div>}
+          </div>;
+        })}
+        <label style={{aspectRatio:"1",borderRadius:8,border:"1.5px dashed var(--po-bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:photoUploading2?"default":"pointer",gap:2}}>
+          <input type="file" accept="image/*" style={{display:"none"}} onChange={handleEventPhotoSelect} disabled={photoUploading2}/>
+          <span style={{fontSize:18}}>{photoUploading2?"⏳":"➕"}</span>
+          <span style={{fontSize:9,color:"var(--po-dim)"}}>{photoUploading2?"Uploading…":"Add"}</span>
+        </label>
+      </div>
+      {photoUploadError&&<div style={{marginTop:10,fontSize:11,color:"#EF4444",background:"#EF444411",borderRadius:6,padding:"8px 10px"}}>⚠️ {photoUploadError}</div>}
+    </Card>}
+
     {/* CI BREAKS */}
-    {tab==="breaks"&&isCI&&isAdmin&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks}/>}
+    {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} isAdmin={isAdmin}/>}
 
     {/* CI ROUNDS */}
-    {tab==="rounds"&&isCI&&isAdmin&&<>
-      {!plan&&<Card>
+    {tab==="rounds"&&isCI&&<>
+      {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Generate Round 1</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players · {tc} courts · {Math.max(0,effEv.registrations.length-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Total rounds:</span>{[4,5,6,7,8].map(n=><SmBtn key={n} label={`${n}`} onClick={()=>setTotalR(n)} active={totalR===n} color="#6366F1"/>)}</div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:16}}>💡 {totalR} rounds fit this event's booking window automatically ({roundDur}m each)</div>
         {effEv.registrations.length<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur)} style={{width:"100%"}}/>}
       </Card>}
       {plan&&<>
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <span>✓ {plan.sorted?.length||0} players · {plan.totalRounds} rounds · {tc} courts</span>
-          {!ciR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current pairings and start over?\n\nRound 1 will be rebuilt from the current registered players. This cannot be undone."))act.startCI(plan.totalRounds,plan.roundDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>}
+          {isAdmin&&(!ciR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current pairings and start over?\n\nRound 1 will be rebuilt from the current registered players. This cannot be undone."))act.startCI(plan.totalRounds,plan.roundDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)}
         </div>
         {/* Next round button ON TOP */}
-        {canNext&&!isCompleted&&<Btn label={`▶ Generate Round ${plan.rounds.length+1} of ${plan.totalRounds}`} primary onClick={act.nextRound} style={{width:"100%",marginBottom:12}}/>}
+        {isAdmin&&canNext&&!isCompleted&&<Btn label={`▶ Generate Round ${plan.rounds.length+1} of ${plan.totalRounds}`} primary onClick={act.nextRound} style={{width:"100%",marginBottom:12}}/>}
         {plan.rounds.length>=plan.totalRounds&&plan.rounds.every(r=>r.matches.every(m=>m.winner!=null))&&<div style={{textAlign:"center",padding:"14px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:14,fontWeight:600,color:"#34D399",marginBottom:12}}>🏆 Complete — check Standings!</div>}
 
         {/* Swap hint */}
         <div style={{fontSize:12,padding:"9px 12px",borderRadius:8,marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,background:sel?"#FBBF2411":"var(--po-bdr)",border:`0.5px solid ${sel?"#FBBF2444":"#334155"}`}}>
-          <span style={{color:sel?"#FBBF24":"var(--po-dim)"}}>{isCompleted?"🔒 Event completed — results locked":sel?`✋ ${users.find(u=>u.id===sel.uid)?.nickname} — tap another in Round ${sel.ri+1} to swap · badges show partner history with them`:"💡 Tap player to select · tap another in same round to swap"}</span>
+          <span style={{color:sel?"#FBBF24":"var(--po-dim)"}}>{isCompleted?"🔒 Event completed — results locked":sel?`✋ ${users.find(u=>u.id===sel.uid)?.nickname} — tap another in Round ${sel.ri+1} to swap · badges show partner history with them`:isAdmin?"💡 Tap player to select · tap another in same round to swap":"Live matches, breaks, and results for this event"}</span>
           {sel&&!isCompleted&&<SmBtn label="✕" onClick={()=>setSel(null)} color="#EF4444"/>}
         </div>
 
@@ -5092,18 +5891,36 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
         {[...plan.rounds].reverse().map((round,revIdx)=>{
           const ri=plan.rounds.length-1-revIdx;
           const isLatest=revIdx===0;
+          const isRoundComplete=round.matches.every(m=>m.winner!=null);
+          const manuallySet=collapsedRounds.has(ri);
+          const toggle=()=>setCollapsedRounds(s=>{const n=new Set(s);n.has(ri)?n.delete(ri):n.add(ri);return n;});
+          const defaultCollapsed = isRoundComplete && !isLatest;
+          const effCollapsed = manuallySet ? !defaultCollapsed : defaultCollapsed;
           return <div key={ri} style={{marginBottom:24,opacity:isLatest?1:0.75}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div onClick={isRoundComplete?toggle:undefined} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,cursor:isRoundComplete?"pointer":"default"}}>
               <div style={{display:"flex",alignItems:"center",gap:10}}>
+                {isRoundComplete&&<span style={{fontSize:11,color:"var(--po-dim)",transform:effCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform 0.15s"}}>▾</span>}
                 <span style={{fontSize:15,fontWeight:700,color:isLatest?"var(--po-text)":"var(--po-dim)"}}>Round {round.round}</span>
                 <Bdg label={`${plan.roundDuration||roundDur} min`} color="var(--po-dim)"/>
               </div>
-              {round.matches.every(m=>m.winner!=null)&&<Bdg label="✓ Complete" color="#34D399"/>}
+              {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
             </div>
-            {isLatest&&!isCompleted&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onStart={act.setMatchModeStart}/>}
+            {effCollapsed?null:<>
+            {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode} isCompleted={isCompleted}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri}/>)}</div></div>}
-            {round.matches.map((m,mi)=><Card key={mi} style={{marginBottom:8}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span><Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/></div>
+            {round.matches.map((m,mi)=>{
+              const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
+              const gap=Math.abs(avgA-avgB);
+              const isRound1=ri===0;
+              return <Card key={mi} style={{marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  {isRound1&&<span title={`Balance gap: ${gap.toFixed(1)} USR`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ {gap.toFixed(0)}</span>}
+                  {isRound1&&isAdmin&&!m.winner&&<SmBtn label="🔀 Re-pair" onClick={()=>act.rebalanceCourt(ri,mi)} color="#38BDF8"/>}
+                  <Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/>
+                </div>
+              </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 30px 1fr",gap:8,alignItems:"start"}}>
                 <div style={{background:m.winner==="A"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="A"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM A <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length)})</span></div>
@@ -5116,7 +5933,8 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
                 </div>
               </div>
               <WinCI m={m} ri={ri} mi={mi}/>
-            </Card>)}
+            </Card>;})}
+            </>}
           </div>;
         })}
       </>}
@@ -5124,6 +5942,7 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
 
     {/* CI STANDINGS */}
     {tab==="standings"&&isCI&&<>
+      {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>{const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;const delta=Math.round(s.user.usr-before);return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};})}/>}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
       {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
         {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
@@ -5133,8 +5952,8 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
     </>}
 
     {/* CT TEAMS */}
-    {tab==="teams"&&isCT&&isAdmin&&<>
-      {!plan&&<Card>
+    {tab==="teams"&&isCT&&<>
+      {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Form Teams & Start</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players → {Math.floor(effEv.registrations.length/6)} pools → {Math.floor(effEv.registrations.length/2)} teams</div>
         {ctCC?.warning&&<div style={{padding:"8px 12px",background:"#F59E0B11",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:12,color:"#F59E0B",marginBottom:12}}>⚠️ {ctCC.warning}</div>}
@@ -5149,17 +5968,46 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
         </div>
         <div style={{marginBottom:16}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Match duration:</div>
-          <div style={{display:"flex",gap:8}}>{[15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
+          <div style={{display:"flex",gap:8}}>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
-        <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur)} style={{width:"100%"}}/>
+        {(()=>{
+          const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
+          if(!alt) return null;
+          const autoTop=autoPools[0]?.length, autoBottom=autoPools[1]?.length;
+          return <div style={{marginBottom:16}}>
+            <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Which group should be the top-ranked (elite) group?</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setCtTopPoolSize(null)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${!ctTopPoolSize?"#6366F1":"var(--po-bdr)"}`,background:!ctTopPoolSize?"#6366F122":"var(--po-inp)",color:!ctTopPoolSize?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {autoTop} <span style={{opacity:0.6}}>(default)</span></button>
+              <button onClick={()=>setCtTopPoolSize(alt)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${ctTopPoolSize===alt?"#6366F1":"var(--po-bdr)"}`,background:ctTopPoolSize===alt?"#6366F122":"var(--po-inp)",color:ctTopPoolSize===alt?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {alt}</button>
+            </div>
+            <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{ctTopPoolSize?`Top ${alt} players → smaller elite group of ${alt} · remaining ${autoTop} → the other group`:`Top ${autoTop} players → the bigger group of ${autoTop} · remaining ${autoBottom} → the other group`}. The bigger group gets priority on courts each round.</div>
+          </div>;
+        })()}
+        <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur,ctTopPoolSize)} style={{width:"100%"}}/>
       </Card>}
       {plan&&<>
+        {isAdmin&&!ctR1Locked&&(()=>{
+          const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
+          if(!alt) return null;
+          const autoTop=autoPools[0]?.length;
+          return <Card style={{marginBottom:10}}>
+            <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Top-ranked (elite) group size — change and hit Regenerate to apply:</div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setCtTopPoolSize(null)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${!ctTopPoolSize?"#6366F1":"var(--po-bdr)"}`,background:!ctTopPoolSize?"#6366F122":"var(--po-inp)",color:!ctTopPoolSize?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {autoTop} <span style={{opacity:0.6}}>(default)</span></button>
+              <button onClick={()=>setCtTopPoolSize(alt)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${ctTopPoolSize===alt?"#6366F1":"var(--po-bdr)"}`,background:ctTopPoolSize===alt?"#6366F122":"var(--po-inp)",color:ctTopPoolSize===alt?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {alt}</button>
+            </div>
+          </Card>;
+        })()}
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <span>✓ {plan.teams?.length||0} teams · {plan.format==="ladder"?"Ladder":"League"} · {plan.courts} courts</span>
-          {plan.rounds.length===0||!plan.rounds[0]?.matchesA?.some(m=>m.winner)
-            ? (!ctR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current team formation and start over?\n\nAll teams and the current Round 1 will be cleared. Registered players stay.\n\nThis cannot be undone."))act.startCT(plan.courts,plan.format,plan.matchDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)
-            : null}
+          {isAdmin&&(plan.rounds.length===0||!plan.rounds[0]?.matchesA?.some(m=>m.winner)
+            ? (!ctR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current team formation and start over?\n\nAll teams and the current Round 1 will be cleared. Registered players stay.\n\nThis cannot be undone."))act.startCT(plan.courts,plan.format,plan.matchDuration,ctTopPoolSize);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)
+            : null)}
         </div>
+        {isAdmin&&!ctR1Locked&&<div style={{padding:"8px 12px",background:"#6366F111",border:"0.5px solid #6366F133",borderRadius:8,fontSize:11,color:"var(--po-dim)",marginBottom:12}}>💡 {ctSel?`✋ Selected — tap a player on another team to swap`:`Tap a player, then tap another player on a different team to swap them`}</div>}
         {plan.format==="ladder"?<>
           {/* Ladder: show Pools (how teams were formed) but make clear they don't affect gameplay */}
           {(() => {
@@ -5168,26 +6016,33 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
               const poolTeams = (plan.teams||[]).filter(t=>t.poolIdx===pi);
               return <React.Fragment key={pi}>
                 <ST>Pool {pi+1} — {poolTeams.length} teams</ST>
-                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}
+                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}
               </React.Fragment>;
             });
           })()}
         </>:<>
           <ST>Group A — {plan.groupA?.length||0} teams</ST>
-          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}
-          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref}/>)}</>}
+          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}
+          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}</>}
         </>}
       </>}
     </>}
 
     {/* CT BREAKS (Ladder only) */}
-    {tab==="breaks"&&isCT&&isAdmin&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm}/>}
+    {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&isAdmin&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} sim={sim} onSetMatchModeStart={act.setMatchModeStart}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>
+      {isCompleted&&ctStands.length>0&&<Podium top3={ctStands.slice(0,3).map(s=>{
+        const teamPlayers=(s.team?.players||[]).map(p=>users.find(u=>u.id===(p.userId||p.id))||p);
+        const before=s.team?.avgUsr??0;
+        const after=teamPlayers.length?Math.round(teamPlayers.reduce((sum,p)=>sum+(p.usr||0),0)/teamPlayers.length):before;
+        const delta=Math.round(after-before);
+        return {name:s.team?.name,players:teamPlayers,value:plan?.format==="ladder"?s.pts:s.wins,valueLabel:plan?.format==="ladder"?"pts":"wins",usrLine:`Avg USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
+      })}/>}
       {/* Scoring info bar */}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>
         {plan?.format==="ladder"
@@ -5271,27 +6126,55 @@ function EvDetail({ev,comm,users,venues,me,onBack,onEditEvent,onRegister,onCheck
 // ══════════════════════════════════════════════════════
 //  EVENTS LIST
 // ══════════════════════════════════════════════════════
-function EvList({events,me,users,comms,onOpen,onCreateEv}){
+function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   const [sub,setSub]=useState("coming");
   const [showCommPicker,setShowCommPicker]=useState(false);
-  const myIds=new Set(events.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)).map(ev=>ev.id));
-  // Coming = registration still open/active (regardless of date) — covers same-day and duplicated past-dated events
-  const coming=events.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled"&&myIds.has(ev.id));
-  const past=events.filter(ev=>(ev.status==="completed"||ev.status==="cancelled")&&!ev.archived&&myIds.has(ev.id));
-  const others=events.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled"&&!myIds.has(ev.id));
+  const [incompleteOpen,setIncompleteOpen]=useState(true);
+  const [completedOpen,setCompletedOpen]=useState(false);
+  const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
+  const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)||ev.createdBy===me.id).map(ev=>ev.id));
+  const now=Date.now();
+  const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
+  // Coming/Past is decided strictly by whether the event's date+time has passed — not by admin status.
+  // This surfaces events whose time has come and gone but were never closed (Incomplete), instead of
+  // leaving them stuck under "Coming" forever. Cancelled events don't appear in this quick view at all —
+  // they live under the community's own Archived section.
+  const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
+  const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
+  const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
+  const pastAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
+  const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
+  const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
+  const past=pastAll;
+  const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&!myIds.has(ev.id)).sort(byNewestFirst);
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
   const isAdm=adminComms.length>0;
   const handleNewClick=()=>{ if(adminComms.length<=1){ if(adminComms.length===1)onCreateEv(adminComms[0].id); return; } setShowCommPicker(true); };
-  function Row({ev}){return <div><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:3}}>{ev.commName}</div><EvCard ev={ev} me={me} users={users} onClick={()=>onOpen(ev.communityId,ev.id)}/></div>;}
+  function Row({ev}){return <EvCard ev={ev} me={me} users={users} onClick={()=>onOpen(ev.communityId,ev.id)}/>;}
   return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>{isAdm&&<Btn label="+ New" primary onClick={handleNewClick}/>}</div>
     {showCommPicker&&<Card style={{marginBottom:12}}>
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Which community?</div>
       {adminComms.map(c=><div key={c.id} onClick={()=>{setShowCommPicker(false);onCreateEv(c.id);}} style={{padding:"9px 10px",borderRadius:8,cursor:"pointer",fontSize:13,color:"var(--po-text)",border:"0.5px solid var(--po-bdr)",marginBottom:6}}>{c.name}</div>)}
       <div onClick={()=>setShowCommPicker(false)} style={{textAlign:"center",fontSize:12,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>Cancel</div>
     </Card>}
-    <Tabs tabs={[[`coming`,`Coming (${coming.length})`],[`past`,`Past & Closed (${past.length})`]]} active={sub} onChange={setSub}/>
+    <Tabs tabs={[[`coming`,`Coming (${coming.length})`],[`past`,`Past (${past.length})`]]} active={sub} onChange={setSub}/>
     {sub==="coming"&&<>{coming.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>📅</div>No upcoming events.</div></Card>:coming.map(ev=><Row key={ev.id} ev={ev}/>)}{others.length>0&&<><ST>Other Upcoming</ST>{others.map(ev=><Row key={ev.id} ev={ev}/>)}</>}</>}
-    {sub==="past"&&(past.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}>No past events yet.</div></Card>:past.map(ev=><Row key={ev.id} ev={ev}/>))}
+    {sub==="past"&&(past.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}>No past events yet.</div></Card>:<>
+      {pastIncomplete.length>0&&<>
+        <div onClick={()=>setIncompleteOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",margin:"16px 0 8px"}}>
+          <span style={{fontSize:11,color:"var(--po-dim)",transform:incompleteOpen?"none":"rotate(-90deg)",transition:"transform 0.15s"}}>▾</span>
+          <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)",textTransform:"uppercase",letterSpacing:0.5}}>⏳ Incomplete ({pastIncomplete.length})</span>
+        </div>
+        {incompleteOpen&&pastIncomplete.map(ev=><Row key={ev.id} ev={ev}/>)}
+      </>}
+      {pastCompleted.length>0&&<>
+        <div onClick={()=>setCompletedOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",margin:"16px 0 8px"}}>
+          <span style={{fontSize:11,color:"var(--po-dim)",transform:completedOpen?"none":"rotate(-90deg)",transition:"transform 0.15s"}}>▾</span>
+          <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)",textTransform:"uppercase",letterSpacing:0.5}}>✅ Completed ({pastCompleted.length})</span>
+        </div>
+        {completedOpen&&pastCompleted.map(ev=><Row key={ev.id} ev={ev}/>)}
+      </>}
+    </>)}
   </>;
 }
 
@@ -5347,8 +6230,9 @@ function ComboCard({combo, lv, eventsDesc}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities}){
   const [tab,setTab]=useState("usr");
+  const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [editing,setEditing]=useState(false);
   const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
   const [photoUploading,setPhotoUploading]=useState(false);
@@ -5367,10 +6251,10 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
 
   // Build team history from all CT completed events the user participated in
 
-  return <><BBtn onBack={onBack} label="Back"/>
+  return <>{isMeTab?<div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Me</div>:<BBtn onBack={onBack} label="Back"/>}
   {viewedByAdmin&&<div style={{marginBottom:12,padding:"8px 12px",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🛡 Viewing as Platform Admin — visible only to you</div>}
   <Card><div style={{display:"flex",gap:14,alignItems:"center",marginBottom:16}}>
-    <Av u={user} size={56}/>
+    <Av u={user} size={isMeTab?68:56}/>
     <div style={{flex:1}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
         <div style={{fontWeight:700,fontSize:18,color:"var(--po-text)"}}>{user.nickname}</div>
@@ -5410,6 +6294,21 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
     )}
   </div></Card>
 
+  {isMeTab&&<>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
+      <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>My Communities</span>
+      <span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join / Create</span>
+    </div>
+    {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></div></Card>
+      :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;
+        return <Card key={c.id} style={{cursor:"pointer",padding:"10px 14px",marginBottom:6}} onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{c.name}</span>
+            {rBdg(myRole)}
+          </div>
+        </Card>;})}
+  </>}
+
   <div style={{display:"flex",gap:6,margin:"16px 0 8px"}}>
     {[["usr","📈 USR History"],["teams","👥 Teams"]].map(([k,l])=>
       <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"9px",borderRadius:8,border:`0.5px solid ${tab===k?"#6366F1":"var(--po-bdr)"}`,background:tab===k?"#6366F122":"var(--po-inp)",color:tab===k?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600,cursor:"pointer"}}>{l}</button>
@@ -5436,7 +6335,32 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
         const deltaColor = delta>0?"#34D399":delta<0?"#EF4444":"var(--po-dim)";
         const deltaArrow = delta>0?"↑":delta<0?"↓":"—";
         const isCTEvent = h.type==="ct";
-        return <div key={i} style={{display:"grid",gridTemplateColumns:"68px 1fr 44px 64px",gap:2,padding:"10px 12px",borderBottom:i<usrHist.length-1?"0.5px solid var(--po-bdr)":"none",alignItems:"center"}}>
+        const hostComm = isMeTab ? comms.find(c=>c.events.some(e=>e.id===h.eventId)) : null;
+        const hostEvent = hostComm?.events.find(e=>e.id===h.eventId);
+        const isExpanded = expandedHist===h.eventId;
+        let extraStats = null;
+        if (isExpanded && hostEvent?.plan) {
+          if (hostEvent.type==="closed_ind") {
+            const stands = calcCIStandings(hostEvent.plan, [user]);
+            const s = stands.find(s=>s.user.id===user.id);
+            if (s) {
+              let finalCourt = null;
+              for (let ri=hostEvent.plan.rounds.length-1; ri>=0 && finalCourt===null; ri--) {
+                for (const m of hostEvent.plan.rounds[ri].matches) {
+                  if (m.teamA.some(p=>p.userId===user.id)||m.teamB.some(p=>p.userId===user.id)) { finalCourt=m.court; break; }
+                }
+              }
+              extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt};
+            }
+          } else if (hostEvent.type==="closed_teams") {
+            const stands = calcCTStandings(hostEvent.plan);
+            const team = hostEvent.plan.teams?.find(t=>t.players?.some(p=>p.userId===user.id));
+            const s = team&&stands.find(s=>s.team?.id===team.id);
+            if (s) extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt:null, isTeam:true};
+          }
+        }
+        return <div key={i} style={{borderBottom:i<usrHist.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+        <div onClick={()=>hostComm&&setExpandedHist(o=>o===h.eventId?null:h.eventId)} style={{display:"grid",gridTemplateColumns:"68px 1fr 44px 64px",gap:2,padding:"10px 12px",alignItems:"center",cursor:hostComm?"pointer":"default"}}>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(h.date)}</div>
           <div>
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4}}>
@@ -5450,6 +6374,17 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser}){
             <span style={{fontSize:12,color:"var(--po-dim)"}}>{prevUsr} </span>
             <span style={{fontSize:13,fontWeight:700,color:deltaColor}}>{deltaArrow}{Math.abs(delta)>0?Math.abs(delta):""}</span>
           </div>
+        </div>
+        {isExpanded&&<div style={{padding:"4px 12px 12px"}}>
+          {extraStats?<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
+            {[["Wins",extraStats.wins],["Points",extraStats.pts],["Breaks",extraStats.breaks],[extraStats.isTeam?"Team":"Final Court",extraStats.isTeam?"—":(extraStats.finalCourt?`C${extraStats.finalCourt}`:"—")]].map(([l,v])=>
+              <div key={l} style={{background:"var(--po-inp)",borderRadius:6,padding:"6px 2px",textAlign:"center"}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
+                <div style={{fontSize:9,color:"var(--po-dim)"}}>{l}</div>
+              </div>)}
+          </div>:<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>No detailed stats available for this event.</div>}
+          {hostComm&&<div onClick={()=>onOpenEvent&&onOpenEvent(hostComm.id,h.eventId)} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",textAlign:"center"}}>Open event →</div>}
+        </div>}
         </div>;
       })}
     </Card>}
@@ -5648,11 +6583,33 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
   </>;
 }
 
-function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
+function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onBack}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
+  const isNative = Capacitor.isNativePlatform();
+  useEffect(() => {
+    if (!isNative) return;
+    PushNotifications.checkPermissions().then(res => {
+      setPushStatus(res.receive === "granted" ? "on" : "error");
+      if (res.receive !== "granted") setPushErrDetail("Notifications permission not granted — enable it for Matchkeeper in your phone's system Settings app");
+    });
+  }, [isNative]);
+  const [locStatus,setLocStatus] = useState("idle"); // idle | working | on | off | error
+  useEffect(() => {
+    if (!isNative) return;
+    Geolocation.checkPermissions().then(res => {
+      setLocStatus(res.location === "granted" ? "on" : "error");
+    }).catch(()=>setLocStatus("error"));
+  }, [isNative]);
+  const enableLoc = async () => {
+    setLocStatus("working");
+    try {
+      const res = await Geolocation.requestPermissions();
+      setLocStatus(res.location === "granted" ? "on" : "error");
+    } catch(e) { console.log("Location permission request failed", e); setLocStatus("error"); }
+  };
   const enablePush = async () => {
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
@@ -5668,13 +6625,27 @@ function SettingsSc({user,users,dark,onToggleDark,onSendTestNotif,onBack}){
         <div style={{flex:1}}>
           <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Push Notifications</div>
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>
-            {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`Couldn't enable — ${pushErrDetail}`:pushStatus==="working"?"Setting up…":"Get notified even when the app is closed"}
+            {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`${isNative?"Off — ":"Couldn't enable — "}${pushErrDetail}`:pushStatus==="working"?"Setting up…":isNative?"Checking…":"Get notified even when the app is closed"}
           </div>
         </div>
-        <Btn label={pushStatus==="on"?"✓ On":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>
+        {(!isNative||pushStatus==="error")&&<Btn label={pushStatus==="on"?"✓ On":pushStatus==="error"?"Try Again":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>}
+        {isNative&&pushStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
       </div>
       {pushStatus==="on"&&<div onClick={onSendTestNotif} style={{marginTop:12,paddingTop:12,borderTop:"0.5px solid var(--po-bdr)",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>Send myself a test notification</div>}
     </Card>
+    {isNative&&<Card style={{marginBottom:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:20}}>📍</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Location Access</div>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>
+            {locStatus==="on"?"Enabled on this device ✓":locStatus==="error"?"Off — needed for venue distance & directions":locStatus==="working"?"Requesting…":"Checking…"}
+          </div>
+        </div>
+        {(locStatus==="error"||locStatus==="off")&&<Btn label="Enable" primary onClick={enableLoc} style={{flexShrink:0}}/>}
+        {locStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
+      </div>
+    </Card>}
     <ST>Preferences</ST>
     <Card style={{padding:0,overflow:"hidden"}}>
       {/* Dark Mode Toggle */}

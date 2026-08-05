@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.01";
+const APP_VERSION = "V0.06.02";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -407,6 +407,85 @@ function maxPossibleCI(plan){
 // per-player PES/USR figure is needed.
 function personalMaxCI(breaks, generatedRounds, tc){
   return (generatedRounds-breaks)*courtPts(1,tc) + breaks*breakPts(tc);
+}
+
+// ════════════════════════════════════════════════════
+//  PARTNER / OPPONENT REPORTS (Closed Individuals only)
+//  Live-computed from official (closed) event history already held
+//  in memory — nothing here is persisted. Same official-results-only
+//  rule as the USR engine: only ev.status==="completed" counts.
+// ════════════════════════════════════════════════════
+const REPORT_MIN_MATCHES = 3;
+const REPORT_RECENT_DAYS = 183; // ~6 months
+function calcPartnerOpponentStats(comms, userId, opts){
+  const recentOnly = opts && opts.recentOnly;
+  const cutoffTime = recentOnly ? Date.now()-REPORT_RECENT_DAYS*24*60*60*1000 : null;
+  const partners = {}, opponents = {};
+  comms.forEach(c=>(c.events||[]).forEach(ev=>{
+    if(ev.type!=="closed_ind"||ev.status!=="completed"||!ev.plan) return;
+    if(cutoffTime && new Date(ev.date).getTime()<cutoffTime) return;
+    ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
+      if(!m.winner) return;
+      const inA=m.teamA.some(p=>p.userId===userId), inB=m.teamB.some(p=>p.userId===userId);
+      if(!inA&&!inB) return;
+      const myTeam=inA?m.teamA:m.teamB, oppTeam=inA?m.teamB:m.teamA;
+      const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+      const partner=myTeam.find(p=>p.userId!==userId);
+      if(partner){
+        if(!partners[partner.userId]) partners[partner.userId]={userId:partner.userId,nickname:partner.nickname,matches:0,wins:0,lastDate:null,lastEventId:null,lastEventName:null};
+        const rec=partners[partner.userId];
+        rec.matches++; if(won) rec.wins++;
+        if(!rec.lastDate||ev.date>rec.lastDate){rec.lastDate=ev.date;rec.lastEventId=ev.id;rec.lastEventName=ev.name;}
+      }
+      oppTeam.forEach(opp=>{
+        if(!opponents[opp.userId]) opponents[opp.userId]={userId:opp.userId,nickname:opp.nickname,matches:0,losses:0,lastDate:null,lastEventId:null,lastEventName:null};
+        const rec=opponents[opp.userId];
+        rec.matches++; if(!won) rec.losses++;
+        if(!rec.lastDate||ev.date>rec.lastDate){rec.lastDate=ev.date;rec.lastEventId=ev.id;rec.lastEventName=ev.name;}
+      });
+    }));
+  }));
+  const partnersArr = Object.values(partners).map(p=>({...p, winRate: p.matches?p.wins/p.matches:0}));
+  const opponentsArr = Object.values(opponents).map(o=>({...o, loseRate: o.matches?o.losses/o.matches:0}));
+  return {
+    partnersRanked: partnersArr.filter(p=>p.matches>=REPORT_MIN_MATCHES).sort((a,b)=>b.winRate-a.winRate||b.matches-a.matches),
+    partnersInsufficient: partnersArr.filter(p=>p.matches<REPORT_MIN_MATCHES).sort((a,b)=>b.matches-a.matches),
+    opponentsRanked: opponentsArr.filter(o=>o.matches>=REPORT_MIN_MATCHES).sort((a,b)=>b.loseRate-a.loseRate||b.matches-a.matches),
+    opponentsInsufficient: opponentsArr.filter(o=>o.matches<REPORT_MIN_MATCHES).sort((a,b)=>b.matches-a.matches),
+  };
+}
+// Dream Match: player + #1 partner vs #1+#2 opponents. Funny Match: player + weakest
+// partner vs weakest 2 opponents. Both hide entirely (return null) if any slot lacks a
+// ranked (>=3 match) entry — per spec, no placeholder message, just absent.
+function calcDreamOrFunnyMatch(stats, kind){
+  const {partnersRanked, opponentsRanked} = stats;
+  if(partnersRanked.length<1||opponentsRanked.length<2) return null;
+  const partner = kind==="dream" ? partnersRanked[0] : partnersRanked[partnersRanked.length-1];
+  const opps = kind==="dream" ? [opponentsRanked[0],opponentsRanked[1]] : [opponentsRanked[opponentsRanked.length-1],opponentsRanked[opponentsRanked.length-2]];
+  return {partner, opponents:opps};
+}
+// Last-meeting indicator (Dream Match only): the exact same 4 players in the exact same
+// teamA-vs-teamB configuration (player+partner vs the two opponents), most recent result.
+// Hidden (null) if that exact combination never happened.
+function calcLastMeeting(comms, userId, partnerId, opponentIds){
+  const oppSet = new Set(opponentIds);
+  let last = null;
+  comms.forEach(c=>(c.events||[]).forEach(ev=>{
+    if(ev.type!=="closed_ind"||ev.status!=="completed"||!ev.plan) return;
+    ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
+      if(!m.winner) return;
+      const inA=m.teamA.some(p=>p.userId===userId), inB=m.teamB.some(p=>p.userId===userId);
+      if(!inA&&!inB) return;
+      const myTeam=inA?m.teamA:m.teamB, oppTeam=inA?m.teamB:m.teamA;
+      const myTeamIds=new Set(myTeam.map(p=>p.userId));
+      const oppTeamIds=new Set(oppTeam.map(p=>p.userId));
+      if(myTeamIds.size!==2||!myTeamIds.has(partnerId)) return;
+      if(oppTeamIds.size!==oppSet.size||![...oppTeamIds].every(id=>oppSet.has(id))) return;
+      const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+      if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, won};
+    }));
+  }));
+  return last;
 }
 
 // ════════════════════════════════════════════════════
@@ -6233,6 +6312,7 @@ function ComboCard({combo, lv, eventsDesc}){
 function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities}){
   const [tab,setTab]=useState("usr");
   const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
+  const [recentOnly,setRecentOnly]=useState(false);
   const [editing,setEditing]=useState(false);
   const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
   const [photoUploading,setPhotoUploading]=useState(false);
@@ -6310,7 +6390,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   </>}
 
   <div style={{display:"flex",gap:6,margin:"16px 0 8px"}}>
-    {[["usr","📈 USR History"],["teams","👥 Teams"]].map(([k,l])=>
+    {[["usr","📈 USR History"],["teams","👥 Teams"],["reports","🤝 Reports"]].map(([k,l])=>
       <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"9px",borderRadius:8,border:`0.5px solid ${tab===k?"#6366F1":"var(--po-bdr)"}`,background:tab===k?"#6366F122":"var(--po-inp)",color:tab===k?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600,cursor:"pointer"}}>{l}</button>
     )}
   </div>
@@ -6422,6 +6502,75 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       TR = rolling average of last 5 TES scores for each partner combination · Seed = avg USR of both players
     </div>
   </>}
+
+  {tab==="reports"&&(()=>{
+    const stats = calcPartnerOpponentStats(comms, user.id, {recentOnly});
+    const totalPairs = stats.partnersRanked.length+stats.partnersInsufficient.length+stats.opponentsRanked.length+stats.opponentsInsufficient.length;
+    const dream = calcDreamOrFunnyMatch(stats,"dream");
+    const funny = calcDreamOrFunnyMatch(stats,"funny");
+    const lastMeeting = dream ? calcLastMeeting(comms, user.id, dream.partner.userId, dream.opponents.map(o=>o.userId)) : null;
+    const PairRow = ({rank,name,rate,num,den,goodColor}) =>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px"}}>
+        <span style={{fontSize:13,color:"var(--po-text)"}}>{rank}. {name}</span>
+        <span style={{fontSize:13,fontWeight:700,color:goodColor}}>{Math.round(rate*100)}% <span style={{fontSize:10,fontWeight:400,color:"var(--po-dim)"}}>({num}/{den})</span></span>
+      </div>;
+    const InsufficientList = ({items,label}) => items.length===0?null:
+      <details style={{marginBottom:14}}>
+        <summary style={{fontSize:11,color:"var(--po-dim)",cursor:"pointer",padding:"4px 0"}}>بيانات غير كافية — {label} ({items.length})</summary>
+        <Card style={{padding:0,overflow:"hidden",marginTop:6}}>
+          {items.map((p,i)=><div key={p.userId} style={{padding:"8px 12px",borderBottom:i<items.length-1?"0.5px solid var(--po-bdr)":"none",display:"flex",justifyContent:"space-between",fontSize:12}}>
+            <span style={{color:"var(--po-text)"}}>{p.nickname}</span>
+            <span style={{color:"var(--po-dim)"}}>{p.matches} match{p.matches!==1?"es":""}</span>
+          </div>)}
+        </Card>
+      </details>;
+    return <>
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--po-dim)",cursor:"pointer"}}>
+          <input type="checkbox" checked={recentOnly} onChange={e=>setRecentOnly(e.target.checked)}/>
+          Recent only (last 6 months)
+        </label>
+      </div>
+
+      {totalPairs===0
+        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No Closed Individuals match history yet.</div></Card>
+        : <>
+          {dream&&<Card style={{marginBottom:10,border:"0.5px solid #F59E0B44",background:"#F59E0B0A"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش الأحلام — Dream Match</div>
+            <div style={{fontSize:13,color:"var(--po-text)"}}>You &amp; <b>{dream.partner.nickname}</b> vs <b>{dream.opponents.map(o=>o.nickname).join(" &amp; ")}</b></div>
+            {lastMeeting&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(lastMeeting.date)}): {lastMeeting.won?"✅ you won":"❌ you lost"}</div>}
+          </Card>}
+          {funny&&<Card style={{marginBottom:14,border:"0.5px solid #06B6D444",background:"#06B6D40A"}}>
+            <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>🎭 ماتش المسخرة — Funny Match</div>
+            <div style={{fontSize:13,color:"var(--po-text)"}}>You &amp; <b>{funny.partner.nickname}</b> vs <b>{funny.opponents.map(o=>o.nickname).join(" &amp; ")}</b></div>
+          </Card>}
+
+          <ST>🤝 Partners Win Rate</ST>
+          <Card style={{padding:0,overflow:"hidden"}}>
+            {stats.partnersRanked.length===0
+              ? <div style={{padding:"14px 12px",textAlign:"center",fontSize:12,color:"var(--po-dim)"}}>No ranked partners yet ({REPORT_MIN_MATCHES}+ matches together needed).</div>
+              : stats.partnersRanked.map((p,i)=><div key={p.userId} style={{borderBottom:i<stats.partnersRanked.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+                  <PairRow rank={i+1} name={p.nickname} rate={p.winRate} num={p.wins} den={p.matches} goodColor="#34D399"/>
+                </div>)}
+          </Card>
+          <InsufficientList items={stats.partnersInsufficient} label="partners"/>
+
+          <ST>⚔️ Opponents Lose Rate</ST>
+          <Card style={{padding:0,overflow:"hidden"}}>
+            {stats.opponentsRanked.length===0
+              ? <div style={{padding:"14px 12px",textAlign:"center",fontSize:12,color:"var(--po-dim)"}}>No ranked opponents yet ({REPORT_MIN_MATCHES}+ matches against needed).</div>
+              : stats.opponentsRanked.map((o,i)=><div key={o.userId} style={{borderBottom:i<stats.opponentsRanked.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+                  <PairRow rank={i+1} name={o.nickname} rate={o.loseRate} num={o.losses} den={o.matches} goodColor="#EF4444"/>
+                </div>)}
+          </Card>
+          <InsufficientList items={stats.opponentsInsufficient} label="opponents"/>
+
+          <div style={{marginTop:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>
+            Official (closed) Closed Individuals matches only · Minimum {REPORT_MIN_MATCHES} matches together/against to be ranked · Dream/Funny Match hidden until you have enough data
+          </div>
+        </>}
+    </>;
+  })()}
 
   <ST>{viewedByAdmin?`${user.nickname}'s Communities`:"My Communities"}</ST>
   {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>🏸</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}

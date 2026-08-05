@@ -1,0 +1,61 @@
+# Matchkeeper (PadelOS) — قواعد العمل مع Claude Code
+
+هذا الملف بيوضّح إزاي نتعامل مع المشروع، وهو أول حاجة لازم تتقرا قبل أي شغل هنا.
+
+## 1. قواعد الـ Versioning
+
+- **رقم النسخة موجود في مكان واحد بس:** `src/App.jsx` → `const APP_VERSION = "V0.0X.YY";` (حاليًا حوالين السطر 125).
+- **متزودش رقم نسخة جديد من نفسك.** الافتراضي إنك تسيب الرقم زي ما هو وانت شغال/بتعدل.
+- **الاستثناء الوحيد:** أول ما تكون جاهز تسلّم **ملف حقيقي جاهز للتجربة أو البناء** (يعني بنيت الـ web build فعليًا و/أو عملت `cap sync` وجهزت الأندرويد للتجربة على الموبايل) — في اللحظة دي، وبس فيها، زوّد رقم النسخة أوتوماتيك من غير ما تسأل.
+- الترقيم بيتبع نفس نمط الـ CHANGELOG الموجود: `V0.0X.YY` (زيادة YY لتعديل عادي، وزيادة X لو حسيت إنه جديد بما يكفي — اتبع نفس الحس اللي شايفه في تاريخ الـ CHANGELOG).
+
+## 2. قاعدة الـ CHANGELOG.md
+
+- أي مرة بتزوّد رقم نسخة (يعني أي مرة بتسلّم ملف جاهز للتجربة)، **لازم تضيف entry جديد فوق في `CHANGELOG.md`** بنفس الأسلوب الموجود (عربي، رقم النسخة كعنوان `##`، نقط bullet توضح اللي اتغير وليه، خط فاصل `---` بعدها).
+- لو التعديل بسيط وبيتضاف لنفس رقم نسخة موجود بالفعل من غير ما ترفع الرقم (زي بعض الأمثلة في التاريخ: "تحديث على نفس الإصدار")، وضّح ده صراحة في الـ entry نفسه.
+- ماتكتبش في CHANGELOG إلا وقت تسليم ملف حقيقي — مش أثناء الشغل النظري أو المسودات.
+
+## 3. مسارات مهمة على اللابتوب
+
+- **جذر المشروع:** `C:\Users\Yoga 260\PadelOS2`
+- **كل الأبلكيشن لوجيك (الويب/الشاشات):** `src/App.jsx` (ملف واحد كبير ~6700 سطر)
+- **الـ entry point:** `src/main.jsx`
+- **Cloud Functions (Firebase):** `functions/index.js`
+- **الأندرويد (native shell):** `android/`
+  - كود الـ Match Mode Native (Kotlin/Java plugin, foreground service, alarm receivers): `android/app/src/main/java/com/trimachine/padelos/`
+  - Build output web: `dist/` (الويب build اللي بيتنقل للأندرويد بعد `cap sync`)
+  - Build output APK: `android/app/build/outputs/apk/debug/app-debug.apk` (بعد `gradlew assembleDebug`)
+  - Android SDK: `C:\Users\Yoga 260\AppData\Local\Android\Sdk` (متسجل في `android/local.properties`)
+- **سكريبتات جاهزة في الجذر (bat files):**
+  - `_01 npm run build.bat` → بناء الويب
+  - `_02 npx cap sync.bat` → نقل الـ build للأندرويد
+  - `_03 npx cap open android.bat` → فتح Android Studio
+  - `_04 Record Android Log.bat` → تسجيل logcat في `Downloads\test_log.txt`
+- **GitHub remote:** `https://github.com/ElMiko-max/PadelOS2.git` (origin, main branch)
+- **Firebase project:** `padelos-6f999` — Hosting مفعّل بس لتوزيع ملفات الـ APK (`public/releases/` → `dist/releases/`)، مش للويب أبق نفسه بعد. رابط الـ Hosting: `https://padelos-6f999.web.app`
+
+## 4. قاعدة تبليغ المسار
+
+**أي مرة تسلّمني ملف** (build، APK، صورة، أي output)، **قولي المسار الكامل بالظبط** في الرسالة — مش وصف عام، المسار الفعلي على الجهاز (زي `C:\Users\Yoga 260\PadelOS2\dist\...` أو مكان الـ APK بعد الـ build).
+
+## 5. الـ Workflow المتوقع
+
+الدور بتاعي (Claude) في كل مرة أسلّم فيها شغل جاهز للتجربة:
+1. أعمل التعديلات في الكود.
+2. أزوّد رقم الـ APP_VERSION (قاعدة #1) وأكتب الـ CHANGELOG entry (قاعدة #2).
+3. أعمل build للويب (`npm run build`) و `cap sync` للأندرويد تلقائي من غير ما أستنى تعليمات.
+4. أعمل commit لـ GitHub تلقائي (نفس remote أعلاه) — من غير ما أستنى إذن كل مرة.
+5. **استثناءات لازم تأكيد صريح من الأدمن كل مرة قبل ما تحصل:**
+   - **بناء الـ APK نفسه** (`gradlew assembleDebug` أو أي build أندرويد فعلي).
+   - **الـ push** لـ GitHub (`git push`).
+   الباقي (كود، version، CHANGELOG، web build، cap sync، commit محلي) بيحصل أوتوماتيك من غير ما أستنى.
+6. أقول المسار بالظبط لأي ملف تجربة جاهز (الويب build أو الـ APK) — قاعدة #4.
+7. **تسليم الـ APK فعليًا:**
+   - **أول حاجة:** أعمل rename للـ APK عشان يعكس اسم البرنامج ورقم النسخة، بالصيغة: `Matchkeeper-V0.0X.YY-debug.apk`.
+   - **الطريقة الأساسية (موثوقة، مجربة):** أرفعه على Firebase Hosting بتاعت المشروع (`public/releases/` → بيتنقل تلقائي لـ `dist/releases/` وقت الـ build → `firebase deploy --only hosting`) وأديه لينك مباشر بالصيغة `https://padelos-6f999.web.app/releases/Matchkeeper-V0.0X.YY-debug.apk` — الأدمن بيفتحه من متصفح الموبايل في أي وقت، من غير ما يحتاج اللابتوب يكون شغال أو حتى مفتوح. **ملحوظة أمان:** اللينك ده عام (public) — أي حد معاه اللينك يقدر يحمّله، مفيش باسورد عليه.
+   - **الطريقة الاحتياطية:** أبعته كمان جوه محادثة Claude (عن طريق أداة إرسال الملفات) كخيار إضافي — لكن جُرّب وطلع مش موثوق دايمًا (بيفضل "downloading..." من غير ما يخلص) خصوصًا للملفات الكبيرة زي الـ APK، فمتعتمدش عليه لوحده.
+   - **مش متاح حاليًا:** إرسال بالإيميل أو تيليجرام — مفيش أداة عندي لأي منهم. لو الأدمن عايز ده مستقبلًا، محتاج setup منفصل (زي Telegram Bot API token) قبل ما يبقى ممكن.
+
+دور المستخدم بس: يجرب الـ web app أو يعمل install لل APK على الموبايل ويجرب، وياخد قرار الـ APK build والـ push كل مرة — مش المفروض يشغّل بنفسه أوامر build/sync يدويًا.
+
+> ملاحظة أمان: أي عملية هدّامة (force push، حذف فروع، reset --hard) برّه النطاق ده وتحتاج تأكيد صريح دايمًا.

@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.06";
+const APP_VERSION = "V0.06.07";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -6418,6 +6418,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [recentOnly,setRecentOnly]=useState(false);
   const [expandedRow,setExpandedRow]=useState(null); // `${kind}-${userId}` for the open Partners/Opponents row, or null
+  const [expandedSection,setExpandedSection]=useState(null); // "partner"|"opponent" for the open "Insufficient data" section, or null
   const [editing,setEditing]=useState(false);
   const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
   const [photoUploading,setPhotoUploading]=useState(false);
@@ -6634,10 +6635,12 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         </div>}
       </div>;
     };
-    const InsufficientList = ({items,label,kind}) => items.length===0?null:
-      <details style={{marginBottom:14}}>
-        <summary style={{fontSize:11,color:"var(--po-dim)",cursor:"pointer",padding:"4px 0"}}>بيانات غير كافية — {label} ({items.length})</summary>
-        <Card style={{padding:0,overflow:"hidden",marginTop:6}}>
+    const InsufficientList = ({items,label,kind}) => {
+      if(items.length===0) return null;
+      const sectionOpen = expandedSection===kind;
+      return <div style={{marginBottom:14}}>
+        <div onClick={()=>setExpandedSection(o=>o===kind?null:kind)} style={{fontSize:11,color:"var(--po-dim)",cursor:"pointer",padding:"4px 0"}}>{sectionOpen?"▾":"▸"} بيانات غير كافية — {label} ({items.length})</div>
+        {sectionOpen&&<Card style={{padding:0,overflow:"hidden",marginTop:6}}>
           {items.map((p,i)=>{
             const rowKey=`insuff-${kind}-${p.userId}`, isOpen=expandedRow===rowKey;
             return <div key={p.userId} style={{borderBottom:i<items.length-1?"0.5px solid var(--po-bdr)":"none"}}>
@@ -6656,8 +6659,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               </div>}
             </div>;
           })}
-        </Card>
-      </details>;
+        </Card>}
+      </div>;
+    };
     return <>
       <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
         <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--po-dim)",cursor:"pointer"}}>
@@ -6675,7 +6679,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             {dreamH2H&&dreamH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(dreamH2H.last.date)}): {dreamH2H.last.sideAWon?"✅ you won":"❌ you lost"}{dreamH2H.meetings>1&&<> · {dreamH2H.meetings} meetings, you've won {Math.round(dreamH2H.sideAWinRate*100)}%</>}</div>}
           </Card>}
           {funny&&<Card style={{marginBottom:14,border:"0.5px solid #06B6D444",background:"#06B6D40A"}}>
-            <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>😂 ماتش يضحك — Funny Match</div>
+            <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>😂 ماتش مسخرة — Funny Match</div>
             <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{funny.partner.nickname}</b> vs <b>{funny.opponents.map(o=>o.nickname).join(" & ")}</b></div>
             {funnyH2H&&funnyH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(funnyH2H.last.date)}): {funnyH2H.last.sideAWon?"✅ you won":"❌ you lost"}{funnyH2H.meetings>1&&<> · {funnyH2H.meetings} meetings, you've won {Math.round(funnyH2H.sideAWinRate*100)}%</>}</div>}
           </Card>}

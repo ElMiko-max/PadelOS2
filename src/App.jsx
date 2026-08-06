@@ -128,7 +128,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.13";
+const APP_VERSION = "V0.06.14";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -170,6 +170,12 @@ function suggestEventName({date,time,venueName,commName}){
 // row per court, each with the two team names and whether it already has a winner.
 const mmTeamLabel = (team) => (team||[]).map(p=>p.nickname).join(" & ");
 const mmBreakLabel = (round) => (round?.onBreak||[]).map(p=>p.nickname).join(", ");
+// CT Ladder's onBreak holds whole TEAM objects ({name, players:[...]}), not flat player
+// objects like CI's — mmBreakLabel would read p.nickname off a team and get undefined.
+const mmCTBreakLabel = (round) => (round?.onBreak||[]).map(t=>{
+  const names = (t.players||[]).map(p=>p.nickname).join(" & ");
+  return t.name ? `${t.name}: ${names}` : names;
+}).join(" | ");
 // Per-player Dream/Funny badge baked directly into the team label string — the native
 // side only ever renders teamA/teamB as plain text, so no native change is needed for
 // this part; only the separate balance/meeting line below needs a genuinely new field.
@@ -5543,7 +5549,8 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     const lastRound = plan.rounds[plan.rounds.length-1];
     const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : [];
     const ladderLastRound = isLadder && plan.rounds.length>=(plan.maxRounds||99);
-    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers: "", courts };
+    const breakPlayers = isLadder ? mmCTBreakLabel(lastRound) : "";
+    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts };
     if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
     else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
     mmCTStartedRef.current = slot;

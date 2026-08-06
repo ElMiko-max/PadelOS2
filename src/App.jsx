@@ -54,8 +54,14 @@ async function enablePushNotifications(userId){
         visibility: 1,
         vibration: true,
       }).catch(e=>console.log("createChannel failed", e));
+      // Always attempt the request (mirrors Geolocation.requestPermissions() below, which
+      // has no gate at all) instead of only when status is exactly "prompt" — Android also
+      // reports "prompt-with-rationale" after a first dismissal, which the old strict
+      // equality check silently treated as a dead end even though Android was still willing
+      // to show the dialog. Calling requestPermissions() when truly denied is a harmless
+      // no-op, so there's no downside to just always trying.
       let permStatus = await PushNotifications.checkPermissions();
-      if (permStatus.receive === "prompt") permStatus = await PushNotifications.requestPermissions();
+      if (permStatus.receive !== "granted") permStatus = await PushNotifications.requestPermissions();
       if (permStatus.receive !== "granted") return {ok:false, reason:"denied"};
       return await new Promise((resolve) => {
         PushNotifications.addListener("registration", async (token) => {
@@ -122,7 +128,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.12";
+const APP_VERSION = "V0.06.13";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -194,6 +200,22 @@ function mmBuildRoundPayload(round, comms, excludeEventId){
     balance: mmBalanceLabel(comms, m.teamA, m.teamB, excludeEventId),
     winner: m.winner || null, // "A" | "B" | null
   }));
+}
+// CT Ladder equivalent — same payload shape, one match per court, but reading team.players
+// (fixed CT teams) instead of CI's per-round player arrays. League isn't built here — it
+// gets its own display-only "currently live" payload builder separately, since League can
+// schedule multiple matches per court per round with no single "the current match" concept.
+function mmBuildCTLadderPayload(round, comms, excludeEventId){
+  return (round?.matchesA||[]).map(m=>{
+    const pA=m.teamA?.players||[], pB=m.teamB?.players||[];
+    return {
+      court: m.court,
+      teamA: (m.teamA?.name?m.teamA.name+": ":"") + mmTeamLabelWithBadges(pA, comms, pB.map(p=>p.userId)),
+      teamB: (m.teamB?.name?m.teamB.name+": ":"") + mmTeamLabelWithBadges(pB, comms, pA.map(p=>p.userId)),
+      balance: mmBalanceLabel(comms, pA, pB, excludeEventId),
+      winner: m.winner || null,
+    };
+  });
 }
 
 // ── CI scoring ────────────────────────────────────────
@@ -5512,7 +5534,16 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     let slot = 1; while (offsets[slot]!==undefined && offsets[slot]<=elapsedMin) slot++;
     slot = Math.min(slot, tr);
     const whistleAt = startMs + (offsets[slot]||slot*rd)*60000;
-    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: slot>=tr, breakPlayers: "", courts: [] };
+    // Ladder is one match per court per round — same shape as CI, so it gets the full
+    // interactive widget (courts populated, tap-to-record-winner, Generate button). League
+    // can schedule multiple matches per court per round with no single "current match"
+    // concept, so it keeps courts:[] here — it gets its own separate display-only "currently
+    // live" payload builder instead (admin-flagged matches, no result entry via the widget).
+    const isLadder = plan.format==="ladder";
+    const lastRound = plan.rounds[plan.rounds.length-1];
+    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : [];
+    const ladderLastRound = isLadder && plan.rounds.length>=(plan.maxRounds||99);
+    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers: "", courts };
     if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
     else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
     mmCTStartedRef.current = slot;
@@ -5521,7 +5552,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
       MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles (CT) failed", e));
       onMarkWhistlesScheduled?.(plan.matchModeStartAt);
     }
-  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick]);
+  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matchesA?.map(m=>m.winner)||[])]);
 
   // Safety net: the native foreground service can get killed independently of this
   // component (e.g. app swiped away while locked). When the app comes back to the
@@ -5545,7 +5576,9 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
   const planRef = useRef(plan);
   const onSetWinCIRef = useRef(onSetWinCI);
   const onNextRoundRef = useRef(onNextRound);
-  useEffect(() => { planRef.current = plan; onSetWinCIRef.current = onSetWinCI; onNextRoundRef.current = onNextRound; });
+  const onSetWinCTRef = useRef(onSetWinCT);
+  const onNextCTLadderRef = useRef(onNextCTLadder);
+  useEffect(() => { planRef.current = plan; onSetWinCIRef.current = onSetWinCI; onNextRoundRef.current = onNextRound; onSetWinCTRef.current = onSetWinCT; onNextCTLadderRef.current = onNextCTLadder; });
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform() || !isAdmin || !isCI || sim) return;
@@ -5576,6 +5609,28 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     })().catch(e=>console.log("MatchMode.addListener failed", e));
     return () => { cancelled = true; winSub?.remove(); genSub?.remove(); };
   }, [isAdmin, isCI, sim]);
+
+  // Same wiring as CI above, but for CT Ladder: matches live in matchesA (single group,
+  // one per court), "side" is always "A" (ladder has no group A/B split), and Generate maps
+  // to onNextCTLadder instead of onNextRound. Only active in ladder format — League never
+  // populates courts so these events simply never fire there.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !isAdmin || !isCT || sim || plan?.format!=="ladder") return;
+    let winSub, genSub, cancelled = false;
+    (async () => {
+      const w = await MatchMode.addListener("courtWinner", ({ court, team }) => {
+        const p = planRef.current;
+        const ri = p?.rounds?.length ? p.rounds.length - 1 : -1;
+        const mi = p?.rounds?.[ri]?.matchesA?.findIndex(m=>m.court===court);
+        if (ri>=0 && mi>=0) onSetWinCTRef.current(ri, mi, "A", team, team==="A"?1:0, team==="A"?0:1);
+      });
+      const g = await MatchMode.addListener("generateNextRound", () => {
+        onNextCTLadderRef.current();
+      });
+      if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
+    })().catch(e=>console.log("MatchMode.addListener (CT) failed", e));
+    return () => { cancelled = true; winSub?.remove(); genSub?.remove(); };
+  }, [isAdmin, isCT, sim, plan?.format]);
 
 
 

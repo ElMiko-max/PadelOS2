@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Big/expanded content view. A consistent semi-transparent dark scrim on the ROOT
+  guarantees the light text stays legible regardless of whether the system notification
+  shade itself is light or dark that moment — instead of relying on adaptive colors that
+  didn't behave consistently across lighting/theme conditions.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#B3121428"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingTop="5dp"
+        android:paddingBottom="5dp">
+
+        <TextView
+            android:id="@+id/mm_round_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#A5B4FC"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:text="Round 1" />
+
+        <TextView
+            android:id="@+id/mm_whistle_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:gravity="center_vertical"
+            android:textColor="#C7C9D9"
+            android:textSize="10sp"
+            android:text="🔊 next in" />
+
+        <Chronometer
+            android:id="@+id/mm_countdown"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#A5B4FC"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#40FFFFFF"
+        android:layout_marginBottom="3dp"
+        android:orientation="horizontal" />
+
+    <LinearLayout
+        android:id="@+id/mm_court_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingTop="2dp" />
+
+    <LinearLayout
+        android:id="@+id/mm_break_row"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#1AF59E0B"
+        android:padding="6dp"
+        android:layout_marginTop="3dp"
+        android:layout_marginBottom="4dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/mm_break_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FBBF24"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:text="🪑 BREAK" />
+
+        <TextView
+            android:id="@+id/mm_break_names"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:textColor="#E5E7EB"
+            android:textSize="11sp"
+            android:maxLines="2"
+            android:ellipsize="end"
+            android:text="" />
+
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/mm_generate_btn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:layout_marginBottom="4dp"
+        android:minHeight="0dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:text="🚀 Generate Next Round"
+        android:textAllCaps="false"
+        android:textStyle="bold"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#34D399"
+        android:visibility="gone" />
+
+</LinearLayout>

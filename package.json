@@ -17,6 +17,7 @@
     "@capacitor/push-notifications": "^8.1.2",
     "@capacitor/share": "^8.0.1",
     "@capawesome/capacitor-google-sign-in": "^0.1.2",
+    "capacitor-native-settings": "^8.2.0",
     "firebase": "^12.15.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"

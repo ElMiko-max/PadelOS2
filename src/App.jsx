@@ -6,6 +6,7 @@ import { Share } from "@capacitor/share";
 import { App as CapApp } from "@capacitor/app";
 import { PushNotifications } from "@capacitor/push-notifications";
 import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
+import { NativeSettings, AndroidSettings, IOSSettings } from "capacitor-native-settings";
 
 // Native Android plugin (see /android/.../MatchModePlugin.kt) — persistent Match Mode
 // notification: shows live courts/teams for the current round, lets the organizer tap a
@@ -62,7 +63,7 @@ async function enablePushNotifications(userId){
       // no-op, so there's no downside to just always trying.
       let permStatus = await PushNotifications.checkPermissions();
       if (permStatus.receive !== "granted") permStatus = await PushNotifications.requestPermissions();
-      if (permStatus.receive !== "granted") return {ok:false, reason:"denied"};
+      if (permStatus.receive !== "granted") return {ok:false, reason:"denied", permState:permStatus.receive};
       return await new Promise((resolve) => {
         PushNotifications.addListener("registration", async (token) => {
           try {
@@ -2913,9 +2914,15 @@ export default function Matchkeeper() {
   useEffect(() => {
     if (Capacitor.isNativePlatform() && linkedMe && !autoPushTriedRef.current) {
       autoPushTriedRef.current = true;
-      enablePushNotifications(linkedMe.id);
-      Geolocation.requestPermissions().catch(e=>console.log("Location permission request failed", e));
-      MatchMode.ensureExactAlarmPermission().catch(e=>console.log("Exact alarm permission request failed", e));
+      // Sequenced, not fired concurrently: Android can only show one runtime-permission
+      // dialog at a time, and a second request arriving while one is already in flight gets
+      // silently dropped rather than queued — which was starving the Notifications prompt
+      // (it starts a beat later than Location's, since it awaits createChannel() first).
+      (async () => {
+        await enablePushNotifications(linkedMe.id).catch(e=>console.log("Push enable failed", e));
+        await Geolocation.requestPermissions().catch(e=>console.log("Location permission request failed", e));
+        await MatchMode.ensureExactAlarmPermission().catch(e=>console.log("Exact alarm permission request failed", e));
+      })();
     }
   }, [linkedMe]);
   const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
@@ -6995,6 +7002,11 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
 function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onBack}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
+  // Separate from pushStatus: once Android reports "denied" (permanently blocked — no
+  // dialog will ever show again), requestPermissions() is a dead end and the only way
+  // forward is the system Settings screen, so the button needs to switch to that instead
+  // of retrying a call that can't work anymore.
+  const [pushBlocked,setPushBlocked] = useState(false);
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const isNative = Capacitor.isNativePlatform();
@@ -7002,6 +7014,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
     if (!isNative) return;
     PushNotifications.checkPermissions().then(res => {
       setPushStatus(res.receive === "granted" ? "on" : "error");
+      setPushBlocked(res.receive === "denied");
       if (res.receive !== "granted") setPushErrDetail("Notifications permission not granted — enable it for Matchkeeper in your phone's system Settings app");
     });
   }, [isNative]);
@@ -7023,7 +7036,11 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
     setPushStatus("working");
     const res = await enablePushNotifications(user.id);
     setPushStatus(res.ok ? "on" : "error");
+    setPushBlocked(res.permState === "denied");
     setPushErrDetail(res.ok ? "" : (res.reason==="denied"?"Browser notification permission was denied":res.reason==="unsupported"?"This browser doesn't support push notifications":res.reason==="no-token"?"Couldn't get a push token — try again":(res.detail||"Unknown error")));
+  };
+  const openAppSettings = () => {
+    NativeSettings.open({optionAndroid: AndroidSettings.ApplicationDetails, optionIOS: IOSSettings.App}).catch(e=>console.log("openAppSettings failed", e));
   };
   return <><BBtn onBack={onBack} label="Back"/>
     <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
@@ -7037,7 +7054,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
             {pushStatus==="on"?"Enabled on this device ✓":pushStatus==="error"?`${isNative?"Off — ":"Couldn't enable — "}${pushErrDetail}`:pushStatus==="working"?"Setting up…":isNative?"Checking…":"Get notified even when the app is closed"}
           </div>
         </div>
-        {(!isNative||pushStatus==="error")&&<Btn label={pushStatus==="on"?"✓ On":pushStatus==="error"?"Try Again":"Enable"} primary={pushStatus!=="on"} onClick={enablePush} style={{flexShrink:0}}/>}
+        {(!isNative||pushStatus==="error")&&<Btn label={pushStatus==="on"?"✓ On":pushStatus==="error"?(pushBlocked?"Open Settings":"Try Again"):"Enable"} primary={pushStatus!=="on"} onClick={(isNative&&pushBlocked)?openAppSettings:enablePush} style={{flexShrink:0}}/>}
         {isNative&&pushStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
       </div>
       {pushStatus==="on"&&<div onClick={onSendTestNotif} style={{marginTop:12,paddingTop:12,borderTop:"0.5px solid var(--po-bdr)",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>Send myself a test notification</div>}

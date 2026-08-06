@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#12FFFFFF"
+    android:padding="10dp"
+    android:layout_marginBottom="6dp">
+
+    <TextView
+        android:id="@+id/mm_court_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#A5B4FC"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.05"
+        android:text="COURT 1" />
+
+    <TextView
+        android:id="@+id/mm_balance_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="#94A3B8"
+        android:textSize="10sp"
+        android:visibility="gone"
+        android:text="" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/mm_team_a_btn"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:minHeight="0dp"
+            android:padding="8dp"
+            android:textAllCaps="false"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="#F5F5FF"
+            android:backgroundTint="#332E3350"
+            android:text="Team A" />
+
+        <Button
+            android:id="@+id/mm_team_b_btn"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:minHeight="0dp"
+            android:padding="8dp"
+            android:textAllCaps="false"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="#F5F5FF"
+            android:backgroundTint="#332E3350"
+            android:text="Team B" />
+
+    </LinearLayout>
+</LinearLayout>

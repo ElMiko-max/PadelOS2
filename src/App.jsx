@@ -122,7 +122,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.11";
+const APP_VERSION = "V0.06.12";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -164,11 +164,34 @@ function suggestEventName({date,time,venueName,commName}){
 // row per court, each with the two team names and whether it already has a winner.
 const mmTeamLabel = (team) => (team||[]).map(p=>p.nickname).join(" & ");
 const mmBreakLabel = (round) => (round?.onBreak||[]).map(p=>p.nickname).join(", ");
-function mmBuildRoundPayload(round){
+// Per-player Dream/Funny badge baked directly into the team label string — the native
+// side only ever renders teamA/teamB as plain text, so no native change is needed for
+// this part; only the separate balance/meeting line below needs a genuinely new field.
+function mmTeamLabelWithBadges(team, comms, oppTeamIds){
+  const myIds = (team||[]).map(p=>p.userId);
+  return (team||[]).map(p=>{
+    const badge = personalMatchBadge(comms||[], p.userId, myIds, oppTeamIds);
+    return p.nickname + (badge.isDream?" 🔥":"") + (badge.isFunny?" 😂":"");
+  }).join(" & ");
+}
+// Same power-balance logic as the live Rounds/Matches screens: history-based (📊) once
+// there's real head-to-head data, USR-based (⚖️) fallback otherwise. Compact for notification width.
+function mmBalanceLabel(comms, teamA, teamB, excludeEventId){
+  const idsA=(teamA||[]).map(p=>p.userId), idsB=(teamB||[]).map(p=>p.userId);
+  const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId});
+  if(h2h.meetings>0) return `📊 ${Math.round(h2h.sideAWinRate*100)}%:${Math.round(h2h.sideBWinRate*100)}% (${h2h.meetings}n)`;
+  const avgA=(teamA||[]).reduce((s,p)=>s+p.usr,0)/((teamA||[]).length||1);
+  const avgB=(teamB||[]).reduce((s,p)=>s+p.usr,0)/((teamB||[]).length||1);
+  if(avgA===avgB) return "";
+  const gap=Math.abs(avgA-avgB);
+  return `⚖️ ${avgA>avgB?"A":"B"} +${Math.round((gap/((avgA+avgB)/2))*100)}%`;
+}
+function mmBuildRoundPayload(round, comms, excludeEventId){
   return (round?.matches||[]).map(m=>({
     court: m.court,
-    teamA: mmTeamLabel(m.teamA),
-    teamB: mmTeamLabel(m.teamB),
+    teamA: mmTeamLabelWithBadges(m.teamA, comms, (m.teamB||[]).map(p=>p.userId)),
+    teamB: mmTeamLabelWithBadges(m.teamB, comms, (m.teamA||[]).map(p=>p.userId)),
+    balance: mmBalanceLabel(comms, m.teamA, m.teamB, excludeEventId),
     winner: m.winner || null, // "A" | "B" | null
   }));
 }
@@ -5436,7 +5459,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
     const slot = Math.min(ri+1, tr);
     const whistleAt = new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000;
-    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), isLastRound: (ri+1)>=tr, breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round) };
+    const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), isLastRound: (ri+1)>=tr, breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round, comms||[], effEv.id) };
     if (mmRoundCountRef.current === 0) {
       MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
     } else {

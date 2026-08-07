@@ -47,6 +47,8 @@
 - **GitHub remote:** `https://github.com/ElMiko-max/PadelOS2.git` (origin, main branch)
 - **Firebase project:** `padelos-6f999` — Hosting مفعّل بس لتوزيع ملفات الـ APK (`dist/releases/`)، مش للويب أبق نفسه بعد. رابط الـ Hosting: `https://padelos-6f999.web.app`
 
+**⚠️ في مفهوم الأدمن، فيه مخرجين (outputs) بس لكل تسليم: (1) الـ APK، و(2) GitHub.** لما يقول "الويب أب" (web app)، قصده **GitHub** (الكود) — مش رابط الـ `padelos-6f999.web.app` نفسه. إن `dist/index.html` بيتنقل لنفس الـ Hosting كنتيجة جانبية لـ `firebase deploy --only hosting` (لإنه بينشر مجلد `dist/` كله مش بس `dist/releases/`) ده تفصيلة تقنية مش مخرج حقيقي — متتكلمش عنه كـ "الويب أب اتحدث" أبدًا.
+
 ## 6. قاعدة تبليغ المسار
 
 **أي مرة تسلّمني ملف** (build، APK، صورة، أي output)، **قولي المسار الكامل بالظبط** في الرسالة — مش وصف عام، المسار الفعلي على الجهاز (زي `C:\Users\Yoga 260\PadelOS2\dist\...` أو مكان الـ APK بعد الـ build).

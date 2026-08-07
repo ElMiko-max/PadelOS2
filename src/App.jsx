@@ -4938,7 +4938,10 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
     const conflictA=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamA?.id);
     const conflictB=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamB?.id);
     const hasConflict=(conflictA||conflictB)&&!m.live;
+    // TEMPORARY diagnostic — remove once the completed-match dimming bug is confirmed fixed.
+    const DBG=isLeague?<div style={{fontSize:9,fontFamily:"monospace",color:"#F59E0B",background:"#F59E0B11",padding:"3px 6px",borderRadius:5,marginBottom:5}}>ri={ri} lastRi={plan.rounds.length-1} live={String(m.live)} win={String(m.winner)} A.id={String(m.teamA?.id)} B.id={String(m.teamB?.id)} cA={String(conflictA)} cB={String(conflictB)}</div>:null;
     if(m.winner){return <Card style={{marginBottom:6,padding:"10px 12px",border:"0.5px solid #34D39444",opacity:hasConflict?0.5:1}}>
+      {DBG}
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} live elsewhere right now</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
@@ -4963,6 +4966,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
 
     const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
     return <Card style={{marginBottom:6,padding:"10px 12px",opacity:hasConflict?0.5:1}}>
+      {DBG}
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} already live elsewhere — can't also flag this one</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:8,flexWrap:"wrap"}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>

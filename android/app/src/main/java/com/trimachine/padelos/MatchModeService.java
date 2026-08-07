@@ -54,6 +54,10 @@ public class MatchModeService extends Service {
     private long currentWhistleAt = 0L;
     private String currentBreakPlayers = "";
     private boolean currentIsLastRound = false;
+    // False only for CT League's display-only payload — courts render as plain info rows
+    // with no tap targets there, since result entry stays in-app (score steppers). Absent
+    // from the Intent (CI, Ladder) defaults to true via the plugin bridge.
+    private boolean currentInteractive = true;
     private final List<CourtInfo> currentCourts = new ArrayList<>();
 
     @Override
@@ -69,6 +73,7 @@ public class MatchModeService extends Service {
             currentWhistleAt = intent.getLongExtra("whistleAt", 0L);
             currentBreakPlayers = intent.getStringExtra("breakPlayers");
             currentIsLastRound = intent.getBooleanExtra("isLastRound", false);
+            currentInteractive = intent.getBooleanExtra("interactive", true);
             String courtsJson = intent.getStringExtra("courtsJson");
             if (courtsJson == null) courtsJson = "[]";
             currentCourts.clear();
@@ -103,7 +108,7 @@ public class MatchModeService extends Service {
         for (int i = 0; i < currentCourts.size(); i++) {
             CourtInfo c = currentCourts.get(i);
             if (c.court == court) {
-                currentCourts.set(i, new CourtInfo(c.court, c.teamA, c.teamB, team, c.balance));
+                currentCourts.set(i, new CourtInfo(c.court, c.teamA, c.teamB, team, c.balance, c.group));
                 break;
             }
         }
@@ -243,7 +248,8 @@ public class MatchModeService extends Service {
                         o.optString("teamA", "Team A"),
                         o.optString("teamB", "Team B"),
                         winner,
-                        o.optString("balance", "")
+                        o.optString("balance", ""),
+                        o.optString("group", "")
                 ));
             }
         } catch (Exception e) {
@@ -338,7 +344,16 @@ public class MatchModeService extends Service {
         int idx = 0;
         for (CourtInfo c : courts) {
             if (idx >= MAX_COURTS) break;
-            if (c.winner == null) {
+            if (!currentInteractive) {
+                // CT League display-only row — no tap targets at all; result entry stays
+                // in-app. Reuses the "done" row's plain two-line structure but its own
+                // layout/color so it can't be mistaken for a finished match.
+                RemoteViews info = new RemoteViews(getPackageName(), R.layout.notification_match_league_info_row);
+                String label = "COURT " + c.court + (c.group != null && !c.group.isEmpty() ? " · GROUP " + c.group : "");
+                info.setTextViewText(R.id.mm_league_court_label, label);
+                info.setTextViewText(R.id.mm_league_teams_text, c.teamA + " vs " + c.teamB);
+                big.addView(R.id.mm_court_container, info);
+            } else if (c.winner == null) {
                 RemoteViews row = new RemoteViews(getPackageName(), R.layout.notification_match_court_row);
                 row.setTextViewText(R.id.mm_court_label, "COURT " + c.court);
                 if (c.balance != null && !c.balance.isEmpty()) {
@@ -363,6 +378,9 @@ public class MatchModeService extends Service {
             }
             idx++;
         }
+
+        big.setViewVisibility(R.id.mm_league_empty_hint,
+                (!currentInteractive && courts.isEmpty()) ? View.VISIBLE : View.GONE);
 
         boolean showGenerate = allDone && !currentIsLastRound;
         big.setViewVisibility(R.id.mm_generate_btn, showGenerate ? View.VISIBLE : View.GONE);
@@ -405,8 +423,9 @@ public class MatchModeService extends Service {
         final String teamB;
         final String winner;
         final String balance;
-        CourtInfo(int court, String teamA, String teamB, String winner, String balance) {
-            this.court = court; this.teamA = teamA; this.teamB = teamB; this.winner = winner; this.balance = balance;
+        final String group; // "A" / "B" / "" — League's group label; unused (empty) for CI/Ladder
+        CourtInfo(int court, String teamA, String teamB, String winner, String balance, String group) {
+            this.court = court; this.teamA = teamA; this.teamB = teamB; this.winner = winner; this.balance = balance; this.group = group;
         }
     }
 }

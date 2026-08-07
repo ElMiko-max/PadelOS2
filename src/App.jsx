@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.15";
+const APP_VERSION = "V0.06.16";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -223,6 +223,22 @@ function mmBuildCTLadderPayload(round, comms, excludeEventId){
       winner: m.winner || null,
     };
   });
+}
+// League's promised widget payload — display-only (no tap-to-record: League can have
+// several matches per court per round, so there's no single "current match" the widget's
+// existing tap/court-index resolution could target). Only matches the admin has flagged
+// live (m.live) AND that don't have a winner yet — a match drops off automatically the
+// moment its result gets entered in-app, no need to remember to un-flag it. Team names
+// only (not player-by-player like CI/Ladder) since League is about team standings.
+function mmBuildCTLeaguePayload(round){
+  const pick = (matches, group) => (matches||[]).filter(m=>m.live && m.winner==null).map(m=>({
+    court: m.court,
+    group,
+    teamA: m.teamA?.name || "Team A",
+    teamB: m.teamB?.name || "Team B",
+    winner: null,
+  }));
+  return [...pick(round?.matchesA, "A"), ...pick(round?.matchesB, "B")];
 }
 
 // ── CI scoring ────────────────────────────────────────
@@ -3955,6 +3971,9 @@ export default function Matchkeeper() {
     toast2(`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
   const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  // Toggles whether a League match shows on the Match Mode widget — display-only there
+  // (no tap-to-record), so this doesn't touch winner/score at all, just the "live" flag.
+  const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
   const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan));toast2("Groups reshuffled ✓");};
   const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan));toast2("Next match generated ✓");return true;};
   const swapCTLadder=(cid,eid,ri,tidA,tidB)=>{
@@ -4100,6 +4119,7 @@ export default function Matchkeeper() {
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
             onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
+            onToggleCTLeagueLive={(ri,mi,side)=>toggleCTLeagueLive(comm.id,event.id,ri,mi,side)}
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
             onNextCTLadder={(silent)=>nextCTLadder(comm.id,event.id,silent)}
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
@@ -4840,7 +4860,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
 }
 
 
-function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
+function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
   const [scores,setScores]=useState({});
   const [collapsedRounds,setCollapsedRounds]=useState(new Set()); // manually toggled rounds (overrides the completed-round default)
@@ -4877,9 +4897,15 @@ function CTMatchesTab({plan,comms,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapC
 
     const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
     return <Card style={{marginBottom:8}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
         <span style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
-        {h2h.meetings===0&&avgA!==avgB&&<span title={`USR gap: ${usrGap} (${m.teamA?.name} avg ${avgA} vs ${m.teamB?.name} avg ${avgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:usrGap<=5?"#34D399":usrGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {avgA>avgB?m.teamA?.name:m.teamB?.name} +{Math.round((usrGap/((avgA+avgB)/2))*100)}%</span>}
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          {h2h.meetings===0&&avgA!==avgB&&<span title={`USR gap: ${usrGap} (${m.teamA?.name} avg ${avgA} vs ${m.teamB?.name} avg ${avgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:usrGap<=5?"#34D399":usrGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {avgA>avgB?m.teamA?.name:m.teamB?.name} +{Math.round((usrGap/((avgA+avgB)/2))*100)}%</span>}
+          {/* Whether this match shows on the admin's Match Mode widget — display-only there
+              (no tap-to-record), doesn't touch winner/score. Same tap-to-toggle interaction
+              as the break-lock 🔓/🔐 badges elsewhere in this screen. */}
+          {isLeague&&isAdmin&&onToggleCTLeagueLive&&<span onClick={()=>onToggleCTLeagueLive(ri,mi,side)} style={{fontSize:11,fontWeight:700,padding:"3px 9px",borderRadius:20,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5,background:m.live?"#EF444422":"var(--po-inp)",color:m.live?"#EF4444":"var(--po-dim)",border:`0.5px solid ${m.live?"#EF444455":"var(--po-bdr)"}`}}>{m.live?"🔴 Live on widget":"⚪ Not on widget"}</span>}
+        </div>
       </div>
       {(()=>{
         const ri2=plan.rounds.findIndex(r=>r.roundNum===plan.rounds[plan.rounds.length-1].roundNum);
@@ -5150,7 +5176,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers}){
+function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -5362,6 +5388,17 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
           return {...e, plan:{...e.plan, rounds}};
         })
       : onSetWinCT(ri,mi,side,w,sA,sB),
+    toggleCTLeagueLive: (ri,mi,side) => sim
+      ? simMutate(e => {
+          if(!e.plan) return e;
+          const rounds=e.plan.rounds.map((r,rr)=>{
+            if(rr!==ri) return r;
+            const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});
+            return {...r, matchesA:side==="A"?up(r.matchesA):r.matchesA, matchesB:side==="B"?up(r.matchesB):r.matchesB};
+          });
+          return {...e, plan:{...e.plan, rounds}};
+        })
+      : onToggleCTLeagueLive(ri,mi,side),
     applyPromo: () => sim
       ? simMutate(e => e.plan ? {...e, plan: applyPromoRelegation(e.plan)} : e)
       : onApplyPromo(),
@@ -5550,14 +5587,15 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     // Ladder is one match per court per round — same shape as CI, so it gets the full
     // interactive widget (courts populated, tap-to-record-winner, Generate button). League
     // can schedule multiple matches per court per round with no single "current match"
-    // concept, so it keeps courts:[] here — it gets its own separate display-only "currently
-    // live" payload builder instead (admin-flagged matches, no result entry via the widget).
+    // concept, so its courts come from the display-only "currently live" payload instead
+    // (admin-flagged matches only) — interactive:false tells the native side to skip
+    // wiring tap listeners on these rows entirely.
     const isLadder = plan.format==="ladder";
     const lastRound = plan.rounds[plan.rounds.length-1];
-    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : [];
+    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : mmBuildCTLeaguePayload(lastRound);
     const ladderLastRound = isLadder && plan.rounds.length>=(plan.maxRounds||99);
     const breakPlayers = isLadder ? mmCTBreakLabel(lastRound) : "";
-    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts };
+    const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts, interactive: isLadder };
     if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
     else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
     mmCTStartedRef.current = slot;
@@ -5566,7 +5604,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
       MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles (CT) failed", e));
       onMarkWhistlesScheduled?.(plan.matchModeStartAt);
     }
-  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matchesA?.map(m=>m.winner)||[])]);
+  }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick, plan?.rounds?.length, JSON.stringify([...(plan?.rounds?.[plan?.rounds?.length-1]?.matchesA||[]),...(plan?.rounds?.[plan?.rounds?.length-1]?.matchesB||[])].map(m=>m.winner+":"+(m.live?1:0)))]);
 
   // Safety net: the native foreground service can get killed independently of this
   // component (e.g. app swiped away while locked). When the app comes back to the
@@ -6353,7 +6391,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} comms={comms} onSetWinCT={act.setWinCT} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} comms={comms} onSetWinCT={act.setWinCT} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>

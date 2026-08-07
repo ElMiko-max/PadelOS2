@@ -68,6 +68,20 @@
         android:orientation="vertical"
         android:paddingTop="2dp" />
 
+    <!-- League display-only mode with nothing flagged live yet. -->
+    <TextView
+        android:id="@+id/mm_league_empty_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="4dp"
+        android:gravity="center"
+        android:textColor="#6B7290"
+        android:textSize="11sp"
+        android:lineSpacingExtra="2dp"
+        android:text="No matches marked live right now.\nFlag one in the Matches tab to see it here."
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/mm_break_row"
         android:layout_width="match_parent"

@@ -344,18 +344,13 @@ public class MatchModeService extends Service {
         int idx = 0;
         for (CourtInfo c : courts) {
             if (idx >= MAX_COURTS) break;
-            if (!currentInteractive) {
-                // CT League display-only row — no tap targets at all; result entry stays
-                // in-app. Reuses the "done" row's plain two-line structure but its own
-                // layout/color so it can't be mistaken for a finished match.
-                RemoteViews info = new RemoteViews(getPackageName(), R.layout.notification_match_league_info_row);
-                String label = "COURT " + c.court + (c.group != null && !c.group.isEmpty() ? " · GROUP " + c.group : "");
-                info.setTextViewText(R.id.mm_league_court_label, label);
-                info.setTextViewText(R.id.mm_league_teams_text, c.teamA + " vs " + c.teamB);
-                big.addView(R.id.mm_court_container, info);
-            } else if (c.winner == null) {
+            if (!currentInteractive || c.winner == null) {
+                // Same row layout for both the normal interactive case (CI/Ladder, tappable)
+                // and CT League's display-only case — League just skips wiring the click
+                // listeners below, since result entry for it stays in-app.
                 RemoteViews row = new RemoteViews(getPackageName(), R.layout.notification_match_court_row);
-                row.setTextViewText(R.id.mm_court_label, "COURT " + c.court);
+                String label = "COURT " + c.court + (c.group != null && !c.group.isEmpty() ? " · GROUP " + c.group : "");
+                row.setTextViewText(R.id.mm_court_label, label);
                 if (c.balance != null && !c.balance.isEmpty()) {
                     row.setTextViewText(R.id.mm_balance_label, c.balance);
                     row.setViewVisibility(R.id.mm_balance_label, View.VISIBLE);
@@ -364,10 +359,12 @@ public class MatchModeService extends Service {
                 }
                 row.setTextViewText(R.id.mm_team_a_btn, c.teamA);
                 row.setTextViewText(R.id.mm_team_b_btn, c.teamB);
-                row.setOnClickPendingIntent(R.id.mm_team_a_btn,
-                        actionPendingIntent(ACTION_COURT_WINNER, c.court, "A", 1000 + idx * 2));
-                row.setOnClickPendingIntent(R.id.mm_team_b_btn,
-                        actionPendingIntent(ACTION_COURT_WINNER, c.court, "B", 1000 + idx * 2 + 1));
+                if (currentInteractive) {
+                    row.setOnClickPendingIntent(R.id.mm_team_a_btn,
+                            actionPendingIntent(ACTION_COURT_WINNER, c.court, "A", 1000 + idx * 2));
+                    row.setOnClickPendingIntent(R.id.mm_team_b_btn,
+                            actionPendingIntent(ACTION_COURT_WINNER, c.court, "B", 1000 + idx * 2 + 1));
+                }
                 big.addView(R.id.mm_court_container, row);
             } else {
                 RemoteViews done = new RemoteViews(getPackageName(), R.layout.notification_match_court_done);

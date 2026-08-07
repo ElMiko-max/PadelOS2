@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.16";
+const APP_VERSION = "V0.06.17";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -224,20 +224,25 @@ function mmBuildCTLadderPayload(round, comms, excludeEventId){
     };
   });
 }
-// League's promised widget payload — display-only (no tap-to-record: League can have
-// several matches per court per round, so there's no single "current match" the widget's
-// existing tap/court-index resolution could target). Only matches the admin has flagged
-// live (m.live) AND that don't have a winner yet — a match drops off automatically the
-// moment its result gets entered in-app, no need to remember to un-flag it. Team names
-// only (not player-by-player like CI/Ladder) since League is about team standings.
-function mmBuildCTLeaguePayload(round){
-  const pick = (matches, group) => (matches||[]).filter(m=>m.live && m.winner==null).map(m=>({
-    court: m.court,
-    group,
-    teamA: m.teamA?.name || "Team A",
-    teamB: m.teamB?.name || "Team B",
-    winner: null,
-  }));
+// League's widget payload — same rich shape as mmBuildCTLadderPayload (team name +
+// per-player 🔥/😂 badges + ⚖️/📊 balance), just filtered down to matches the admin has
+// flagged live (m.live) AND that don't have a winner yet — a match drops off automatically
+// the moment its result gets entered in-app, no need to remember to un-flag it. Display-only
+// on the native side (no tap-to-record wired up there): League can have several matches per
+// court per round, so there's no single "current match" the widget's tap/court-index
+// resolution could target.
+function mmBuildCTLeaguePayload(round, comms, excludeEventId){
+  const pick = (matches, group) => (matches||[]).filter(m=>m.live && m.winner==null).map(m=>{
+    const pA=m.teamA?.players||[], pB=m.teamB?.players||[];
+    return {
+      court: m.court,
+      group,
+      teamA: (m.teamA?.name?m.teamA.name+": ":"") + mmTeamLabelWithBadges(pA, comms, pB.map(p=>p.userId)),
+      teamB: (m.teamB?.name?m.teamB.name+": ":"") + mmTeamLabelWithBadges(pB, comms, pA.map(p=>p.userId)),
+      balance: mmBalanceLabel(comms, pA, pB, excludeEventId),
+      winner: null,
+    };
+  });
   return [...pick(round?.matchesA, "A"), ...pick(round?.matchesB, "B")];
 }
 
@@ -2618,6 +2623,7 @@ function Av({u,size=36}){
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}
+function LiveBdg({label}){return <span style={{fontSize:11,fontWeight:700,padding:"2px 8px 2px 6px",borderRadius:20,background:"#EF444422",color:"#EF4444",border:"0.5px solid #EF444466",whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:"#EF4444",animation:"liveDotPulse 1.4s ease-in-out infinite"}}/>{label}</span>;}
 
 // top3: array of up to 3 {name, avatarUser, players, value, valueLabel, usrLine} in RANK order (1st, 2nd, 3rd).
 // avatarUser: single user (CI). players: array of users (CT, shows each member's avatar+name).
@@ -2732,16 +2738,21 @@ function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casua
 function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EGYPT[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
 
 // Score Stepper — fixed scroll issue with onMouseDown instead of onClick
+// Horizontal [−] value [+] layout — a vertical +/number/− stack ate ~130px of height per
+// team; this is the same control in ~40px, which is most of the undecided League match
+// card's "too big, too much empty space" complaint.
 function ScoreStepper({value,onChange,label}){
-  return <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
-    <div style={{fontSize:10,color:"var(--po-dim)",fontWeight:600,textAlign:"center",maxWidth:70,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
-    <button
-      onMouseDown={e=>{e.preventDefault();onChange(Math.min(9,value+1));}}
-      style={{width:38,height:38,borderRadius:8,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:22,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>+</button>
-    <div style={{fontSize:30,fontWeight:700,color:"var(--po-text)",minWidth:44,textAlign:"center",lineHeight:1}}>{value}</div>
-    <button
-      onMouseDown={e=>{e.preventDefault();onChange(Math.max(0,value-1));}}
-      style={{width:38,height:38,borderRadius:8,border:"0.5px solid #EF444444",background:"#EF444411",color:"#EF4444",fontSize:22,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>−</button>
+  return <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+    <div style={{fontSize:9,color:"var(--po-dim)",fontWeight:600,textAlign:"center",maxWidth:84,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      <button
+        onMouseDown={e=>{e.preventDefault();onChange(Math.max(0,value-1));}}
+        style={{width:26,height:26,borderRadius:6,border:"0.5px solid #EF444444",background:"#EF444411",color:"#EF4444",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>−</button>
+      <div style={{fontSize:18,fontWeight:700,color:"var(--po-text)",minWidth:20,textAlign:"center",lineHeight:1}}>{value}</div>
+      <button
+        onMouseDown={e=>{e.preventDefault();onChange(Math.min(9,value+1));}}
+        style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>+</button>
+    </div>
   </div>;
 }
 
@@ -3733,8 +3744,17 @@ export default function Matchkeeper() {
   const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
+  // An admin's phone can only meaningfully show one event's Match Mode widget at a time —
+  // starting a new one clears matchModeStartAt on any OTHER event that still has it set
+  // (across every community, not just this one), so at most one event is ever "live"
+  // app-wide. This is what the Events-list LIVE badge relies on to never have to
+  // disambiguate between two "current" events.
   const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}})}));
+    setComms(cs=>cs.map(c=>({...c,events:c.events.map(ev=>{
+      if (c.id===cid && ev.id===eid) return !ev.plan ? ev : {...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}};
+      if (ev.plan?.matchModeStartAt) return {...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}};
+      return ev;
+    })})));
     if (!roundEndTimes || !roundEndTimes.length) return;
     const comm = comms.find(c=>c.id===cid);
     const ev = comm?.events.find(e=>e.id===eid);
@@ -4468,7 +4488,17 @@ function EvCard({ev,me,users,onClick}){
   const tl={open:"Open Day",closed_ind:"Closed Ind.",closed_teams:"Closed Teams"};
   const creator=users?.find(u=>u.id===ev.createdBy);
   const photoCount=ev.photos?.length||0;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  const liveStartAt=ev.plan?.matchModeStartAt;
+  const [now,setNow]=useState(Date.now());
+  useEffect(()=>{
+    if(!liveStartAt||ev.status==="completed"||ev.status==="cancelled")return;
+    const t=setInterval(()=>setNow(Date.now()),1000);
+    return ()=>clearInterval(t);
+  },[liveStartAt,ev.status]);
+  const live=getLiveMatchInfo(ev,now);
+  const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
+  const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -4875,36 +4905,60 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
   const lastRound=plan.rounds[plan.rounds.length-1];
   const lastRoundDone=lastRound&&[...lastRound.matchesA,...(lastRound.matchesB||[])].every(m=>m.winner);
 
+  // A team can only really be playing one match at a time — if it's already flagged live
+  // on another undecided match in the same round, this checks for that so the UI can warn
+  // instead of letting the admin double-book it.
+  function isTeamLiveElsewhere(ri,mi,side,teamId){
+    if(teamId==null)return false;
+    const round=plan.rounds[ri];
+    if(!round)return false;
+    const all=[...(round.matchesA||[]).map((mm,i)=>({mm,s:"A",i})),...(round.matchesB||[]).map((mm,i)=>({mm,s:"B",i}))];
+    return all.some(({mm,s,i})=>!(s===side&&i===mi)&&mm.live&&!mm.winner&&(mm.teamA?.id===teamId||mm.teamB?.id===teamId));
+  }
+
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
     const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
-    const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:8,fontSize:13,fontWeight:700,padding:"6px 8px",borderRadius:8,background:"var(--po-inp)"}}>
-      <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:11}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:11,color:"var(--po-dim)"}}>({h2h.meetings} n.)</span>
+    const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:5,fontSize:12,fontWeight:700,padding:"4px 6px",borderRadius:7,background:"var(--po-inp)"}}>
+      <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:10}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:10,color:"var(--po-dim)"}}>({h2h.meetings}n)</span>
     </div>;
-    if(m.winner){return <Card style={{marginBottom:8,border:"0.5px solid #34D39444"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <span style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
+    if(m.winner){return <Card style={{marginBottom:6,padding:"10px 12px",border:"0.5px solid #34D39444"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+        <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
         <Bdg label={`${m.winner==="A"?m.teamA?.name:m.teamB?.name} wins`} color="#34D399"/>
       </div>
-      <div style={{display:"flex",alignItems:"center",gap:8}}>
-        <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:gc,fontWeight:600,marginBottom:2}}>{m.teamA?.name}</div>{isLeague&&<div style={{fontSize:26,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)"}}>{m.scoreA}</div>}</div>
-        {isLeague&&<div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>}
-        <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:gc,fontWeight:600,marginBottom:2}}>{m.teamB?.name}</div>{isLeague&&<div style={{fontSize:26,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)"}}>{m.scoreB}</div>}</div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
+        <div style={{flex:1,textAlign:"center"}}>
+          <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}</div>
+          {isLeague&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>}
+          {isLeague&&<div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>}
+        </div>
+        {isLeague&&<div style={{fontSize:12,color:"#334155",fontWeight:700}}>—</div>}
+        <div style={{flex:1,textAlign:"center"}}>
+          <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}</div>
+          {isLeague&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>}
+          {isLeague&&<div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>}
+        </div>
       </div>
       <H2HRow/>
-      <div style={{display:"flex",justifyContent:"flex-end",marginTop:6}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>
+      <div style={{display:"flex",justifyContent:"flex-end"}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>
     </Card>;}
 
     const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
-    return <Card style={{marginBottom:8}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:11,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
+    const conflictA=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamA?.id);
+    const conflictB=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamB?.id);
+    const hasConflict=(conflictA||conflictB)&&!m.live;
+    return <Card style={{marginBottom:6,padding:"10px 12px",opacity:hasConflict?0.5:1}}>
+      {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} already live elsewhere — can't also flag this one</div>}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           {h2h.meetings===0&&avgA!==avgB&&<span title={`USR gap: ${usrGap} (${m.teamA?.name} avg ${avgA} vs ${m.teamB?.name} avg ${avgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:usrGap<=5?"#34D399":usrGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {avgA>avgB?m.teamA?.name:m.teamB?.name} +{Math.round((usrGap/((avgA+avgB)/2))*100)}%</span>}
           {/* Whether this match shows on the admin's Match Mode widget — display-only there
               (no tap-to-record), doesn't touch winner/score. Same tap-to-toggle interaction
-              as the break-lock 🔓/🔐 badges elsewhere in this screen. */}
-          {isLeague&&isAdmin&&onToggleCTLeagueLive&&<span onClick={()=>onToggleCTLeagueLive(ri,mi,side)} style={{fontSize:11,fontWeight:700,padding:"3px 9px",borderRadius:20,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5,background:m.live?"#EF444422":"var(--po-inp)",color:m.live?"#EF4444":"var(--po-dim)",border:`0.5px solid ${m.live?"#EF444455":"var(--po-bdr)"}`}}>{m.live?"🔴 Live on widget":"⚪ Not on widget"}</span>}
+              as the break-lock 🔓/🔐 badges elsewhere in this screen. Blocked while a
+              conflicting team is already live elsewhere. */}
+          {isLeague&&isAdmin&&onToggleCTLeagueLive&&<span onClick={()=>!hasConflict&&onToggleCTLeagueLive(ri,mi,side)} style={{fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:20,cursor:hasConflict?"default":"pointer",display:"inline-flex",alignItems:"center",gap:5,background:m.live?"#EF444422":"var(--po-inp)",color:m.live?"#EF4444":"var(--po-dim)",border:`0.5px solid ${m.live?"#EF444455":"var(--po-bdr)"}`}}>{m.live?"🔴 Live on widget":"⚪ Not on widget"}</span>}
         </div>
       </div>
       {(()=>{
@@ -4912,32 +4966,32 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         function TeamBox({team,side2}){const isSel=selT&&selT.ri===ri2&&selT.tid===team?.id;
           const oppTeam=team===m.teamA?m.teamB:m.teamA;
           const myIds=(team?.players||[]).map(p=>p.userId), oppIds=(oppTeam?.players||[]).map(p=>p.userId);
-          return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"6px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}>
-            <div style={{fontSize:13,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:2}}>{team?.name} <span style={{fontSize:11,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div>
-            <div style={{fontSize:11,color:"var(--po-dim)",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4}}>
+          return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"3px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}>
+            <div style={{fontSize:12,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:1}}>{team?.name} <span style={{fontSize:10,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div>
+            <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4}}>
               {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname}{badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
             </div>
           </div>;}
-        return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:8,marginBottom:isLeague?16:10,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:12,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
+        return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       <H2HRow/>
       {isLeague&&<>
-        <div style={{display:"flex",justifyContent:"center",alignItems:"flex-start",gap:24,marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
           <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
-          <div style={{fontSize:20,color:"#334155",fontWeight:700,paddingTop:44}}>—</div>
+          <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
           <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"}/>
         </div>
-        {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:10}}>⚠️ Tied — adjust score to confirm winner</div>}
+        {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       </>}
-      <div style={{display:"flex",gap:8}}>
+      <div style={{display:"flex",gap:6}}>
         <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",isLeague?sc.scoreA:1,isLeague?sc.scoreB:0);}}
           disabled={isLeague&&sc.scoreA<=sc.scoreB}
-          style={{flex:1,padding:"10px 0",borderRadius:8,border:`0.5px solid ${!isLeague||sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:!isLeague||sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:!isLeague||sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:13,fontWeight:600,cursor:isLeague&&sc.scoreA<=sc.scoreB?"default":"pointer",opacity:isLeague&&sc.scoreA<=sc.scoreB?0.4:1}}>
+          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${!isLeague||sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:!isLeague||sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:!isLeague||sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:isLeague&&sc.scoreA<=sc.scoreB?"default":"pointer",opacity:isLeague&&sc.scoreA<=sc.scoreB?0.4:1}}>
           ← {m.teamA?.name}
         </button>
         <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",isLeague?sc.scoreA:0,isLeague?sc.scoreB:1);}}
           disabled={isLeague&&sc.scoreB<=sc.scoreA}
-          style={{flex:1,padding:"10px 0",borderRadius:8,border:`0.5px solid ${!isLeague||sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:!isLeague||sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:!isLeague||sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:13,fontWeight:600,cursor:isLeague&&sc.scoreB<=sc.scoreA?"default":"pointer",opacity:isLeague&&sc.scoreB<=sc.scoreA?0.4:1}}>
+          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${!isLeague||sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:!isLeague||sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:!isLeague||sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:isLeague&&sc.scoreB<=sc.scoreA?"default":"pointer",opacity:isLeague&&sc.scoreB<=sc.scoreA?0.4:1}}>
           {m.teamB?.name} →
         </button>
       </div>
@@ -5029,6 +5083,28 @@ function computeRoundEndOffsets(totalRounds, roundDuration, totalBookingMin, del
   const evenDur = remainingMin/totalRounds;
   for (let n=1; n<=totalRounds; n++) offsets[n] = n*evenDur;
   return offsets;
+}
+
+// For the Events list: is this event's Match Mode currently mid-round right now? Mirrors
+// MatchTimerWidget's own slot math exactly, just read from outside that component. Safe to
+// assume at most one event can ever be live at a time — setMatchModeStart enforces that
+// app-wide — so this never has to disambiguate between two "current" events.
+function getLiveMatchInfo(ev, now){
+  const plan = ev.plan;
+  if (!plan || !plan.matchModeStartAt || ev.status==="completed" || ev.status==="cancelled") return null;
+  const rd = plan.matchDuration || plan.roundDuration || 20;
+  const totalBookingMin = ev.time && ev.timeTo ? (new Date(`${ev.date}T${ev.timeTo}`).getTime() - new Date(`${ev.date}T${ev.time}`).getTime())/60000 : rd;
+  const tr = plan.totalRounds || plan.maxRounds || Math.max(1, Math.round(totalBookingMin/rd));
+  const delayMin = plan.matchModeDelayMin ?? 0;
+  const offsets = computeRoundEndOffsets(tr, rd, totalBookingMin, delayMin);
+  const startMs = new Date(plan.matchModeStartAt).getTime();
+  const elapsedMin = (now-startMs)/60000;
+  let slotRaw = 1;
+  while (offsets[slotRaw]!==undefined && offsets[slotRaw]<=elapsedMin) slotRaw++;
+  if (slotRaw>tr) return null; // whole event's time window has elapsed
+  const slot = Math.min(slotRaw, tr);
+  const roundEndAt = startMs + (offsets[slot]||slot*rd)*60000;
+  return {slot, tr, roundEndAt};
 }
 
 // ══════════════════════════════════════════════════════
@@ -5592,7 +5668,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     // wiring tap listeners on these rows entirely.
     const isLadder = plan.format==="ladder";
     const lastRound = plan.rounds[plan.rounds.length-1];
-    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : mmBuildCTLeaguePayload(lastRound);
+    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : mmBuildCTLeaguePayload(lastRound, comms||[], effEv.id);
     const ladderLastRound = isLadder && plan.rounds.length>=(plan.maxRounds||99);
     const breakPlayers = isLadder ? mmCTBreakLabel(lastRound) : "";
     const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts, interactive: isLadder };

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.19";
+const APP_VERSION = "V0.06.20";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4911,15 +4911,18 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
   const lastRound=plan.rounds[plan.rounds.length-1];
   const lastRoundDone=lastRound&&[...lastRound.matchesA,...(lastRound.matchesB||[])].every(m=>m.winner);
 
-  // A team can only really be playing one match at a time — if it's already flagged live
-  // on another undecided match in the same round, this checks for that so the UI can warn
-  // instead of letting the admin double-book it.
+  // A team can only really be playing one match at a time. The widget only ever reads the
+  // LATEST round for "live" matches (mmBuildCTLeaguePayload), so that's the only round a
+  // team can actually be live in right now — checking the card's own round (ri) instead of
+  // always the latest missed conflicts entirely whenever the card in question (e.g. an
+  // already-completed match) sits in an earlier round than the live one.
   function isTeamLiveElsewhere(ri,mi,side,teamId){
     if(teamId==null)return false;
-    const round=plan.rounds[ri];
+    const lastRi=plan.rounds.length-1;
+    const round=plan.rounds[lastRi];
     if(!round)return false;
     const all=[...(round.matchesA||[]).map((mm,i)=>({mm,s:"A",i})),...(round.matchesB||[]).map((mm,i)=>({mm,s:"B",i}))];
-    return all.some(({mm,s,i})=>!(s===side&&i===mi)&&mm.live&&!mm.winner&&(mm.teamA?.id===teamId||mm.teamB?.id===teamId));
+    return all.some(({mm,s,i})=>!(ri===lastRi&&s===side&&i===mi)&&mm.live&&!mm.winner&&(mm.teamA?.id===teamId||mm.teamB?.id===teamId));
   }
 
   function MatchCard({m,ri,mi,side}){
@@ -5103,7 +5106,17 @@ function getLiveMatchInfo(ev, now){
   const plan = ev.plan;
   if (!plan || !plan.matchModeStartAt || ev.status==="completed" || ev.status==="cancelled") return null;
   const rd = plan.matchDuration || plan.roundDuration || 20;
-  const totalBookingMin = ev.time && ev.timeTo ? (new Date(`${ev.date}T${ev.timeTo}`).getTime() - new Date(`${ev.date}T${ev.time}`).getTime())/60000 : rd;
+  // ev.timeTo can be earlier-in-the-day than ev.time when the booking crosses midnight
+  // (e.g. 11:00 PM -> 12:00 AM) — both get built from the same ev.date string, so timeTo
+  // lands "before" time and the subtraction goes deeply negative. Roll it to the next
+  // calendar day whenever that happens.
+  let totalBookingMin = rd;
+  if (ev.time && ev.timeTo) {
+    const startMs = new Date(`${ev.date}T${ev.time}`).getTime();
+    let endMs = new Date(`${ev.date}T${ev.timeTo}`).getTime();
+    if (endMs <= startMs) endMs += 24*60*60*1000;
+    totalBookingMin = (endMs-startMs)/60000;
+  }
   // Deliberately NOT plan.maxRounds/totalRounds — for CT League those count "League Round"
   // batches (a batch can hold several matches), a different number entirely from the
   // per-match timer slot this countdown needs. The real native-sync effect (source of

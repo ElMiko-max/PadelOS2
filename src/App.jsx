@@ -4973,14 +4973,14 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
         <div style={{flex:1,textAlign:"center"}}>
           <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}</div>
-          {isLeague&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>}
-          {isLeague&&<div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>}
+          <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
+          <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
         </div>
-        {isLeague&&<div style={{fontSize:12,color:"#334155",fontWeight:700}}>—</div>}
+        <div style={{fontSize:12,color:"#334155",fontWeight:700}}>—</div>
         <div style={{flex:1,textAlign:"center"}}>
           <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}</div>
-          {isLeague&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>}
-          {isLeague&&<div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>}
+          <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
+          <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
         </div>
       </div>
       <H2HRow/>
@@ -5015,23 +5015,21 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       <H2HRow/>
-      {isLeague&&<>
-        <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
-          <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
-          <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
-          <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
-        </div>
-        {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
-      </>}
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
+        <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
+        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
+        <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
+      </div>
+      {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       <div style={{display:"flex",gap:6}}>
-        <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",isLeague?sc.scoreA:1,isLeague?sc.scoreB:0);}}
-          disabled={isLeague&&sc.scoreA<=sc.scoreB}
-          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${!isLeague||sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:!isLeague||sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:!isLeague||sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:isLeague&&sc.scoreA<=sc.scoreB?"default":"pointer",opacity:isLeague&&sc.scoreA<=sc.scoreB?0.4:1}}>
+        <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",sc.scoreA,sc.scoreB);}}
+          disabled={sc.scoreA<=sc.scoreB}
+          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreA<=sc.scoreB?"default":"pointer",opacity:sc.scoreA<=sc.scoreB?0.4:1}}>
           ← {m.teamA?.name}
         </button>
-        <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",isLeague?sc.scoreA:0,isLeague?sc.scoreB:1);}}
-          disabled={isLeague&&sc.scoreB<=sc.scoreA}
-          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${!isLeague||sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:!isLeague||sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:!isLeague||sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:isLeague&&sc.scoreB<=sc.scoreA?"default":"pointer",opacity:isLeague&&sc.scoreB<=sc.scoreA?0.4:1}}>
+        <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",sc.scoreA,sc.scoreB);}}
+          disabled={sc.scoreB<=sc.scoreA}
+          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreB<=sc.scoreA?"default":"pointer",opacity:sc.scoreB<=sc.scoreA?0.4:1}}>
           {m.teamB?.name} →
         </button>
       </div>

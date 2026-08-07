@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.21";
+const APP_VERSION = "V0.07.00";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2744,17 +2744,21 @@ function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EG
 // Horizontal [−] value [+] layout — a vertical +/number/− stack ate ~130px of height per
 // team; this is the same control in ~40px, which is most of the undecided League match
 // card's "too big, too much empty space" complaint.
-function ScoreStepper({value,onChange,label}){
+// flip=true (the right-hand stepper of a pair) mirrors the button order to [+] value [−] —
+// used so the two "+" buttons of a side-by-side pair sit facing each other next to the
+// divider, and the two "−" buttons sit outward at the far edges, across every event type.
+function ScoreStepper({value,onChange,label,flip}){
+  const minusBtn=<button key="minus"
+    onMouseDown={e=>{e.preventDefault();onChange(Math.max(0,value-1));}}
+    style={{width:26,height:26,borderRadius:6,border:"0.5px solid #EF444444",background:"#EF444411",color:"#EF4444",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>−</button>;
+  const plusBtn=<button key="plus"
+    onMouseDown={e=>{e.preventDefault();onChange(Math.min(9,value+1));}}
+    style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>+</button>;
+  const valEl=<div key="val" style={{fontSize:18,fontWeight:700,color:"var(--po-text)",minWidth:20,textAlign:"center",lineHeight:1}}>{value}</div>;
   return <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
     <div style={{fontSize:9,color:"var(--po-dim)",fontWeight:600,textAlign:"center",maxWidth:84,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
     <div style={{display:"flex",alignItems:"center",gap:6}}>
-      <button
-        onMouseDown={e=>{e.preventDefault();onChange(Math.max(0,value-1));}}
-        style={{width:26,height:26,borderRadius:6,border:"0.5px solid #EF444444",background:"#EF444411",color:"#EF4444",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>−</button>
-      <div style={{fontSize:18,fontWeight:700,color:"var(--po-text)",minWidth:20,textAlign:"center",lineHeight:1}}>{value}</div>
-      <button
-        onMouseDown={e=>{e.preventDefault();onChange(Math.min(9,value+1));}}
-        style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>+</button>
+      {flip?[plusBtn,valEl,minusBtn]:[minusBtn,valEl,plusBtn]}
     </div>
   </div>;
 }
@@ -3803,7 +3807,17 @@ export default function Matchkeeper() {
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
   const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");return true;};
-  const setWinCI=(cid,eid,ri,mi,w)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w})});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  // sA/sB default to an implied 1-0/0-1 when omitted (native widget taps, which only ever
+  // declare a winner, no real score) — same pattern CT Ladder's widget already uses.
+  const setWinCI=(cid,eid,ri,mi,w,sA,sB)=>{
+    const scoreA = w ? (sA ?? (w==="A"?1:0)) : 0;
+    const scoreB = w ? (sB ?? (w==="B"?1:0)) : 0;
+    updC(cid,c=>({...c,events:c.events.map(ev=>{
+      if(ev.id!==eid||!ev.plan)return ev;
+      const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA,scoreB})});
+      return{...ev,plan:{...ev.plan,rounds}};
+    })}));
+  };
   const rebalanceCourtCI=(cid,eid,ri,mi)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
       if(ev.id!==eid||!ev.plan)return ev;
@@ -4134,7 +4148,7 @@ export default function Matchkeeper() {
             onResolveType={k=>resolveT(comm.id,event.id,k)}
             onCloseEvent={()=>closeEvent(comm.id,event.id)}
             onStartCI={(n,dur)=>startCI(comm.id,event.id,n,dur)}
-            onSetWinCI={(ri,mi,w)=>setWinCI(comm.id,event.id,ri,mi,w)}
+            onSetWinCI={(ri,mi,w,sA,sB)=>setWinCI(comm.id,event.id,ri,mi,w,sA,sB)}
             onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
             onRebalanceCourt={(ri,mi)=>rebalanceCourtCI(comm.id,event.id,ri,mi)}
@@ -5005,7 +5019,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
           <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
           <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
-          <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"}/>
+          <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
         </div>
         {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       </>}
@@ -5329,6 +5343,10 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
   const [showAddG,setSAG]  = useState(false);
   const [gf,setGf]         = useState({n:"",name:"",p:"",usr:"50"});
   const [sel,setSel]       = useState(null);
+  // In-progress CI score entry, keyed by "ri_mi" — mirrors CTMatchesTab's scores state.
+  const [ciScores,setCiScores] = useState({});
+  const getCiS=(ri,mi)=>ciScores[`${ri}_${mi}`]||{scoreA:0,scoreB:0};
+  const setCiS=(ri,mi,field,val)=>setCiScores(s=>({...s,[`${ri}_${mi}`]:{...getCiS(ri,mi),[field]:val}}));
   const [ctSel,setCtSel]   = useState(null); // {teamId,userId} — for tap-a-player-to-swap between teams
   const [showResultsTable,setShowResultsTable] = useState(false);
   const [ctC,setCtC]       = useState(null);
@@ -5397,13 +5415,15 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
           return {...e, plan:{...genRound1(players, e.courts, n), roundDuration:dur}};
         })
       : onStartCI(n,dur),
-    setWinCI: (ri,mi,w) => sim
+    setWinCI: (ri,mi,w,sA,sB) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
-          const rounds = e.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w})});
+          const scoreA = w ? (sA ?? (w==="A"?1:0)) : 0;
+          const scoreB = w ? (sB ?? (w==="B"?1:0)) : 0;
+          const rounds = e.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA,scoreB})});
           return {...e, plan:{...e.plan, rounds}};
         })
-      : onSetWinCI(ri,mi,w),
+      : onSetWinCI(ri,mi,w,sA,sB),
     nextRound: () => sim
       ? simMutate(e => e.plan ? {...e, plan: genNextRoundCI(e.plan)} : e)
       : onNextRound(),
@@ -5969,12 +5989,30 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
   function WinCI({m,ri,mi}){
     const avgA=m.teamA?Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length):0;
     const avgB=m.teamB?Math.round(m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length):0;
-    if(m.winner){const wT=m.winner==="A"?m.teamA:m.teamB;return <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}><div style={{flex:1,padding:"9px",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:12,fontWeight:600,color:"#34D399",textAlign:"center"}}>✓ {wT.map(p=>p.nickname).join(" & ")} won</div>{!isCompleted&&<SmBtn label="↩" onClick={()=>act.setWinCI(ri,mi,null)} color="#EF4444"/>}</div>;}
+    if(m.winner){
+      const wT=m.winner==="A"?m.teamA:m.teamB;
+      const wScore=m.winner==="A"?m.scoreA:m.scoreB, lScore=m.winner==="A"?m.scoreB:m.scoreA;
+      const scoreLabel=(wScore!=null&&lScore!=null)?` ${wScore}–${lScore}`:"";
+      return <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}><div style={{flex:1,padding:"9px",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:12,fontWeight:600,color:"#34D399",textAlign:"center"}}>✓ {wT.map(p=>p.nickname).join(" & ")} won{scoreLabel}</div>{!isCompleted&&<SmBtn label="↩" onClick={()=>act.setWinCI(ri,mi,null)} color="#EF4444"/>}</div>;
+    }
     if(isCompleted) return null;
-    return <div style={{display:"flex",gap:8,marginTop:10}}>
-      <button onMouseDown={e=>{e.preventDefault();act.setWinCI(ri,mi,"A");}} style={{flex:1,padding:"10px 0",borderRadius:8,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:13,fontWeight:600,cursor:"pointer"}}>← Team A wins <span style={{fontSize:10,opacity:0.7}}>({avgA})</span></button>
-      <button onMouseDown={e=>{e.preventDefault();act.setWinCI(ri,mi,"B");}} style={{flex:1,padding:"10px 0",borderRadius:8,border:"0.5px solid #06B6D444",background:"#06B6D411",color:"#67E8F9",fontSize:13,fontWeight:600,cursor:"pointer"}}>Team B wins → <span style={{fontSize:10,opacity:0.7}}>({avgB})</span></button>
-    </div>;}
+    const sc=getCiS(ri,mi);
+    return <>
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginTop:10,marginBottom:6}}>
+        <ScoreStepper value={sc.scoreA} onChange={v=>setCiS(ri,mi,"scoreA",v)} label={`Team A (${avgA})`}/>
+        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
+        <ScoreStepper value={sc.scoreB} onChange={v=>setCiS(ri,mi,"scoreB",v)} label={`Team B (${avgB})`} flip/>
+      </div>
+      {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
+      <div style={{display:"flex",gap:8}}>
+        <button onMouseDown={e=>{e.preventDefault();act.setWinCI(ri,mi,"A",sc.scoreA,sc.scoreB);}}
+          disabled={sc.scoreA<=sc.scoreB}
+          style={{flex:1,padding:"10px 0",borderRadius:8,border:`0.5px solid ${sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:sc.scoreA>sc.scoreB?"#6366F111":"transparent",color:sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:13,fontWeight:600,cursor:sc.scoreA<=sc.scoreB?"default":"pointer",opacity:sc.scoreA<=sc.scoreB?0.4:1}}>← Confirm Team A</button>
+        <button onMouseDown={e=>{e.preventDefault();act.setWinCI(ri,mi,"B",sc.scoreA,sc.scoreB);}}
+          disabled={sc.scoreB<=sc.scoreA}
+          style={{flex:1,padding:"10px 0",borderRadius:8,border:`0.5px solid ${sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:sc.scoreB>sc.scoreA?"#06B6D411":"transparent",color:sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:13,fontWeight:600,cursor:sc.scoreB<=sc.scoreA?"default":"pointer",opacity:sc.scoreB<=sc.scoreA?0.4:1}}>Confirm Team B →</button>
+      </div>
+    </>;}
 
   return <>
     <BBtn onBack={onBack} label="Back" sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>

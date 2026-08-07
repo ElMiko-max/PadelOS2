@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.20";
+const APP_VERSION = "V0.06.21";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3993,7 +3993,12 @@ export default function Matchkeeper() {
     setPlan(cid,eid,newPlan);
     toast2(`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
-  const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  // Clears the League "live" flag the moment a winner gets recorded — otherwise a
+  // completed match can go on carrying a stale live:true from before it was decided,
+  // which (among other things) confuses the "is this team live elsewhere" conflict check
+  // on every other match involving that team, since it looks like the match matching
+  // itself. Undo (w===null) leaves live untouched — it wasn't this action that set it.
+  const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB,live:w?false:m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
   // Toggles whether a League match shows on the Match Mode widget — display-only there
   // (no tap-to-record), so this doesn't touch winner/score at all, just the "live" flag.
   const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
@@ -4148,7 +4153,7 @@ export default function Matchkeeper() {
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
           />
         }
-        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
+        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
@@ -4485,11 +4490,12 @@ function VenueForm({editV,onBack,onSave}){
 }
 
 // ── Event Card ────────────────────────────────────────
-function EvCard({ev,me,users,onClick}){
+function EvCard({ev,me,users,venues,onClick}){
   const sc={registration_open:"#34D399",completed:"var(--po-sub)",cancelled:"#EF4444"};
   const sl={registration_open:"Open",completed:"Completed",cancelled:"Cancelled"};
   const tl={open:"Open Day",closed_ind:"Closed Ind.",closed_teams:"Closed Teams"};
   const creator=users?.find(u=>u.id===ev.createdBy);
+  const venue=venues?.find(v=>v.id===ev.venueId);
   const photoCount=ev.photos?.length||0;
   const liveStartAt=ev.plan?.matchModeStartAt;
   const [now,setNow]=useState(Date.now());
@@ -4501,7 +4507,7 @@ function EvCard({ev,me,users,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -4935,13 +4941,16 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
     // Same conflict check for both states below — a completed match's teams can still be
     // "busy" if one of them is now live in a different, still-undecided match, so it needs
     // the same dimming treatment as an undecided match would.
+    // isTeamLiveElsewhere already excludes this exact card's own position from its scan
+    // (ri/side/mi), so the actually-live card's own conflictA/conflictB always come back
+    // false on their own — no extra "&& !m.live" guard needed here. That guard used to be
+    // here and was the actual bug: a completed match can go on carrying a stale live:true
+    // from before it was decided (now cleared going forward by setWinCT, but harmless
+    // either way since this no longer depends on m.live at all).
     const conflictA=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamA?.id);
     const conflictB=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamB?.id);
-    const hasConflict=(conflictA||conflictB)&&!m.live;
-    // TEMPORARY diagnostic — remove once the completed-match dimming bug is confirmed fixed.
-    const DBG=isLeague?<div style={{fontSize:9,fontFamily:"monospace",color:"#F59E0B",background:"#F59E0B11",padding:"3px 6px",borderRadius:5,marginBottom:5}}>ri={ri} lastRi={plan.rounds.length-1} live={String(m.live)} win={String(m.winner)} A.id={String(m.teamA?.id)} B.id={String(m.teamB?.id)} cA={String(conflictA)} cB={String(conflictB)}</div>:null;
+    const hasConflict=conflictA||conflictB;
     if(m.winner){return <Card style={{marginBottom:6,padding:"10px 12px",border:"0.5px solid #34D39444",opacity:hasConflict?0.5:1}}>
-      {DBG}
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} live elsewhere right now</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
@@ -4966,7 +4975,6 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
 
     const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
     return <Card style={{marginBottom:6,padding:"10px 12px",opacity:hasConflict?0.5:1}}>
-      {DBG}
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} already live elsewhere — can't also flag this one</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:8,flexWrap:"wrap"}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
@@ -5491,7 +5499,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
           if(!e.plan) return e;
           const rounds=e.plan.rounds.map((r,rr)=>{
             if(rr!==ri) return r;
-            const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB});
+            const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB,live:w?false:m.live});
             return {...r, matchesA:side==="A"?up(r.matchesA):r.matchesA, matchesB:side==="B"?up(r.matchesB):r.matchesB};
           });
           return {...e, plan:{...e.plan, rounds}};
@@ -6598,7 +6606,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
 // ══════════════════════════════════════════════════════
 //  EVENTS LIST
 // ══════════════════════════════════════════════════════
-function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
+function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv}){
   const [sub,setSub]=useState("coming");
   const [showCommPicker,setShowCommPicker]=useState(false);
   const [incompleteOpen,setIncompleteOpen]=useState(true);
@@ -6622,7 +6630,7 @@ function EvList({events,me,users,comms,eventCommFilter,onOpen,onCreateEv}){
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
   const isAdm=adminComms.length>0;
   const handleNewClick=()=>{ if(adminComms.length<=1){ if(adminComms.length===1)onCreateEv(adminComms[0].id); return; } setShowCommPicker(true); };
-  function Row({ev}){return <EvCard ev={ev} me={me} users={users} onClick={()=>onOpen(ev.communityId,ev.id)}/>;}
+  function Row({ev}){return <EvCard ev={ev} me={me} users={users} venues={venues} onClick={()=>onOpen(ev.communityId,ev.id)}/>;}
   return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>{isAdm&&<Btn label="+ New" primary onClick={handleNewClick}/>}</div>
     {showCommPicker&&<Card style={{marginBottom:12}}>
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Which community?</div>

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.17";
+const APP_VERSION = "V0.06.18";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2623,7 +2623,9 @@ function Av({u,size=36}){
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}
-function LiveBdg({label}){return <span style={{fontSize:11,fontWeight:700,padding:"2px 8px 2px 6px",borderRadius:20,background:"#EF444422",color:"#EF4444",border:"0.5px solid #EF444466",whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:"#EF4444",animation:"liveDotPulse 1.4s ease-in-out infinite"}}/>{label}</span>;}
+// Solid, not the soft `color22`-on-transparent pastel style every other badge on the card
+// uses — those all look alike at a glance, and LIVE needs to be the one thing that doesn't.
+function LiveBdg({label}){return <span style={{fontSize:11,fontWeight:800,padding:"3px 10px 3px 7px",borderRadius:20,background:"#EF4444",color:"#fff",whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:5,letterSpacing:0.3,boxShadow:"0 1px 4px #EF444466"}}><span style={{width:6,height:6,borderRadius:"50%",background:"#fff",animation:"liveDotPulse 1.4s ease-in-out infinite"}}/>{label}</span>;}
 
 // top3: array of up to 3 {name, avatarUser, players, value, valueLabel, usrLine} in RANK order (1st, 2nd, 3rd).
 // avatarUser: single user (CI). players: array of users (CT, shows each member's avatar+name).
@@ -4922,7 +4924,14 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
     const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:5,fontSize:12,fontWeight:700,padding:"4px 6px",borderRadius:7,background:"var(--po-inp)"}}>
       <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:10}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:10,color:"var(--po-dim)"}}>({h2h.meetings}n)</span>
     </div>;
-    if(m.winner){return <Card style={{marginBottom:6,padding:"10px 12px",border:"0.5px solid #34D39444"}}>
+    // Same conflict check for both states below — a completed match's teams can still be
+    // "busy" if one of them is now live in a different, still-undecided match, so it needs
+    // the same dimming treatment as an undecided match would.
+    const conflictA=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamA?.id);
+    const conflictB=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamB?.id);
+    const hasConflict=(conflictA||conflictB)&&!m.live;
+    if(m.winner){return <Card style={{marginBottom:6,padding:"10px 12px",border:"0.5px solid #34D39444",opacity:hasConflict?0.5:1}}>
+      {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} live elsewhere right now</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
         <Bdg label={`${m.winner==="A"?m.teamA?.name:m.teamB?.name} wins`} color="#34D399"/>
@@ -4945,9 +4954,6 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
     </Card>;}
 
     const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
-    const conflictA=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamA?.id);
-    const conflictB=isLeague&&isTeamLiveElsewhere(ri,mi,side,m.teamB?.id);
-    const hasConflict=(conflictA||conflictB)&&!m.live;
     return <Card style={{marginBottom:6,padding:"10px 12px",opacity:hasConflict?0.5:1}}>
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} already live elsewhere — can't also flag this one</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:8,flexWrap:"wrap"}}>
@@ -5094,7 +5100,12 @@ function getLiveMatchInfo(ev, now){
   if (!plan || !plan.matchModeStartAt || ev.status==="completed" || ev.status==="cancelled") return null;
   const rd = plan.matchDuration || plan.roundDuration || 20;
   const totalBookingMin = ev.time && ev.timeTo ? (new Date(`${ev.date}T${ev.timeTo}`).getTime() - new Date(`${ev.date}T${ev.time}`).getTime())/60000 : rd;
-  const tr = plan.totalRounds || plan.maxRounds || Math.max(1, Math.round(totalBookingMin/rd));
+  // Deliberately NOT plan.maxRounds/totalRounds — for CT League those count "League Round"
+  // batches (a batch can hold several matches), a different number entirely from the
+  // per-match timer slot this countdown needs. The real native-sync effect (source of
+  // truth for the actual widget/whistle) always derives this fresh the same way, for every
+  // format, so mirroring it exactly here is what keeps the two from ever disagreeing.
+  const tr = Math.max(1, Math.round(totalBookingMin/rd));
   const delayMin = plan.matchModeDelayMin ?? 0;
   const offsets = computeRoundEndOffsets(tr, rd, totalBookingMin, delayMin);
   const startMs = new Date(plan.matchModeStartAt).getTime();

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.20";
+const APP_VERSION = "V0.06.19";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4507,7 +4507,7 @@ function EvCard({ev,me,users,onClick}){
 function EventForm({venues,onBack,onCreate,commName}){
   const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",rotationMin:"20",pollMode:false,eventType:"open",visibility:"public"});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId)),c=parseInt(f.courts)||0,maxC=v?v.courts.length:10;
-  const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; return Math.max(0.5, ((h2*60+m2)-(h1*60+m1))/60); })();
+  const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60; return Math.max(0.5, mins/60); })();
   const tot=v?Math.round((v.pricePerHour+v.extraFee)*c*durHrs):0;
   const doSuggestName=()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,commName}));
   return <><BBtn onBack={onBack} label="Community"/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>New Event</div><Card>
@@ -5571,7 +5571,11 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     const [h1,m1]=effEv.time.split(":").map(Number);
     const [h2,m2]=(effEv.timeTo||"").split(":").map(Number);
     if(isNaN(h2)) return 2;
-    return Math.max(0.5, ((h2*60+m2)-(h1*60+m1))/60);
+    // Booking crossing midnight (e.g. 11:00 PM -> 12:00 AM) otherwise goes deeply negative
+    // here, collapsing round generation and the real whistle schedule down to the 0.5hr
+    // floor (BUGS.md #1) — roll to the next day whenever end lands before start.
+    let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60;
+    return Math.max(0.5, mins/60);
   })();
   const exemptedIds = new Set(effEv.exempted||[]);
   const courtTotal  = (effEv.costPerCourt||0)*tc*durationHrs;

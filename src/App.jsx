@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.19";
+const APP_VERSION = "V0.06.20";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -762,8 +762,9 @@ function calcEventMinutes(ev) {
   if (!ev.time || !ev.timeTo) return 120; // default 2 hours
   const [sh,sm]=ev.time.split(":").map(Number);
   const [eh,em]=ev.timeTo.split(":").map(Number);
-  const mins=(eh*60+em)-(sh*60+sm);
-  return mins>0?mins:120;
+  let mins=(eh*60+em)-(sh*60+sm);
+  if (mins<=0) mins+=24*60; // booking crosses midnight (e.g. 11 PM -> 12 AM), not invalid
+  return mins;
 }
 
 function calcMaxRounds(ev, format, groupA, groupB, courts, matchDuration=20) {
@@ -1681,7 +1682,7 @@ async function shareImages(canvases, baseName){
 function durationLabel(time, timeTo){
   if(!time||!timeTo) return "—";
   const [sh,sm]=time.split(":").map(Number), [eh,em]=timeTo.split(":").map(Number);
-  const m=(eh*60+em)-(sh*60+sm); if(m<=0) return "—";
+  let m=(eh*60+em)-(sh*60+sm); if(m<=0) m+=24*60; // crosses midnight, not invalid
   const h=Math.floor(m/60), rm=m%60;
   return h>0?(rm>0?`${h}h ${rm}min`:`${h}h`):`${rm}min`;
 }
@@ -6074,7 +6075,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     {tab==="info"&&<Card><div style={{display:"flex",flexDirection:"column",gap:8}}>{[["Venue",venue?`${venue.name}, ${venue.area}`:"TBD"],
         ["Type",ev.type?tl[ev.type]:"Pending Poll"],
         ["Date & Time",`${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}`],
-        ["Duration",(()=>{if(!ev.time||!ev.timeTo)return "—";const[sh,sm]=ev.time.split(":").map(Number);const[eh,em]=ev.timeTo.split(":").map(Number);const m=(eh*60+em)-(sh*60+sm);if(m<=0)return "—";const h=Math.floor(m/60),rm=m%60;return h>0?(rm>0?`${h}h ${rm}min`:`${h}h`):`${rm}min`;})()],
+        ["Duration",durationLabel(ev.time, ev.timeTo)],
         ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?`${u.nickname} (${u.name})`:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation","Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":"League + Promo/Relego"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`Court ${tc}=1pt ... Court 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:"Group A first · Wins → Score Diff"],["Match Duration",`${plan?.matchDuration||20} min`]]:[]),["Priority Reg.","Regular Members: 24h early access"]].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>}
 
     {/* PLAYERS */}

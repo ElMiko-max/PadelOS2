@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.06.14";
+const APP_VERSION = "V0.06.15";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3956,7 +3956,7 @@ export default function Matchkeeper() {
   };
   const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
   const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan));toast2("Groups reshuffled ✓");};
-  const nextCTLadder=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,genNextCTLadder(ev.plan));toast2("Next match generated ✓");};
+  const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan));toast2("Next match generated ✓");return true;};
   const swapCTLadder=(cid,eid,ri,tidA,tidB)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
       if(ev.id!==eid||!ev.plan)return ev;
@@ -4101,7 +4101,7 @@ export default function Matchkeeper() {
             onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
-            onNextCTLadder={()=>nextCTLadder(comm.id,event.id)}
+            onNextCTLadder={(silent)=>nextCTLadder(comm.id,event.id,silent)}
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
           />
         }
@@ -5639,7 +5639,17 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
         if (ri>=0 && mi>=0) onSetWinCTRef.current(ri, mi, "A", team, team==="A"?1:0, team==="A"?0:1);
       });
       const g = await MatchMode.addListener("generateNextRound", () => {
-        onNextCTLadderRef.current();
+        // Same race CI had: the widget's own "all courts done" state can be a beat ahead
+        // of this court's winner tap actually landing in the plan (Firestore write latency,
+        // or a cold app resume still mounting) — generating from that stale state corrupts
+        // the round. Retry with backoff instead of generating on the first, possibly-early,
+        // attempt — mirrors the CI listener above exactly.
+        const attempts = [300, 800, 1500, 2500, 4000, 6000, 8000, 10000];
+        const tryGenerate = (i) => {
+          const ok = onNextCTLadderRef.current(i < attempts.length - 1); // silent except on the last try
+          if (!ok && i < attempts.length - 1) setTimeout(()=>tryGenerate(i+1), attempts[i+1]-attempts[i]);
+        };
+        setTimeout(()=>tryGenerate(0), attempts[0]);
       });
       if (cancelled) { w.remove(); g.remove(); } else { winSub = w; genSub = g; }
     })().catch(e=>console.log("MatchMode.addListener (CT) failed", e));

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.00";
+const APP_VERSION = "V0.07.01";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3934,6 +3934,25 @@ export default function Matchkeeper() {
     setPlan(cid,eid,{...ev.plan,teams:(ev.plan.teams||[]).map(bump),sorted:(ev.plan.sorted||[]).map(bump),groupA:(ev.plan.groupA||[]).map(bump),groupB:(ev.plan.groupB||[]).map(bump)});
     toast2("Team break preference updated ✓");
   };
+  // Rename a CT team (Closed Teams). Teams are embedded by value inside plan.teams,
+  // groupA/groupB, sorted, and every already-generated round's matches — same fan-out
+  // as swapCTTeamPlayers above, so every one of those needs the renamed team object.
+  const renameCTTeam=(cid,eid,tid,newName)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>{
+      if(ev.id!==eid||!ev.plan)return ev;
+      const plan=ev.plan;
+      const replaceTeam=t=>t?.id===tid?{...t,name:newName}:t;
+      const newRounds=plan.rounds.map(r=>({...r,
+        matchesA:(r.matchesA||[]).map(m=>({...m,teamA:replaceTeam(m.teamA),teamB:replaceTeam(m.teamB)})),
+        matchesB:(r.matchesB||[]).map(m=>({...m,teamA:replaceTeam(m.teamA),teamB:replaceTeam(m.teamB)})),
+        onBreak:(r.onBreak||[]).map(replaceTeam),
+      }));
+      return {...ev,plan:{...plan,teams:(plan.teams||[]).map(replaceTeam),
+        groupA:plan.groupA?.map(replaceTeam),groupB:plan.groupB?.map(replaceTeam),sorted:plan.sorted?.map(replaceTeam),
+        rounds:newRounds}};
+    })}));
+    toast2("Team renamed ✓");
+  };
   // Manual admin swap of two players between two teams (Teams tab, before Round 1 locks)
   // — mirrors the tap-a-player-to-swap pattern already used for CI. Teams are embedded by
   // value inside plan.teams, groupA/groupB, sorted, and every already-generated round's
@@ -4133,6 +4152,7 @@ export default function Matchkeeper() {
             onStopMatchMode={()=>stopMatchMode(comm.id,event.id)}
             onMarkWhistlesScheduled={(startAt)=>markWhistlesScheduled(comm.id,event.id,startAt)}
             onSwapCTTeamPlayers={(teamIdA,userIdA,teamIdB,userIdB)=>swapCTTeamPlayers(comm.id,event.id,teamIdA,userIdA,teamIdB,userIdB)}
+            onRenameTeam={(tid,newName)=>renameCTTeam(comm.id,event.id,tid,newName)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -4171,8 +4191,8 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
-        {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser}/>}
-        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser}/>}
+        {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}/>}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -4430,9 +4450,9 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
         const list=sortedMembers.filter(m=>m.role===rf);if(!list.length)return null;
         return <div key={rf}><ST>{rf==="owner"?"Owner":rf==="admin"?"Admins":"Members"}</ST>
           {list.map(m=>{const u=users.find(u=>u.id===m.userId);if(!u)return null;const isMe=u.id===me.id;return(
-            <Card key={m.userId} style={{cursor:isAdmin?"pointer":"default"}}><div onClick={()=>isAdmin&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
+            <Card key={m.userId} style={{cursor:"pointer"}}><div onClick={()=>onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
-              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{isAdmin&&!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
+              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
               {isAdmin&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -4780,18 +4800,29 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin}){
 // ══════════════════════════════════════════════════════
 //  CT TEAM CARD
 // ══════════════════════════════════════════════════════
-function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit,selectedUserId,onPlayerTap}){
+function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit,selectedUserId,onPlayerTap,onRenameTeam}){
   const poolColors = ["#6366F1","#06B6D4","#F472B6","#34D399","#F59E0B"];
   const isPool = group && group.startsWith("P");
   const poolNum = isPool ? parseInt(group.slice(1))-1 : (group==="A"?0:1);
   const gc = poolColors[poolNum % poolColors.length];
   const badgeLabel = isPool ? group : `Group ${group}`;
   const badgeIcon = isPool ? group : group;
+  const [editingName,setEditingName] = useState(false);
+  const [nameVal,setNameVal] = useState(team.name);
+  const saveName = () => {
+    setEditingName(false);
+    const trimmed = nameVal.trim();
+    if(trimmed && trimmed!==team.name && onRenameTeam) onRenameTeam(team.id,trimmed);
+    else setNameVal(team.name);
+  };
   return <Card style={{marginBottom:8}}><div style={{display:"flex",alignItems:"center",gap:10}}>
     <div style={{width:36,height:36,borderRadius:8,background:`${gc}22`,border:`0.5px solid ${gc}44`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:gc,flexShrink:0}}>{badgeIcon}{team.id}</div>
     <div style={{flex:1}}>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
-        <span style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{team.name}</span>
+        {editingName
+          ? <input autoFocus value={nameVal} onChange={e=>setNameVal(e.target.value)} onBlur={saveName} onKeyDown={e=>{if(e.key==="Enter")saveName();if(e.key==="Escape"){setNameVal(team.name);setEditingName(false);}}} className="po-inp" style={{fontSize:13,fontWeight:600,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",width:120}}/>
+          : <span style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{team.name}</span>}
+        {isAdmin&&onRenameTeam&&!editingName&&<span onClick={()=>{setNameVal(team.name);setEditingName(true);}} style={{fontSize:11,cursor:"pointer",color:"var(--po-dim)"}}>✏️</span>}
         <span style={{fontSize:12,color:"var(--po-dim)"}}>({team.avgUsr})</span>
         <Bdg label={badgeLabel} color={gc}/>
       </div>
@@ -5305,7 +5336,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers}){
+function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -5506,6 +5537,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
         })
       : onRegenCTBreaks&&onRegenCTBreaks(),
     swapCTTeamPlayers: (teamIdA,userIdA,teamIdB,userIdB) => onSwapCTTeamPlayers&&onSwapCTTeamPlayers(teamIdA,userIdA,teamIdB,userIdB),
+    renameCTTeam: (tid,newName) => onRenameTeam&&onRenameTeam(tid,newName),
     startCT: (c,f,dur,topPoolSizeOverride) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId};}).filter(Boolean);
@@ -6026,7 +6058,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
           {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>🏸 {comm.name}</div>}
           {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
           <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
-          {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by {creator.nickname}</div>:null;})()}
+          {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{creator.nickname}</span></div>:null;})()}
           {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
@@ -6149,11 +6181,11 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
         <Btn label="Add Guest" primary onClick={()=>{if(gf.n&&gf.p){act.addGuest(gf);setGf({n:"",name:"",p:"",usr:"50"});}}} style={{width:"100%"}}/>
         <SmBtn label="✓ Done" onClick={()=>setSAG(false)} color="#34D399" style={{width:"100%",marginTop:8}}/>
       </Card>}</>}
-      {isOpen&&cinCnt>0&&<><ST>Checked In ({cinCnt})</ST>{effEv.checkedIn.map(uid=>{const u=users.find(u=>u.id===uid);if(!u)return null;return <Card key={uid}><div style={{display:"flex",alignItems:"center",gap:10}}><Av u={u} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><Bdg label="✓ In" color="#34D399"/></div></Card>;})}</>}
+      {isOpen&&cinCnt>0&&<><ST>Checked In ({cinCnt})</ST>{effEv.checkedIn.map(uid=>{const u=users.find(u=>u.id===uid);if(!u)return null;return <Card key={uid} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}><Av u={u} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><Bdg label="✓ In" color="#34D399"/></div></Card>;})}</>}
       {isCT&&plan?.waitlisted?.length>0&&<>
         <ST>⏳ Waiting List (odd player count)</ST>
-        {plan.waitlisted.map(w=>{const wu=users.find(u=>u.id===w.userId);return <Card key={w.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10}}>
+        {plan.waitlisted.map(w=>{const wu=users.find(u=>u.id===w.userId);return <Card key={w.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08",cursor:wu&&onViewProfile?"pointer":"default"}}>
+          <div onClick={()=>wu&&onViewProfile&&onViewProfile(wu.id)} style={{display:"flex",alignItems:"center",gap:10}}>
             <Av u={wu||w} size={34}/>
             <div style={{flex:1}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{w.nickname}</div>
@@ -6175,8 +6207,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
             <Av u={u} size={34}/>
             <div style={{flex:1}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6}}>
-                {u.nickname}
-                {isAdmin&&!u.isGuest&&<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{fontSize:10,color:COLORS?.accent||"#6366F1",cursor:"pointer",textDecoration:"underline"}}>👁 profile</span>}
+                <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{u.phone?` · ${u.phone}`:""}</span>}
               </div>
               {/* Guest USR - editable inline, saves on blur or Enter */}
@@ -6252,7 +6283,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
         const payer = users.find(u=>u.id===payerId);
         return <Card style={{marginTop:8}}>
           <div style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>Your share</div>
-          <div style={{fontSize:13,color:"var(--po-text)",marginBottom:isPayer||isEx?0:10}}>{isEx?"You're exempt from payment.":isPayer?"You're collecting from everyone else.":`You owe ${cpp} EGP${payer?` to ${payer.nickname}`:""}.`}</div>
+          <div style={{fontSize:13,color:"var(--po-text)",marginBottom:isPayer||isEx?0:10}}>{isEx?"You're exempt from payment.":isPayer?"You're collecting from everyone else.":<>You owe {cpp} EGP{payer&&<> to <span onClick={()=>onViewProfile&&onViewProfile(payer.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{payer.nickname}</span></>}.</>}</div>
           {!isPayer&&!isEx&&<div onClick={()=>act.togglePaid(me.id)} style={{textAlign:"center",padding:"9px",borderRadius:8,background:isPaid?"#34D39922":"#6366F1",border:`0.5px solid ${isPaid?"#34D39966":"transparent"}`,color:isPaid?"#34D399":"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>{isPaid?"✓ Marked as Paid":"I Paid"}</div>}
         </Card>;
       })()}
@@ -6336,7 +6367,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
               <Av u={u} size={32}/>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                  <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{u.nickname}</span>
+                  <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{fontSize:13,fontWeight:600,color:"var(--po-text)",cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
                   {isPayer&&<Bdg label="💰 Collector" color="#F59E0B"/>}
                 </div>
                 <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":`${cpp} EGP`}</div>
@@ -6463,7 +6494,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
       {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>{const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;const delta=Math.round(s.user.usr-before);return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};})}/>}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
       {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
-        {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
+        {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
         {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
         {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
       </>}
@@ -6534,14 +6565,14 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
               const poolTeams = (plan.teams||[]).filter(t=>t.poolIdx===pi);
               return <React.Fragment key={pi}>
                 <ST>Pool {pi+1} — {poolTeams.length} teams</ST>
-                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}
+                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
               </React.Fragment>;
             });
           })()}
         </>:<>
           <ST>Group A — {plan.groupA?.length||0} teams</ST>
-          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}
-          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap}/>)}</>}
+          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
+          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}</>}
         </>}
       </>}
     </>}
@@ -6748,7 +6779,9 @@ function ComboCard({combo, lv, eventsDesc}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile}){
+  const isPlatformAdmin = me?.id===1;
+  const showContact = !viewedByAdmin || isPlatformAdmin;
   const [tab,setTab]=useState("usr");
   const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [recentOnly,setRecentOnly]=useState(false);
@@ -6773,7 +6806,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   // Build team history from all CT completed events the user participated in
 
   return <>{isMeTab?<div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Me</div>:<BBtn onBack={onBack} label="Back"/>}
-  {viewedByAdmin&&<div style={{marginBottom:12,padding:"8px 12px",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🛡 Viewing as Platform Admin — visible only to you</div>}
+  {viewedByAdmin&&<div style={{marginBottom:12,padding:"8px 12px",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>{isPlatformAdmin?"🛡 Viewing as Platform Admin — visible only to you":`👀 Viewing ${user.nickname}'s profile`}</div>}
   <Card><div style={{display:"flex",gap:14,alignItems:"center",marginBottom:16}}>
     <Av u={user} size={isMeTab?68:56}/>
     <div style={{flex:1}}>
@@ -6783,8 +6816,8 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       </div>
       <div style={{fontSize:13,color:"var(--po-dim)"}}>{user.name}</div>
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {user.area} · {user.gov}</div>
-      <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>✉️ {user.email || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>
-      <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>📱 {user.phone || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>
+      {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>✉️ {user.email || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>}
+      {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>📱 {user.phone || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
     {isMe&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
@@ -6952,11 +6985,11 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const funny = calcDreamOrFunnyMatch(stats,"funny");
     const dreamH2H = dream ? calcHeadToHead(comms, [user.id, dream.partner.userId], dream.opponents.map(o=>o.userId)) : null;
     const funnyH2H = funny ? calcHeadToHead(comms, [user.id, funny.partner.userId], funny.opponents.map(o=>o.userId)) : null;
-    const PairRow = ({rowKey,kind,rank,name,rate,num,den,goodColor,history}) => {
+    const PairRow = ({rowKey,kind,rank,name,userId,rate,num,den,goodColor,history}) => {
       const isOpen = expandedRow===rowKey;
       return <div>
         <div onClick={()=>setExpandedRow(o=>o===rowKey?null:rowKey)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",cursor:"pointer"}}>
-          <span style={{fontSize:13,color:"var(--po-text)"}}>{rank}. {name} <span style={{fontSize:9,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span></span>
+          <span style={{fontSize:13,color:"var(--po-text)"}}>{rank}. <span onClick={e=>{if(onViewProfile){e.stopPropagation();onViewProfile(userId);}}} style={{color:onViewProfile?"#6366F1":"var(--po-text)",cursor:onViewProfile?"pointer":"default"}}>{name}</span> <span style={{fontSize:9,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span></span>
           <span style={{fontSize:13,fontWeight:700,color:goodColor}}>{Math.round(rate*100)}% <span style={{fontSize:10,fontWeight:400,color:"var(--po-dim)"}}>({num}/{den})</span></span>
         </div>
         {isOpen&&<div style={{padding:"0 12px 10px"}}>
@@ -6980,7 +7013,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             const rowKey=`insuff-${kind}-${p.userId}`, isOpen=expandedRow===rowKey;
             return <div key={p.userId} style={{borderBottom:i<items.length-1?"0.5px solid var(--po-bdr)":"none"}}>
               <div onClick={()=>setExpandedRow(o=>o===rowKey?null:rowKey)} style={{padding:"8px 12px",display:"flex",justifyContent:"space-between",fontSize:12,cursor:"pointer"}}>
-                <span style={{color:"var(--po-text)"}}>{p.nickname} <span style={{fontSize:9,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span></span>
+                <span style={{color:"var(--po-text)"}}><span onClick={e=>{if(onViewProfile){e.stopPropagation();onViewProfile(p.userId);}}} style={{color:onViewProfile?"#6366F1":"var(--po-text)",cursor:onViewProfile?"pointer":"default"}}>{p.nickname}</span> <span style={{fontSize:9,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span></span>
                 <span style={{color:"var(--po-dim)"}}>{p.matches} match{p.matches!==1?"es":""}</span>
               </div>
               {isOpen&&<div style={{padding:"0 12px 8px"}}>
@@ -7010,12 +7043,12 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         : <>
           {dream&&<Card style={{marginBottom:10,border:"0.5px solid #F59E0B44",background:"#F59E0B0A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش جامد — Dream Match</div>
-            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{dream.partner.nickname}</b> vs <b>{dream.opponents.map(o=>o.nickname).join(" & ")}</b></div>
+            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b onClick={()=>onViewProfile&&onViewProfile(dream.partner.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{dream.partner.nickname}</b> vs {dream.opponents.map((o,oi)=><React.Fragment key={o.userId}>{oi>0&&" & "}<b onClick={()=>onViewProfile&&onViewProfile(o.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{o.nickname}</b></React.Fragment>)}</div>
             {dreamH2H&&dreamH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(dreamH2H.last.date)}): {dreamH2H.last.sideAWon?"✅ you won":"❌ you lost"}{dreamH2H.meetings>1&&<> · {dreamH2H.meetings} meetings, you've won {Math.round(dreamH2H.sideAWinRate*100)}%</>}</div>}
           </Card>}
           {funny&&<Card style={{marginBottom:14,border:"0.5px solid #06B6D444",background:"#06B6D40A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>😂 ماتش مسخرة — Funny Match</div>
-            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b>{funny.partner.nickname}</b> vs <b>{funny.opponents.map(o=>o.nickname).join(" & ")}</b></div>
+            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b onClick={()=>onViewProfile&&onViewProfile(funny.partner.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{funny.partner.nickname}</b> vs {funny.opponents.map((o,oi)=><React.Fragment key={o.userId}>{oi>0&&" & "}<b onClick={()=>onViewProfile&&onViewProfile(o.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{o.nickname}</b></React.Fragment>)}</div>
             {funnyH2H&&funnyH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(funnyH2H.last.date)}): {funnyH2H.last.sideAWon?"✅ you won":"❌ you lost"}{funnyH2H.meetings>1&&<> · {funnyH2H.meetings} meetings, you've won {Math.round(funnyH2H.sideAWinRate*100)}%</>}</div>}
           </Card>}
 
@@ -7024,7 +7057,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             {stats.partnersRanked.length===0
               ? <div style={{padding:"14px 12px",textAlign:"center",fontSize:12,color:"var(--po-dim)"}}>No ranked partners yet ({REPORT_MIN_MATCHES}+ matches together needed).</div>
               : stats.partnersRanked.map((p,i)=><div key={p.userId} style={{borderBottom:i<stats.partnersRanked.length-1?"0.5px solid var(--po-bdr)":"none"}}>
-                  <PairRow rowKey={`partner-${p.userId}`} kind="partner" rank={i+1} name={p.nickname} rate={p.winRate} num={p.wins} den={p.matches} goodColor="#34D399" history={p.history}/>
+                  <PairRow rowKey={`partner-${p.userId}`} kind="partner" rank={i+1} name={p.nickname} userId={p.userId} rate={p.winRate} num={p.wins} den={p.matches} goodColor="#34D399" history={p.history}/>
                 </div>)}
           </Card>
           <InsufficientList items={stats.partnersInsufficient} label="partners" kind="partner"/>
@@ -7034,7 +7067,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             {stats.opponentsRanked.length===0
               ? <div style={{padding:"14px 12px",textAlign:"center",fontSize:12,color:"var(--po-dim)"}}>No ranked opponents yet ({REPORT_MIN_MATCHES}+ matches against needed).</div>
               : stats.opponentsRanked.map((o,i)=><div key={o.userId} style={{borderBottom:i<stats.opponentsRanked.length-1?"0.5px solid var(--po-bdr)":"none"}}>
-                  <PairRow rowKey={`opponent-${o.userId}`} kind="opponent" rank={i+1} name={o.nickname} rate={o.loseRate} num={o.losses} den={o.matches} goodColor="#EF4444" history={o.history}/>
+                  <PairRow rowKey={`opponent-${o.userId}`} kind="opponent" rank={i+1} name={o.nickname} userId={o.userId} rate={o.loseRate} num={o.losses} den={o.matches} goodColor="#EF4444" history={o.history}/>
                 </div>)}
           </Card>
           <InsufficientList items={stats.opponentsInsufficient} label="opponents" kind="opponent"/>
@@ -7047,7 +7080,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   })()}
 
   <ST>{viewedByAdmin?`${user.nickname}'s Communities`:"My Communities"}</ST>
-  {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id}><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>🏸</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}
+  {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id} style={{cursor:onOpenCommunity?"pointer":"default"}}><div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>🏸</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}
   </>;
 }
 const SeedBadge = ()=><span title="Seeded data">🌱</span>;

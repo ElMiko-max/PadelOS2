@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.04";
+const APP_VERSION = "V0.07.05";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2772,7 +2772,10 @@ function ScoreRoller({value,onChange,flip}){
     const dx=e.clientX-d.startX; if(Math.abs(dx)>4)d.moved=true;
     const effDx=flip?-dx:dx;
     setTexture(d.baseShift+effDx);
-    const v=Math.max(0,d.startVal+Math.round(effDx/16));
+    // ~6px/point — a normal thumb flick (~20-30px) now moves the score ~3-5 points, matching
+    // the "fast bulk increment" feel a physical roller should have (was 16px/point, which felt
+    // no faster than tapping the ends one at a time).
+    const v=Math.max(0,d.startVal+Math.round(effDx/6));
     if(v!==value)onChange(v);
   };
   const onUp=e=>{
@@ -4271,7 +4274,7 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
         {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}/>}
-        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}/>}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -6840,23 +6843,36 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
 // ══════════════════════════════════════════════════════
 //  PROFILE & SETTINGS
 // ══════════════════════════════════════════════════════
-function ComboCard({combo, lv, eventsDesc}){
+function ComboCard({combo, lv, eventsDesc, teamName, onRename}){
   const [expanded, setExpanded] = useState(false);
+  const [editingName,setEditingName] = useState(false);
+  const [nameVal,setNameVal] = useState(teamName||"");
   const tr = combo.currentTr;
   const eventCount = combo.events.length;
+  const saveName = () => {
+    setEditingName(false);
+    const trimmed = nameVal.trim();
+    if(onRename && trimmed && trimmed!==teamName) onRename(trimmed);
+    else setNameVal(teamName||"");
+  };
   return <Card style={{marginBottom:8,padding:0,overflow:"hidden"}}>
     {/* Header row — always visible */}
-    <div onClick={()=>setExpanded(e=>!e)} style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px",cursor:"pointer"}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px"}}>
       {/* TR badge */}
-      <div style={{width:40,height:40,borderRadius:10,background:`${lv.c}22`,border:`1.5px solid ${lv.c}44`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+      <div onClick={()=>setExpanded(e=>!e)} style={{width:40,height:40,borderRadius:10,background:`${lv.c}22`,border:`1.5px solid ${lv.c}44`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0,cursor:"pointer"}}>
         <div style={{fontSize:14,fontWeight:700,color:lv.c,lineHeight:1}}>{tr??"-"}</div>
         <div style={{fontSize:8,color:lv.c,fontWeight:600}}>TR</div>
       </div>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{fontWeight:700,fontSize:14,color:"var(--po-text)"}}>with {combo.partnerName}</div>
-        <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{eventCount} event{eventCount!==1?"s":""} together</div>
+      <div onClick={()=>!editingName&&setExpanded(e=>!e)} style={{flex:1,minWidth:0,cursor:editingName?"default":"pointer"}}>
+        {editingName
+          ? <input autoFocus value={nameVal} onClick={e=>e.stopPropagation()} onChange={e=>setNameVal(e.target.value)} onBlur={saveName} onKeyDown={e=>{if(e.key==="Enter")saveName();if(e.key==="Escape"){setNameVal(teamName||"");setEditingName(false);}}} placeholder="Team name (optional)" className="po-inp" style={{fontSize:13,fontWeight:700,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",width:"90%"}}/>
+          : <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontWeight:700,fontSize:14,color:"var(--po-text)"}}>{teamName || `with ${combo.partnerName}`}</span>
+              {onRename&&<span onClick={e=>{e.stopPropagation();setNameVal(teamName||"");setEditingName(true);}} style={{fontSize:11,cursor:"pointer",color:"var(--po-dim)"}}>✏️</span>}
+            </div>}
+        <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{teamName?`with ${combo.partnerName} · `:""}{eventCount} event{eventCount!==1?"s":""} together</div>
       </div>
-      <div style={{fontSize:18,color:"var(--po-dim)",transition:"transform 0.2s",transform:expanded?"rotate(180deg)":"none"}}>⌄</div>
+      <div onClick={()=>setExpanded(e=>!e)} style={{fontSize:18,color:"var(--po-dim)",transition:"transform 0.2s",transform:expanded?"rotate(180deg)":"none",cursor:"pointer"}}>⌄</div>
     </div>
 
     {/* Expanded: TR history per event */}
@@ -6889,7 +6905,7 @@ function ComboCard({combo, lv, eventsDesc}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName}){
   const isPlatformAdmin = me?.id===1;
   const showContact = !viewedByAdmin || isPlatformAdmin;
   // Full activity (USR History / Teams / Reports) is only for the owner, the real platform
@@ -7093,7 +7109,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       return comboList.map(combo=>{
         const lv=usrLv(combo.currentTr??50);
         const eventsDesc=[...combo.events].reverse();
-        return <ComboCard key={combo.comboKey} combo={combo} lv={lv} eventsDesc={eventsDesc}/>;
+        return <ComboCard key={combo.comboKey} combo={combo} lv={lv} eventsDesc={eventsDesc}
+          teamName={user.comboNames?.[combo.comboKey]}
+          onRename={isMeTab&&onSetComboName?name=>onSetComboName(combo.partnerId,name):undefined}/>;
       });
     })()}
     <div style={{marginTop:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>

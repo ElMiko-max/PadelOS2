@@ -5735,6 +5735,8 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     const ladderLastRound = isLadder && plan.rounds.length>=(plan.maxRounds||99);
     const breakPlayers = isLadder ? mmCTBreakLabel(lastRound) : "";
     const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts, interactive: isLadder };
+    // TEMPORARY diagnostic for "widget doesn't know the round progressed" — remove once found.
+    console.log("[MatchModeDiag CT] effect fired — plan.rounds.length="+plan.rounds.length+" slot="+slot+" courts="+courts.length+" winners="+JSON.stringify(courts.map(c=>c.winner))+" action="+(mmCTStartedRef.current===0?"START":"UPDATE"));
     if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
     else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
     mmCTStartedRef.current = slot;

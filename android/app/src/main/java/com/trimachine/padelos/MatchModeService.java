@@ -78,6 +78,8 @@ public class MatchModeService extends Service {
             if (courtsJson == null) courtsJson = "[]";
             currentCourts.clear();
             currentCourts.addAll(parseCourts(courtsJson));
+            // TEMPORARY diagnostic for "widget doesn't know the round progressed" — remove once found.
+            android.util.Log.i("MatchModeDiag", "onStartCommand action=" + action + " round=" + currentRoundNumber + " courts=" + currentCourts.size());
             startForeground(NOTIF_ID, buildNotification());
         } else if (ACTION_SCHEDULE_ALL.equals(action)) {
             String eventId = intent.getStringExtra("eventId");

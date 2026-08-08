@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.01";
+const APP_VERSION = "V0.07.02";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -3594,6 +3594,30 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,archived:false,archivedAt:null})}));
     toast2("Event restored");
   };
+  // Bulk versions for the Events list "Select" mode — unlike the single-event
+  // archiveEvent/deleteEvent above, these don't navigate away (the caller stays
+  // on the list) and can span multiple communities in one selection.
+  const bulkArchiveEvents=(items)=>{ // items: [{cid,eid}]
+    const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
+    setComms(cs=>cs.map(c=>{
+      const eids=byCid[c.id]; if(!eids) return c;
+      return {...c,events:c.events.map(e=>eids.has(e.id)?{...e,archived:true,archivedAt:new Date().toISOString()}:e)};
+    }));
+    toast2(`${items.length} event(s) archived ✓`);
+  };
+  const bulkDeleteEvents=(items)=>{ // items: [{cid,eid}] — completed events are skipped, same rule as single deleteEvent
+    const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
+    let deletedCount=0, skippedCount=0;
+    setComms(cs=>cs.map(c=>{
+      const eids=byCid[c.id]; if(!eids) return c;
+      return {...c,events:c.events.filter(e=>{
+        if(!eids.has(e.id)) return true;
+        if(e.status==="completed"){ skippedCount++; return true; }
+        deletedCount++; return false;
+      })};
+    }));
+    toast2(skippedCount>0?`${deletedCount} event(s) deleted · ${skippedCount} completed event(s) skipped (use Archive instead)`:`${deletedCount} event(s) deleted ✓`);
+  };
   const closeEvent=(cid,eid)=>{
     const ev=getEv(cid,eid);
     if(!ev){toast2("Event not found","err");return;}
@@ -4187,7 +4211,7 @@ export default function Matchkeeper() {
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
           />
         }
-        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}}/>}
+        {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}} onBulkArchive={bulkArchiveEvents} onBulkDelete={bulkDeleteEvents}/>}
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
@@ -6675,11 +6699,13 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
 // ══════════════════════════════════════════════════════
 //  EVENTS LIST
 // ══════════════════════════════════════════════════════
-function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv}){
+function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,onBulkArchive,onBulkDelete}){
   const [sub,setSub]=useState("coming");
   const [showCommPicker,setShowCommPicker]=useState(false);
   const [incompleteOpen,setIncompleteOpen]=useState(true);
   const [completedOpen,setCompletedOpen]=useState(false);
+  const [selMode,setSelMode]=useState(false);
+  const [selected,setSelected]=useState(new Set());
   const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
   const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)||ev.createdBy===me.id).map(ev=>ev.id));
   const now=Date.now();
@@ -6698,9 +6724,32 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv}
   const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&!myIds.has(ev.id)).sort(byNewestFirst);
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
   const isAdm=adminComms.length>0;
+  const adminCommIds=new Set(adminComms.map(c=>c.id));
   const handleNewClick=()=>{ if(adminComms.length<=1){ if(adminComms.length===1)onCreateEv(adminComms[0].id); return; } setShowCommPicker(true); };
-  function Row({ev}){return <EvCard ev={ev} me={me} users={users} venues={venues} onClick={()=>onOpen(ev.communityId,ev.id)}/>;}
-  return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>{isAdm&&<Btn label="+ New" primary onClick={handleNewClick}/>}</div>
+  const toggleSel=eid=>setSelected(s=>{const n=new Set(s);n.has(eid)?n.delete(eid):n.add(eid);return n;});
+  const selItems=[...selected].map(eid=>{const ev=filteredEvents.find(e=>e.id===eid);return ev?{cid:ev.communityId,eid:ev.id}:null;}).filter(Boolean);
+  const exitSelMode=()=>{setSelMode(false);setSelected(new Set());};
+  function Row({ev}){
+    const canSelect=selMode&&adminCommIds.has(ev.communityId);
+    const isSel=selected.has(ev.id);
+    return <div style={{position:"relative"}}>
+      {canSelect&&<div onClick={()=>toggleSel(ev.id)} style={{position:"absolute",top:14,left:10,zIndex:2,width:20,height:20,borderRadius:5,border:`1.5px solid ${isSel?"#6366F1":"var(--po-dim)"}`,background:isSel?"#6366F1":"var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:12,color:"#fff",fontWeight:700}}>{isSel?"✓":""}</div>}
+      <div style={{marginLeft:canSelect?30:0,opacity:selMode&&!canSelect?0.5:1}}>
+        <EvCard ev={ev} me={me} users={users} venues={venues} onClick={canSelect?()=>toggleSel(ev.id):(selMode?undefined:()=>onOpen(ev.communityId,ev.id))}/>
+      </div>
+    </div>;
+  }
+  return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>
+    {isAdm&&!selMode&&<div style={{display:"flex",gap:8}}><SmBtn label="☑ Select" onClick={()=>setSelMode(true)} color="#6366F1"/><Btn label="+ New" primary onClick={handleNewClick}/></div>}
+    {selMode&&<SmBtn label="✕ Cancel" onClick={exitSelMode} color="#94A3B8"/>}
+  </div>
+  {selMode&&<Card style={{marginBottom:12,padding:"10px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+    <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{selected.size} selected</span>
+    <div style={{display:"flex",gap:8}}>
+      <SmBtn label="🗄 Archive" color="#F59E0B" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Archive ${selItems.length} event(s)?`)){onBulkArchive&&onBulkArchive(selItems);exitSelMode();}}}/>
+      <SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Delete ${selItems.length} event(s)?\n\nThis cannot be undone. Completed events will be skipped — use Archive for those instead.`)){onBulkDelete&&onBulkDelete(selItems);exitSelMode();}}}/>
+    </div>
+  </Card>}
     {showCommPicker&&<Card style={{marginBottom:12}}>
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Which community?</div>
       {adminComms.map(c=><div key={c.id} onClick={()=>{setShowCommPicker(false);onCreateEv(c.id);}} style={{padding:"9px 10px",borderRadius:8,cursor:"pointer",fontSize:13,color:"var(--po-text)",border:"0.5px solid var(--po-bdr)",marginBottom:6}}>{c.name}</div>)}

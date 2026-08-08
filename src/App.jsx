@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.03";
+const APP_VERSION = "V0.07.04";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -497,17 +497,20 @@ function calcPartnerOpponentStats(comms, userId, opts){
   const recentOnly = opts && opts.recentOnly;
   const cutoffTime = recentOnly ? Date.now()-REPORT_RECENT_DAYS*24*60*60*1000 : null;
   const partners = {}, opponents = {};
-  const recordPartner=(partner,ev,won,oppNames,score,type)=>{
+  const recordPartner=(partner,ev,won,oppPlayers,score,type)=>{
     if(!partners[partner.userId]) partners[partner.userId]={userId:partner.userId,nickname:partner.nickname,matches:0,wins:0,history:[]};
     const rec=partners[partner.userId];
     rec.matches++; if(won) rec.wins++;
-    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,against:oppNames,score});
+    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,against:oppPlayers.map(p=>({userId:p.userId,nickname:p.nickname})),score});
   };
-  const recordOpponent=(opp,ev,won,partnerName,oppPartnerName,score,type)=>{
+  const recordOpponent=(opp,ev,won,partner,oppPartner,score,type)=>{
     if(!opponents[opp.userId]) opponents[opp.userId]={userId:opp.userId,nickname:opp.nickname,matches:0,losses:0,history:[]};
     const rec=opponents[opp.userId];
     rec.matches++; if(!won) rec.losses++;
-    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,partnerName,oppPartnerName,score});
+    rec.history.push({eventId:ev.id,eventName:ev.name,date:ev.date,type,won,
+      partner:partner?{userId:partner.userId,nickname:partner.nickname}:null,
+      oppPartner:oppPartner?{userId:oppPartner.userId,nickname:oppPartner.nickname}:null,
+      score});
   };
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
     if(ev.status!=="completed"||!ev.plan) return;
@@ -520,11 +523,10 @@ function calcPartnerOpponentStats(comms, userId, opts){
         const myTeam=inA?m.teamA:m.teamB, oppTeam=inA?m.teamB:m.teamA;
         const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
         const partner=myTeam.find(p=>p.userId!==userId);
-        const oppNames=oppTeam.map(p=>p.nickname);
-        if(partner) recordPartner(partner,ev,won,oppNames,null,"ci");
+        if(partner) recordPartner(partner,ev,won,oppTeam,null,"ci");
         oppTeam.forEach(opp=>{
           const oppPartner=oppTeam.find(p=>p.userId!==opp.userId);
-          recordOpponent(opp,ev,won,partner?.nickname,oppPartner?.nickname,null,"ci");
+          recordOpponent(opp,ev,won,partner,oppPartner,null,"ci");
         });
       }));
     }else if(ev.type==="closed_teams"){
@@ -537,12 +539,11 @@ function calcPartnerOpponentStats(comms, userId, opts){
           const myPlayers=inA?m.teamA.players:m.teamB.players, oppPlayers=inA?m.teamB.players:m.teamA.players;
           const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
           const partner=myPlayers.find(p=>p.userId!==userId);
-          const oppNames=oppPlayers.map(p=>p.nickname);
           const score=hasScore?{for:inA?m.scoreA:m.scoreB, against:inA?m.scoreB:m.scoreA}:null;
-          if(partner) recordPartner(partner,ev,won,oppNames,score,"ct");
+          if(partner) recordPartner(partner,ev,won,oppPlayers,score,"ct");
           oppPlayers.forEach(opp=>{
             const oppPartner=oppPlayers.find(p=>p.userId!==opp.userId);
-            recordOpponent(opp,ev,won,partner?.nickname,oppPartner?.nickname,score,"ct");
+            recordOpponent(opp,ev,won,partner,oppPartner,score,"ct");
           });
         });
       });
@@ -591,6 +592,15 @@ function personalMatchBadge(comms, playerId, myTeamIds, oppTeamIds){
     isDream: !!(dream && dream.partner.userId===partnerId && sameOpp(dream.opponents.map(o=>o.userId))),
     isFunny: !!(funny && funny.partner.userId===partnerId && sameOpp(funny.opponents.map(o=>o.userId))),
   };
+}
+// Surfaces a recorded CT team name (see setComboName) when the same two players happen to
+// land on the same side of a CI match — "accidental" reunions of a named combo get labeled
+// even though CI has no persistent team entity of its own.
+function ctComboLabel(team){
+  if(!team||team.length!==2)return null;
+  const [a,b]=team;
+  const ck=[a.userId,b.userId].sort().join("_");
+  return a.comboNames?.[ck] || b.comboNames?.[ck] || null;
 }
 // General head-to-head record between two exact sides (Closed Individuals: 2-player sets;
 // Closed Teams: single team IDs), regardless of which side was historically "teamA" vs
@@ -721,7 +731,11 @@ function snakeTeams(poolPlayers, poolIdx, startId) {
     // otherwise neutral (No Preference) rather than arbitrarily picking one player's choice.
     // Admins can always set an explicit team-level override afterward.
     const teamBreakPref = (p1.breakPref && p1.breakPref===p2.breakPref) ? p1.breakPref : "none";
-    teams.push({ id:startId+i, name:`Team ${startId+i}`, players:[p1,p2], avgUsr:Math.round((p1.usr+p2.usr)/2), poolIdx, breakPref:teamBreakPref });
+    // If this exact pair has already had a custom team name recorded (from a previous CT
+    // event), reuse it instead of the generic default — see renameCTTeam/setComboName.
+    const comboKey=[p1.userId||p1.id, p2.userId||p2.id].sort().join("_");
+    const recordedName = p1.comboNames?.[comboKey] || p2.comboNames?.[comboKey];
+    teams.push({ id:startId+i, name:recordedName||`Team ${startId+i}`, players:[p1,p2], avgUsr:Math.round((p1.usr+p2.usr)/2), poolIdx, breakPref:teamBreakPref });
   }
   return teams;
 }
@@ -3986,10 +4000,23 @@ export default function Matchkeeper() {
     setPlan(cid,eid,{...ev.plan,teams:(ev.plan.teams||[]).map(bump),sorted:(ev.plan.sorted||[]).map(bump),groupA:(ev.plan.groupA||[]).map(bump),groupB:(ev.plan.groupB||[]).map(bump)});
     toast2("Team break preference updated ✓");
   };
+  // Recorded per player-combo (not per-event) so the same two players get their chosen
+  // team name back automatically next time they're paired in a CT event — written onto
+  // both players' own user records, keyed the same way as teamsHistory's comboKey.
+  const setComboName=(uidA,uidB,name)=>{
+    const comboKey=[uidA,uidB].sort().join("_");
+    setUsers(us=>us.map(u=>(u.id===uidA||u.id===uidB)?{...u,comboNames:{...(u.comboNames||{}),[comboKey]:name}}:u));
+  };
   // Rename a CT team (Closed Teams). Teams are embedded by value inside plan.teams,
   // groupA/groupB, sorted, and every already-generated round's matches — same fan-out
   // as swapCTTeamPlayers above, so every one of those needs the renamed team object.
   const renameCTTeam=(cid,eid,tid,newName)=>{
+    const curEv=getEv(cid,eid);
+    const curTeam=curEv?.plan?.teams?.find(t=>t.id===tid);
+    if(curTeam?.players?.length===2){
+      const [pA,pB]=curTeam.players;
+      setComboName(pA.userId||pA.id, pB.userId||pB.id, newName);
+    }
     updC(cid,c=>({...c,events:c.events.map(ev=>{
       if(ev.id!==eid||!ev.plan)return ev;
       const plan=ev.plan;
@@ -6529,11 +6556,13 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
               <div style={{display:"grid",gridTemplateColumns:"1fr 30px 1fr",gap:8,alignItems:"start"}}>
                 <div style={{background:m.winner==="A"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="A"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM A <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length)})</span></div>
+                  {ctComboLabel(m.teamA)&&<div style={{fontSize:9,fontWeight:700,color:"#F59E0B",textAlign:"center",marginTop:-3,marginBottom:5}}>🏷 {ctComboLabel(m.teamA)}</div>}
                   {m.teamA.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamA.map(x=>x.userId),m.teamB.map(x=>x.userId))}/>)}
                 </div>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",paddingTop:24}}><span style={{fontSize:10,color:"#334155",fontWeight:700}}>VS</span></div>
                 <div style={{background:m.winner==="B"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="B"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM B <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length)})</span></div>
+                  {ctComboLabel(m.teamB)&&<div style={{fontSize:9,fontWeight:700,color:"#F59E0B",textAlign:"center",marginTop:-3,marginBottom:5}}>🏷 {ctComboLabel(m.teamB)}</div>}
                   {m.teamB.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamB.map(x=>x.userId),m.teamA.map(x=>x.userId))}/>)}
                 </div>
               </div>
@@ -6863,6 +6892,18 @@ function ComboCard({combo, lv, eventsDesc}){
 function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile}){
   const isPlatformAdmin = me?.id===1;
   const showContact = !viewedByAdmin || isPlatformAdmin;
+  // Full activity (USR History / Teams / Reports) is only for the owner, the real platform
+  // admin, or a viewer who actually shares a community with this profile — a total stranger
+  // just gets the basic info card, not this person's match history.
+  const shareCommunity = comms.some(c=>c.members.some(m=>m.userId===me?.id)&&c.members.some(m=>m.userId===user.id));
+  const canSeeActivity = !viewedByAdmin || isPlatformAdmin || shareCommunity;
+  // "You" only makes sense when the viewer IS the profile owner — otherwise it's misleading,
+  // so it's swapped for the owner's own name (in red, not clickable — already on their page).
+  const meLabel = viewedByAdmin ? <span style={{color:"#EF4444",fontWeight:600}}>{user.nickname}</span> : "You";
+  const NameLink = ({uid,nickname}) => {
+    if(!nickname) return <>—</>;
+    return <span onClick={e=>{if(onViewProfile){e.stopPropagation();onViewProfile(uid);}}} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{nickname}</span>;
+  };
   const [tab,setTab]=useState("usr");
   const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [recentOnly,setRecentOnly]=useState(false);
@@ -6944,6 +6985,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         </Card>;})}
   </>}
 
+  {canSeeActivity ? <>
   <div style={{display:"flex",gap:6,margin:"16px 0 8px"}}>
     {[["usr","📈 USR History"],["teams","👥 Teams"],["reports","🤝 Reports"]].map(([k,l])=>
       <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"9px",borderRadius:8,border:`0.5px solid ${tab===k?"#6366F1":"var(--po-bdr)"}`,background:tab===k?"#6366F122":"var(--po-inp)",color:tab===k?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600,cursor:"pointer"}}>{l}</button>
@@ -7079,7 +7121,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
               <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
             </div>
-            <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`You & ${name} vs ${h.against.join(" & ")}`:`You & ${h.partnerName||"—"} vs ${name} & ${h.oppPartnerName||"—"}`}</div>
+            <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"
+              ? <>{meLabel} & <NameLink uid={userId} nickname={name}/> vs {h.against.map((o,oi)=><React.Fragment key={o.userId||oi}>{oi>0&&" & "}<NameLink uid={o.userId} nickname={o.nickname}/></React.Fragment>)}</>
+              : <>{meLabel} & <NameLink uid={h.partner?.userId} nickname={h.partner?.nickname}/> vs <NameLink uid={userId} nickname={name}/> & <NameLink uid={h.oppPartner?.userId} nickname={h.oppPartner?.nickname}/></>}</div>
           </div>)}
         </div>}
       </div>;
@@ -7103,7 +7147,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
                     <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
                     <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
                   </div>
-                  <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"?`You & ${p.nickname} vs ${h.against.join(" & ")}`:`You & ${h.partnerName||"—"} vs ${p.nickname} & ${h.oppPartnerName||"—"}`}</div>
+                  <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"
+                    ? <>{meLabel} & <NameLink uid={p.userId} nickname={p.nickname}/> vs {h.against.map((o,oi)=><React.Fragment key={o.userId||oi}>{oi>0&&" & "}<NameLink uid={o.userId} nickname={o.nickname}/></React.Fragment>)}</>
+                    : <>{meLabel} & <NameLink uid={h.partner?.userId} nickname={h.partner?.nickname}/> vs <NameLink uid={p.userId} nickname={p.nickname}/> & <NameLink uid={h.oppPartner?.userId} nickname={h.oppPartner?.nickname}/></>}</div>
                 </div>)}
               </div>}
             </div>;
@@ -7124,13 +7170,13 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         : <>
           {dream&&<Card style={{marginBottom:10,border:"0.5px solid #F59E0B44",background:"#F59E0B0A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#F59E0B",marginBottom:4}}>🔥 ماتش جامد — Dream Match</div>
-            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b onClick={()=>onViewProfile&&onViewProfile(dream.partner.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{dream.partner.nickname}</b> vs {dream.opponents.map((o,oi)=><React.Fragment key={o.userId}>{oi>0&&" & "}<b onClick={()=>onViewProfile&&onViewProfile(o.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{o.nickname}</b></React.Fragment>)}</div>
-            {dreamH2H&&dreamH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(dreamH2H.last.date)}): {dreamH2H.last.sideAWon?"✅ you won":"❌ you lost"}{dreamH2H.meetings>1&&<> · {dreamH2H.meetings} meetings, you've won {Math.round(dreamH2H.sideAWinRate*100)}%</>}</div>}
+            <div style={{fontSize:13,color:"var(--po-text)"}}>{meLabel} & <b onClick={()=>onViewProfile&&onViewProfile(dream.partner.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{dream.partner.nickname}</b> vs {dream.opponents.map((o,oi)=><React.Fragment key={o.userId}>{oi>0&&" & "}<b onClick={()=>onViewProfile&&onViewProfile(o.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{o.nickname}</b></React.Fragment>)}</div>
+            {dreamH2H&&dreamH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(dreamH2H.last.date)}): {dreamH2H.last.sideAWon?<>✅ {meLabel} won</>:<>❌ {meLabel} lost</>}{dreamH2H.meetings>1&&<> · {dreamH2H.meetings} meetings, {meLabel} won {Math.round(dreamH2H.sideAWinRate*100)}% of them</>}</div>}
           </Card>}
           {funny&&<Card style={{marginBottom:14,border:"0.5px solid #06B6D444",background:"#06B6D40A"}}>
             <div style={{fontSize:13,fontWeight:700,color:"#06B6D4",marginBottom:4}}>😂 ماتش مسخرة — Funny Match</div>
-            <div style={{fontSize:13,color:"var(--po-text)"}}>You & <b onClick={()=>onViewProfile&&onViewProfile(funny.partner.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{funny.partner.nickname}</b> vs {funny.opponents.map((o,oi)=><React.Fragment key={o.userId}>{oi>0&&" & "}<b onClick={()=>onViewProfile&&onViewProfile(o.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{o.nickname}</b></React.Fragment>)}</div>
-            {funnyH2H&&funnyH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(funnyH2H.last.date)}): {funnyH2H.last.sideAWon?"✅ you won":"❌ you lost"}{funnyH2H.meetings>1&&<> · {funnyH2H.meetings} meetings, you've won {Math.round(funnyH2H.sideAWinRate*100)}%</>}</div>}
+            <div style={{fontSize:13,color:"var(--po-text)"}}>{meLabel} & <b onClick={()=>onViewProfile&&onViewProfile(funny.partner.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{funny.partner.nickname}</b> vs {funny.opponents.map((o,oi)=><React.Fragment key={o.userId}>{oi>0&&" & "}<b onClick={()=>onViewProfile&&onViewProfile(o.userId)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{o.nickname}</b></React.Fragment>)}</div>
+            {funnyH2H&&funnyH2H.last&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Last time this exact matchup happened ({fmtD(funnyH2H.last.date)}): {funnyH2H.last.sideAWon?<>✅ {meLabel} won</>:<>❌ {meLabel} lost</>}{funnyH2H.meetings>1&&<> · {funnyH2H.meetings} meetings, {meLabel} won {Math.round(funnyH2H.sideAWinRate*100)}% of them</>}</div>}
           </Card>}
 
           <ST>🤝 Partners Win Rate</ST>
@@ -7159,6 +7205,8 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         </>}
     </>;
   })()}
+
+  </> : <Card><div style={{textAlign:"center",padding:"16px 0",color:"var(--po-dim)",fontSize:13}}>🔒 Match history is only visible to people who share a community with {user.nickname}.</div></Card>}
 
   <ST>{viewedByAdmin?`${user.nickname}'s Communities`:"My Communities"}</ST>
   {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id} style={{cursor:onOpenCommunity?"pointer":"default"}}><div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>🏸</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}

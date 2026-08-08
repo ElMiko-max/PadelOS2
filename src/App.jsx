@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.02";
+const APP_VERSION = "V0.07.03";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2741,25 +2741,53 @@ function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casua
 function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EGYPT[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
 
 // Score Stepper — fixed scroll issue with onMouseDown instead of onClick
-// Horizontal [−] value [+] layout — a vertical +/number/− stack ate ~130px of height per
-// team; this is the same control in ~40px, which is most of the undecided League match
-// card's "too big, too much empty space" complaint.
-// flip=true (the right-hand stepper of a pair) mirrors the button order to [+] value [−] —
-// used so the two "+" buttons of a side-by-side pair sit facing each other next to the
-// divider, and the two "−" buttons sit outward at the far edges, across every event type.
-function ScoreStepper({value,onChange,label,flip}){
-  const minusBtn=<button key="minus"
-    onMouseDown={e=>{e.preventDefault();onChange(Math.max(0,value-1));}}
-    style={{width:26,height:26,borderRadius:6,border:"0.5px solid #EF444444",background:"#EF444411",color:"#EF4444",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>−</button>;
-  const plusBtn=<button key="plus"
-    onMouseDown={e=>{e.preventDefault();onChange(Math.min(9,value+1));}}
-    style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>+</button>;
-  const valEl=<div key="val" style={{fontSize:18,fontWeight:700,color:"var(--po-text)",minWidth:20,textAlign:"center",lineHeight:1}}>{value}</div>;
-  return <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
-    <div style={{fontSize:9,color:"var(--po-dim)",fontWeight:600,textAlign:"center",maxWidth:84,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
-    <div style={{display:"flex",alignItems:"center",gap:6}}>
-      {flip?[plusBtn,valEl,minusBtn]:[minusBtn,valEl,plusBtn]}
+// Retro "tuner roller" score control — a horizontal drag wheel with no printed
+// numbers/range, replacing ScoreStepper. `flip` mirrors the same inside/outside
+// convention (+ facing the other team, − on the outside) for drag direction, tap
+// zones at each end, and which end shows which symbol.
+function ScoreRoller({value,onChange,flip}){
+  const rollerRef=useRef(null);
+  const dragRef=useRef({dragging:false,startX:0,startVal:0,moved:false,baseShift:0});
+  const setTexture=px=>{ if(rollerRef.current) rollerRef.current.style.backgroundPosition=`50% 18%, ${px}px 0`; };
+  const onDown=e=>{
+    const d=dragRef.current; d.dragging=true; d.moved=false; d.startX=e.clientX; d.startVal=value;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onMove=e=>{
+    const d=dragRef.current; if(!d.dragging)return;
+    const dx=e.clientX-d.startX; if(Math.abs(dx)>4)d.moved=true;
+    const effDx=flip?-dx:dx;
+    setTexture(d.baseShift+effDx);
+    const v=Math.max(0,d.startVal+Math.round(effDx/16));
+    if(v!==value)onChange(v);
+  };
+  const onUp=e=>{
+    const d=dragRef.current; if(!d.dragging)return;
+    d.dragging=false;
+    const dx=e.clientX-d.startX; const effDx=flip?-dx:dx;
+    d.baseShift+=effDx;
+    if(!d.moved){
+      const rect=e.currentTarget.getBoundingClientRect();
+      const frac=(e.clientX-rect.left)/rect.width;
+      let dlt=0;
+      if(frac<0.3)dlt=flip?1:-1;
+      else if(frac>0.7)dlt=flip?-1:1;
+      if(dlt!==0)onChange(Math.max(0,value+dlt));
+      else setTexture(d.baseShift);
+    }
+  };
+  const endMarkStyle={position:"absolute",top:"50%",marginTop:-9,width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#c9c5ba",pointerEvents:"none",zIndex:2};
+  return <div style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+    <span style={{...endMarkStyle,left:-2}}>{flip?"+":"−"}</span>
+    <div onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
+      style={{position:"relative",width:112,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"ew-resize",touchAction:"none"}}>
+      <div style={{position:"relative",width:"100%",height:"100%",borderRadius:14,overflow:"hidden",background:"#0a0a0a",boxShadow:"inset 0 3px 5px rgba(0,0,0,0.85), inset 0 -1px 0 rgba(255,255,255,0.05)"}}>
+        <div ref={rollerRef} style={{position:"absolute",left:-6,right:-6,top:-14,height:42,borderRadius:"50%",
+          background:"radial-gradient(ellipse at 50% 18%, rgba(255,255,255,0.75), rgba(255,255,255,0) 55%), repeating-linear-gradient(90deg, #a9a6a0 0 2px, #e2ded4 2px 4px)",
+          boxShadow:"inset 0 -6px 8px rgba(0,0,0,0.35)"}}/>
+      </div>
     </div>
+    <span style={{...endMarkStyle,right:-2}}>{flip?"−":"+"}</span>
   </div>;
 }
 
@@ -5070,10 +5098,12 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       <H2HRow/>
-      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
-        <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
-        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
-        <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginBottom:6}}>
+        <ScoreRoller value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)}/>
+        <div style={{background:"#161a14",borderRadius:8,padding:"6px 12px",boxShadow:"inset 0 1px 3px #000"}}>
+          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
+        </div>
+        <ScoreRoller value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} flip/>
       </div>
       {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       <div style={{display:"flex",gap:6}}>
@@ -6054,10 +6084,12 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     if(isCompleted) return null;
     const sc=getCiS(ri,mi);
     return <>
-      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginTop:10,marginBottom:6}}>
-        <ScoreStepper value={sc.scoreA} onChange={v=>setCiS(ri,mi,"scoreA",v)} label={`Team A (${avgA})`}/>
-        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
-        <ScoreStepper value={sc.scoreB} onChange={v=>setCiS(ri,mi,"scoreB",v)} label={`Team B (${avgB})`} flip/>
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginTop:10,marginBottom:6}}>
+        <ScoreRoller value={sc.scoreA} onChange={v=>setCiS(ri,mi,"scoreA",v)}/>
+        <div style={{background:"#161a14",borderRadius:8,padding:"6px 12px",boxShadow:"inset 0 1px 3px #000"}}>
+          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
+        </div>
+        <ScoreRoller value={sc.scoreB} onChange={v=>setCiS(ri,mi,"scoreB",v)} flip/>
       </div>
       {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       <div style={{display:"flex",gap:8}}>

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.08";
+const APP_VERSION = "V0.07.07";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },

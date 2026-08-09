@@ -3361,7 +3361,12 @@ export default function Matchkeeper() {
     const code = localStorage.getItem("mk_pending_invite");
     if (!code || appliedInviteRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
-    if (!inv) { localStorage.removeItem("mk_pending_invite"); return; }
+    // Don't give up on a not-yet-found code — if this invite was just generated on another
+    // device/session moments ago, the write to Firestore can still be in flight when this
+    // effect first runs. Clearing the pending code here would lose it permanently even
+    // though `invites` (a dependency of this effect) will re-fire once the real data
+    // arrives — only clear it once actually applied, below.
+    if (!inv) return;
     appliedInviteRef.current = code;
     if (inv.communityId) {
       const c = comms.find(c=>c.id===inv.communityId);

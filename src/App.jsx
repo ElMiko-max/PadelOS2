@@ -2955,6 +2955,8 @@ export default function Matchkeeper() {
   const [claimRequests, setClaimRequests] = useState([]); // {id, userId, firebaseUid, email, displayName, requestedAt, status}
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
   const [invites, setInvites] = useState([]); // {id, code, createdBy, createdAt, label, communityId, eventId}
+  const [inviteLog, setInviteLog] = useState([]); // temp diagnostic trail for the invite flow — visible on-screen, no DevTools needed
+  const logInvite = (msg) => { console.log("[InviteDiag]", msg); setInviteLog(l => [...l.slice(-14), `${new Date().toLocaleTimeString([],{hour12:false})} ${msg}`]); };
   const [authUser, setAuthUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [nav,    setNav]    = useState("events");
@@ -2979,6 +2981,9 @@ export default function Matchkeeper() {
         const url = new URL(window.location.href);
         url.searchParams.delete("invite");
         window.history.replaceState(null, "", url.toString());
+        logInvite(`URL capture: code=${code} stored`);
+      } else {
+        logInvite(`URL capture: no ?invite= param (pending=${readPendingInvite()||"none"})`);
       }
     } catch(e) { console.log("Invite param capture error", e); }
   }, []);
@@ -3312,15 +3317,19 @@ export default function Matchkeeper() {
     const code = readPendingInvite();
     if (!code || autoInviteClaimRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
-    if (!inv) return;
+    if (!inv) { logInvite(`EffectA: code=${code} not found in ${invites.length} invites yet`); return; }
     const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
     const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
     if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
       autoInviteClaimRef.current = code;
+      logInvite(`EffectA: code=${code} → requestClaim(target=${inv.targetUserId})`);
       requestClaim(inv.targetUserId);
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
+      logInvite(`EffectA: code=${code} target=null → createFreshProfile()`);
       createFreshProfile();
+    } else {
+      logInvite(`EffectA: code=${code} target=${inv.targetUserId} skipped (claimed=${alreadyClaimed} pending=${alreadyPending})`);
     }
   }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests]);
   // Once the person opening an invite link is actually linked to a profile — instantly for a
@@ -3339,19 +3348,21 @@ export default function Matchkeeper() {
     // effect first runs. Clearing the pending code here would lose it permanently even
     // though `invites` (a dependency of this effect) will re-fire once the real data
     // arrives — only clear it once actually applied, below.
-    if (!inv) return;
+    if (!inv) { logInvite(`EffectB: code=${code} not found in ${invites.length} invites yet (linkedMe=${linkedMe.id})`); return; }
     appliedInviteRef.current = code;
     if (inv.eventId && inv.communityId) {
       // An event invite is deliberate access to THAT event only — it does not join the
       // community. Registers immediately, bypassing the regular-member priority window
       // entirely (that gate exists to stop random public sign-ups from queue-jumping, not
       // someone the admin specifically invited).
+      logInvite(`EffectB: code=${code} → registerViaInvite(comm=${inv.communityId}, event=${inv.eventId}, uid=${linkedMe.id})`);
       registerViaInvite(inv.communityId, inv.eventId, linkedMe.id);
       goEvent(inv.communityId, inv.eventId);
     } else if (inv.communityId) {
       const c = comms.find(c=>c.id===inv.communityId);
       const isMember = c?.members.some(m=>m.userId===linkedMe.id);
       const hasPending = c?.joinRequests.some(r=>r.userId===linkedMe.id);
+      logInvite(`EffectB: code=${code} → community=${inv.communityId} isMember=${isMember} hasPending=${hasPending}`);
       if (c && !isMember && !hasPending) requestJoin(inv.communityId);
       goComm(inv.communityId);
     }
@@ -3363,7 +3374,7 @@ export default function Matchkeeper() {
   const wasAuthedRef = useRef(false);
   useEffect(() => {
     if (authUser) { wasAuthedRef.current = true; }
-    else if (wasAuthedRef.current) { clearPendingInvite(); wasAuthedRef.current = false; }
+    else if (wasAuthedRef.current) { logInvite("sign-out: pending invite cleared"); clearPendingInvite(); wasAuthedRef.current = false; }
   }, [authUser]);
 
   useEffect(() => {
@@ -4306,29 +4317,38 @@ export default function Matchkeeper() {
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
 
   if (authLoading || (authUser && !dataLoaded)) {
-    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
-    </div>;
+    return <>
+      <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
+      </div>
+      <InviteDebugPanel log={inviteLog}/>
+    </>;
   }
   if (!authUser) {
-    return <LoginScreen/>;
+    return <><LoginScreen/><InviteDebugPanel log={inviteLog}/></>;
   }
   if (!linkedMe) {
     if (myPendingRequest) {
       const target = users.find(u=>u.id===myPendingRequest.userId);
-      return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-        <div style={{maxWidth:360,textAlign:"center"}}>
-          <div style={{fontSize:32,marginBottom:12}}>⏳</div>
-          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Waiting for approval</div>
-          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You asked to claim <b style={{color:"#F1F5F9"}}>{target?.nickname}</b>'s profile. A community admin needs to confirm that's really you before you can continue.</div>
-          <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
+      return <>
+        <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{maxWidth:360,textAlign:"center"}}>
+            <div style={{fontSize:32,marginBottom:12}}>⏳</div>
+            <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Waiting for approval</div>
+            <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You asked to claim <b style={{color:"#F1F5F9"}}>{target?.nickname}</b>'s profile. A community admin needs to confirm that's really you before you can continue.</div>
+            <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
+          </div>
         </div>
-      </div>;
+        <InviteDebugPanel log={inviteLog}/>
+      </>;
     }
     const pendingUserIds = new Set(claimRequests.filter(r=>r.status==="pending").map(r=>r.userId));
     const claimedUserIds = new Set(Object.values(uidLinks));
     const unclaimed = users.filter(u => !claimedUserIds.has(u.id) && !pendingUserIds.has(u.id));
-    return <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)} degraded={dataDegraded} diagText={diagText}/>;
+    return <>
+      <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)} degraded={dataDegraded} diagText={diagText}/>
+      <InviteDebugPanel log={inviteLog}/>
+    </>;
   }
 
   return (
@@ -4355,6 +4375,7 @@ export default function Matchkeeper() {
         select.po-inp option{background:var(--po-card);color:var(--po-text);}
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
       `}</style>
+      <InviteDebugPanel log={inviteLog}/>
       <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>signOut(fbAuth)}
         comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
@@ -4640,6 +4661,17 @@ function CommStatsTab({comm, users, onViewProfile}){
 // Shared "here's your link" popup for any invite (community or event) — copy or hand off to
 // the native share sheet (WhatsApp etc). Works for a brand-new recipient or an existing one;
 // the app resolves what to do with it on open (see the invite-handling effects up top).
+// Temporary diagnostic overlay for the invite-link flow (Bug: invites not auto-registering /
+// priority window bypassed for everyone) — shows the trace without needing DevTools/logcat.
+// Remove once the invite flow is confirmed working end-to-end.
+function InviteDebugPanel({log}){
+  const [open,setOpen]=useState(true);
+  if(!log||log.length===0) return null;
+  return <div style={{position:"fixed",left:8,right:8,bottom:8,zIndex:9999,background:"#000000dd",border:"1px solid #34D399",borderRadius:8,padding:"6px 8px",fontFamily:"monospace",fontSize:10,color:"#34D399",maxHeight:open?"40vh":22,overflowY:"auto"}}>
+    <div onClick={()=>setOpen(o=>!o)} style={{cursor:"pointer",fontWeight:700,color:"#FBBF24"}}>🔧 Invite Diag ({log.length}) {open?"▼":"▲"}</div>
+    {open&&log.map((l,i)=><div key={i} style={{whiteSpace:"pre-wrap",wordBreak:"break-all",borderTop:"1px solid #ffffff22",paddingTop:2,marginTop:2}}>{l}</div>)}
+  </div>;
+}
 function InviteModal({url,onClose}){
   const [copied,setCopied]=useState(false);
   const copy=async()=>{
@@ -6402,6 +6434,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
         <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}><span>{effEv.registrations.length} registered</span><span>Min {minReq} · Ideal {ideal} · Max {maxCap}</span></div>
         <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(effEv.registrations.length/maxCap)*100)}%`,background:effEv.registrations.length>=maxCap?"#EF4444":effEv.registrations.length>=ideal?"#F59E0B":"#6366F1"}}/></div>
         {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:3}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
+        <div style={{fontSize:9,color:"#818CF8",fontFamily:"monospace",marginTop:3}}>diag: now={new Date().toISOString()} regularUntil={effEv.regularUntil} inRW={String(inRW)} canReg={String(canReg)} isReg={String(isReg)} myReg={String(!!myReg)}</div>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12}}>

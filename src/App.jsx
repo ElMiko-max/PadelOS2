@@ -2761,10 +2761,12 @@ function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EG
 // zones at each end, and which end shows which symbol.
 function ScoreRoller({value,onChange,flip}){
   const rollerRef=useRef(null);
-  const dragRef=useRef({dragging:false,startX:0,startVal:0,startTime:0,moved:false,baseShift:0,lastVal:0});
+  const dragRef=useRef({dragging:false,startX:0,startVal:0,startTime:0,moved:false,baseShift:0,width:140});
   const setTexture=px=>{ if(rollerRef.current) rollerRef.current.style.backgroundPosition=`50% 18%, ${px}px 0`; };
   const onDown=e=>{
-    const d=dragRef.current; d.dragging=true; d.moved=false; d.startX=e.clientX; d.startVal=value; d.startTime=(typeof performance!=="undefined"?performance.now():Date.now()); d.lastVal=value;
+    const d=dragRef.current; d.dragging=true; d.moved=false; d.startX=e.clientX; d.startVal=value;
+    d.startTime=(typeof performance!=="undefined"?performance.now():Date.now());
+    d.width=e.currentTarget.getBoundingClientRect().width||140;
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onMove=e=>{
@@ -2772,8 +2774,11 @@ function ScoreRoller({value,onChange,flip}){
     const dx=e.clientX-d.startX; if(Math.abs(dx)>4)d.moved=true;
     const effDx=flip?-dx:dx;
     setTexture(d.baseShift+effDx);
-    const v=Math.max(0,d.startVal+Math.round(effDx/4));
-    if(v!==value){onChange(v); d.lastVal=v;}
+    // Sensitivity is relative to the control's own on-screen width, not a fixed pixel guess
+    // (two earlier fixed-px-per-point attempts both undershot on real devices) — a full
+    // edge-to-edge drag moves ~40 points, so even a short real thumb flick moves several.
+    const v=Math.max(0,Math.round(d.startVal+(effDx/d.width)*40));
+    if(v!==value)onChange(v);
   };
   const onUp=e=>{
     const d=dragRef.current; if(!d.dragging)return;
@@ -2790,28 +2795,24 @@ function ScoreRoller({value,onChange,flip}){
       else setTexture(d.baseShift);
       return;
     }
-    // A quick short flick can register very little raw pixel distance even though it was a
-    // vigorous gesture — a real spinning wheel responds to how FAST you flick it, not just
-    // how far your finger physically traveled. Add a momentum kick on top of the live
-    // per-pixel tracking above, scaled by velocity, so a fast flick still jumps several
-    // points even when the sampled distance was tiny.
+    // Extra speed-based kick on top of the width-relative tracking above, with no minimum
+    // cutoff this time (the previous velocity threshold likely filtered out exactly the fast,
+    // short flicks it was meant to help).
     const now=(typeof performance!=="undefined"?performance.now():Date.now());
     const dt=Math.max(1,now-d.startTime);
     const velocity=Math.abs(effDx)/dt; // px per ms
-    if(dt<400 && velocity>0.08){
-      const bonus=Math.round(velocity*18);
-      if(bonus>0){
-        const dir=effDx>=0?1:-1;
-        const v=Math.max(0,d.lastVal+dir*bonus);
-        if(v!==d.lastVal)onChange(v);
-      }
+    const bonus=Math.round(velocity*10);
+    if(bonus>0){
+      const dir=effDx>=0?1:-1;
+      const v=Math.max(0,value+dir*bonus);
+      if(v!==value)onChange(v);
     }
   };
   const endMarkStyle={position:"absolute",top:"50%",marginTop:-9,width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#c9c5ba",pointerEvents:"none",zIndex:2};
   return <div style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
     <span style={{...endMarkStyle,left:-2}}>{flip?"+":"−"}</span>
     <div onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
-      style={{position:"relative",width:112,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"ew-resize",touchAction:"none"}}>
+      style={{position:"relative",width:140,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"ew-resize",touchAction:"none"}}>
       <div style={{position:"relative",width:"100%",height:"100%",borderRadius:14,overflow:"hidden",background:"#0a0a0a",boxShadow:"inset 0 3px 5px rgba(0,0,0,0.85), inset 0 -1px 0 rgba(255,255,255,0.05)"}}>
         <div ref={rollerRef} style={{position:"absolute",left:-6,right:-6,top:-14,height:42,borderRadius:"50%",
           background:"radial-gradient(ellipse at 50% 18%, rgba(255,255,255,0.75), rgba(255,255,255,0) 55%), repeating-linear-gradient(90deg, #a9a6a0 0 2px, #e2ded4 2px 4px)",

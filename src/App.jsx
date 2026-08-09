@@ -2755,65 +2755,50 @@ function rBdg(r){const m={owner:["#C084FC","Owner"],admin:["#38BDF8","Admin"],me
 function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"],guest:["#F59E0B","Guest"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
 function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EGYPT[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
 
-// Score Stepper — fixed scroll issue with onMouseDown instead of onClick
-// Retro "tuner roller" score control — a horizontal drag wheel with no printed
-// numbers/range, replacing ScoreStepper. `flip` mirrors the same inside/outside
-// convention (+ facing the other team, − on the outside) for drag direction, tap
-// zones at each end, and which end shows which symbol.
+// Retro "tuner roller" score control. Three drag-based sensitivity rewrites (fixed px/point,
+// velocity momentum, width-relative + unthresholded momentum) all still moved ~1 point per
+// real-device gesture — drag-distance/velocity math depends on touch-coordinate sampling this
+// WebView apparently doesn't deliver reliably. Replaced entirely: press-and-hold on either
+// half, no dragging, no coordinate math — just a timer that steps once immediately and then
+// repeats with acceleration the longer it's held, same "hold to fast-forward" pattern as a
+// volume rocker. `flip` mirrors the same inside/outside convention (+ facing the other team,
+// − on the outside) for which half does what.
 function ScoreRoller({value,onChange,flip}){
   const rollerRef=useRef(null);
-  const dragRef=useRef({dragging:false,startX:0,startVal:0,startTime:0,moved:false,baseShift:0,width:140});
+  const valueRef=useRef(value);
+  useEffect(()=>{ valueRef.current=value; },[value]);
+  const holdRef=useRef({timer:null,spin:0});
   const setTexture=px=>{ if(rollerRef.current) rollerRef.current.style.backgroundPosition=`50% 18%, ${px}px 0`; };
+  const stopHold=()=>{
+    if(holdRef.current.timer){ clearTimeout(holdRef.current.timer); holdRef.current.timer=null; }
+  };
+  const startHold=dir=>{
+    stopHold();
+    let delay=380;
+    const step=()=>{
+      const v=Math.max(0, valueRef.current+dir);
+      valueRef.current=v; // update immediately so rapid repeats never read a stale value
+      onChange(v);
+      holdRef.current.spin+=dir*10;
+      setTexture(holdRef.current.spin);
+      delay=Math.max(55, delay*0.78); // accelerate the longer it's held
+      holdRef.current.timer=setTimeout(step, delay);
+    };
+    step(); // immediate first step on press, then the timer above takes over
+  };
   const onDown=e=>{
-    const d=dragRef.current; d.dragging=true; d.moved=false; d.startX=e.clientX; d.startVal=value;
-    d.startTime=(typeof performance!=="undefined"?performance.now():Date.now());
-    d.width=e.currentTarget.getBoundingClientRect().width||140;
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-  const onMove=e=>{
-    const d=dragRef.current; if(!d.dragging)return;
-    const dx=e.clientX-d.startX; if(Math.abs(dx)>4)d.moved=true;
-    const effDx=flip?-dx:dx;
-    setTexture(d.baseShift+effDx);
-    // Sensitivity is relative to the control's own on-screen width, not a fixed pixel guess
-    // (two earlier fixed-px-per-point attempts both undershot on real devices) — a full
-    // edge-to-edge drag moves ~40 points, so even a short real thumb flick moves several.
-    const v=Math.max(0,Math.round(d.startVal+(effDx/d.width)*40));
-    if(v!==value)onChange(v);
-  };
-  const onUp=e=>{
-    const d=dragRef.current; if(!d.dragging)return;
-    d.dragging=false;
-    const dx=e.clientX-d.startX; const effDx=flip?-dx:dx;
-    d.baseShift+=effDx;
-    if(!d.moved){
-      const rect=e.currentTarget.getBoundingClientRect();
-      const frac=(e.clientX-rect.left)/rect.width;
-      let dlt=0;
-      if(frac<0.3)dlt=flip?1:-1;
-      else if(frac>0.7)dlt=flip?-1:1;
-      if(dlt!==0)onChange(Math.max(0,value+dlt));
-      else setTexture(d.baseShift);
-      return;
-    }
-    // Extra speed-based kick on top of the width-relative tracking above, with no minimum
-    // cutoff this time (the previous velocity threshold likely filtered out exactly the fast,
-    // short flicks it was meant to help).
-    const now=(typeof performance!=="undefined"?performance.now():Date.now());
-    const dt=Math.max(1,now-d.startTime);
-    const velocity=Math.abs(effDx)/dt; // px per ms
-    const bonus=Math.round(velocity*10);
-    if(bonus>0){
-      const dir=effDx>=0?1:-1;
-      const v=Math.max(0,value+dir*bonus);
-      if(v!==value)onChange(v);
-    }
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const rect=e.currentTarget.getBoundingClientRect();
+    const leftHalf=(e.clientX-rect.left)/rect.width<0.5;
+    const dir=leftHalf ? (flip?1:-1) : (flip?-1:1); // left=outside for A, inside for B — same convention as the end marks
+    startHold(dir);
   };
   const endMarkStyle={position:"absolute",top:"50%",marginTop:-9,width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#c9c5ba",pointerEvents:"none",zIndex:2};
-  return <div style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center"}}>
+  return <div style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
     <span style={{...endMarkStyle,left:-2}}>{flip?"+":"−"}</span>
-    <div onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
-      style={{position:"relative",width:140,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"ew-resize",touchAction:"none"}}>
+    <div onPointerDown={onDown}
+      onPointerUp={stopHold} onPointerCancel={stopHold} onPointerLeave={stopHold}
+      style={{position:"relative",width:140,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"pointer",touchAction:"none",userSelect:"none"}}>
       <div style={{position:"relative",width:"100%",height:"100%",borderRadius:14,overflow:"hidden",background:"#0a0a0a",boxShadow:"inset 0 3px 5px rgba(0,0,0,0.85), inset 0 -1px 0 rgba(255,255,255,0.05)"}}>
         <div ref={rollerRef} style={{position:"absolute",left:-6,right:-6,top:-14,height:42,borderRadius:"50%",
           background:"radial-gradient(ellipse at 50% 18%, rgba(255,255,255,0.75), rgba(255,255,255,0) 55%), repeating-linear-gradient(90deg, #a9a6a0 0 2px, #e2ded4 2px 4px)",
@@ -5290,8 +5275,8 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
       <H2HRow/>
       <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginBottom:6}}>
         <ScoreRoller value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)}/>
-        <div style={{background:"#161a14",borderRadius:8,padding:"6px 12px",boxShadow:"inset 0 1px 3px #000"}}>
-          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
+        <div style={{background:"#161a14",borderRadius:8,padding:"6px 10px",boxShadow:"inset 0 1px 3px #000",whiteSpace:"nowrap",flexShrink:0}}>
+          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88",whiteSpace:"nowrap"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
         </div>
         <ScoreRoller value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} flip/>
       </div>
@@ -6277,8 +6262,8 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     return <>
       <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginTop:10,marginBottom:6}}>
         <ScoreRoller value={sc.scoreA} onChange={v=>setCiS(ri,mi,"scoreA",v)}/>
-        <div style={{background:"#161a14",borderRadius:8,padding:"6px 12px",boxShadow:"inset 0 1px 3px #000"}}>
-          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
+        <div style={{background:"#161a14",borderRadius:8,padding:"6px 10px",boxShadow:"inset 0 1px 3px #000",whiteSpace:"nowrap",flexShrink:0}}>
+          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88",whiteSpace:"nowrap"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
         </div>
         <ScoreRoller value={sc.scoreB} onChange={v=>setCiS(ri,mi,"scoreB",v)} flip/>
       </div>

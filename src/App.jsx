@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.09";
+const APP_VERSION = "V0.07.10";
 const INVITE_BASE_URL = "https://padelos-6f999.web.app"; // Firebase Hosting — works in any browser even without the app installed
 
 const EVENT_TYPES = [
@@ -2798,7 +2798,9 @@ function ScoreRoller({value,onChange,flip}){
     <span style={{...endMarkStyle,left:-2}}>{flip?"+":"−"}</span>
     <div onPointerDown={onDown}
       onPointerUp={stopHold} onPointerCancel={stopHold} onPointerLeave={stopHold}
-      style={{position:"relative",width:140,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"pointer",touchAction:"none",userSelect:"none"}}>
+      onContextMenu={e=>e.preventDefault()}
+      style={{position:"relative",width:140,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"pointer",
+        touchAction:"none",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none",WebkitTapHighlightColor:"transparent"}}>
       <div style={{position:"relative",width:"100%",height:"100%",borderRadius:14,overflow:"hidden",background:"#0a0a0a",boxShadow:"inset 0 3px 5px rgba(0,0,0,0.85), inset 0 -1px 0 rgba(255,255,255,0.05)"}}>
         <div ref={rollerRef} style={{position:"absolute",left:-6,right:-6,top:-14,height:42,borderRadius:"50%",
           background:"radial-gradient(ellipse at 50% 18%, rgba(255,255,255,0.75), rgba(255,255,255,0) 55%), repeating-linear-gradient(90deg, #a9a6a0 0 2px, #e2ded4 2px 4px)",

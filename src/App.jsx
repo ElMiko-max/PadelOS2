@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.08";
+const APP_VERSION = "V0.07.09";
 const INVITE_BASE_URL = "https://padelos-6f999.web.app"; // Firebase Hosting — works in any browser even without the app installed
 
 const EVENT_TYPES = [
@@ -3065,28 +3065,6 @@ export default function Matchkeeper() {
     setUsers(us => [...us, {id:newId, email:authUser.email, photoURL:authUser.photoURL||"", nickname:displayName, name:displayName, avatar:ini2(displayName), usr:50, joined:today, isGuest:false}]);
     linkUidToUser(authUser.uid, newId);
   };
-  // An invite link skips the generic "which one is you?" search screen: a targetUserId invite
-  // auto-requests that exact profile (still goes through the normal admin-approval queue —
-  // this can't impersonate anyone, it just removes the manual search step), and an invite
-  // with no target (pure signup/community/event) goes straight to a fresh profile.
-  const autoInviteClaimRef = useRef(null);
-  useEffect(() => {
-    if (!authUser || linkedMe || !dataLoaded) return;
-    const code = localStorage.getItem("mk_pending_invite");
-    if (!code || autoInviteClaimRef.current===code) return;
-    const inv = invites.find(i=>i.code===code);
-    if (!inv) return;
-    const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
-    const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
-    if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
-      autoInviteClaimRef.current = code;
-      requestClaim(inv.targetUserId);
-    } else if (inv.targetUserId==null) {
-      autoInviteClaimRef.current = code;
-      createFreshProfile();
-    }
-  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests]);
-
   const go = (screen, extra={}) => {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
     setView({screen,...extra});
@@ -3351,6 +3329,27 @@ export default function Matchkeeper() {
     setInvites(inv => [...inv, {id, code, createdBy:me.id, createdAt:new Date().toISOString(), targetUserId:targetUserId??null, communityId:communityId??null, eventId:eventId??null, label:label||""}]);
     return code;
   };
+  // An invite link skips the generic "which one is you?" search screen: a targetUserId invite
+  // auto-requests that exact profile (still goes through the normal admin-approval queue —
+  // this can't impersonate anyone, it just removes the manual search step), and an invite
+  // with no target (pure signup/community/event) goes straight to a fresh profile.
+  const autoInviteClaimRef = useRef(null);
+  useEffect(() => {
+    if (!authUser || linkedMe || !dataLoaded) return;
+    const code = localStorage.getItem("mk_pending_invite");
+    if (!code || autoInviteClaimRef.current===code) return;
+    const inv = invites.find(i=>i.code===code);
+    if (!inv) return;
+    const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
+    const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
+    if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
+      autoInviteClaimRef.current = code;
+      requestClaim(inv.targetUserId);
+    } else if (inv.targetUserId==null) {
+      autoInviteClaimRef.current = code;
+      createFreshProfile();
+    }
+  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests]);
   // Once the person opening an invite link is actually linked to a profile — instantly for a
   // brand-new one, or after admin approval for a claimed one, however long that takes — join
   // them to the invited community/event. Deliberately re-checked on every render where these

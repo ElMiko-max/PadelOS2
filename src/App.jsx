@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.07";
+const APP_VERSION = "V0.07.08";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2761,10 +2761,10 @@ function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EG
 // zones at each end, and which end shows which symbol.
 function ScoreRoller({value,onChange,flip}){
   const rollerRef=useRef(null);
-  const dragRef=useRef({dragging:false,startX:0,startVal:0,moved:false,baseShift:0});
+  const dragRef=useRef({dragging:false,startX:0,startVal:0,startTime:0,moved:false,baseShift:0,lastVal:0});
   const setTexture=px=>{ if(rollerRef.current) rollerRef.current.style.backgroundPosition=`50% 18%, ${px}px 0`; };
   const onDown=e=>{
-    const d=dragRef.current; d.dragging=true; d.moved=false; d.startX=e.clientX; d.startVal=value;
+    const d=dragRef.current; d.dragging=true; d.moved=false; d.startX=e.clientX; d.startVal=value; d.startTime=(typeof performance!=="undefined"?performance.now():Date.now()); d.lastVal=value;
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onMove=e=>{
@@ -2772,11 +2772,8 @@ function ScoreRoller({value,onChange,flip}){
     const dx=e.clientX-d.startX; if(Math.abs(dx)>4)d.moved=true;
     const effDx=flip?-dx:dx;
     setTexture(d.baseShift+effDx);
-    // ~6px/point — a normal thumb flick (~20-30px) now moves the score ~3-5 points, matching
-    // the "fast bulk increment" feel a physical roller should have (was 16px/point, which felt
-    // no faster than tapping the ends one at a time).
-    const v=Math.max(0,d.startVal+Math.round(effDx/6));
-    if(v!==value)onChange(v);
+    const v=Math.max(0,d.startVal+Math.round(effDx/4));
+    if(v!==value){onChange(v); d.lastVal=v;}
   };
   const onUp=e=>{
     const d=dragRef.current; if(!d.dragging)return;
@@ -2791,6 +2788,23 @@ function ScoreRoller({value,onChange,flip}){
       else if(frac>0.7)dlt=flip?-1:1;
       if(dlt!==0)onChange(Math.max(0,value+dlt));
       else setTexture(d.baseShift);
+      return;
+    }
+    // A quick short flick can register very little raw pixel distance even though it was a
+    // vigorous gesture — a real spinning wheel responds to how FAST you flick it, not just
+    // how far your finger physically traveled. Add a momentum kick on top of the live
+    // per-pixel tracking above, scaled by velocity, so a fast flick still jumps several
+    // points even when the sampled distance was tiny.
+    const now=(typeof performance!=="undefined"?performance.now():Date.now());
+    const dt=Math.max(1,now-d.startTime);
+    const velocity=Math.abs(effDx)/dt; // px per ms
+    if(dt<400 && velocity>0.08){
+      const bonus=Math.round(velocity*18);
+      if(bonus>0){
+        const dir=effDx>=0?1:-1;
+        const v=Math.max(0,d.lastVal+dir*bonus);
+        if(v!==d.lastVal)onChange(v);
+      }
     }
   };
   const endMarkStyle={position:"absolute",top:"50%",marginTop:-9,width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#c9c5ba",pointerEvents:"none",zIndex:2};

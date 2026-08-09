@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.06";
+const APP_VERSION = "V0.07.07";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4286,7 +4286,7 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue}/>}
-        {nav==="profile"&&<ProfileSc user={users.find(u=>u.id===(view.uid??me.id))||me} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}/>}
+        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)}/>;})()}
         {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
@@ -6926,6 +6926,10 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   // just gets the basic info card, not this person's match history.
   const shareCommunity = comms.some(c=>c.members.some(m=>m.userId===me?.id)&&c.members.some(m=>m.userId===user.id));
   const canSeeActivity = !viewedByAdmin || isPlatformAdmin || shareCommunity;
+  // Renaming a combo's team name: the owner themselves, the real platform admin, or a
+  // community admin who shares a community with this profile — same admin bar as renaming
+  // from the event's own Teams tab, just reachable from the profile page too.
+  const canManageCombo = !viewedByAdmin || isPlatformAdmin || comms.some(c=>c.members.some(m=>m.userId===me?.id&&(m.role==="owner"||m.role==="admin"))&&c.members.some(m=>m.userId===user.id));
   // "You" only makes sense when the viewer IS the profile owner — otherwise it's misleading,
   // so it's swapped for the owner's own name (in red, not clickable — already on their page).
   const meLabel = viewedByAdmin ? <span style={{color:"#EF4444",fontWeight:600}}>{user.nickname}</span> : "You";
@@ -7124,7 +7128,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         const eventsDesc=[...combo.events].reverse();
         return <ComboCard key={combo.comboKey} combo={combo} lv={lv} eventsDesc={eventsDesc}
           teamName={user.comboNames?.[combo.comboKey]}
-          onRename={isMeTab&&onSetComboName?name=>onSetComboName(combo.partnerId,name):undefined}/>;
+          onRename={canManageCombo&&onSetComboName?name=>onSetComboName(combo.partnerId,name):undefined}/>;
       });
     })()}
     <div style={{marginTop:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>

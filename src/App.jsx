@@ -3353,12 +3353,19 @@ export default function Matchkeeper() {
     // arrives — only clear it once actually applied, below.
     if (!inv) return;
     appliedInviteRef.current = code;
-    if (inv.communityId) {
+    if (inv.eventId && inv.communityId) {
+      // An event invite is deliberate access to THAT event only — it does not join the
+      // community. Registers immediately, bypassing the regular-member priority window
+      // entirely (that gate exists to stop random public sign-ups from queue-jumping, not
+      // someone the admin specifically invited).
+      registerViaInvite(inv.communityId, inv.eventId, linkedMe.id);
+      goEvent(inv.communityId, inv.eventId);
+    } else if (inv.communityId) {
       const c = comms.find(c=>c.id===inv.communityId);
       const isMember = c?.members.some(m=>m.userId===linkedMe.id);
       const hasPending = c?.joinRequests.some(r=>r.userId===linkedMe.id);
       if (c && !isMember && !hasPending) requestJoin(inv.communityId);
-      if (inv.eventId) goEvent(inv.communityId, inv.eventId); else goComm(inv.communityId);
+      goComm(inv.communityId);
     }
     localStorage.removeItem("mk_pending_invite");
   }, [linkedMe, dataLoaded, invites, comms]);
@@ -3875,6 +3882,41 @@ export default function Matchkeeper() {
     toast2(`${users.find(u=>u.id===uid)?.nickname} added ✓`);
     if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
   };
+  // An invite link is deliberate access granted by an admin — it skips both the regular-
+  // member priority window and community membership entirely (an event invite is NOT a
+  // community invite; joining one doesn't join the other). Registers immediately, no gate.
+  const registerViaInvite=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
+    if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
+  };
+  // Event-level join requests — same shape as community joinRequests, but scoped to one
+  // event: anyone who finds the event (not just invited, not just regular members) can ask
+  // to be let in even while the priority window is active; an admin has to approve it rather
+  // than the button just being hidden with no way to ask at all.
+  const requestEventJoin=(cid,eid)=>{
+    const ev=getEv(cid,eid);
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:(ev.joinRequests||[]).some(r=>r.userId===me.id)?ev:{...ev,joinRequests:[...(ev.joinRequests||[]),{userId:me.id,requestedAt:new Date().toISOString()}]})}));
+    toast2("Request sent ✓");
+    if (ev) notify([ev.createdBy].filter(Boolean), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
+  };
+  const approveEventJoin=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    const updateOne=e=>{
+      if(e.id!==eid) return e;
+      const newJoinRequests=(e.joinRequests||[]).filter(r=>r.userId!==uid);
+      const alreadyReg=e.registrations.find(r=>r.userId===uid);
+      const newRegs=alreadyReg?e.registrations:[...e.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"approved",isGuest:false}];
+      return {...e,joinRequests:newJoinRequests,registrations:newRegs};
+    };
+    updC(cid,c=>({...c,events:c.events.map(updateOne)}));
+    toast2("Approved ✓");
+    if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
+  };
+  const rejectEventJoin=(cid,eid,uid)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)})}));
+    toast2("Rejected");
+  };
   const addGuest=(cid,eid,g)=>{
     const id=_uid++;
     const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
@@ -4348,6 +4390,9 @@ export default function Matchkeeper() {
             onSwapCTTeamPlayers={(teamIdA,userIdA,teamIdB,userIdB)=>swapCTTeamPlayers(comm.id,event.id,teamIdA,userIdA,teamIdB,userIdB)}
             onRenameTeam={(tid,newName)=>renameCTTeam(comm.id,event.id,tid,newName)}
             onCreateInvite={createInvite}
+            onRequestEventJoin={()=>requestEventJoin(comm.id,event.id)}
+            onApproveEventJoin={uid=>approveEventJoin(comm.id,event.id,uid)}
+            onRejectEventJoin={uid=>rejectEventJoin(comm.id,event.id,uid)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -5565,7 +5610,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite}){
+function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -5652,6 +5697,9 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     register: () => sim
       ? simMutate(e => e.registrations.find(r=>r.userId===me.id) ? e : {...e, registrations:[...e.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})
       : onRegister(),
+    requestEventJoin: () => onRequestEventJoin&&onRequestEventJoin(),
+    approveEventJoin: uid => onApproveEventJoin&&onApproveEventJoin(uid),
+    rejectEventJoin: uid => onRejectEventJoin&&onRejectEventJoin(uid),
     addMember: (uid) => sim
       ? simMutate(e => e.registrations.find(r=>r.userId===uid) ? e : {...e, registrations:[...e.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})
       : onAddMember(uid),
@@ -5890,6 +5938,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
   const collectedSoFar = payingCnt>0 ? Math.round((totC/payingCnt)*paidCnt) : 0;
   const inRW   = new Date()<new Date(effEv.regularUntil);
   const canReg = !myReg&&effEv.status==="registration_open"&&(!inRW||isReg||isAdmin);
+  const myEventJoinPending = (effEv.joinRequests||[]).some(r=>r.userId===me.id);
   const isDay  = sim||effEv.date===today;
   const plan   = effEv.plan;
   const isCompleted = effEv.status==="completed";
@@ -6373,6 +6422,9 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
 
       {!isCompleted&&effEv.status==="registration_open"&&<>
         {canReg&&<Btn label="I'm In ✓" primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
+        {!canReg&&!myReg&&(myEventJoinPending
+          ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
+          : <Btn label="🙋 Request to Join" onClick={act.requestEventJoin} style={{width:"100%",marginBottom:6}}/>)}
         {myReg&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
         {myReg&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
         {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
@@ -6400,6 +6452,14 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
       {isCI&&!ciR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players until Round 1 has results.</div>}
       {isAdmin&&onCreateInvite&&!isCompleted&&<div style={{display:"flex",marginBottom:10}}><SmBtn label="🔗 Invite Link for this Event" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{width:"100%"}}/></div>}
       {inviteUrl&&<InviteModal url={inviteUrl} onClose={()=>setInviteUrl(null)}/>}
+      {isAdmin&&(effEv.joinRequests||[]).length>0&&<Card style={{marginBottom:10,borderColor:"#FBBF2466",background:"#FBBF240A"}}>
+        <ST>🙋 Requests to Join ({effEv.joinRequests.length})</ST>
+        {effEv.joinRequests.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return <div key={r.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
+          <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>USR {u.usr}</span></div>
+          <SmBtn label="✓" onClick={()=>act.approveEventJoin(u.id)} color="#34D399"/>
+          <SmBtn label="✕" onClick={()=>act.rejectEventJoin(u.id)} color="#EF4444"/>
+        </div>;})}
+      </Card>}
       {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}><Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
       {showAddM&&<Card style={{marginBottom:10}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Select member to add:</div>{comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).map(m=>users.find(u=>u.id===m.userId)).filter(Boolean).map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}><Av u={u} size={30}/><div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><SmBtn label="Add" onClick={()=>act.addMember(u.id)} color="#6366F1"/></div>)}{comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>All community members are registered ✓</div>}<SmBtn label="✓ Done" onClick={()=>setSAM(false)} color="#34D399" style={{width:"100%",marginTop:8}}/></Card>}
       {showAddG&&<Card style={{marginBottom:10}}>

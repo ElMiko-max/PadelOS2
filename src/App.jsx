@@ -130,6 +130,7 @@ const EGYPT = {
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
 const APP_VERSION = "V0.07.07";
+const INVITE_BASE_URL = "https://padelos-6f999.web.app"; // Firebase Hosting — works in any browser even without the app installed
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1344,7 +1345,7 @@ const INIT_COMMS = [
   },
 ];
 
-let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_crid=1;
+let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_crid=1,_invid=1;
 
 // ── Helpers ───────────────────────────────────────────
 const usrLv  = u => u>=80?{l:"A",c:"#C084FC"}:u>=65?{l:"B",c:"#38BDF8"}:u>=50?{l:"C",c:"#34D399"}:u>=35?{l:"D",c:"#FBBF24"}:{l:"E",c:"#F87171"};
@@ -2980,6 +2981,7 @@ export default function Matchkeeper() {
   const [notifications, setNotifications] = useState([]);
   const [claimRequests, setClaimRequests] = useState([]); // {id, userId, firebaseUid, email, displayName, requestedAt, status}
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
+  const [invites, setInvites] = useState([]); // {id, code, createdBy, createdAt, label, communityId, eventId}
   const [authUser, setAuthUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [nav,    setNav]    = useState("events");
@@ -2990,6 +2992,22 @@ export default function Matchkeeper() {
   useEffect(() => {
     const unsub = onAuthStateChanged(fbAuth, (u) => { setAuthUser(u); setAuthLoading(false); });
     return unsub;
+  }, []);
+
+  // Invite links (Enhancement #1) — capture ?invite=CODE from a cold-start URL once, stash it
+  // in localStorage so it survives the login/claim screens (which today carry no routing
+  // state at all), and strip it from the address bar so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("invite");
+      if (code) {
+        localStorage.setItem("mk_pending_invite", code);
+        const url = new URL(window.location.href);
+        url.searchParams.delete("invite");
+        window.history.replaceState(null, "", url.toString());
+      }
+    } catch(e) { console.log("Invite param capture error", e); }
   }, []);
 
   // Which local Matchkeeper profile belongs to the signed-in Firebase account, if any.
@@ -3047,6 +3065,27 @@ export default function Matchkeeper() {
     setUsers(us => [...us, {id:newId, email:authUser.email, photoURL:authUser.photoURL||"", nickname:displayName, name:displayName, avatar:ini2(displayName), usr:50, joined:today, isGuest:false}]);
     linkUidToUser(authUser.uid, newId);
   };
+  // An invite link skips the generic "which one is you?" search screen: a targetUserId invite
+  // auto-requests that exact profile (still goes through the normal admin-approval queue —
+  // this can't impersonate anyone, it just removes the manual search step), and an invite
+  // with no target (pure signup/community/event) goes straight to a fresh profile.
+  const autoInviteClaimRef = useRef(null);
+  useEffect(() => {
+    if (!authUser || linkedMe || !dataLoaded) return;
+    const code = localStorage.getItem("mk_pending_invite");
+    if (!code || autoInviteClaimRef.current===code) return;
+    const inv = invites.find(i=>i.code===code);
+    if (!inv) return;
+    const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
+    const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
+    if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
+      autoInviteClaimRef.current = code;
+      requestClaim(inv.targetUserId);
+    } else if (inv.targetUserId==null) {
+      autoInviteClaimRef.current = code;
+      createFreshProfile();
+    }
+  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests]);
 
   const go = (screen, extra={}) => {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
@@ -3118,7 +3157,7 @@ export default function Matchkeeper() {
   const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, claimRequests:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
-  const dataLoaded = ["comms","users","venues","notifications","claimRequests","uidLinks"].every(k => loadedKeys.includes(k));
+  const dataLoaded = ["comms","users","venues","notifications","claimRequests","uidLinks","invites"].every(k => loadedKeys.includes(k));
   // Captures the real Firestore error (code + message) whenever a collection fails to load,
   // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
   const [loadDiag, setLoadDiag] = useState({});
@@ -3278,6 +3317,62 @@ export default function Matchkeeper() {
     return unsub;
   }, [authUser]);
   const linkUidToUser = (firebaseUid, userId) => setDoc(doc(db,"padelos_links",firebaseUid), {userId}).catch(e=>console.log("Firestore write error (uidLinks)", e));
+
+  // invites — admin-generated shareable links (Enhancement #1). Same one-blob-doc pattern as
+  // claimRequests/notifications; codes are short random tokens resolved client-side.
+  useEffect(() => {
+    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
+    const unsub = onSnapshot(doc(db,"padelos","invites"), snap => {
+      if (snap.exists()) {
+        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        const json = JSON.stringify(remote);
+        if (json !== syncedRef.current.invites) { syncedRef.current.invites = json; setInvites(remote);
+          _invid = Math.max(_invid, ...remote.map(i=>i.id), 0) + 1;
+        }
+        everRealRef.current.invites = true;
+      } else if (!everRealRef.current.invites) { syncedRef.current.invites = JSON.stringify([]); setInvites([]); }
+      markLoaded("invites");
+    }, e => { console.log("Firestore invites error", e); recordDiag("invites", `${e.code||"error"}: ${e.message||e}`); markLoaded("invites"); });
+    return unsub;
+  }, [authUser]);
+  useEffect(() => {
+    if (!dataLoaded) return;
+    if (!everRealRef.current.invites) { console.log("Blocked write: haven't confirmed real invites data this session yet"); return; }
+    const json = JSON.stringify(invites);
+    if (json === syncedRef.current.invites) return;
+    syncedRef.current.invites = json;
+    setDoc(doc(db,"padelos","invites"), {value:JSON.stringify(invites)}).catch(e=>console.log("Firestore write error (invites)", e));
+  }, [invites, dataLoaded]);
+  const inviteCodeChars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O/1/I/L
+  const genInviteCode = () => Array.from({length:7}, () => inviteCodeChars[Math.floor(Math.random()*inviteCodeChars.length)]).join("");
+  const createInvite = ({targetUserId,communityId,eventId,label}) => {
+    const id = _invid++;
+    const code = genInviteCode();
+    setInvites(inv => [...inv, {id, code, createdBy:me.id, createdAt:new Date().toISOString(), targetUserId:targetUserId??null, communityId:communityId??null, eventId:eventId??null, label:label||""}]);
+    return code;
+  };
+  // Once the person opening an invite link is actually linked to a profile — instantly for a
+  // brand-new one, or after admin approval for a claimed one, however long that takes — join
+  // them to the invited community/event. Deliberately re-checked on every render where these
+  // deps change (not just right after auth) so a claim approved later still gets applied the
+  // next time the app is open, since the invite code just sits in localStorage until consumed.
+  const appliedInviteRef = useRef(null);
+  useEffect(() => {
+    if (!linkedMe || !dataLoaded) return;
+    const code = localStorage.getItem("mk_pending_invite");
+    if (!code || appliedInviteRef.current===code) return;
+    const inv = invites.find(i=>i.code===code);
+    if (!inv) { localStorage.removeItem("mk_pending_invite"); return; }
+    appliedInviteRef.current = code;
+    if (inv.communityId) {
+      const c = comms.find(c=>c.id===inv.communityId);
+      const isMember = c?.members.some(m=>m.userId===linkedMe.id);
+      const hasPending = c?.joinRequests.some(r=>r.userId===linkedMe.id);
+      if (c && !isMember && !hasPending) requestJoin(inv.communityId);
+      if (inv.eventId) goEvent(inv.communityId, inv.eventId); else goComm(inv.communityId);
+    }
+    localStorage.removeItem("mk_pending_invite");
+  }, [linkedMe, dataLoaded, invites, comms]);
 
   useEffect(() => {
     if (!dataLoaded) return;
@@ -4245,7 +4340,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={()=>go("comm",{cid:comm.id})} onSave={d=>saveComm(comm.id,d)}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -4263,6 +4358,7 @@ export default function Matchkeeper() {
             onMarkWhistlesScheduled={(startAt)=>markWhistlesScheduled(comm.id,event.id,startAt)}
             onSwapCTTeamPlayers={(teamIdA,userIdA,teamIdB,userIdB)=>swapCTTeamPlayers(comm.id,event.id,teamIdA,userIdA,teamIdB,userIdB)}
             onRenameTeam={(tid,newName)=>renameCTTeam(comm.id,event.id,tid,newName)}
+            onCreateInvite={createInvite}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -4511,9 +4607,37 @@ function CommStatsTab({comm, users, onViewProfile}){
   </>;
 }
 
-function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile}){
+// Shared "here's your link" popup for any invite (community or event) — copy or hand off to
+// the native share sheet (WhatsApp etc). Works for a brand-new recipient or an existing one;
+// the app resolves what to do with it on open (see the invite-handling effects up top).
+function InviteModal({url,onClose}){
+  const [copied,setCopied]=useState(false);
+  const copy=async()=>{
+    try{ await navigator.clipboard.writeText(url); setCopied(true); setTimeout(()=>setCopied(false),1500); }
+    catch(e){ console.log("Clipboard copy failed", e); }
+  };
+  const share=async()=>{
+    try{ await Share.share({title:"Join me on Matchkeeper",text:"Join me on Matchkeeper — tap to open:",url}); }
+    catch(e){ console.log("Share failed", e); }
+  };
+  return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:360,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+      <div style={{fontSize:16,fontWeight:700,color:"var(--po-text)",marginBottom:4}}>🔗 Invite Link</div>
+      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14}}>Share this with anyone — works whether they already have Matchkeeper or not.</div>
+      <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",fontSize:12,color:"var(--po-text)",wordBreak:"break-all",marginBottom:14,fontFamily:"monospace"}}>{url}</div>
+      <div style={{display:"flex",gap:8}}>
+        <Btn label={copied?"✓ Copied":"📋 Copy"} onClick={copy} style={{flex:1}}/>
+        <Btn label="📤 Share" primary onClick={share} style={{flex:1}}/>
+      </div>
+      <div onClick={onClose} style={{textAlign:"center",fontSize:12,color:"var(--po-dim)",cursor:"pointer",marginTop:14}}>Close</div>
+    </div>
+  </div>;
+}
+
+function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite}){
   const [tab,setTab]=useState("members");
   const [showInvite,setShowInvite]=useState(false);
+  const [inviteUrl,setInviteUrl]=useState(null);
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const myRole=comm.members.find(m=>m.userId===me.id)?.role;
   const isAdmin=myRole==="owner"||myRole==="admin";
@@ -4548,7 +4672,11 @@ function CommDetail({comm,users,me,onBack,onEdit,onApprove,onReject,onRequestJoi
 
     {tab==="members"&&<>
       {isAdmin&&<>
-        <SmBtn label={showInvite?"▲ Hide Invite":"+ Invite Platform User"} onClick={()=>setShowInvite(o=>!o)} color="#6366F1" style={{marginBottom:12,width:"100%"}}/>
+        <div style={{display:"flex",gap:6,marginBottom:12}}>
+          <SmBtn label={showInvite?"▲ Hide":"+ Invite Platform User"} onClick={()=>setShowInvite(o=>!o)} color="#6366F1" style={{flex:1}}/>
+          {onCreateInvite&&<SmBtn label="🔗 Invite Link" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,label:`Join ${comm.name}`})}`)} color="#34D399" style={{flex:1}}/>}
+        </div>
+        {inviteUrl&&<InviteModal url={inviteUrl} onClose={()=>setInviteUrl(null)}/>}
         {showInvite&&nonMembers.length>0&&<Card style={{marginBottom:12}}>
           {nonMembers.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
             <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>USR {u.usr} · {u.area}</span></div>
@@ -5448,7 +5576,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam}){
+function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -5465,6 +5593,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
   // no manual round-count picker; changing the duration recomputes this automatically.
   const totalR = Math.max(1, Math.round(eventBookingMins/(roundDur||20)));
   const [showAddM,setSAM]  = useState(false);
+  const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [photoUploading2,setPhotoUploading2] = useState(false);
   const [photoUploadError,setPhotoUploadError] = useState("");
@@ -6280,6 +6409,8 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
       {isCT&&!ctR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players and regenerate teams until Round 1 has results.</div>}
       {isCI&&ciR1Locked&&<div style={{marginBottom:10,padding:"8px 12px",background:"#EF444411",border:"0.5px solid #EF444433",borderRadius:8,fontSize:12,color:"#EF4444"}}>🔒 Round 1 has results — player list is now frozen.</div>}
       {isCI&&!ciR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players until Round 1 has results.</div>}
+      {isAdmin&&onCreateInvite&&!isCompleted&&<div style={{display:"flex",marginBottom:10}}><SmBtn label="🔗 Invite Link for this Event" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{width:"100%"}}/></div>}
+      {inviteUrl&&<InviteModal url={inviteUrl} onClose={()=>setInviteUrl(null)}/>}
       {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}><Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
       {showAddM&&<Card style={{marginBottom:10}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Select member to add:</div>{comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).map(m=>users.find(u=>u.id===m.userId)).filter(Boolean).map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}><Av u={u} size={30}/><div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><SmBtn label="Add" onClick={()=>act.addMember(u.id)} color="#6366F1"/></div>)}{comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>All community members are registered ✓</div>}<SmBtn label="✓ Done" onClick={()=>setSAM(false)} color="#34D399" style={{width:"100%",marginTop:8}}/></Card>}
       {showAddG&&<Card style={{marginBottom:10}}>

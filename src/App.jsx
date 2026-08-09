@@ -129,8 +129,29 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.10";
+const APP_VERSION = "V0.07.11";
 const INVITE_BASE_URL = "https://padelos-6f999.web.app"; // Firebase Hosting — works in any browser even without the app installed
+// localStorage persists across sign-out/sign-in on the same device, so a pending invite code
+// that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
+// indefinitely and silently get applied to a COMPLETELY DIFFERENT person who later signs in
+// on that same device — a real bug found in testing (a stale invite from one account's test
+// auto-registered a second, unrelated account for the same event). Bounding the age it's
+// still honored, and clearing it explicitly on sign-out (see the effect further down), closes
+// that off while still surviving the few-second Firestore-propagation race this exists for.
+const PENDING_INVITE_TTL_MS = 5*60*1000; // 5 minutes
+function readPendingInvite(){
+  try{
+    const raw = localStorage.getItem("mk_pending_invite");
+    if(!raw) return null;
+    const parsed = JSON.parse(raw);
+    if(!parsed?.code || !parsed?.capturedAt || Date.now()-parsed.capturedAt>PENDING_INVITE_TTL_MS){
+      localStorage.removeItem("mk_pending_invite");
+      return null;
+    }
+    return parsed.code;
+  }catch(e){ try{ localStorage.removeItem("mk_pending_invite"); }catch(e2){} return null; }
+}
+function clearPendingInvite(){ try{ localStorage.removeItem("mk_pending_invite"); }catch(e){} }
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -2755,59 +2776,24 @@ function rBdg(r){const m={owner:["#C084FC","Owner"],admin:["#38BDF8","Admin"],me
 function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"],guest:["#F59E0B","Guest"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
 function AreaSel({gov,area,onChange}){const govs=Object.keys(EGYPT),areas=gov?EGYPT[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
 
-// Retro "tuner roller" score control. Three drag-based sensitivity rewrites (fixed px/point,
-// velocity momentum, width-relative + unthresholded momentum) all still moved ~1 point per
-// real-device gesture — drag-distance/velocity math depends on touch-coordinate sampling this
-// WebView apparently doesn't deliver reliably. Replaced entirely: press-and-hold on either
-// half, no dragging, no coordinate math — just a timer that steps once immediately and then
-// repeats with acceleration the longer it's held, same "hold to fast-forward" pattern as a
-// volume rocker. `flip` mirrors the same inside/outside convention (+ facing the other team,
-// − on the outside) for which half does what.
-function ScoreRoller({value,onChange,flip}){
-  const rollerRef=useRef(null);
-  const valueRef=useRef(value);
-  useEffect(()=>{ valueRef.current=value; },[value]);
-  const holdRef=useRef({timer:null,spin:0});
-  const setTexture=px=>{ if(rollerRef.current) rollerRef.current.style.backgroundPosition=`50% 18%, ${px}px 0`; };
-  const stopHold=()=>{
-    if(holdRef.current.timer){ clearTimeout(holdRef.current.timer); holdRef.current.timer=null; }
-  };
-  const startHold=dir=>{
-    stopHold();
-    let delay=380;
-    const step=()=>{
-      const v=Math.max(0, valueRef.current+dir);
-      valueRef.current=v; // update immediately so rapid repeats never read a stale value
-      onChange(v);
-      holdRef.current.spin+=dir*10;
-      setTexture(holdRef.current.spin);
-      delay=Math.max(55, delay*0.78); // accelerate the longer it's held
-      holdRef.current.timer=setTimeout(step, delay);
-    };
-    step(); // immediate first step on press, then the timer above takes over
-  };
-  const onDown=e=>{
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    const rect=e.currentTarget.getBoundingClientRect();
-    const leftHalf=(e.clientX-rect.left)/rect.width<0.5;
-    const dir=leftHalf ? (flip?1:-1) : (flip?-1:1); // left=outside for A, inside for B — same convention as the end marks
-    startHold(dir);
-  };
-  const endMarkStyle={position:"absolute",top:"50%",marginTop:-9,width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800,color:"#c9c5ba",pointerEvents:"none",zIndex:2};
-  return <div style={{position:"relative",display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-    <span style={{...endMarkStyle,left:-2}}>{flip?"+":"−"}</span>
-    <div onPointerDown={onDown}
-      onPointerUp={stopHold} onPointerCancel={stopHold} onPointerLeave={stopHold}
-      onContextMenu={e=>e.preventDefault()}
-      style={{position:"relative",width:140,height:34,borderRadius:17,background:"linear-gradient(180deg,#2b2b2b,#111111)",boxShadow:"0 1px 2px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.06)",padding:"2px 5px",cursor:"pointer",
-        touchAction:"none",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none",WebkitTapHighlightColor:"transparent"}}>
-      <div style={{position:"relative",width:"100%",height:"100%",borderRadius:14,overflow:"hidden",background:"#0a0a0a",boxShadow:"inset 0 3px 5px rgba(0,0,0,0.85), inset 0 -1px 0 rgba(255,255,255,0.05)"}}>
-        <div ref={rollerRef} style={{position:"absolute",left:-6,right:-6,top:-14,height:42,borderRadius:"50%",
-          background:"radial-gradient(ellipse at 50% 18%, rgba(255,255,255,0.75), rgba(255,255,255,0) 55%), repeating-linear-gradient(90deg, #a9a6a0 0 2px, #e2ded4 2px 4px)",
-          boxShadow:"inset 0 -6px 8px rgba(0,0,0,0.35)"}}/>
-      </div>
+// Horizontal [−] value [+] stepper. flip=true (the right-hand stepper of a pair) mirrors the
+// button order to [+] value [−] — the two "+" buttons of a side-by-side pair sit facing each
+// other next to the divider, and the two "−" buttons sit outward at the far edges.
+// (Reverted from a retro "tuner roller" concept after four rebuilds — drag, velocity-momentum,
+// width-relative, and press-and-hold — none behaved reliably on the actual device.)
+function ScoreStepper({value,onChange,label,flip}){
+  const minusBtn=<button key="minus"
+    onMouseDown={e=>{e.preventDefault();onChange(Math.max(0,value-1));}}
+    style={{width:26,height:26,borderRadius:6,border:"0.5px solid #EF444444",background:"#EF444411",color:"#EF4444",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>−</button>;
+  const plusBtn=<button key="plus"
+    onMouseDown={e=>{e.preventDefault();onChange(value+1);}}
+    style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",touchAction:"none"}}>+</button>;
+  const valEl=<div key="val" style={{fontSize:18,fontWeight:700,color:"var(--po-text)",minWidth:20,textAlign:"center",lineHeight:1}}>{value}</div>;
+  return <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+    <div style={{fontSize:9,color:"var(--po-dim)",fontWeight:600,textAlign:"center",maxWidth:84,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      {flip?[plusBtn,valEl,minusBtn]:[minusBtn,valEl,plusBtn]}
     </div>
-    <span style={{...endMarkStyle,right:-2}}>{flip?"−":"+"}</span>
   </div>;
 }
 
@@ -2989,7 +2975,7 @@ export default function Matchkeeper() {
       const params = new URLSearchParams(window.location.search);
       const code = params.get("invite");
       if (code) {
-        localStorage.setItem("mk_pending_invite", code);
+        localStorage.setItem("mk_pending_invite", JSON.stringify({code, capturedAt:Date.now()}));
         const url = new URL(window.location.href);
         url.searchParams.delete("invite");
         window.history.replaceState(null, "", url.toString());
@@ -3323,7 +3309,7 @@ export default function Matchkeeper() {
   const autoInviteClaimRef = useRef(null);
   useEffect(() => {
     if (!authUser || linkedMe || !dataLoaded) return;
-    const code = localStorage.getItem("mk_pending_invite");
+    const code = readPendingInvite();
     if (!code || autoInviteClaimRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
     if (!inv) return;
@@ -3345,7 +3331,7 @@ export default function Matchkeeper() {
   const appliedInviteRef = useRef(null);
   useEffect(() => {
     if (!linkedMe || !dataLoaded) return;
-    const code = localStorage.getItem("mk_pending_invite");
+    const code = readPendingInvite();
     if (!code || appliedInviteRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
     // Don't give up on a not-yet-found code — if this invite was just generated on another
@@ -3369,8 +3355,16 @@ export default function Matchkeeper() {
       if (c && !isMember && !hasPending) requestJoin(inv.communityId);
       goComm(inv.communityId);
     }
-    localStorage.removeItem("mk_pending_invite");
+    clearPendingInvite();
   }, [linkedMe, dataLoaded, invites, comms]);
+  // Defense in depth for the same bug: explicitly wipe any pending invite on a genuine
+  // sign-out transition (not the initial pre-login "no authUser yet" state), so switching
+  // accounts on one device can never carry a leftover invite into the next person's session.
+  const wasAuthedRef = useRef(false);
+  useEffect(() => {
+    if (authUser) { wasAuthedRef.current = true; }
+    else if (wasAuthedRef.current) { clearPendingInvite(); wasAuthedRef.current = false; }
+  }, [authUser]);
 
   useEffect(() => {
     if (!dataLoaded) return;
@@ -5320,12 +5314,10 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       <H2HRow/>
-      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginBottom:6}}>
-        <ScoreRoller value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)}/>
-        <div style={{background:"#161a14",borderRadius:8,padding:"6px 10px",boxShadow:"inset 0 1px 3px #000",whiteSpace:"nowrap",flexShrink:0}}>
-          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88",whiteSpace:"nowrap"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
-        </div>
-        <ScoreRoller value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} flip/>
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
+        <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
+        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
+        <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
       </div>
       {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       <div style={{display:"flex",gap:6}}>
@@ -6311,12 +6303,10 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
     if(isCompleted) return null;
     const sc=getCiS(ri,mi);
     return <>
-      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginTop:10,marginBottom:6}}>
-        <ScoreRoller value={sc.scoreA} onChange={v=>setCiS(ri,mi,"scoreA",v)}/>
-        <div style={{background:"#161a14",borderRadius:8,padding:"6px 10px",boxShadow:"inset 0 1px 3px #000",whiteSpace:"nowrap",flexShrink:0}}>
-          <span style={{fontFamily:"'Courier New',ui-monospace,monospace",fontSize:18,fontWeight:700,color:"#8dff9e",textShadow:"0 0 5px #8dff9e88",whiteSpace:"nowrap"}}>{sc.scoreA}<span style={{opacity:0.6,margin:"0 3px"}}>–</span>{sc.scoreB}</span>
-        </div>
-        <ScoreRoller value={sc.scoreB} onChange={v=>setCiS(ri,mi,"scoreB",v)} flip/>
+      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginTop:10,marginBottom:6}}>
+        <ScoreStepper value={sc.scoreA} onChange={v=>setCiS(ri,mi,"scoreA",v)} label={`Team A (${avgA})`}/>
+        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
+        <ScoreStepper value={sc.scoreB} onChange={v=>setCiS(ri,mi,"scoreB",v)} label={`Team B (${avgB})`} flip/>
       </div>
       {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
       <div style={{display:"flex",gap:8}}>

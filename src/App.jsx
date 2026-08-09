@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.05";
+const APP_VERSION = "V0.07.06";
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -4052,6 +4052,19 @@ export default function Matchkeeper() {
       const newTeamB={...teamB,players:teamB.players.map(p=>(p.userId||p.id)===userIdB?pA:p)};
       newTeamA.avgUsr=Math.round((newTeamA.players[0].usr+newTeamA.players[1].usr)/2);
       newTeamB.avgUsr=Math.round((newTeamB.players[0].usr+newTeamB.players[1].usr)/2);
+      // A swap changes who's actually on the team, so re-check for a recorded combo name —
+      // snakeTeams only gets to do this at initial auto-formation, a manual swap needs the
+      // same lookup or a pair reunited by swap silently keeps the generic "Team N" name.
+      const comboLookup=(p1,p2)=>{
+        const uid1=p1.userId||p1.id, uid2=p2.userId||p2.id;
+        const u1=users.find(u=>u.id===uid1), u2=users.find(u=>u.id===uid2);
+        const ck=[uid1,uid2].sort().join("_");
+        return u1?.comboNames?.[ck] || u2?.comboNames?.[ck] || null;
+      };
+      const nameA=comboLookup(newTeamA.players[0],newTeamA.players[1]);
+      const nameB=comboLookup(newTeamB.players[0],newTeamB.players[1]);
+      if(nameA) newTeamA.name=nameA;
+      if(nameB) newTeamB.name=nameB;
       const replaceTeam=t=>t?.id===teamIdA?newTeamA:t?.id===teamIdB?newTeamB:t;
       const newTeams=plan.teams.map(replaceTeam);
       const newRounds=plan.rounds.map(r=>({...r,

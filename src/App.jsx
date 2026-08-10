@@ -3286,7 +3286,7 @@ export default function Matchkeeper() {
           _invid = Math.max(_invid, ...remote.map(i=>i.id), 0) + 1;
         }
         everRealRef.current.invites = true;
-      } else if (!everRealRef.current.invites) { syncedRef.current.invites = JSON.stringify([]); setInvites([]); }
+      } else if (!everRealRef.current.invites) { syncedRef.current.invites = JSON.stringify([]); setInvites([]); everRealRef.current.invites = true; } // unlike comms/users/venues, invites has no seed data to protect — "document not found" IS the confirmed-real empty state, so writes must not stay blocked forever
       markLoaded("invites");
     }, e => { console.log("Firestore invites error", e); recordDiag("invites", `${e.code||"error"}: ${e.message||e}`); markLoaded("invites"); });
     return unsub;

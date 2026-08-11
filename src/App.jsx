@@ -3355,17 +3355,21 @@ export default function Matchkeeper() {
     if (!inv) return;
     appliedInviteRef.current = code;
     if (inv.eventId && inv.communityId) {
-      // An event invite is deliberate access to THAT event only — it does not join the
-      // community. Registers immediately, bypassing the regular-member priority window
-      // entirely (that gate exists to stop random public sign-ups from queue-jumping, not
-      // someone the admin specifically invited).
+      // Registers immediately, bypassing the regular-member priority window entirely (see
+      // registerViaInvite) — and leaves a community guest-tier footprint too if they weren't
+      // already a member of any status.
       registerViaInvite(inv.communityId, inv.eventId, linkedMe.id);
       goEvent(inv.communityId, inv.eventId);
     } else if (inv.communityId) {
       const c = comms.find(c=>c.id===inv.communityId);
       const isMember = c?.members.some(m=>m.userId===linkedMe.id);
-      const hasPending = c?.joinRequests.some(r=>r.userId===linkedMe.id);
-      if (c && !isMember && !hasPending) requestJoin(inv.communityId);
+      if (c && !isMember) {
+        if (inv.targetUserId!=null) joinCommunityViaInvite(inv.communityId, linkedMe.id);
+        else {
+          const hasPending = c.joinRequests.some(r=>r.userId===linkedMe.id);
+          if (!hasPending) requestJoin(inv.communityId);
+        }
+      }
       goComm(inv.communityId);
     }
     clearPendingInvite();
@@ -3625,6 +3629,11 @@ export default function Matchkeeper() {
   const kickM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.filter(m=>m.userId!==uid)}));toast2("Removed");};
   const toggleMemberStatus=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,status:m.status==="regular"?"casual":"regular"}:m)}));toast2("Status updated ✓");};
   const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2(`${u?.nickname} added ✓`);};
+  // A community invite targeted at a specific person joins them immediately, no approval
+  // queue — same reasoning as claimViaInvite: the admin picking exactly this person to send
+  // the link to already is the approval. An un-targeted community link (shared publicly)
+  // still goes through the normal requestJoin/approve flow, see Effect B.
+  const joinCommunityViaInvite=(cid,uid)=>{updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));};
 
   // Venue
   const saveVenue=(d,editId=null)=>{const courts=d.courtNames.filter(Boolean).map(n=>({name:n}));if(editId){setVenues(vs=>vs.map(v=>v.id===editId?{...v,...d,courts,status:"pending_edit"}:v));toast2("Saved · Pending review");}else{const id=_vid++;setVenues(vs=>[...vs,{id,...d,courts,status:"pending"}]);toast2("Added · Pending review");}go("list");};
@@ -3898,12 +3907,17 @@ export default function Matchkeeper() {
     toast2(`${users.find(u=>u.id===uid)?.nickname} added ✓`);
     if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
   };
-  // An invite link is deliberate access granted by an admin — it skips both the regular-
-  // member priority window and community membership entirely (an event invite is NOT a
-  // community invite; joining one doesn't join the other). Registers immediately, no gate.
+  // An invite link is deliberate access granted by an admin — it skips the regular-member
+  // priority window entirely (that gate exists to stop random public sign-ups from queue-
+  // jumping, not someone the admin specifically invited). It also leaves a guest-tier
+  // footprint at the community level if the invitee wasn't already a member of any status —
+  // a name that exists for reference with no extra visibility, upgradeable later via the
+  // existing "Make Member" action, rather than a total stranger with zero community trace.
   const registerViaInvite=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
+    updC(cid,c=>({...c,
+      members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],
+      events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
     if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
   };
   // Event-level join requests — same shape as community joinRequests, but scoped to one

@@ -4337,38 +4337,29 @@ export default function Matchkeeper() {
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
 
   if (authLoading || (authUser && !dataLoaded)) {
-    return <>
-      <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
-      </div>
-      <InviteDebugPanel log={inviteLog}/>
-    </>;
+    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
+    </div>;
   }
   if (!authUser) {
-    return <><LoginScreen/><InviteDebugPanel log={inviteLog}/></>;
+    return <LoginScreen/>;
   }
   if (!linkedMe) {
     if (myPendingRequest) {
       const target = users.find(u=>u.id===myPendingRequest.userId);
-      return <>
-        <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-          <div style={{maxWidth:360,textAlign:"center"}}>
-            <div style={{fontSize:32,marginBottom:12}}>⏳</div>
-            <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Waiting for approval</div>
-            <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You asked to claim <b style={{color:"#F1F5F9"}}>{target?.nickname}</b>'s profile. A community admin needs to confirm that's really you before you can continue.</div>
-            <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
-          </div>
+      return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{maxWidth:360,textAlign:"center"}}>
+          <div style={{fontSize:32,marginBottom:12}}>⏳</div>
+          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Waiting for approval</div>
+          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You asked to claim <b style={{color:"#F1F5F9"}}>{target?.nickname}</b>'s profile. A community admin needs to confirm that's really you before you can continue.</div>
+          <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
         </div>
-        <InviteDebugPanel log={inviteLog}/>
-      </>;
+      </div>;
     }
     const pendingUserIds = new Set(claimRequests.filter(r=>r.status==="pending").map(r=>r.userId));
     const claimedUserIds = new Set(Object.values(uidLinks));
     const unclaimed = users.filter(u => !claimedUserIds.has(u.id) && !pendingUserIds.has(u.id));
-    return <>
-      <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)} degraded={dataDegraded} diagText={diagText}/>
-      <InviteDebugPanel log={inviteLog}/>
-    </>;
+    return <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)} degraded={dataDegraded} diagText={diagText}/>;
   }
 
   return (
@@ -4395,7 +4386,7 @@ export default function Matchkeeper() {
         select.po-inp option{background:var(--po-card);color:var(--po-text);}
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
       `}</style>
-      <InviteDebugPanel log={inviteLog}/>
+      {me?.id===1&&<InviteDebugPanel log={inviteLog}/>}
       <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>signOut(fbAuth)}
         comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
@@ -6462,7 +6453,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}><span>{effEv.registrations.length} registered</span><span>Min {minReq} · Ideal {ideal} · Max {maxCap}</span></div>
         <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(effEv.registrations.length/maxCap)*100)}%`,background:effEv.registrations.length>=maxCap?"#EF4444":effEv.registrations.length>=ideal?"#F59E0B":"#6366F1"}}/></div>
         {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:3}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
-        <div style={{fontSize:9,color:"#818CF8",fontFamily:"monospace",marginTop:3}}>diag: now={new Date().toISOString()} regularUntil={effEv.regularUntil} inRW={String(inRW)} canReg={String(canReg)} isReg={String(isReg)} myReg={String(!!myReg)}</div>
+        {me?.id===1&&<div style={{fontSize:9,color:"#818CF8",fontFamily:"monospace",marginTop:3}}>diag: now={new Date().toISOString()} regularUntil={effEv.regularUntil} inRW={String(inRW)} canReg={String(canReg)} isReg={String(isReg)} myReg={String(!!myReg)}</div>}
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12}}>

@@ -3037,6 +3037,14 @@ export default function Matchkeeper() {
     }
   };
   const rejectClaim = (reqId) => setClaimRequests(rs => rs.map(r => r.id===reqId ? {...r, status:"rejected"} : r));
+  // Links a signed-in Firebase account straight to an existing profile, no approval queue —
+  // safe ONLY when driven by an admin-generated targeted invite (see Effect A below), since
+  // the admin choosing to send that specific link to that specific person IS the approval.
+  // A person self-picking a name off the public unclaimed list still goes through requestClaim.
+  const claimViaInvite = (userId) => {
+    linkUidToUser(authUser.uid, userId);
+    setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
+  };
   const createFreshProfile = () => {
     const newId = _uid++;
     const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
@@ -3322,8 +3330,8 @@ export default function Matchkeeper() {
     const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
     if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
       autoInviteClaimRef.current = code;
-      logInvite(`EffectA: code=${code} → requestClaim(target=${inv.targetUserId})`);
-      requestClaim(inv.targetUserId);
+      logInvite(`EffectA: code=${code} → claimViaInvite(target=${inv.targetUserId}) [instant, no approval]`);
+      claimViaInvite(inv.targetUserId);
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
       logInvite(`EffectA: code=${code} target=null → createFreshProfile()`);
@@ -3332,9 +3340,11 @@ export default function Matchkeeper() {
       logInvite(`EffectA: code=${code} target=${inv.targetUserId} skipped (claimed=${alreadyClaimed} pending=${alreadyPending})`);
     }
   }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests]);
-  // Once the person opening an invite link is actually linked to a profile — instantly for a
-  // brand-new one, or after admin approval for a claimed one, however long that takes — join
-  // them to the invited community/event. Deliberately re-checked on every render where these
+  // Once the person opening an invite link is actually linked to a profile — instantly, for
+  // both a brand-new profile and a targeted claim of an existing one (self-picked claims from
+  // the public unclaimed list are the only path still needing admin approval, and don't carry
+  // a pending invite) — join them to the invited community/event. Deliberately re-checked on
+  // every render where these
   // deps change (not just right after auth) so a claim approved later still gets applied the
   // next time the app is open, since the invite code just sits in localStorage until consumed.
   const appliedInviteRef = useRef(null);
@@ -4392,7 +4402,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
-          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
+          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
             onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
@@ -5636,7 +5646,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin}){
   const [tab,setTab]       = useState("info");
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -6575,6 +6585,7 @@ function EvDetail({ev,comm,comms,users,venues,me,onBack,onOpenCommunity,onEditEv
               {(r.isGuest||u.isGuest)&&<Bdg label={r.addedBy?`Guest · by ${r.addedBy}`:"Guest"} color="#F59E0B"/>}
               {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
+              {isAdmin&&onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
           </div>

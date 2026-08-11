@@ -3427,9 +3427,16 @@ export default function Matchkeeper() {
   }, [dataLoaded]); // re-runs once the restore completes; only meaningful after that
 
 
+  // Nickname (the name everyone sees) and phone must be unique across every local profile —
+  // guests included, since a guest today can become a real linked member tomorrow.
+  const nicknameTaken = (nickname, excludeId=null) => users.some(u => u.id!==excludeId && u.nickname && u.nickname.trim().toLowerCase()===(nickname||"").trim().toLowerCase());
+  const phoneTaken = (phone, excludeId=null) => !!(phone||"").trim() && users.some(u => u.id!==excludeId && u.phone && u.phone.trim()===phone.trim());
   const editUser = (id, data) => {
+    if (nicknameTaken(data.nickname, id)) { toast2(`Nickname "${data.nickname}" is already used by another player`, "err"); return false; }
+    if (phoneTaken(data.phone, id)) { toast2(`Phone ${data.phone} is already used by another player`, "err"); return false; }
     setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref} : u));
     toast2("Player updated ✓");
+    return true;
   };
   const deleteUser = (id) => {
     setUsers(us => us.filter(u => u.id!==id));
@@ -3935,6 +3942,8 @@ export default function Matchkeeper() {
     toast2("Rejected");
   };
   const addGuest=(cid,eid,g)=>{
+    if (nicknameTaken(g.n)) { toast2(`Nickname "${g.n}" is already used by another player`, "err"); return false; }
+    if (phoneTaken(g.p)) { toast2(`Phone ${g.p} is already used by another player`, "err"); return false; }
     const id=_uid++;
     const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
     setUsers(us=>[...us,newUser]);
@@ -3942,6 +3951,7 @@ export default function Matchkeeper() {
       members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
     toast2(`${g.n} added ✓`);
+    return true;
   };
   // Promotes a community guest to a full (casual) member — same person, same history,
   // just no longer flagged as a guest anywhere in the app.
@@ -4465,8 +4475,16 @@ export default function Matchkeeper() {
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={n=>{markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav:"notifications",view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}/>}
         {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} onBack={goBack}
-          onAddUser={u=>{const id=_uid++;setUsers(us=>[...us,{id,...u,joined:today,avatar:ini2(u.nickname),isGuest:false,seedUsr:parseInt(u.usr)||50}]);toast2(`${u.nickname} added ✓`);}}
-          onEditUser={(id,updates)=>{setUsers(us=>us.map(u=>u.id===id?{...u,...updates,seedUsr:u.seedUsr??u.usr}:u));toast2("Updated ✓");}}
+          onAddUser={u=>{
+            if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
+            if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
+            const id=_uid++;setUsers(us=>[...us,{id,...u,joined:today,avatar:ini2(u.nickname),isGuest:false,seedUsr:parseInt(u.usr)||50}]);toast2(`${u.nickname} added ✓`);return true;
+          }}
+          onEditUser={(id,updates)=>{
+            if (nicknameTaken(updates.nickname,id)) { toast2(`Nickname "${updates.nickname}" is already used by another player`, "err"); return false; }
+            if (phoneTaken(updates.phone,id)) { toast2(`Phone ${updates.phone} is already used by another player`, "err"); return false; }
+            setUsers(us=>us.map(u=>u.id===id?{...u,...updates,seedUsr:u.seedUsr??u.usr}:u));toast2("Updated ✓");return true;
+          }}
           onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           claimRequests={claimRequests} onApproveClaim={approveClaim} onRejectClaim={rejectClaim}
@@ -6507,7 +6525,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <span style={{fontSize:14,fontWeight:700,color:"#6366F1",minWidth:32}}>{gf.usr}</span>
           </div>
         </div>
-        <Btn label="Add Guest" primary onClick={()=>{if(gf.n&&gf.p){act.addGuest(gf);setGf({n:"",name:"",p:"",usr:"50"});}}} style={{width:"100%"}}/>
+        <Btn label="Add Guest" primary onClick={()=>{if(gf.n&&gf.p&&act.addGuest(gf)){setGf({n:"",name:"",p:"",usr:"50"});}}} style={{width:"100%"}}/>
         <SmBtn label="✓ Done" onClick={()=>setSAG(false)} color="#34D399" style={{width:"100%",marginTop:8}}/>
       </Card>}</>}
       {isOpen&&cinCnt>0&&<><ST>Checked In ({cinCnt})</ST>{effEv.checkedIn.map(uid=>{const u=users.find(u=>u.id===uid);if(!u)return null;return <Card key={uid} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}><Av u={u} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><Bdg label="✓ In" color="#34D399"/></div></Card>;})}</>}
@@ -7221,7 +7239,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     <Drp label="Break Preference" value={ef.breakPref} onChange={v=>setEf(p=>({...p,breakPref:v}))} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Used as your default whenever you join an event — admins can override it per event.</div>
     <div style={{display:"flex",gap:8,marginTop:4}}>
-      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref});setEditing(false);}} style={{flex:1}}/>
+      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref})!==false)setEditing(false);}} style={{flex:1}}/>
       <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
     </div>
   </div>}
@@ -7541,9 +7559,8 @@ function PlatformAdminSc({users,comms,venues,onBack,onAddUser,onEditUser,onDelet
       <div style={{display:"flex",gap:8,marginTop:8}}>
         <Btn label="Save" primary onClick={()=>{
           if(!nf.nickname.trim())return;
-          if(editing) onEditUser(editing,{...nf,usr:parseInt(nf.usr)||50});
-          else onAddUser({...nf,usr:parseInt(nf.usr)||50});
-          setShowAdd(false);setEditing(null);
+          const ok = editing ? onEditUser(editing,{...nf,usr:parseInt(nf.usr)||50}) : onAddUser({...nf,usr:parseInt(nf.usr)||50});
+          if(ok!==false){setShowAdd(false);setEditing(null);}
         }} style={{flex:1}}/>
         <Btn label="Cancel" onClick={()=>{setShowAdd(false);setEditing(null);}} style={{flex:1}}/>
       </div>

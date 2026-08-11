@@ -3041,9 +3041,12 @@ export default function Matchkeeper() {
   // safe ONLY when driven by an admin-generated targeted invite (see Effect A below), since
   // the admin choosing to send that specific link to that specific person IS the approval.
   // A person self-picking a name off the public unclaimed list still goes through requestClaim.
-  const claimViaInvite = (userId) => {
+  const claimViaInvite = (userId, inv) => {
     linkUidToUser(authUser.uid, userId);
     setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
+    const target = users.find(u => u.id===userId);
+    const who = authUser.displayName || authUser.email || "Someone";
+    notify([inv?.createdBy].filter(Boolean), "inviteClaimed", null, "🔗 Invite connected", `${who} just signed in and got linked as ${target?.nickname||"their profile"} — they're in.`);
   };
   const createFreshProfile = () => {
     const newId = _uid++;
@@ -3331,7 +3334,7 @@ export default function Matchkeeper() {
     if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
       autoInviteClaimRef.current = code;
       logInvite(`EffectA: code=${code} → claimViaInvite(target=${inv.targetUserId}) [instant, no approval]`);
-      claimViaInvite(inv.targetUserId);
+      claimViaInvite(inv.targetUserId, inv);
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
       logInvite(`EffectA: code=${code} target=null → createFreshProfile()`);

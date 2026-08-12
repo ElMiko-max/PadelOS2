@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.17";
+const APP_VERSION = "V0.07.18";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -5386,7 +5386,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         </div>
       </div>
       <H2HRow/>
-      <div style={{display:"flex",justifyContent:"flex-end"}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>
+      {isAdmin&&<div style={{display:"flex",justifyContent:"flex-end"}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>}
     </Card>;}
 
     const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
@@ -5417,24 +5417,26 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
       })()}
       <H2HRow/>
-      <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
-        <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
-        <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
-        <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
-      </div>
-      {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
-      <div style={{display:"flex",gap:6}}>
-        <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",sc.scoreA,sc.scoreB);}}
-          disabled={sc.scoreA<=sc.scoreB}
-          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreA<=sc.scoreB?"default":"pointer",opacity:sc.scoreA<=sc.scoreB?0.4:1}}>
-          ← {m.teamA?.name}
-        </button>
-        <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",sc.scoreA,sc.scoreB);}}
-          disabled={sc.scoreB<=sc.scoreA}
-          style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreB<=sc.scoreA?"default":"pointer",opacity:sc.scoreB<=sc.scoreA?0.4:1}}>
-          {m.teamB?.name} →
-        </button>
-      </div>
+      {isAdmin?<>
+        <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginBottom:6}}>
+          <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
+          <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
+          <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
+        </div>
+        {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
+        <div style={{display:"flex",gap:6}}>
+          <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",sc.scoreA,sc.scoreB);}}
+            disabled={sc.scoreA<=sc.scoreB}
+            style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreA<=sc.scoreB?"default":"pointer",opacity:sc.scoreA<=sc.scoreB?0.4:1}}>
+            ← {m.teamA?.name}
+          </button>
+          <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",sc.scoreA,sc.scoreB);}}
+            disabled={sc.scoreB<=sc.scoreA}
+            style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreB<=sc.scoreA?"default":"pointer",opacity:sc.scoreB<=sc.scoreA?0.4:1}}>
+            {m.teamB?.name} →
+          </button>
+        </div>
+      </>:<div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginTop:6}}>⏳ Waiting for result</div>}
     </Card>;
   }
 
@@ -6401,9 +6403,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       const wT=m.winner==="A"?m.teamA:m.teamB;
       const wScore=m.winner==="A"?m.scoreA:m.scoreB, lScore=m.winner==="A"?m.scoreB:m.scoreA;
       const scoreLabel=(wScore!=null&&lScore!=null)?` ${wScore}–${lScore}`:"";
-      return <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}><div style={{flex:1,padding:"9px",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:12,fontWeight:600,color:"#34D399",textAlign:"center"}}>✓ {wT.map(p=>p.nickname).join(" & ")} won{scoreLabel}</div>{!isCompleted&&<SmBtn label="↩" onClick={()=>act.setWinCI(ri,mi,null)} color="#EF4444"/>}</div>;
+      return <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}><div style={{flex:1,padding:"9px",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:12,fontWeight:600,color:"#34D399",textAlign:"center"}}>✓ {wT.map(p=>p.nickname).join(" & ")} won{scoreLabel}</div>{!isCompleted&&isAdmin&&<SmBtn label="↩" onClick={()=>act.setWinCI(ri,mi,null)} color="#EF4444"/>}</div>;
     }
     if(isCompleted) return null;
+    if(!isAdmin) return <div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginTop:10}}>⏳ Waiting for result</div>;
     const sc=getCiS(ri,mi);
     return <>
       <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:14,marginTop:10,marginBottom:6}}>

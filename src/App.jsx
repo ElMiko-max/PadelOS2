@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.15";
+const APP_VERSION = "V0.07.16";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4751,13 +4751,17 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
   const [showInvite,setShowInvite]=useState(false);
   const [inviteUrl,setInviteUrl]=useState(null);
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
-  const myRole=comm.members.find(m=>m.userId===me.id)?.role;
+  const [memberSearch,setMemberSearch]=useState("");
+  const myMember=comm.members.find(m=>m.userId===me.id);
+  const myRole=myMember?.role;
   const isAdmin=myRole==="owner"||myRole==="admin";
   const isMember=!!myRole;
   const meIsPlatformAdmin=me?.id===1;
   // "Private" was previously cosmetic — a non-member could see the full roster, stats, and
-  // events regardless. Platform Admin can always see through it for oversight.
-  const canViewPrivate=comm.type!=="private"||isMember||meIsPlatformAdmin;
+  // events regardless. Platform Admin can always see through it for oversight. A guest-tier
+  // member (e.g. auto-added via an event invite) is deliberately NOT a "real" member for this
+  // purpose — the whole point of the guest tier is minimal visibility until promoted.
+  const canViewPrivate=comm.type!=="private"||(isMember&&myMember.status!=="guest")||meIsPlatformAdmin;
   const hasPendingJoin=comm.joinRequests.some(r=>r.userId===me.id);
   const regs=comm.members.filter(m=>m.status!=="inactive");
   const regularCount=regs.filter(m=>m.status==="regular").length;
@@ -4766,7 +4770,9 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
   const avgU=regs.length?Math.round(regs.reduce((s,m)=>s+(users.find(u=>u.id===m.userId)?.usr||0),0)/regs.length):0;
   const tdefs=[["members","Members"],["events","Events"],["stats","Reports"],...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
-  const sortedMembers=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
+  const sortedMembersAll=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
+  const memberQ=memberSearch.trim().toLowerCase();
+  const sortedMembers=memberQ?sortedMembersAll.filter(m=>users.find(u=>u.id===m.userId)?.nickname?.toLowerCase().includes(memberQ)):sortedMembersAll;
   const nonMembers=users.filter(u=>!comm.members.some(m=>m.userId===u.id));
 
   return <><BBtn onBack={onBack} label="Communities" sticky subLabel={tab==="members"?"Members":tab==="events"?"Events":"Requests"}/>
@@ -4788,6 +4794,7 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
 
     {tab==="members"&&<>
       {!canViewPrivate?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see the member list.</div></Card>:<>
+      {regs.length>6&&<input value={memberSearch} onChange={e=>setMemberSearch(e.target.value)} placeholder="🔍 Search members..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>}
       {isAdmin&&<>
         <div style={{display:"flex",gap:6,marginBottom:12}}>
           <SmBtn label={showInvite?"▲ Hide":"+ Invite Platform User"} onClick={()=>setShowInvite(o=>!o)} color="#6366F1" style={{flex:1}}/>
@@ -4801,6 +4808,7 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
           </div>)}
         </Card>}
       </>}
+      {memberQ&&sortedMembers.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No members match "{memberSearch}"</div></Card>}
       {["owner","admin","member"].map(rf=>{
         const list=sortedMembers.filter(m=>m.role===rf);if(!list.length)return null;
         return <div key={rf}><ST>{rf==="owner"?"Owner":rf==="admin"?"Admins":"Members"}</ST>
@@ -7541,9 +7549,14 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
   const [inviteUrl,setInviteUrl]=useState(null);
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
   const [showAdd,setShowAdd]=useState(false);
+  const [userSearch,setUserSearch]=useState("");
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const pendingClaims = claimRequests.filter(r=>r.status==="pending");
+  const linkedUserIds=new Set(Object.values(uidLinks||{}));
+  const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
+  const q=userSearch.trim().toLowerCase();
+  const filteredUsers=q?users.filter(u=>u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q)):users;
   useEffect(()=>{ if(tab==="data") onRefreshBackups&&onRefreshBackups(); }, [tab]);
 
   return <><BBtn onBack={onBack} label="Back"/>
@@ -7580,6 +7593,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
   </>}
 
   {tab==="users"&&<>
+    <div style={{display:"flex",gap:6,marginBottom:12}}><Bdg label={`🔗 ${linkedCount} linked`} color="#34D399"/><Bdg label={`◌ ${users.length-linkedCount} unlinked`} color="#F59E0B"/></div>
+    <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
     <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none"});}} style={{width:"100%",marginBottom:12}}/>
     {showAdd&&<Card style={{marginBottom:12}}>
       <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>{editing?"Edit User":"New User"}</div>
@@ -7607,7 +7622,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
         <Btn label="Cancel" onClick={()=>{setShowAdd(false);setEditing(null);}} style={{flex:1}}/>
       </div>
     </Card>}
-    {users.map(u=><Card key={u.id} style={{marginBottom:8}}>
+    {filteredUsers.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No players match "{userSearch}"</div></Card>}
+    {filteredUsers.map(u=><Card key={u.id} style={{marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
         <Av u={u} size={36}/>
         <div style={{flex:1,minWidth:0}}>

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.18";
+const APP_VERSION = "V0.07.19";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3592,6 +3592,17 @@ export default function Matchkeeper() {
   };
   const markNotifRead = (id) => setNotifications(ns => ns.map(n => n.id===id?{...n,read:true}:n));
   const markAllNotifRead = () => setNotifications(ns => ns.map(n => n.userId===me.id?{...n,read:true}:n));
+  // Enhancement #19 — a tapped notification takes you to whatever it's actually about,
+  // instead of leaving you wherever you happened to be. Covers every notify() call site:
+  // event+community context (most types) already carries both ids; claimRequest has neither
+  // (it's about the Platform Admin Claims tab, not a community/event); community-only
+  // context (new_community) carries just communityId.
+  const openNotif = (n) => {
+    markNotifRead(n.id);
+    if (n.type==="claimRequest") { setNavHistory(h=>[...h,{nav,view}]); setNav("platform"); setView({screen:"admin",tab:"claims"}); return; }
+    if (n.communityId && n.eventId) { goEvent(n.communityId, n.eventId); return; }
+    if (n.communityId) { goComm(n.communityId); return; }
+  };
 
   // Reminder engine — checks upcoming events every minute and fires a one-time
   // notification per threshold (24h/3h/1h before start) to all registered players.
@@ -3629,7 +3640,7 @@ export default function Matchkeeper() {
 
   // Community
   const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
-    if (me.id!==1) notify([1], "new_community", null, "🌱 New community created", `${me.nickname} created "${d.name}"`);
+    if (me.id!==1) notify([1], "new_community", {communityId:id}, "🌱 New community created", `${me.nickname} created "${d.name}"`);
   };
   const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");go("comm",{cid:id});};
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
@@ -4416,7 +4427,7 @@ export default function Matchkeeper() {
         comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
         onMarkNotifRead={markNotifRead} onMarkAllNotifRead={markAllNotifRead}
-        onOpenNotif={n=>{setNotifMenu(false);markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}
+        onOpenNotif={n=>{setNotifMenu(false);openNotif(n);}}
         onSeeAllNotifs={()=>{setNotifMenu(false);setNavHistory(h=>[...h,{nav,view}]);setNav("notifications");setView({screen:"list"});}}
       />
       <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
@@ -4489,8 +4500,8 @@ export default function Matchkeeper() {
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
-          onOpen={n=>{markNotifRead(n.id);if(n.communityId&&n.eventId){setNav("communities");setNavHistory(h=>[...h,{nav:"notifications",view}]);setView({screen:"event",cid:n.communityId,eid:n.eventId});}}}/>}
-        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onBack={goBack}
+          onOpen={openNotif}/>}
+        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} initialTab={view.tab} onBack={goBack}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -7546,8 +7557,8 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
-  const [tab,setTab]=useState("users");
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
+  const [tab,setTab]=useState(initialTab||"users");
   const [editing,setEditing]=useState(null);
   const [inviteUrl,setInviteUrl]=useState(null);
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});

@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.20";
+const APP_VERSION = "V0.07.21";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3669,7 +3669,7 @@ export default function Matchkeeper() {
   const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
     if (me.id!==1) notify([1], "new_community", {communityId:id}, "🌱 New community created", `${me.nickname} created "${d.name}"`);
   };
-  const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");go("comm",{cid:id});};
+  const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");goBack();};
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
   const requestJoin=(cid)=>{updC(cid,c=>c.joinRequests.some(r=>r.userId===me.id)?c:({...c,joinRequests:[...c.joinRequests,{userId:me.id,requestedAt:today}]}));toast2("Request sent ✓");};
@@ -3729,7 +3729,7 @@ export default function Matchkeeper() {
   };
   const editEvent=(cid,eid,d)=>{
     const before = getEv(cid,eid);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...d})}));toast2("Event updated ✓");go("event",{cid,eid});
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...d})}));toast2("Event updated ✓");goBack();
     if (before) {
       const changed = [];
       if (d.date!==undefined && d.date!==before.date) changed.push("date");
@@ -3808,7 +3808,7 @@ export default function Matchkeeper() {
       return after;
     });
     toast2("Event deleted (id "+eid+")");
-    go("comm",{cid});
+    goBack();
   };
   const archiveEvent=(cid,eid)=>{
     console.log("[archiveEvent] called with", {cid, eid});
@@ -3821,7 +3821,7 @@ export default function Matchkeeper() {
       return updated;
     });
     toast2("Event archived (id "+eid+")");
-    go("comm",{cid});
+    goBack();
   };
   const unarchiveEvent=(cid,eid)=>{
     console.log("[unarchiveEvent] called with", {cid, eid});
@@ -4466,10 +4466,10 @@ export default function Matchkeeper() {
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={()=>go("comm",{cid:comm.id})} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite}/>}
-        {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={()=>go("comm",{cid:comm.id})} onCreate={d=>createEvent(comm.id,d)}/>}
-        {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={()=>go("event",{cid:comm.id,eid:event.id})} onSave={d=>editEvent(comm.id,event.id,d)}/>}
+        {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})}/>}
+        {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
+        {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
           <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
             onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
@@ -4494,7 +4494,7 @@ export default function Matchkeeper() {
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
             onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
             onRegenCTBreaks={()=>regenCTBreaks(comm.id,event.id)}
-            onBack={()=>go("comm",{cid:comm.id})}
+            onBack={goBack}
             onEditEvent={()=>go("editEvent",{cid:comm.id,eid:event.id})}
             onRegister={()=>registerEv(comm.id,event.id)}
             onCheckIn={uid=>checkIn(comm.id,event.id,uid)}
@@ -4521,6 +4521,8 @@ export default function Matchkeeper() {
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
             onNextCTLadder={(silent)=>nextCTLadder(comm.id,event.id,silent)}
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
+            initialTab={view.tab}
+            onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})}
           />
         }
         {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}} onBulkArchive={bulkArchiveEvents} onBulkDelete={bulkDeleteEvents}/>}
@@ -4533,7 +4535,7 @@ export default function Matchkeeper() {
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
-        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} initialTab={view.tab} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt}
+        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -4789,8 +4791,9 @@ function InviteModal({url,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership}){
-  const [tab,setTab]=useState("members");
+function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange}){
+  const [tab,setTab]=useState(initialTab||"members");
+  useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
   const [inviteUrl,setInviteUrl]=useState(null);
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
@@ -5757,8 +5760,9 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin}){
-  const [tab,setTab]       = useState("info");
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,initialTab,onTabChange}){
+  const [tab,setTab]       = useState(initialTab||"info");
+  useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
   const eventBookingMins = (()=>{
@@ -5778,16 +5782,23 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [photoUploading2,setPhotoUploading2] = useState(false);
+  const [photoUploadProgress,setPhotoUploadProgress] = useState(null); // {done,total} while a multi-select batch is in flight
   const [photoUploadError,setPhotoUploadError] = useState("");
   const handleEventPhotoSelect = async (e) => {
-    const file = e.target.files[0]; if (!file) return;
-    setPhotoUploading2(true); setPhotoUploadError("");
-    try { const photo = await uploadEventPhoto(ev.id, file); onAddEventPhoto(photo); }
-    catch(err) {
-      console.log("Event photo upload failed", err);
-      setPhotoUploadError(`${err.code||"error"}: ${err.message||err}`);
-      onToast&&onToast("Upload failed — see details below","err");
+    const files = Array.from(e.target.files||[]); if (!files.length) return;
+    setPhotoUploading2(true); setPhotoUploadError(""); setPhotoUploadProgress({done:0,total:files.length});
+    let failCount = 0;
+    for (let i=0;i<files.length;i++) {
+      try { const photo = await uploadEventPhoto(ev.id, files[i]); onAddEventPhoto(photo); }
+      catch(err) {
+        console.log("Event photo upload failed", err);
+        failCount++;
+        setPhotoUploadError(`${err.code||"error"}: ${err.message||err}`);
+      }
+      setPhotoUploadProgress({done:i+1,total:files.length});
     }
+    if (failCount>0) onToast&&onToast(files.length>1?`${files.length-failCount}/${files.length} photos uploaded — ${failCount} failed`:"Upload failed — see details below","err");
+    setPhotoUploadProgress(null);
     setPhotoUploading2(false);
     e.target.value = "";
   };
@@ -6842,9 +6853,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </div>;
         })}
         <label style={{aspectRatio:"1",borderRadius:8,border:"1.5px dashed var(--po-bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:photoUploading2?"default":"pointer",gap:2}}>
-          <input type="file" accept="image/*" style={{display:"none"}} onChange={handleEventPhotoSelect} disabled={photoUploading2}/>
+          <input type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleEventPhotoSelect} disabled={photoUploading2}/>
           <span style={{fontSize:18}}>{photoUploading2?"⏳":"➕"}</span>
-          <span style={{fontSize:9,color:"var(--po-dim)"}}>{photoUploading2?"Uploading…":"Add"}</span>
+          <span style={{fontSize:9,color:"var(--po-dim)",textAlign:"center"}}>{photoUploadProgress?`${photoUploadProgress.done}/${photoUploadProgress.total}`:"Add"}</span>
         </label>
       </div>
       {photoUploadError&&<div style={{marginTop:10,fontSize:11,color:"#EF4444",background:"#EF444411",borderRadius:6,padding:"8px 10px"}}>⚠️ {photoUploadError}</div>}
@@ -7599,8 +7610,9 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
   const [tab,setTab]=useState(initialTab||"users");
+  useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
   const [inviteUrl,setInviteUrl]=useState(null);
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});

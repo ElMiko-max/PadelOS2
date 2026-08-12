@@ -545,14 +545,14 @@ function calcPartnerOpponentStats(comms, userId, opts){
         const myTeam=inA?m.teamA:m.teamB, oppTeam=inA?m.teamB:m.teamA;
         const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
         const partner=myTeam.find(p=>p.userId!==userId);
-        if(partner) recordPartner(partner,ev,won,oppTeam,null,"ci");
+        const score=(m.scoreA!=null&&m.scoreB!=null)?{for:inA?m.scoreA:m.scoreB, against:inA?m.scoreB:m.scoreA}:null;
+        if(partner) recordPartner(partner,ev,won,oppTeam,score,"ci");
         oppTeam.forEach(opp=>{
           const oppPartner=oppTeam.find(p=>p.userId!==opp.userId);
-          recordOpponent(opp,ev,won,partner,oppPartner,null,"ci");
+          recordOpponent(opp,ev,won,partner,oppPartner,score,"ci");
         });
       }));
     }else if(ev.type==="closed_teams"){
-      const hasScore=ev.plan.format==="league";
       ev.plan.rounds.forEach(r=>{
         [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
           if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
@@ -561,7 +561,7 @@ function calcPartnerOpponentStats(comms, userId, opts){
           const myPlayers=inA?m.teamA.players:m.teamB.players, oppPlayers=inA?m.teamB.players:m.teamA.players;
           const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
           const partner=myPlayers.find(p=>p.userId!==userId);
-          const score=hasScore?{for:inA?m.scoreA:m.scoreB, against:inA?m.scoreB:m.scoreA}:null;
+          const score=(m.scoreA!=null&&m.scoreB!=null)?{for:inA?m.scoreA:m.scoreB, against:inA?m.scoreB:m.scoreA}:null;
           if(partner) recordPartner(partner,ev,won,oppPlayers,score,"ct");
           oppPlayers.forEach(opp=>{
             const oppPartner=oppPlayers.find(p=>p.userId!==opp.userId);
@@ -4479,7 +4479,18 @@ export default function Matchkeeper() {
           onEditUser={(id,updates)=>{
             if (nicknameTaken(updates.nickname,id)) { toast2(`Nickname "${updates.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(updates.phone,id)) { toast2(`Phone ${updates.phone} is already used by another player`, "err"); return false; }
-            setUsers(us=>us.map(u=>u.id===id?{...u,...updates,seedUsr:u.seedUsr??u.usr}:u));toast2("Updated ✓");return true;
+            // The form's "Initial/Seed USR" field edits the seed baseline, never the live
+            // .usr directly — otherwise the next event closure silently overwrites the edit
+            // (closeEvent-type functions always recompute .usr from usrHistory+seedUsr, so a
+            // stale seed just re-clobbers whatever was manually typed here). Recalculating the
+            // live .usr from the new seed is a separate, explicitly-confirmed step — see
+            // onRecalcUsr below.
+            const {usr:newSeed, ...rest} = updates;
+            setUsers(us=>us.map(u=>u.id===id?{...u,...rest,seedUsr:newSeed}:u));toast2("Updated ✓");return true;
+          }}
+          onRecalcUsr={id=>{
+            setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr)}:u));
+            toast2("USR recalculated from seed ✓");
           }}
           onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
@@ -7486,7 +7497,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAddUser,onEditUser,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup}){
   const [tab,setTab]=useState("users");
   const [editing,setEditing]=useState(null);
   const [inviteUrl,setInviteUrl]=useState(null);
@@ -7539,13 +7550,21 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
       )}
       <AreaSel gov={nf.gov} area={nf.area} onChange={set}/>
       <Inp label="Phone" value={nf.phone||""} onChange={v=>set("phone",v)}/>
-      <Inp label="Initial USR (0–100)" value={nf.usr} onChange={v=>set("usr",v)}/>
+      <Inp label="Seed USR (0–100)" value={nf.usr} onChange={v=>set("usr",v)}/>
+      {editing&&<div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>The baseline used in USR calculations — changing it won't move their current USR until you confirm a recalculation.</div>}
       <Drp label="Break Preference" value={nf.breakPref||"none"} onChange={v=>set("breakPref",v)} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
       <div style={{display:"flex",gap:8,marginTop:8}}>
         <Btn label="Save" primary onClick={()=>{
           if(!nf.nickname.trim())return;
-          const ok = editing ? onEditUser(editing,{...nf,usr:parseInt(nf.usr)||50}) : onAddUser({...nf,usr:parseInt(nf.usr)||50});
-          if(ok!==false){setShowAdd(false);setEditing(null);}
+          const newSeed = parseInt(nf.usr)||50;
+          const prevSeed = editing ? (users.find(u=>u.id===editing)?.seedUsr ?? users.find(u=>u.id===editing)?.usr) : null;
+          const ok = editing ? onEditUser(editing,{...nf,usr:newSeed}) : onAddUser({...nf,usr:newSeed});
+          if(ok!==false){
+            if(editing&&onRecalcUsr&&newSeed!==prevSeed&&window.confirm(`Seed USR changed from ${prevSeed} to ${newSeed}.\n\nRecalculate this player's current USR from their full history using the new seed now?`)){
+              onRecalcUsr(editing);
+            }
+            setShowAdd(false);setEditing(null);
+          }
         }} style={{flex:1}}/>
         <Btn label="Cancel" onClick={()=>{setShowAdd(false);setEditing(null);}} style={{flex:1}}/>
       </div>
@@ -7566,7 +7585,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
         <div style={{display:"flex",gap:4}}>
           <SmBtn label="👁" onClick={()=>onViewProfile(u.id)} color="#6366F1"/>
           {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label:`Join Matchkeeper as ${u.nickname}`})}`)} color="#34D399"/>}
-          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.usr||50),phone:u.phone||"",breakPref:u.breakPref||"none"});setShowAdd(true);}} color="#F59E0B"/>
+          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none"});setShowAdd(true);}} color="#F59E0B"/>
           {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>}
         </div>
       </div>

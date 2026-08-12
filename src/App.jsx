@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.20";
+const APP_VERSION = "V0.07.21";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3911,11 +3911,16 @@ export default function Matchkeeper() {
       const promoteAfter = c.promoteAfter||3, demoteAfter = c.demoteAfter||4;
       const completedEvs = updatedEvents.filter(e=>e.status==="completed").sort((a,b)=>new Date(a.date)-new Date(b.date));
       const updatedMembers = c.members.map(m=>{
-        if(m.role!=="member"||completedEvs.length===0) return m; // owners/admins aren't auto-managed this way
-        const latestAttended = completedEvs[completedEvs.length-1].registrations.some(r=>r.userId===m.userId);
+        if(m.role!=="member") return m; // owners/admins aren't auto-managed this way
+        // A private event this member was never invited to (not registered in it) shouldn't
+        // count as a "miss" for them — they had no way to attend. Public events always count;
+        // private events only count when the member actually has a registration in them.
+        const eligibleEvs = completedEvs.filter(e=>e.visibility!=="private"||e.registrations.some(r=>r.userId===m.userId));
+        if(eligibleEvs.length===0) return m;
+        const latestAttended = eligibleEvs[eligibleEvs.length-1].registrations.some(r=>r.userId===m.userId);
         let streak=0;
-        for(let i=completedEvs.length-1;i>=0;i--){
-          const wasReg = completedEvs[i].registrations.some(r=>r.userId===m.userId);
+        for(let i=eligibleEvs.length-1;i>=0;i--){
+          const wasReg = eligibleEvs[i].registrations.some(r=>r.userId===m.userId);
           if(wasReg===latestAttended) streak++; else break;
         }
         if(latestAttended && streak>=promoteAfter && m.status==="casual") return {...m,status:"regular"};

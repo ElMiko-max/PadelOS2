@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.16";
+const APP_VERSION = "V0.07.17";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -7550,13 +7550,16 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
   const [showAdd,setShowAdd]=useState(false);
   const [userSearch,setUserSearch]=useState("");
+  const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const pendingClaims = claimRequests.filter(r=>r.status==="pending");
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
   const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
   const q=userSearch.trim().toLowerCase();
-  const filteredUsers=q?users.filter(u=>u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q)):users;
+  const filteredUsers=users
+    .filter(u=>!q||u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q))
+    .filter(u=>!linkFilter||(linkFilter==="linked")===linkedUserIds.has(u.id));
   useEffect(()=>{ if(tab==="data") onRefreshBackups&&onRefreshBackups(); }, [tab]);
 
   return <><BBtn onBack={onBack} label="Back"/>
@@ -7593,7 +7596,10 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,onBack,onAd
   </>}
 
   {tab==="users"&&<>
-    <div style={{display:"flex",gap:6,marginBottom:12}}><Bdg label={`🔗 ${linkedCount} linked`} color="#34D399"/><Bdg label={`◌ ${users.length-linkedCount} unlinked`} color="#F59E0B"/></div>
+    <div style={{display:"flex",gap:6,marginBottom:12}}>
+      <div onClick={()=>setLinkFilter(f=>f==="linked"?null:"linked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="linked"?0.4:1}}><Bdg label={`🔗 ${linkedCount} linked${linkFilter==="linked"?" ✕":""}`} color="#34D399"/></div>
+      <div onClick={()=>setLinkFilter(f=>f==="unlinked"?null:"unlinked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="unlinked"?0.4:1}}><Bdg label={`◌ ${users.length-linkedCount} unlinked${linkFilter==="unlinked"?" ✕":""}`} color="#F59E0B"/></div>
+    </div>
     <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
     <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none"});}} style={{width:"100%",marginBottom:12}}/>
     {showAdd&&<Card style={{marginBottom:12}}>

@@ -129,7 +129,7 @@ const EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.07.13";
+const APP_VERSION = "V0.07.15";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -159,6 +159,8 @@ function clearPendingInvite(){ try{ localStorage.removeItem("mk_pending_invite")
 // migration over live Firestore data.
 const SPORTS = ["Padel Tennis", "Football"];
 const DEFAULT_SPORT = "Padel Tennis";
+const SPORT_EMOJI = {"Padel Tennis":"🎾", "Football":"⚽"};
+const sportLabel = s => `${SPORT_EMOJI[s]||"🏅"} ${s}`;
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
@@ -1765,6 +1767,7 @@ function buildEventInfoCard(ev, venue, players, communityName, ctPlan=null, phot
   y += 14;
   const totalCount = ctPlan ? ctPlan.teams.length*2 : players.length;
   const infoRows = [
+    ["🏅 Sport", sportLabel(ev.sport||DEFAULT_SPORT)],
     ["📍 Location", venue ? venue.name : "TBD"],
     ["⏱ Duration", durationLabel(ev.time, ev.timeTo)],
     ["🎾 Courts", `${ev.courts} courts`],
@@ -2010,7 +2013,7 @@ function buildRound1Card(ev,venue,plan,tc,communityName){
 }
 
 function drawEventStrip(ctx, w, y, ev, venue){
-  const text = `${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}${venue?"  ·  📍 "+venue.name:""}`;
+  const text = `${sportLabel(ev.sport||DEFAULT_SPORT)}  ·  ${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}${venue?"  ·  📍 "+venue.name:""}`;
   ctx.fillStyle = COLORS.card; roundRect(ctx, 16, y, w-32, 38, 10); ctx.fill();
   ctx.strokeStyle = COLORS.border; roundRect(ctx, 16, y, w-32, 38, 10); ctx.stroke();
   ctx.fillStyle = COLORS.text; ctx.font="700 12px Arial";
@@ -4594,7 +4597,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
       {menu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,minWidth:190,zIndex:100,boxShadow:"0 8px 32px #00000066"}}>
         <div style={{padding:"8px 10px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}><div className="po-text" style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{me.nickname}</div><div className="po-dim" style={{fontSize:11,color:"var(--po-dim)"}}>USR {me.usr} · {usrLv(me.usr).l}</div></div>
         {comms&&<div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}>
-          <span style={{fontSize:12,color:"var(--po-sub)",flexShrink:0}}>🏸 Events from</span>
+          <span style={{fontSize:12,color:"var(--po-sub)",flexShrink:0}}>👥 Events from</span>
           <select value={eventCommFilter||"all"} onChange={e=>{onSetEventCommFilter&&onSetEventCommFilter(e.target.value);}}
             style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:6,padding:"4px 6px",color:"var(--po-text)",fontSize:12,minWidth:0}}>
             <option value="all">All Communities</option>
@@ -4612,10 +4615,10 @@ function CommList({comms,me,onOpen,onCreate}){
   const [sub,setSub]=useState("mine"),[q,setQ]=useState("");
   const mine=comms.filter(c=>c.members.some(m=>m.userId===me.id));
   const shown=comms.filter(c=>c.type==="public"&&!c.members.some(m=>m.userId===me.id)).filter(c=>!q?c.gov===me.gov||c.area===me.area:c.name.toLowerCase().includes(q.toLowerCase())||c.area.includes(q));
-  function CR({c}){const act=c.members.filter(m=>m.status!=="inactive").length,my=c.members.find(m=>m.userId===me.id);return <Card style={{cursor:"pointer"}}><div onClick={()=>onOpen(c.id)} style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>🏸</div><div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{c.name}</span>{SEEDED_COMM_IDS.has(c.id)&&<SeedBadge/>}<Bdg label={c.type==="public"?"Public":"Private"} color={c.type==="public"?"#34D399":"var(--po-sub)"}/>{my&&rBdg(my.role)}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:2}}>📍 {c.area} · {c.gov}</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{act} members · {c.events.length} events</div></div></div></Card>;}
+  function CR({c}){const act=c.members.filter(m=>m.status!=="inactive").length,my=c.members.find(m=>m.userId===me.id);return <Card style={{cursor:"pointer"}}><div onClick={()=>onOpen(c.id)} style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>👥</div><div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{c.name}</span>{SEEDED_COMM_IDS.has(c.id)&&<SeedBadge/>}<Bdg label={c.type==="public"?"Public":"Private"} color={c.type==="public"?"#34D399":"var(--po-sub)"}/>{(c.sports?.length?c.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}{my&&rBdg(my.role)}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:2}}>📍 {c.area} · {c.gov}</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{act} members · {c.events.length} events</div></div></div></Card>;}
   return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Communities</div><Btn label="+ New" onClick={onCreate} primary/></div>
     <Tabs tabs={[["mine",`Mine (${mine.length})`],["explore","Explore"]]} active={sub} onChange={setSub}/>
-    {sub==="mine"&&(mine.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>🏸</div>No communities. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>setSub("explore")}>Explore →</span></div></Card>:mine.map(c=><CR key={c.id} c={c}/>))}
+    {sub==="mine"&&(mine.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>👥</div>No communities. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>setSub("explore")}>Explore →</span></div></Card>:mine.map(c=><CR key={c.id} c={c}/>))}
     {sub==="explore"&&<><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search by name or area..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:8}}/>{!q&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:10}}>📍 Near {me.area}</div>}{shown.length===0?<Card><div style={{textAlign:"center",padding:"20px 0",color:"var(--po-dim)",fontSize:13}}>No communities found.</div></Card>:shown.map(c=><CR key={c.id} c={c}/>)}</>}
   </>;
 }
@@ -4623,7 +4626,7 @@ function CommList({comms,me,onOpen,onCreate}){
 function SportPicker({selected,onChange}){
   const toggle=s=>onChange(selected.includes(s)?selected.filter(x=>x!==s):[...selected,s]);
   return <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-    {SPORTS.map(s=><div key={s} onClick={()=>toggle(s)} className="po-inp" style={{padding:"8px 14px",borderRadius:20,cursor:"pointer",border:`0.5px solid ${selected.includes(s)?"#6366F1":"var(--po-bdr)"}`,background:selected.includes(s)?"#6366F122":"var(--po-inp)",color:selected.includes(s)?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600}}>{selected.includes(s)?"✓ ":""}{s}</div>)}
+    {SPORTS.map(s=><div key={s} onClick={()=>toggle(s)} className="po-inp" style={{padding:"8px 14px",borderRadius:20,cursor:"pointer",border:`0.5px solid ${selected.includes(s)?"#6366F1":"var(--po-bdr)"}`,background:selected.includes(s)?"#6366F122":"var(--po-inp)",color:selected.includes(s)?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600}}>{selected.includes(s)?"✓ ":""}{sportLabel(s)}</div>)}
   </div>;
 }
 function CommForm({comm,onBack,onSave}){
@@ -4769,8 +4772,8 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
   return <><BBtn onBack={onBack} label="Communities" sticky subLabel={tab==="members"?"Members":tab==="events"?"Events":"Requests"}/>
     <Card>
       <div style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:12}}>
-        <div style={{width:52,height:52,borderRadius:12,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>🏸</div>
-        <div style={{flex:1}}><div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:2}}>{comm.name}{SEEDED_COMM_IDS.has(comm.id)&&<> <SeedBadge/></>}</div><div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · Founded {fmtD(comm.founded)}</div><div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:5}}>{(comm.sports?.length?comm.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={s} color="#A78BFA"/>)}</div></div>
+        <div style={{width:52,height:52,borderRadius:12,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>👥</div>
+        <div style={{flex:1}}><div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:2}}>{comm.name}{SEEDED_COMM_IDS.has(comm.id)&&<> <SeedBadge/></>}</div><div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · Founded {fmtD(comm.founded)}</div><div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:5}}>{(comm.sports?.length?comm.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}</div></div>
         <div style={{display:"flex",gap:6,alignItems:"center"}}><Bdg label={comm.type==="public"?"Public":"Private"} color={comm.type==="public"?"#34D399":"var(--po-sub)"}/>{myRole==="owner"&&<SmBtn label="✏️" onClick={onEdit} color="#6366F1"/>}</div>
       </div>
       <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:14}}>{comm.description}</div>
@@ -4864,7 +4867,7 @@ function VenueList({venues,onAdd,onEdit,onBack}){
   return <><BBtn onBack={onBack} label="Back"/><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Venues</div><Btn label="+ Add Venue" primary onClick={onAdd}/></div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:12,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>ℹ️ Use any venue immediately. Platform Admin approval publishes globally.</div>
     {brokenCount>0&&<div style={{fontSize:12,color:"#F87171",marginBottom:12,padding:"8px 12px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8}}>⚠️ {brokenCount} venue(s) have corrupted data and were hidden. Go to Settings → Data → Repair to fix, or Factory Reset if the issue persists.</div>}
     {safeVenues.length===0&&brokenCount===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No venues yet.</div></Card>}
-    {safeVenues.map(v=><Card key={v.id}><div style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🏟</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{v.name}</span>{SEEDED_VENUE_IDS.has(v.id)&&<SeedBadge/>}{v.status==="pending"&&<Bdg label="⏳ Pending" color="#F59E0B"/>}{v.status==="pending_edit"&&<Bdg label="✏️ Edit Pending" color="#F59E0B"/>}{(!v.status||v.status==="approved")&&<Bdg label="✓ Approved" color="#34D399"/>}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>📍 {v.area} · {v.gov}</div><div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>{(v.sports?.length?v.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={s} color="#A78BFA"/>)}<Bdg label={`${v.courts.length} courts`} color="#38BDF8"/>{v.pricePerHour>0&&<Bdg label={`${v.pricePerHour} EGP/hr`} color="#34D399"/>}{v.pricePerHour===0&&<Bdg label="Free" color="#34D399"/>}{v.extraFee>0&&<Bdg label={`+${v.extraFee} EGP booking`} color="#F59E0B"/>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{v.courts.map(c=>c.name).join(" · ")}</div></div><div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>{(v.mapsUrl||(typeof v.lat==="number"&&typeof v.lng==="number"))&&<MapOpenPicker venue={v} label="📍 Maps"/>}<SmBtn label="✏️ Edit" onClick={()=>onEdit(v.id)} color="#6366F1"/></div></div></Card>)}
+    {safeVenues.map(v=><Card key={v.id}><div style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🏟</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{v.name}</span>{SEEDED_VENUE_IDS.has(v.id)&&<SeedBadge/>}{v.status==="pending"&&<Bdg label="⏳ Pending" color="#F59E0B"/>}{v.status==="pending_edit"&&<Bdg label="✏️ Edit Pending" color="#F59E0B"/>}{(!v.status||v.status==="approved")&&<Bdg label="✓ Approved" color="#34D399"/>}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>📍 {v.area} · {v.gov}</div><div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>{(v.sports?.length?v.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}<Bdg label={`${v.courts.length} courts`} color="#38BDF8"/>{v.pricePerHour>0&&<Bdg label={`${v.pricePerHour} EGP/hr`} color="#34D399"/>}{v.pricePerHour===0&&<Bdg label="Free" color="#34D399"/>}{v.extraFee>0&&<Bdg label={`+${v.extraFee} EGP booking`} color="#F59E0B"/>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{v.courts.map(c=>c.name).join(" · ")}</div></div><div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>{(v.mapsUrl||(typeof v.lat==="number"&&typeof v.lng==="number"))&&<MapOpenPicker venue={v} label="📍 Maps"/>}<SmBtn label="✏️ Edit" onClick={()=>onEdit(v.id)} color="#6366F1"/></div></div></Card>)}
   </>;
 }
 function VenueForm({editV,onBack,onSave}){
@@ -4897,7 +4900,7 @@ function EvCard({ev,me,users,venues,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{(ev.sport||DEFAULT_SPORT)!==DEFAULT_SPORT&&<Bdg label={ev.sport} color="#A78BFA"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏸 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -6419,8 +6422,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
         <div>
-          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
-          {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>🏸 {comm.name}</div>}
+          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+          {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>👥 {comm.name}</div>}
           {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
           <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
           {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{creator.nickname}</span></div>:null;})()}
@@ -6522,8 +6525,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     <Tabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>
 
     {/* INFO */}
-    {tab==="info"&&<Card><div style={{display:"flex",flexDirection:"column",gap:8}}>{[["Sport",ev.sport||DEFAULT_SPORT],
-        ["Venue",venue?`${venue.name}, ${venue.area}`:"TBD"],
+    {tab==="info"&&<Card><div style={{display:"flex",flexDirection:"column",gap:8}}>{[["Venue",venue?`${venue.name}, ${venue.area}`:"TBD"],
         ["Type",ev.type?tl[ev.type]:"Pending Poll"],
         ["Date & Time",`${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}`],
         ["Duration",durationLabel(ev.time, ev.timeTo)],
@@ -7366,7 +7368,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
           </div>
         </div>
         {isExpanded&&<div style={{padding:"4px 12px 12px"}}>
-          {hostComm&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>🏸 {hostComm.name}</div>}
+          {hostComm&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>👥 {hostComm.name}</div>}
           {extraStats?<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
             {[["Wins",extraStats.wins],["Points",extraStats.pts],["Breaks",extraStats.breaks],[extraStats.isTeam?"Team":"Final Court",extraStats.isTeam?"—":(extraStats.finalCourt?`C${extraStats.finalCourt}`:"—")]].map(([l,v])=>
               <div key={l} style={{background:"var(--po-inp)",borderRadius:6,padding:"6px 2px",textAlign:"center"}}>
@@ -7524,7 +7526,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   </> : <Card><div style={{textAlign:"center",padding:"16px 0",color:"var(--po-dim)",fontSize:13}}>🔒 Match history is only visible to people who share a community with {user.nickname}.</div></Card>}
 
   <ST>{viewedByAdmin?`${user.nickname}'s Communities`:"My Communities"}</ST>
-  {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id} style={{cursor:onOpenCommunity?"pointer":"default"}}><div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>🏸</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}
+  {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id} style={{cursor:onOpenCommunity?"pointer":"default"}}><div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>👥</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}
   </>;
 }
 const SeedBadge = ()=><span title="Seeded data">🌱</span>;

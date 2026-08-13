@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.01";
+const APP_VERSION = "V0.08.02";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -558,9 +558,10 @@ function calcXCIPreview(plan, users, comms, ev) {
       const process = (ids, oppIds, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
         ids.forEach(uid => {
           const u = users.find(x=>x.id===uid); if (!u) return;
+          const partnerId = ids.find(id=>id!==uid) ?? null;
           const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});
           if (!perPlayer[uid]) perPlayer[uid] = {userId: uid, user: u, matches: []};
-          perPlayer[uid].matches.push({round: ri+1, court: m.court, won, oppIds, oppNames: oppIds.map(nameOf), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
+          perPlayer[uid].matches.push({round: ri+1, court: m.court, won, partnerId, partnerName: partnerId!=null?nameOf(partnerId):null, oppIds, oppNames: oppIds.map(nameOf), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
         });
       };
       process(idsA, idsB, usrA, usrB, scoreA, scoreB, m.winner==="A", h2h);
@@ -779,6 +780,71 @@ function calcHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
 function calcHeadToHead(comms, sideAIds, sideBIds, opts){
   const ci = calcHeadToHeadCI(comms, sideAIds, sideBIds, opts);
   const ct = calcHeadToHeadCT(comms, sideAIds, sideBIds, opts);
+  const meetings = ci.meetings+ct.meetings;
+  const sideAWins = ci.sideAWins+ct.sideAWins, sideBWins = ci.sideBWins+ct.sideBWins;
+  const last = !ci.last ? ct.last : !ct.last ? ci.last : (ci.last.date>=ct.last.date ? ci.last : ct.last);
+  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
+}
+// Exact-foursome variant (the two teams must match completely, not just overlap) — used ONLY
+// where the UI explicitly claims "this EXACT matchup happened N times" (Dream/Funny Match on
+// the Profile Reports tab). That claim is specifically about the same partner+opponents
+// combination recurring, which calcHeadToHead's broader player-pairwise matching (Bug #15
+// fix) would misrepresent by counting different partnerships against the same two rivals as
+// if they were the same matchup. Do not use this for the general balance badge or X-System —
+// they want "have these people faced each other," which is what calcHeadToHead answers.
+function calcExactHeadToHeadCI(comms, sideAIds, sideBIds, opts){
+  const excludeEventId = opts && opts.excludeEventId;
+  const setA = new Set(sideAIds), setB = new Set(sideBIds);
+  const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
+  let meetings=0, sideAWins=0, sideBWins=0, last=null;
+  comms.forEach(c=>(c.events||[]).forEach(ev=>{
+    if(ev.type!=="closed_ind"||ev.status!=="completed"||!ev.plan) return;
+    if(excludeEventId!=null&&ev.id===excludeEventId) return;
+    ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
+      if(!m.winner) return;
+      const idsA=m.teamA.map(p=>p.userId), idsB=m.teamB.map(p=>p.userId);
+      let sideAIsMatchTeamA;
+      if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
+      else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
+      else return;
+      meetings++;
+      const matchTeamAWon = m.winner==="A";
+      const sideAWon = sideAIsMatchTeamA ? matchTeamAWon : !matchTeamAWon;
+      if(sideAWon) sideAWins++; else sideBWins++;
+      if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
+    }));
+  }));
+  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
+}
+function calcExactHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
+  const excludeEventId = opts && opts.excludeEventId;
+  const setA = new Set(sideAPlayerIds), setB = new Set(sideBPlayerIds);
+  const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
+  let meetings=0, sideAWins=0, sideBWins=0, last=null;
+  comms.forEach(c=>(c.events||[]).forEach(ev=>{
+    if(ev.type!=="closed_teams"||ev.status!=="completed"||!ev.plan) return;
+    if(excludeEventId!=null&&ev.id===excludeEventId) return;
+    ev.plan.rounds.forEach(r=>{
+      [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
+        if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
+        const idsA=m.teamA.players.map(p=>p.userId), idsB=m.teamB.players.map(p=>p.userId);
+        let sideAIsMatchTeamA;
+        if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
+        else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
+        else return;
+        meetings++;
+        const matchTeamAWon = m.winner==="A";
+        const sideAWon = sideAIsMatchTeamA ? matchTeamAWon : !matchTeamAWon;
+        if(sideAWon) sideAWins++; else sideBWins++;
+        if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
+      });
+    });
+  }));
+  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
+}
+function calcExactHeadToHead(comms, sideAIds, sideBIds, opts){
+  const ci = calcExactHeadToHeadCI(comms, sideAIds, sideBIds, opts);
+  const ct = calcExactHeadToHeadCT(comms, sideAIds, sideBIds, opts);
   const meetings = ci.meetings+ct.meetings;
   const sideAWins = ci.sideAWins+ct.sideAWins, sideBWins = ci.sideBWins+ct.sideBWins;
   const last = !ci.last ? ct.last : !ct.last ? ci.last : (ci.last.date>=ct.last.date ? ci.last : ct.last);
@@ -5234,7 +5300,10 @@ function XStandingsPreview({rows}){
       return <div key={r.key} style={{marginBottom:6}}>
         <div onClick={()=>{setExpandedRow(o=>o===r.key?null:r.key);setExpandedMatch(null);}} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,background:"var(--po-inp)",cursor:"pointer"}}>
           <span style={{fontSize:11,color:"var(--po-dim)",width:18}}>{i+1}</span>
-          <span style={{flex:1,fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</span>
+          <span style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</div>
+            {r.subtitle&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{r.subtitle}</div>}
+          </span>
           <span style={{fontSize:14,fontWeight:700,color:"#A78BFA"}}>{r.score}%</span>
           <span style={{fontSize:11,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span>
         </div>
@@ -5245,7 +5314,7 @@ function XStandingsPreview({rows}){
               <div onClick={()=>setExpandedMatch(o=>o===mKey?null:mKey)} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 8px",borderRadius:6,background:"var(--po-card)",cursor:"pointer",fontSize:11}}>
                 <span style={{width:14,textAlign:"center",fontWeight:700,color:m.won?"#34D399":"#EF4444"}}>{m.won?"W":"L"}</span>
                 <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>R{m.round}·C{m.court}</span>
-                <span style={{flex:1,color:"var(--po-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>vs {m.oppNames.join(" & ")}</span>
+                <span style={{flex:1,color:"var(--po-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.partnerName&&<span style={{color:"var(--po-dim)"}}>w/ {m.partnerName} </span>}vs {m.oppNames.join(" & ")}</span>
                 <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>{m.hasRealScore?`${m.scoreA}–${m.scoreB}`:"no score"}</span>
                 <span style={{fontWeight:700,color:"#A78BFA",minWidth:34,textAlign:"right"}}>{m.xPts}</span>
                 <span style={{fontSize:9,color:"var(--po-dim)"}}>{mOpen?"▲":"▼"}</span>
@@ -7304,7 +7373,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </>}
           {isPlatformAdmin&&plan?.format==="ladder"&&<SmBtn label={showXStandings?"▲ Hide XStandings (Preview)":"🧪 XStandings (Preview)"} onClick={()=>setShowXStandings(o=>!o)} color="#A78BFA" style={{width:"100%",marginTop:6,marginBottom:showXStandings?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {showXStandings&&isPlatformAdmin&&plan?.format==="ladder"&&<Card style={{padding:8}}>
-            <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,score:t.xTES,matches:t.matches}))}/>
+            <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),score:t.xTES,matches:t.matches}))}/>
           </Card>}
         </>}
     </>}
@@ -7679,8 +7748,8 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const totalPairs = stats.partnersRanked.length+stats.partnersInsufficient.length+stats.opponentsRanked.length+stats.opponentsInsufficient.length;
     const dream = calcDreamOrFunnyMatch(stats,"dream");
     const funny = calcDreamOrFunnyMatch(stats,"funny");
-    const dreamH2H = dream ? calcHeadToHead(comms, [user.id, dream.partner.userId], dream.opponents.map(o=>o.userId)) : null;
-    const funnyH2H = funny ? calcHeadToHead(comms, [user.id, funny.partner.userId], funny.opponents.map(o=>o.userId)) : null;
+    const dreamH2H = dream ? calcExactHeadToHead(comms, [user.id, dream.partner.userId], dream.opponents.map(o=>o.userId)) : null;
+    const funnyH2H = funny ? calcExactHeadToHead(comms, [user.id, funny.partner.userId], funny.opponents.map(o=>o.userId)) : null;
     const PairRow = ({rowKey,kind,rank,name,userId,rate,num,den,goodColor,history}) => {
       const isOpen = expandedRow===rowKey;
       return <div>

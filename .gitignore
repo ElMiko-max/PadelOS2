@@ -1,0 +1,12 @@
+node_modules/
+*.local
+.env
+.env.*
+
+# Firebase service account keys — never commit these, regardless of name/location
+**/serviceAccountKey*.json
+**/*-admin-key.json
+**/*firebase-adminsdk*.json
+**/*-readonly*.json
+secrets/
+.secrets/

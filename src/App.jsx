@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.02";
+const APP_VERSION = "V0.08.03";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -225,7 +225,7 @@ function mmTeamLabelWithBadges(team, comms, oppTeamIds){
 // there's real head-to-head data, USR-based (⚖️) fallback otherwise. Compact for notification width.
 function mmBalanceLabel(comms, teamA, teamB, excludeEventId){
   const idsA=(teamA||[]).map(p=>p.userId), idsB=(teamB||[]).map(p=>p.userId);
-  const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId});
+  const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId});
   if(h2h.meetings>0) return `📊 ${Math.round(h2h.sideAWinRate*100)}%:${Math.round(h2h.sideBWinRate*100)}% (${h2h.meetings}n)`;
   const avgA=(teamA||[]).reduce((s,p)=>s+p.usr,0)/((teamA||[]).length||1);
   const avgB=(teamB||[]).reduce((s,p)=>s+p.usr,0)/((teamB||[]).length||1);
@@ -794,37 +794,45 @@ function calcHeadToHead(comms, sideAIds, sideBIds, opts){
 // they want "have these people faced each other," which is what calcHeadToHead answers.
 function calcExactHeadToHeadCI(comms, sideAIds, sideBIds, opts){
   const excludeEventId = opts && opts.excludeEventId;
+  const beforeRound = opts && opts.beforeRound;
   const setA = new Set(sideAIds), setB = new Set(sideBIds);
   const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_ind"||ev.status!=="completed"||!ev.plan) return;
-    if(excludeEventId!=null&&ev.id===excludeEventId) return;
-    ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
-      if(!m.winner) return;
-      const idsA=m.teamA.map(p=>p.userId), idsB=m.teamB.map(p=>p.userId);
-      let sideAIsMatchTeamA;
-      if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
-      else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
-      else return;
-      meetings++;
-      const matchTeamAWon = m.winner==="A";
-      const sideAWon = sideAIsMatchTeamA ? matchTeamAWon : !matchTeamAWon;
-      if(sideAWon) sideAWins++; else sideBWins++;
-      if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
-    }));
+    if(ev.type!=="closed_ind"||!ev.plan) return;
+    const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
+    if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
+    ev.plan.rounds.forEach((r,ri)=>{
+      if(isCurrent && ri>=beforeRound) return;
+      r.matches.forEach(m=>{
+        if(!m.winner) return;
+        const idsA=m.teamA.map(p=>p.userId), idsB=m.teamB.map(p=>p.userId);
+        let sideAIsMatchTeamA;
+        if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
+        else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
+        else return;
+        meetings++;
+        const matchTeamAWon = m.winner==="A";
+        const sideAWon = sideAIsMatchTeamA ? matchTeamAWon : !matchTeamAWon;
+        if(sideAWon) sideAWins++; else sideBWins++;
+        if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
+      });
+    });
   }));
   return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
 }
 function calcExactHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
   const excludeEventId = opts && opts.excludeEventId;
+  const beforeRound = opts && opts.beforeRound;
   const setA = new Set(sideAPlayerIds), setB = new Set(sideBPlayerIds);
   const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_teams"||ev.status!=="completed"||!ev.plan) return;
-    if(excludeEventId!=null&&ev.id===excludeEventId) return;
-    ev.plan.rounds.forEach(r=>{
+    if(ev.type!=="closed_teams"||!ev.plan) return;
+    const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
+    if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
+    ev.plan.rounds.forEach((r,ri)=>{
+      if(isCurrent && ri>=beforeRound) return;
       [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
         if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
         const idsA=m.teamA.players.map(p=>p.userId), idsB=m.teamB.players.map(p=>p.userId);
@@ -5635,7 +5643,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
 
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
-    const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId, beforeRound:ri});
+    const h2h=calcExactHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId, beforeRound:ri});
     const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:5,fontSize:12,fontWeight:700,padding:"4px 6px",borderRadius:7,background:"var(--po-inp)"}}>
       <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:10}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:10,color:"var(--po-dim)"}}>({h2h.meetings}n)</span>
     </div>;
@@ -7155,7 +7163,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
               const gap=Math.abs(avgA-avgB);
-              const h2h=calcHeadToHead(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id, beforeRound:ri});
+              const h2h=calcExactHeadToHead(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id, beforeRound:ri});
               return <Card key={mi} style={{marginBottom:8}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>

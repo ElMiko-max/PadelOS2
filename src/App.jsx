@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.04";
+const APP_VERSION = "V0.08.05";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -544,14 +544,17 @@ function personalMaxCI(breaks, generatedRounds, tc){
 function calcXCIPreview(plan, users, comms, ev) {
   if (!plan) return [];
   const perPlayer = {};
-  const usrOf = uid => users.find(u=>u.id===uid)?.usr ?? 50;
-  const avgUsr = ids => ids.length ? ids.reduce((s,id)=>s+usrOf(id),0)/ids.length : 50;
   const nameOf = uid => users.find(u=>u.id===uid)?.nickname ?? "—";
+  // USR comes from the match's OWN snapshot (the same p.usr baked in at round-generation time
+  // that the live match card displays as "TEAM A (NN)"), not a fresh lookup against the
+  // current users array — for an old event, current USR has drifted since, and using it here
+  // would silently disagree with the balance the live card showed for this exact match.
+  const teamUsr = team => team.length ? team.reduce((s,p)=>s+(p.usr??50),0)/team.length : 50;
   plan.rounds.forEach((r, ri) => {
     r.matches.forEach(m => {
       if (!m.winner) return;
       const idsA = m.teamA.map(p=>p.userId), idsB = m.teamB.map(p=>p.userId);
-      const usrA = avgUsr(idsA), usrB = avgUsr(idsB);
+      const usrA = teamUsr(m.teamA), usrB = teamUsr(m.teamB);
       const scoreA = m.scoreA||0, scoreB = m.scoreB||0;
       const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
@@ -1052,6 +1055,16 @@ function calcWeightedUSR(usrHistory, seedUsr){
   }
   return Math.round(weightedSum / totalWeight);
 }
+// "What was this player's USR immediately before event `ev`?" — replays calcWeightedUSR over
+// only the usrHistory entries that happened before ev (by date, eventId as tiebreak for same-
+// date events), using the player's CURRENT seedUsr. Used to rebuild historical match-card
+// snapshots after an admin corrects a seed — see rewriteUsrSnapshots.
+function reconstructUsrAsOfEvent(user, ev){
+  const hist = [...(user.usrHistory||[])].sort((a,b)=> a.date!==b.date ? (a.date<b.date?-1:1) : (a.eventId-b.eventId));
+  const idx = hist.findIndex(h=>h.eventId===ev.id);
+  const prefix = idx>=0 ? hist.slice(0, idx) : hist.filter(h=> h.date<ev.date || (h.date===ev.date && h.eventId<ev.id));
+  return calcWeightedUSR(prefix, user.seedUsr ?? user.usr);
+}
 
 // Max possible pts for a specific team across all played rounds
 // Each round: if that team is on break → breakPts, else → court1 win pts
@@ -1163,8 +1176,10 @@ function calcCTStandings(plan) {
 function calcXCTLadderPreview(plan, users, comms, ev) {
   if (!plan || plan.format!=="ladder") return [];
   const perTeam = {};
-  const usrOf = uid => users.find(u=>u.id===uid)?.usr ?? 50;
-  const teamUsr = t => t.players?.length ? t.players.reduce((s,p)=>s+usrOf(p.userId),0)/t.players.length : (t.avgUsr ?? 50);
+  // Team USR comes from the team's OWN avgUsr snapshot (the same value the live CT Matches
+  // card displays as "TEAM A (NN)"), not re-derived from current live player ratings — see
+  // the matching note in calcXCIPreview.
+  const teamUsr = t => t.avgUsr ?? (t.players?.length ? t.players.reduce((s,p)=>s+(p.usr??50),0)/t.players.length : 50);
   plan.rounds.forEach((r, ri) => {
     (r.matchesA||[]).forEach(m => {
       if (!m.winner) return;
@@ -4664,6 +4679,50 @@ export default function Matchkeeper() {
             setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr)}:u));
             toast2("USR recalculated from seed ✓");
           }}
+          onRewriteUsrSnapshots={id=>{
+            // A seed correction only fixed the player's CURRENT usr above — every historical
+            // match/team snapshot (the p.usr baked into teamA/teamB at round-generation time,
+            // which the live Rounds/Matches cards and X-System both read) still shows the OLD
+            // trajectory. This rebuilds every one of them: for each event the player appears
+            // in, reconstruct what their USR was immediately before that event (using the
+            // corrected seed) and overwrite every embedded copy, then recompute any CT team
+            // avgUsr that depends on it. Explicitly separate/opt-in from the step above since
+            // it rewrites historical data across potentially many events.
+            const user = users.find(u=>u.id===id);
+            if (!user) return;
+            let touchedEvents = 0;
+            setComms(cs => cs.map(c => ({
+              ...c,
+              events: c.events.map(ev => {
+                if (!ev.plan) return ev;
+                const newUsr = reconstructUsrAsOfEvent(user, ev);
+                const clonedPlan = JSON.parse(JSON.stringify(ev.plan));
+                let changed = false;
+                const patchUsr = (node) => {
+                  if (Array.isArray(node)) { node.forEach(patchUsr); return; }
+                  if (node && typeof node==="object") {
+                    if (node.userId===id && typeof node.usr==="number" && node.usr!==newUsr) { node.usr = newUsr; changed = true; }
+                    Object.values(node).forEach(patchUsr);
+                  }
+                };
+                patchUsr(clonedPlan);
+                const fixTeamAvg = (node) => {
+                  if (Array.isArray(node)) { node.forEach(fixTeamAvg); return; }
+                  if (node && typeof node==="object") {
+                    if (Array.isArray(node.players) && node.players.length===2 && typeof node.avgUsr==="number") {
+                      const recomputed = Math.round((node.players[0].usr + node.players[1].usr)/2);
+                      if (recomputed !== node.avgUsr) { node.avgUsr = recomputed; changed = true; }
+                    }
+                    Object.values(node).forEach(fixTeamAvg);
+                  }
+                };
+                fixTeamAvg(clonedPlan);
+                if (changed) touchedEvents++;
+                return changed ? {...ev, plan: clonedPlan} : ev;
+              })
+            })));
+            toast2(touchedEvents>0 ? `Historical match snapshots rewritten across ${touchedEvents} event(s) ✓` : "No historical snapshots needed updating");
+          }}
           onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           claimRequests={claimRequests} onApproveClaim={approveClaim} onRejectClaim={rejectClaim}
@@ -7785,7 +7844,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onRewriteUsrSnapshots,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -7866,6 +7925,9 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           if(ok!==false){
             if(editing&&onRecalcUsr&&newSeed!==prevSeed&&window.confirm(`Seed USR changed from ${prevSeed} to ${newSeed}.\n\nRecalculate this player's current USR from their full history using the new seed now?`)){
               onRecalcUsr(editing);
+              if(onRewriteUsrSnapshots&&window.confirm(`Also rewrite this player's historical match/team USR snapshots across every past event to reflect the corrected seed?\n\nThis changes what old match cards (and X-System) display for events already played — the balance shown will reflect the corrected rating, not what was shown at the time. Cannot be undone automatically.`)){
+                onRewriteUsrSnapshots(editing);
+              }
             }
             setShowAdd(false);setEditing(null);
           }

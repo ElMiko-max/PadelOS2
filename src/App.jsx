@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.00";
+const APP_VERSION = "V0.08.01";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -293,7 +293,7 @@ const breakPts = (tc) => {
 // head-to-head) instead of court position. Pure/read-only — never persisted on its own;
 // only used for the Platform-Admin XStandings preview and (optionally, at close time) as the
 // source value for the real pes/tes. See PLAN: parallel scoring system.
-const USR_XPTS_DIVISOR = 20; // logistic-curve steepness for the expected-outcome calc
+const USR_XPTS_DIVISOR = 12; // logistic-curve steepness for the expected-outcome calc — lower = sharper (wider spread), higher = flatter (results hug 50)
 function xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h}) {
   const usrGap = (mySideUsr ?? 50) - (oppSideUsr ?? 50);
   const E = 1 / (1 + Math.pow(10, -usrGap / USR_XPTS_DIVISOR));
@@ -546,20 +546,21 @@ function calcXCIPreview(plan, users, comms, ev) {
   const perPlayer = {};
   const usrOf = uid => users.find(u=>u.id===uid)?.usr ?? 50;
   const avgUsr = ids => ids.length ? ids.reduce((s,id)=>s+usrOf(id),0)/ids.length : 50;
+  const nameOf = uid => users.find(u=>u.id===uid)?.nickname ?? "—";
   plan.rounds.forEach((r, ri) => {
     r.matches.forEach(m => {
       if (!m.winner) return;
       const idsA = m.teamA.map(p=>p.userId), idsB = m.teamB.map(p=>p.userId);
       const usrA = avgUsr(idsA), usrB = avgUsr(idsB);
       const scoreA = m.scoreA||0, scoreB = m.scoreB||0;
-      const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id});
+      const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
       const process = (ids, oppIds, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
         ids.forEach(uid => {
           const u = users.find(x=>x.id===uid); if (!u) return;
           const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});
           if (!perPlayer[uid]) perPlayer[uid] = {userId: uid, user: u, matches: []};
-          perPlayer[uid].matches.push({round: ri+1, oppIds, scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
+          perPlayer[uid].matches.push({round: ri+1, court: m.court, won, oppIds, oppNames: oppIds.map(nameOf), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
         });
       };
       process(idsA, idsB, usrA, usrB, scoreA, scoreB, m.winner==="A", h2h);
@@ -696,27 +697,44 @@ function ctComboLabel(team){
 // "teamB" in any given match — matches purely by identity, not by A/B label. Powers both
 // the Dream/Funny Match last-meeting indicator and the live head-to-head display on the
 // Match Mode / CT Matches views. Returns meetings=0 (last=null) if they never met.
+// Player-pairwise matching (NOT exact-foursome matching): a historical match counts as a
+// "meeting" between sideA and sideB whenever at least one tracked sideA player was on one
+// team and at least one tracked sideB player was on the opposing team — win/loss attributed
+// to whichever literal team held the sideA representative(s). This answers "have these
+// people faced each other before," which is what actually matters for rivalry/balance
+// display — matching on the exact 4-person grouping (old behavior) almost never re-occurs
+// once partners rotate, even between the same two rivals, making it useless in practice.
+// Ambiguous overlaps (a tracked player from BOTH sides ends up on the same historical team)
+// are skipped, not misattributed.
+// opts.excludeEventId marks "the event currently being evaluated" — if opts.beforeRound is
+// also given, that event's own rounds strictly before it still count (so a rematch earlier
+// in the same, still-open event is a real "previous meeting"); otherwise that event is
+// skipped entirely, same as the old behavior, for callers that don't have a round index handy.
 function calcHeadToHeadCI(comms, sideAIds, sideBIds, opts){
   const excludeEventId = opts && opts.excludeEventId;
+  const beforeRound = opts && opts.beforeRound;
   const setA = new Set(sideAIds), setB = new Set(sideBIds);
-  const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_ind"||ev.status!=="completed"||!ev.plan) return;
-    if(excludeEventId!=null&&ev.id===excludeEventId) return;
-    ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
-      if(!m.winner) return;
-      const idsA=m.teamA.map(p=>p.userId), idsB=m.teamB.map(p=>p.userId);
-      let sideAIsMatchTeamA;
-      if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
-      else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
-      else return;
-      meetings++;
-      const matchTeamAWon = m.winner==="A";
-      const sideAWon = sideAIsMatchTeamA ? matchTeamAWon : !matchTeamAWon;
-      if(sideAWon) sideAWins++; else sideBWins++;
-      if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
-    }));
+    if(ev.type!=="closed_ind"||!ev.plan) return;
+    const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
+    if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
+    ev.plan.rounds.forEach((r,ri)=>{
+      if(isCurrent && ri>=beforeRound) return;
+      r.matches.forEach(m=>{
+        if(!m.winner) return;
+        const idsX=m.teamA.map(p=>p.userId), idsY=m.teamB.map(p=>p.userId);
+        const aInX=idsX.some(id=>setA.has(id)), aInY=idsY.some(id=>setA.has(id));
+        const bInX=idsX.some(id=>setB.has(id)), bInY=idsY.some(id=>setB.has(id));
+        let sideAWon;
+        if(aInX&&bInY&&!aInY&&!bInX) sideAWon = m.winner==="A";
+        else if(aInY&&bInX&&!aInX&&!bInY) sideAWon = m.winner==="B";
+        else return;
+        meetings++;
+        if(sideAWon) sideAWins++; else sideBWins++;
+        if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
+      });
+    });
   }));
   return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
 }
@@ -729,23 +747,25 @@ function calcHeadToHeadCI(comms, sideAIds, sideBIds, opts){
 // both use this shape).
 function calcHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
   const excludeEventId = opts && opts.excludeEventId;
+  const beforeRound = opts && opts.beforeRound;
   const setA = new Set(sideAPlayerIds), setB = new Set(sideBPlayerIds);
-  const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_teams"||ev.status!=="completed"||!ev.plan) return;
-    if(excludeEventId!=null&&ev.id===excludeEventId) return;
-    ev.plan.rounds.forEach(r=>{
+    if(ev.type!=="closed_teams"||!ev.plan) return;
+    const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
+    if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
+    ev.plan.rounds.forEach((r,ri)=>{
+      if(isCurrent && ri>=beforeRound) return;
       [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
         if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
-        const idsA=m.teamA.players.map(p=>p.userId), idsB=m.teamB.players.map(p=>p.userId);
-        let sideAIsMatchTeamA;
-        if(sameSet(idsA,setA)&&sameSet(idsB,setB)) sideAIsMatchTeamA=true;
-        else if(sameSet(idsA,setB)&&sameSet(idsB,setA)) sideAIsMatchTeamA=false;
+        const idsX=m.teamA.players.map(p=>p.userId), idsY=m.teamB.players.map(p=>p.userId);
+        const aInX=idsX.some(id=>setA.has(id)), aInY=idsY.some(id=>setA.has(id));
+        const bInX=idsX.some(id=>setB.has(id)), bInY=idsY.some(id=>setB.has(id));
+        let sideAWon;
+        if(aInX&&bInY&&!aInY&&!bInX) sideAWon = m.winner==="A";
+        else if(aInY&&bInX&&!aInX&&!bInY) sideAWon = m.winner==="B";
         else return;
         meetings++;
-        const matchTeamAWon = m.winner==="A";
-        const sideAWon = sideAIsMatchTeamA ? matchTeamAWon : !matchTeamAWon;
         if(sideAWon) sideAWins++; else sideBWins++;
         if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
       });
@@ -1161,12 +1181,12 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
       const usrA = teamUsr(A), usrB = teamUsr(B);
       const scoreA = m.scoreA||0, scoreB = m.scoreB||0;
       const idsA = (A.players||[]).map(p=>p.userId), idsB = (B.players||[]).map(p=>p.userId);
-      const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id});
+      const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
       const process = (team, oppTeam, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
         const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});
         if (!perTeam[team.id]) perTeam[team.id] = {teamId: team.id, team, matches: []};
-        perTeam[team.id].matches.push({round: ri+1, oppTeamId: oppTeam.id, oppTeamName: oppTeam.name, scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
+        perTeam[team.id].matches.push({round: ri+1, court: m.court, won, oppTeamId: oppTeam.id, oppTeamName: oppTeam.name, oppNames: (oppTeam.players||[]).map(p=>p.nickname), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
       };
       process(A, B, usrA, usrB, scoreA, scoreB, m.winner==="A", h2h);
       process(B, A, usrB, usrA, scoreB, scoreA, m.winner==="B", h2hFlipped);
@@ -5200,40 +5220,46 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
 // X-System preview table (Platform Admin only) — shared shape for CI (rows=players) and
 // CT Ladder (rows=teams). Each row expands to show the per-match formula breakdown so the
 // number is inspectable, not a black box. See PLAN: parallel scoring system.
+// 3-level nested expand: row (player/team + xPES) → tap → compact per-match list
+// (W/L, round, court, opponents, score, xPts) → tap a match → the formula breakdown for
+// that one match (Expected/Actual/Δ/H2H). Keeps the common "who beat whom" skim fast while
+// still letting the math be interrogated when actually wanted.
 function XStandingsPreview({rows}){
-  const [expanded,setExpanded]=useState(null);
+  const [expandedRow,setExpandedRow]=useState(null);
+  const [expandedMatch,setExpandedMatch]=useState(null);
   if(!rows.length) return <div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No completed matches yet to preview.</div>;
   return <div>
     {rows.map((r,i)=>{
-      const isOpen=expanded===r.key;
+      const isOpen=expandedRow===r.key;
       return <div key={r.key} style={{marginBottom:6}}>
-        <div onClick={()=>setExpanded(o=>o===r.key?null:r.key)} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,background:"var(--po-inp)",cursor:"pointer"}}>
+        <div onClick={()=>{setExpandedRow(o=>o===r.key?null:r.key);setExpandedMatch(null);}} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,background:"var(--po-inp)",cursor:"pointer"}}>
           <span style={{fontSize:11,color:"var(--po-dim)",width:18}}>{i+1}</span>
           <span style={{flex:1,fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</span>
           <span style={{fontSize:14,fontWeight:700,color:"#A78BFA"}}>{r.score}%</span>
           <span style={{fontSize:11,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span>
         </div>
-        {isOpen&&<div style={{padding:"8px 4px",overflowX:"auto"}}>
-          <table style={{borderCollapse:"collapse",width:"100%",fontSize:11,minWidth:420}}>
-            <thead><tr style={{color:"var(--po-dim)"}}>
-              <th style={{textAlign:"left",padding:"4px 6px"}}>R</th>
-              <th style={{textAlign:"left",padding:"4px 6px"}}>Score</th>
-              <th style={{padding:"4px 6px"}}>Expected</th>
-              <th style={{padding:"4px 6px"}}>Actual</th>
-              <th style={{padding:"4px 6px"}}>Δ</th>
-              <th style={{padding:"4px 6px"}}>H2H</th>
-              <th style={{padding:"4px 6px"}}>xPts</th>
-            </tr></thead>
-            <tbody>{r.matches.map((m,mi)=><tr key={mi} style={{borderTop:"0.5px solid var(--po-bdr)"}}>
-              <td style={{padding:"4px 6px",color:"var(--po-text)"}}>{m.round}</td>
-              <td style={{padding:"4px 6px",color:"var(--po-dim)",whiteSpace:"nowrap"}}>{m.hasRealScore?`${m.scoreA}–${m.scoreB}`:"no score"}</td>
-              <td style={{padding:"4px 6px",textAlign:"center",color:"var(--po-dim)"}}>{Math.round(m.E*100)}%</td>
-              <td style={{padding:"4px 6px",textAlign:"center",color:"var(--po-dim)"}}>{Math.round(m.S*100)}%</td>
-              <td style={{padding:"4px 6px",textAlign:"center",fontWeight:600,color:m.delta>=0?"#34D399":"#EF4444"}}>{m.delta>=0?"+":""}{Math.round(m.delta*100)}%</td>
-              <td style={{padding:"4px 6px",textAlign:"center",color:"var(--po-dim)"}}>×{m.h2hFactor}</td>
-              <td style={{padding:"4px 6px",textAlign:"center",fontWeight:700,color:"#A78BFA"}}>{m.xPts}</td>
-            </tr>)}</tbody>
-          </table>
+        {isOpen&&<div style={{padding:"6px 2px"}}>
+          {r.matches.map((m,mi)=>{
+            const mKey=`${r.key}-${mi}`, mOpen=expandedMatch===mKey;
+            return <div key={mi} style={{marginBottom:3}}>
+              <div onClick={()=>setExpandedMatch(o=>o===mKey?null:mKey)} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 8px",borderRadius:6,background:"var(--po-card)",cursor:"pointer",fontSize:11}}>
+                <span style={{width:14,textAlign:"center",fontWeight:700,color:m.won?"#34D399":"#EF4444"}}>{m.won?"W":"L"}</span>
+                <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>R{m.round}·C{m.court}</span>
+                <span style={{flex:1,color:"var(--po-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>vs {m.oppNames.join(" & ")}</span>
+                <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>{m.hasRealScore?`${m.scoreA}–${m.scoreB}`:"no score"}</span>
+                <span style={{fontWeight:700,color:"#A78BFA",minWidth:34,textAlign:"right"}}>{m.xPts}</span>
+                <span style={{fontSize:9,color:"var(--po-dim)"}}>{mOpen?"▲":"▼"}</span>
+              </div>
+              {mOpen&&<div style={{padding:"7px 10px",background:"var(--po-inp)",borderRadius:6,marginTop:2}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"5px 14px",fontSize:11}}>
+                  <div><span style={{color:"var(--po-dim)"}}>Expected </span><span style={{color:"var(--po-text)",fontWeight:600}}>{Math.round(m.E*100)}%</span></div>
+                  <div><span style={{color:"var(--po-dim)"}}>Actual </span><span style={{color:"var(--po-text)",fontWeight:600}}>{Math.round(m.S*100)}%</span></div>
+                  <div><span style={{color:"var(--po-dim)"}}>Δ </span><span style={{fontWeight:700,color:m.delta>=0?"#34D399":"#EF4444"}}>{m.delta>=0?"+":""}{Math.round(m.delta*100)}%</span></div>
+                  <div><span style={{color:"var(--po-dim)"}}>H2H adj </span><span style={{color:"var(--po-text)",fontWeight:600}}>×{m.h2hFactor}</span></div>
+                </div>
+              </div>}
+            </div>;
+          })}
         </div>}
       </div>;
     })}
@@ -5540,10 +5566,15 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
 
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
-    const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId});
+    const h2h=calcHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId, beforeRound:ri});
     const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:5,fontSize:12,fontWeight:700,padding:"4px 6px",borderRadius:7,background:"var(--po-inp)"}}>
       <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:10}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:10,color:"var(--po-dim)"}}>({h2h.meetings}n)</span>
     </div>;
+    // USR-gap fallback badge — shown whenever there's no head-to-head history, whether the
+    // match is still open or already settled, so reviewing an old match keeps the same
+    // context that was available when the winner was picked.
+    const bAvgA=m.teamA?.avgUsr??0, bAvgB=m.teamB?.avgUsr??0, bGap=Math.abs(bAvgA-bAvgB);
+    const BalanceBadge=()=>(h2h.meetings===0&&bAvgA!==bAvgB)?<span title={`USR gap: ${bGap} (${m.teamA?.name} avg ${bAvgA} vs ${m.teamB?.name} avg ${bAvgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:bGap<=5?"#34D399":bGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {bAvgA>bAvgB?m.teamA?.name:m.teamB?.name} +{Math.round((bGap/((bAvgA+bAvgB)/2))*100)}%</span>:null;
     // Same conflict check for both states below — a completed match's teams can still be
     // "busy" if one of them is now live in a different, still-undecided match, so it needs
     // the same dimming treatment as an undecided match would.
@@ -5576,16 +5607,16 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         </div>
       </div>
       <H2HRow/>
+      <BalanceBadge/>
       {isAdmin&&<div style={{display:"flex",justifyContent:"flex-end"}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>}
     </Card>;}
 
-    const avgA=m.teamA?.avgUsr??0, avgB=m.teamB?.avgUsr??0, usrGap=Math.abs(avgA-avgB);
     return <Card style={{marginBottom:6,padding:"10px 12px",opacity:hasConflict?0.5:1}}>
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} already live elsewhere — can't also flag this one</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:8,flexWrap:"wrap"}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          {h2h.meetings===0&&avgA!==avgB&&<span title={`USR gap: ${usrGap} (${m.teamA?.name} avg ${avgA} vs ${m.teamB?.name} avg ${avgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:usrGap<=5?"#34D399":usrGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {avgA>avgB?m.teamA?.name:m.teamB?.name} +{Math.round((usrGap/((avgA+avgB)/2))*100)}%</span>}
+          <BalanceBadge/>
           {/* Whether this match shows on the admin's Match Mode widget — display-only there
               (no tap-to-record), doesn't touch winner/score. Same tap-to-toggle interaction
               as the break-lock 🔓/🔐 badges elsewhere in this screen. Blocked while a
@@ -7055,12 +7086,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
               const gap=Math.abs(avgA-avgB);
-              const h2h=calcHeadToHead(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id});
+              const h2h=calcHeadToHead(comms||[], m.teamA.map(p=>p.userId), m.teamB.map(p=>p.userId), {excludeEventId:effEv.id, beforeRound:ri});
               return <Card key={mi} style={{marginBottom:8}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Court {m.court}</span>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
-                  {h2h.meetings===0&&!m.winner&&avgA!==avgB&&<span title={`USR gap: ${gap.toFixed(1)} (Team A avg ${avgA.toFixed(0)} vs Team B avg ${avgB.toFixed(0)}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ Team {avgA>avgB?"A":"B"} +{Math.round((gap/((avgA+avgB)/2))*100)}%</span>}
+                  {h2h.meetings===0&&avgA!==avgB&&<span title={`USR gap: ${gap.toFixed(1)} (Team A avg ${avgA.toFixed(0)} vs Team B avg ${avgB.toFixed(0)}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:gap<=5?"#34D399":gap<=10?"#F59E0B":"#EF4444"}}>⚖️ Team {avgA>avgB?"A":"B"} +{Math.round((gap/((avgA+avgB)/2))*100)}%</span>}
                   {isAdmin&&!m.winner&&<SmBtn label="🔀 Re-pair" onClick={()=>act.rebalanceCourt(ri,mi)} color="#38BDF8"/>}
                   <Bdg label={`Win = ${courtPts(m.court,tc)} pts`} color="#38BDF8"/>
                 </div>

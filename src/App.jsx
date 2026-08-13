@@ -5227,6 +5227,7 @@ function XStandingsPreview({rows}){
   return <div>
     {rows.map((r,i)=>{
       const isOpen=expandedRow===r.key;
+      const avgDelta=r.matches.length?r.matches.reduce((s,m)=>s+m.delta,0)/r.matches.length:0;
       return <div key={r.key} style={{marginBottom:6}}>
         <div onClick={()=>{setExpandedRow(o=>o===r.key?null:r.key);setExpandedMatch(null);}} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,background:"var(--po-inp)",cursor:"pointer"}}>
           <span style={{fontSize:11,color:"var(--po-dim)",width:18}}>{i+1}</span>
@@ -5234,6 +5235,7 @@ function XStandingsPreview({rows}){
             <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</div>
             {r.subtitle&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{r.subtitle}</div>}
           </span>
+          <span style={{fontSize:11,fontWeight:700,color:avgDelta>=0?"#34D399":"#EF4444",whiteSpace:"nowrap"}}>Avg Δ {avgDelta>=0?"+":""}{Math.round(avgDelta*100)}%</span>
           <span style={{fontSize:14,fontWeight:700,color:"#A78BFA"}}>{r.score}%</span>
           <span style={{fontSize:11,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span>
         </div>
@@ -5246,6 +5248,7 @@ function XStandingsPreview({rows}){
                 <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>R{m.round}·C{m.court}</span>
                 <span style={{flex:1,color:"var(--po-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.partnerName&&<span style={{color:"var(--po-dim)"}}>w/ {m.partnerName} </span>}vs {m.oppNames.join(" & ")}</span>
                 <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>{m.hasRealScore?`${m.scoreA}–${m.scoreB}`:"no score"}</span>
+                <span style={{fontWeight:700,color:m.delta>=0?"#34D399":"#EF4444",minWidth:38,textAlign:"right",whiteSpace:"nowrap"}}>{m.delta>=0?"+":""}{Math.round(m.delta*100)}%</span>
                 <span style={{fontWeight:700,color:"#A78BFA",minWidth:34,textAlign:"right"}}>{m.xPts}</span>
                 <span style={{fontSize:9,color:"var(--po-dim)"}}>{mOpen?"▲":"▼"}</span>
               </div>

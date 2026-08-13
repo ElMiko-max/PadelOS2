@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.03";
+const APP_VERSION = "V0.08.04";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -553,7 +553,7 @@ function calcXCIPreview(plan, users, comms, ev) {
       const idsA = m.teamA.map(p=>p.userId), idsB = m.teamB.map(p=>p.userId);
       const usrA = avgUsr(idsA), usrB = avgUsr(idsB);
       const scoreA = m.scoreA||0, scoreB = m.scoreB||0;
-      const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
+      const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
       const process = (ids, oppIds, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
         ids.forEach(uid => {
@@ -693,105 +693,22 @@ function ctComboLabel(team){
   const ck=[a.userId,b.userId].sort().join("_");
   return a.comboNames?.[ck] || b.comboNames?.[ck] || null;
 }
-// General head-to-head record between two exact sides (Closed Individuals: 2-player sets;
-// Closed Teams: single team IDs), regardless of which side was historically "teamA" vs
-// "teamB" in any given match — matches purely by identity, not by A/B label. Powers both
-// the Dream/Funny Match last-meeting indicator and the live head-to-head display on the
-// Match Mode / CT Matches views. Returns meetings=0 (last=null) if they never met.
-// Player-pairwise matching (NOT exact-foursome matching): a historical match counts as a
-// "meeting" between sideA and sideB whenever at least one tracked sideA player was on one
-// team and at least one tracked sideB player was on the opposing team — win/loss attributed
-// to whichever literal team held the sideA representative(s). This answers "have these
-// people faced each other before," which is what actually matters for rivalry/balance
-// display — matching on the exact 4-person grouping (old behavior) almost never re-occurs
-// once partners rotate, even between the same two rivals, making it useless in practice.
-// Ambiguous overlaps (a tracked player from BOTH sides ends up on the same historical team)
-// are skipped, not misattributed.
+// Head-to-head record between two exact sides (Closed Individuals: 2-player sets; Closed
+// Teams: single team's player-id set), regardless of which side was historically "teamA" vs
+// "teamB" — matches purely by identity, not by A/B label. Exact-foursome only (the two teams
+// must match completely, not just overlap): every consumer of this — the live 📊/⚖️ balance
+// badge on Rounds/Matches, the Match Mode notification widget, the X-System H2H modifier,
+// and the Dream/Funny Match "this exact matchup happened N times" line — wants the same
+// precise question answered: have these specific people, in this specific split, met before.
+// A looser "has anyone from side A ever faced anyone from side B, with any partner" variant
+// existed briefly (Bug #15's first pass) but was replaced everywhere per explicit admin
+// direction: a blended number across different partnerships isn't what any of these consumers
+// should show, even though it means CI matches (which rotate partners every round) will
+// usually report zero prior meetings — that's the accurate answer, not a bug.
 // opts.excludeEventId marks "the event currently being evaluated" — if opts.beforeRound is
 // also given, that event's own rounds strictly before it still count (so a rematch earlier
 // in the same, still-open event is a real "previous meeting"); otherwise that event is
-// skipped entirely, same as the old behavior, for callers that don't have a round index handy.
-function calcHeadToHeadCI(comms, sideAIds, sideBIds, opts){
-  const excludeEventId = opts && opts.excludeEventId;
-  const beforeRound = opts && opts.beforeRound;
-  const setA = new Set(sideAIds), setB = new Set(sideBIds);
-  let meetings=0, sideAWins=0, sideBWins=0, last=null;
-  comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_ind"||!ev.plan) return;
-    const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
-    if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
-    ev.plan.rounds.forEach((r,ri)=>{
-      if(isCurrent && ri>=beforeRound) return;
-      r.matches.forEach(m=>{
-        if(!m.winner) return;
-        const idsX=m.teamA.map(p=>p.userId), idsY=m.teamB.map(p=>p.userId);
-        const aInX=idsX.some(id=>setA.has(id)), aInY=idsY.some(id=>setA.has(id));
-        const bInX=idsX.some(id=>setB.has(id)), bInY=idsY.some(id=>setB.has(id));
-        let sideAWon;
-        if(aInX&&bInY&&!aInY&&!bInX) sideAWon = m.winner==="A";
-        else if(aInY&&bInX&&!aInX&&!bInY) sideAWon = m.winner==="B";
-        else return;
-        meetings++;
-        if(sideAWon) sideAWins++; else sideBWins++;
-        if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
-      });
-    });
-  }));
-  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
-}
-// Same idea for Closed Teams. IMPORTANT: team.id is only unique *within one event* —
-// formCTTeams() resets its counter to 1 every time teams are generated, so "team.id===1" in
-// two different events is very likely two completely different pairs of players. Sides here
-// must therefore be matched by the team's actual player-id set (like CI), never by team.id,
-// or history from unrelated teams would get silently conflated the moment a second CT event
-// completes. Scans both matchesA and matchesB across every round (ladder and league formats
-// both use this shape).
-function calcHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
-  const excludeEventId = opts && opts.excludeEventId;
-  const beforeRound = opts && opts.beforeRound;
-  const setA = new Set(sideAPlayerIds), setB = new Set(sideBPlayerIds);
-  let meetings=0, sideAWins=0, sideBWins=0, last=null;
-  comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_teams"||!ev.plan) return;
-    const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
-    if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
-    ev.plan.rounds.forEach((r,ri)=>{
-      if(isCurrent && ri>=beforeRound) return;
-      [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
-        if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
-        const idsX=m.teamA.players.map(p=>p.userId), idsY=m.teamB.players.map(p=>p.userId);
-        const aInX=idsX.some(id=>setA.has(id)), aInY=idsY.some(id=>setA.has(id));
-        const bInX=idsX.some(id=>setB.has(id)), bInY=idsY.some(id=>setB.has(id));
-        let sideAWon;
-        if(aInX&&bInY&&!aInY&&!bInX) sideAWon = m.winner==="A";
-        else if(aInY&&bInX&&!aInX&&!bInY) sideAWon = m.winner==="B";
-        else return;
-        meetings++;
-        if(sideAWon) sideAWins++; else sideBWins++;
-        if(!last||ev.date>last.date) last={date:ev.date, eventId:ev.id, eventName:ev.name, sideAWon};
-      });
-    });
-  }));
-  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
-}
-// These 4 players facing off in this exact split is the same real-world question whether it
-// happened as a rotating CI pairing or as fixed CT teams — same "did we ever meet" answer the
-// unified Partners/Opponents reports already give. Merges both engines into one result.
-function calcHeadToHead(comms, sideAIds, sideBIds, opts){
-  const ci = calcHeadToHeadCI(comms, sideAIds, sideBIds, opts);
-  const ct = calcHeadToHeadCT(comms, sideAIds, sideBIds, opts);
-  const meetings = ci.meetings+ct.meetings;
-  const sideAWins = ci.sideAWins+ct.sideAWins, sideBWins = ci.sideBWins+ct.sideBWins;
-  const last = !ci.last ? ct.last : !ct.last ? ci.last : (ci.last.date>=ct.last.date ? ci.last : ct.last);
-  return {meetings, sideAWins, sideBWins, sideAWinRate: meetings?sideAWins/meetings:0, sideBWinRate: meetings?sideBWins/meetings:0, last};
-}
-// Exact-foursome variant (the two teams must match completely, not just overlap) — used ONLY
-// where the UI explicitly claims "this EXACT matchup happened N times" (Dream/Funny Match on
-// the Profile Reports tab). That claim is specifically about the same partner+opponents
-// combination recurring, which calcHeadToHead's broader player-pairwise matching (Bug #15
-// fix) would misrepresent by counting different partnerships against the same two rivals as
-// if they were the same matchup. Do not use this for the general balance badge or X-System —
-// they want "have these people faced each other," which is what calcHeadToHead answers.
+// skipped entirely, for callers that don't have a round index handy.
 function calcExactHeadToHeadCI(comms, sideAIds, sideBIds, opts){
   const excludeEventId = opts && opts.excludeEventId;
   const beforeRound = opts && opts.beforeRound;
@@ -1255,7 +1172,7 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
       const usrA = teamUsr(A), usrB = teamUsr(B);
       const scoreA = m.scoreA||0, scoreB = m.scoreB||0;
       const idsA = (A.players||[]).map(p=>p.userId), idsB = (B.players||[]).map(p=>p.userId);
-      const h2h = calcHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
+      const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
       const process = (team, oppTeam, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
         const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});

@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.08";
+const APP_VERSION = "V0.08.09";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -141,7 +141,15 @@ const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel,
 // auto-registered a second, unrelated account for the same event). Bounding the age it's
 // still honored, and clearing it explicitly on sign-out (see the effect further down), closes
 // that off while still surviving the few-second Firestore-propagation race this exists for.
-const PENDING_INVITE_TTL_MS = 5*60*1000; // 5 minutes
+// Was 5 minutes — too tight for a brand-new invitee's actual first-time flow (picking/creating
+// a Google account, consent screens, a cold app load) to reliably finish inside; when it
+// expired mid-flow, the person fell through to the generic "which one is you?" screen and had
+// to self-claim through the manual admin-approval queue instead of the intended zero-approval
+// targeted-invite path (see claimViaInvite below) — exactly the bug this was mistaken for.
+// The actual staleness risk it guards against (a leftover code on a device that keeps the
+// SAME account signed in for days without ever using it) is a day-scale risk, not a minute-
+// scale one, so a generous 60 minutes still closes that off comfortably.
+const PENDING_INVITE_TTL_MS = 60*60*1000; // 60 minutes
 function readPendingInvite(){
   try{
     const raw = localStorage.getItem("mk_pending_invite");
@@ -4096,6 +4104,15 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
     toast2("Registered ✓");
     if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
+    // Let the event's creator + community admins know someone registered themselves — the
+    // admin-driven paths (addMember, registerViaInvite, approveEventJoin) don't need this,
+    // since the admin already knows because they're the one who took the action.
+    if (ev) {
+      const comm = comms.find(c=>c.id===cid);
+      const adminIds = (comm?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
+      const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
+      notify(recipients, "eventRegistration", ev, "🎾 New registration", `${me.nickname} just registered for ${ev.name}`);
+    }
   };
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -5092,7 +5109,7 @@ function EvCard({ev,me,users,venues,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts · {ev.registrations.length} registered{creator?` · by ${creator.nickname}`:""}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts{creator?` · by ${creator.nickname}`:""}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--po-dim)",marginTop:3}}><span>{ev.registrations.length} registered</span><span>Min {ev.courts*4} · Ideal {ev.courts*5} · Max {ev.courts*6}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2,overflow:"hidden",marginTop:2}}><div style={{height:"100%",borderRadius:2,width:`${Math.min(100,(ev.registrations.length/(ev.courts*6||1))*100)}%`,background:ev.registrations.length>=ev.courts*6?"#EF4444":ev.registrations.length>=ev.courts*5?"#F59E0B":"#6366F1"}}/></div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────

@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.06";
+const APP_VERSION = "V0.08.07";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -294,6 +294,12 @@ const breakPts = (tc) => {
 // only used for the Platform-Admin XStandings preview and (optionally, at close time) as the
 // source value for the real pes/tes. See PLAN: parallel scoring system.
 const USR_XPTS_DIVISOR = 12; // logistic-curve steepness for the expected-outcome calc — lower = sharper (wider spread), higher = flatter (results hug 50)
+// Output PES = Entry USR + OUTPUT_PES_K * (that event's average delta) — the "Performance
+// Based" view. Calibrated against real match history: the most extreme observed per-event
+// avgDelta was ~0.5 (a genuinely outstanding or disastrous day), so K=20 puts a real extreme
+// day at roughly a ±10-point swing from Entry USR, while a typical day (median |avgDelta|
+// ~0.09) only nudges ~±1.8 points — small on an ordinary day, real on an extraordinary one.
+const OUTPUT_PES_K = 20;
 function xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h}) {
   const usrGap = (mySideUsr ?? 50) - (oppSideUsr ?? 50);
   const E = 1 / (1 + Math.pow(10, -usrGap / USR_XPTS_DIVISOR));
@@ -563,7 +569,7 @@ function calcXCIPreview(plan, users, comms, ev) {
           const u = users.find(x=>x.id===uid); if (!u) return;
           const partnerId = ids.find(id=>id!==uid) ?? null;
           const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});
-          if (!perPlayer[uid]) perPlayer[uid] = {userId: uid, user: u, matches: []};
+          if (!perPlayer[uid]) perPlayer[uid] = {userId: uid, user: u, entryUsr: mySideUsr, matches: []};
           perPlayer[uid].matches.push({round: ri+1, court: m.court, won, partnerId, partnerName: partnerId!=null?nameOf(partnerId):null, oppIds, oppNames: oppIds.map(nameOf), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
         });
       };
@@ -572,7 +578,14 @@ function calcXCIPreview(plan, users, comms, ev) {
     });
   });
   return Object.values(perPlayer)
-    .map(p => ({...p, xPES: Math.round((p.matches.reduce((s,x)=>s+x.xPts,0)/p.matches.length) * 10) / 10}))
+    .map(p => {
+      const avgDelta = p.matches.reduce((s,x)=>s+x.delta*x.h2hFactor,0)/p.matches.length;
+      return {
+        ...p,
+        xPES: Math.round((p.matches.reduce((s,x)=>s+x.xPts,0)/p.matches.length) * 10) / 10,
+        outputPES: Math.round(Math.max(0,Math.min(100, p.entryUsr + OUTPUT_PES_K*avgDelta)) * 10) / 10,
+      };
+    })
     .sort((a,b)=>b.xPES-a.xPES);
 }
 
@@ -1181,7 +1194,7 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
       const process = (team, oppTeam, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
         const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});
-        if (!perTeam[team.id]) perTeam[team.id] = {teamId: team.id, team, matches: []};
+        if (!perTeam[team.id]) perTeam[team.id] = {teamId: team.id, team, entryUsr: mySideUsr, matches: []};
         perTeam[team.id].matches.push({round: ri+1, court: m.court, won, oppTeamId: oppTeam.id, oppTeamName: oppTeam.name, oppNames: (oppTeam.players||[]).map(p=>p.nickname), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
       };
       process(A, B, usrA, usrB, scoreA, scoreB, m.winner==="A", h2h);
@@ -1189,7 +1202,14 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
     });
   });
   return Object.values(perTeam)
-    .map(t => ({...t, xTES: Math.round((t.matches.reduce((s,x)=>s+x.xPts,0)/t.matches.length) * 10) / 10}))
+    .map(t => {
+      const avgDelta = t.matches.reduce((s,x)=>s+x.delta*x.h2hFactor,0)/t.matches.length;
+      return {
+        ...t,
+        xTES: Math.round((t.matches.reduce((s,x)=>s+x.xPts,0)/t.matches.length) * 10) / 10,
+        outputTES: Math.round(Math.max(0,Math.min(100, t.entryUsr + OUTPUT_PES_K*avgDelta)) * 10) / 10,
+      };
+    })
     .sort((a,b)=>b.xTES-a.xTES);
 }
 
@@ -3973,7 +3993,7 @@ export default function Matchkeeper() {
         if(maxPts<=0)return u;
         const standardPes=Math.round((s.pts/maxPts)*100*10)/10;
         const xEntry=xPreview?.find(x=>x.userId===u.id);
-        const pes=xEntry?xEntry.xPES:standardPes;
+        const pes=xEntry?xEntry.outputPES:standardPes;
         const hist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes, type:"ci"}];
         const seedUsr = u.seedUsr ?? u.usr;
         const newUsr = calcWeightedUSR(hist, seedUsr);
@@ -4004,7 +4024,7 @@ export default function Matchkeeper() {
           tes=totalMatches>0?Math.round(((s.wins||0)/totalMatches)*100*10)/10:0;
         }
         const xEntry=xPreview?.find(x=>x.teamId===s.team?.id);
-        teamTES[s.team?.id]=xEntry?xEntry.xTES:tes;
+        teamTES[s.team?.id]=xEntry?xEntry.outputTES:tes;
       });
 
       // Update teamsHistory for each player in each team
@@ -5220,6 +5240,14 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
 // (W/L, round, court, opponents, score, xPts) → tap a match → the formula breakdown for
 // that one match (Expected/Actual/Δ/H2H). Keeps the common "who beat whom" skim fast while
 // still letting the math be interrogated when actually wanted.
+// Platform-Admin-only 3-way switch for the Standings tab. Everyone else never sees this —
+// the tab always renders "pes" (today's official standings) for them.
+function StandingsViewToggle({view,onChange}){
+  const opts=[["pes","PES (Court-based)"],["delta","Delta (Performance Delta)"],["output","Output PES (Performance Based)"]];
+  return <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+    {opts.map(([k,label])=><div key={k} onClick={()=>onChange(k)} className="po-inp" style={{flex:"1 1 auto",textAlign:"center",padding:"7px 8px",borderRadius:8,cursor:"pointer",fontSize:11,fontWeight:600,border:`0.5px solid ${view===k?"#A78BFA":"var(--po-bdr)"}`,background:view===k?"#A78BFA22":"var(--po-inp)",color:view===k?"#A78BFA":"var(--po-dim)"}}>{label}</div>)}
+  </div>;
+}
 function XStandingsPreview({rows}){
   const [expandedRow,setExpandedRow]=useState(null);
   const [expandedMatch,setExpandedMatch]=useState(null);
@@ -5984,7 +6012,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const setCiS=(ri,mi,field,val)=>setCiScores(s=>({...s,[`${ri}_${mi}`]:{...getCiS(ri,mi),[field]:val}}));
   const [ctSel,setCtSel]   = useState(null); // {teamId,userId} — for tap-a-player-to-swap between teams
   const [showResultsTable,setShowResultsTable] = useState(false);
-  const [showXStandings,setShowXStandings] = useState(false);
+  const [standingsView,setStandingsView] = useState("pes"); // "pes" | "delta" | "output" — Platform-Admin-only toggle, everyone else always sees "pes"
   const [ctC,setCtC]       = useState(null);
   const [ctTopPoolSize,setCtTopPoolSize] = useState(null); // null = auto (top-ranked players → the auto-computed bigger pool)
   const [ctF,setCtF]       = useState("league");
@@ -6760,7 +6788,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {myReg&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
         {myReg&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
         {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
-        {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with New Scoring" onClick={()=>{if(window.confirm(`Close "${ev.name}" using the experimental X-System scoring instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"transparent",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
+        {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with Output PES (Performance Based)" onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"transparent",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
@@ -7125,15 +7153,25 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {/* CI STANDINGS */}
     {tab==="standings"&&isCI&&<>
       {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>{const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;const delta=Math.round(s.user.usr-before);return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};})}/>}
-      <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
-      {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
-        {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
-        {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
-        {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
-        {isPlatformAdmin&&plan&&<SmBtn label={showXStandings?"▲ Hide XStandings (Preview)":"🧪 XStandings (Preview)"} onClick={()=>setShowXStandings(o=>!o)} color="#A78BFA" style={{width:"100%",marginTop:6,marginBottom:showXStandings?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
-        {showXStandings&&plan&&isPlatformAdmin&&<Card style={{padding:8}}>
-          <XStandingsPreview rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,score:p.xPES,matches:p.matches}))}/>
-        </Card>}
+      {isPlatformAdmin&&plan&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
+
+      {(standingsView==="pes"||!isPlatformAdmin)&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
+        {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
+          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
+          {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+          {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
+        </>}
+      </>}
+
+      {standingsView==="delta"&&isPlatformAdmin&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Delta Standings — Performance Delta.</b> How each player did relative to what their current USR predicted — 50% = exactly as expected, above = overperformed, below = underperformed (even on a win). Computed live from current match data, not official, doesn't affect real standings.</div>
+        {plan?<XStandingsPreview rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,score:p.xPES,matches:p.matches}))}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
+      </>}
+
+      {standingsView==="output"&&isPlatformAdmin&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±2 points, a genuinely extreme day (best/worst observed) moves ~±10. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
+        {plan?<XStandingsPreview rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,score:p.outputPES,matches:p.matches}))}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
     </>}
 
@@ -7229,6 +7267,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const delta=Math.round(after-before);
         return {name:s.team?.name,players:teamPlayers,value:plan?.format==="ladder"?s.pts:s.wins,valueLabel:plan?.format==="ladder"?"pts":"wins",usrLine:`Avg USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
       })}/>}
+      {isPlatformAdmin&&plan?.format==="ladder"&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
+
+      {(standingsView==="pes"||!isPlatformAdmin||plan?.format!=="ladder")&&<>
       {/* Scoring info bar */}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>
         {plan?.format==="ladder"
@@ -7304,11 +7345,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               </table>
             </div>
           </>}
-          {isPlatformAdmin&&plan?.format==="ladder"&&<SmBtn label={showXStandings?"▲ Hide XStandings (Preview)":"🧪 XStandings (Preview)"} onClick={()=>setShowXStandings(o=>!o)} color="#A78BFA" style={{width:"100%",marginTop:6,marginBottom:showXStandings?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
-          {showXStandings&&isPlatformAdmin&&plan?.format==="ladder"&&<Card style={{padding:8}}>
-            <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),score:t.xTES,matches:t.matches}))}/>
-          </Card>}
         </>}
+      </>}
+
+      {standingsView==="delta"&&isPlatformAdmin&&plan?.format==="ladder"&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Delta Standings — Performance Delta.</b> How each team did relative to what their avg USR predicted — 50% = exactly as expected, above = overperformed, below = underperformed (even on a win). Computed live from current match data, not official, doesn't affect real standings.</div>
+        <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),score:t.xTES,matches:t.matches}))}/>
+      </>}
+
+      {standingsView==="output"&&isPlatformAdmin&&plan?.format==="ladder"&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±2 points, a genuinely extreme day (best/worst observed) moves ~±10. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
+        <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),score:t.outputTES,matches:t.matches}))}/>
+      </>}
     </>}
   </>;
 }

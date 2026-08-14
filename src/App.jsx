@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.09";
+const APP_VERSION = "V0.08.10";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -573,17 +573,25 @@ function calcXCIPreview(plan, users, comms, ev) {
       const scoreA = m.scoreA||0, scoreB = m.scoreB||0;
       const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId: ev?.id, beforeRound: ri});
       const h2hFlipped = {...h2h, sideAWinRate: h2h.sideBWinRate, sideBWinRate: h2h.sideAWinRate};
-      const process = (ids, oppIds, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h) => {
+      // mySideUsr (teamUsr, blended with the round's partner) drives the Expected-outcome (E)
+      // calc — that's correctly the actual on-court balance for this match. entryUsr for the
+      // Output PES anchor is different on purpose: each player's OWN individual snapshot usr
+      // from this side's roster, not blended with whoever they happened to be paired with —
+      // otherwise a strong player's baseline would silently shift depending on which random
+      // partner they got in their first round, undermining Output PES's whole point of
+      // crediting individual performance instead of a team/court proxy.
+      const process = (ids, oppIds, mySideUsr, oppSideUsr, myScore, oppScore, won, sideH2h, mySideTeam) => {
         ids.forEach(uid => {
           const u = users.find(x=>x.id===uid); if (!u) return;
           const partnerId = ids.find(id=>id!==uid) ?? null;
           const res = xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h: sideH2h});
-          if (!perPlayer[uid]) perPlayer[uid] = {userId: uid, user: u, entryUsr: mySideUsr, matches: []};
+          const ownUsr = mySideTeam.find(p=>p.userId===uid)?.usr ?? mySideUsr;
+          if (!perPlayer[uid]) perPlayer[uid] = {userId: uid, user: u, entryUsr: ownUsr, matches: []};
           perPlayer[uid].matches.push({round: ri+1, court: m.court, won, partnerId, partnerName: partnerId!=null?nameOf(partnerId):null, oppIds, oppNames: oppIds.map(nameOf), scoreA: myScore, scoreB: oppScore, hasRealScore: res.hasRealScore, E: res.E, S: res.S, delta: res.delta, h2hFactor: res.h2hFactor, xPts: res.xPts});
         });
       };
-      process(idsA, idsB, usrA, usrB, scoreA, scoreB, m.winner==="A", h2h);
-      process(idsB, idsA, usrB, usrA, scoreB, scoreA, m.winner==="B", h2hFlipped);
+      process(idsA, idsB, usrA, usrB, scoreA, scoreB, m.winner==="A", h2h, m.teamA);
+      process(idsB, idsA, usrB, usrA, scoreB, scoreA, m.winner==="B", h2hFlipped, m.teamB);
     });
   });
   return Object.values(perPlayer)
@@ -591,6 +599,7 @@ function calcXCIPreview(plan, users, comms, ev) {
       const avgDelta = p.matches.reduce((s,x)=>s+x.delta*x.h2hFactor,0)/p.matches.length;
       return {
         ...p,
+        avgDelta,
         xPES: Math.round((p.matches.reduce((s,x)=>s+x.xPts,0)/p.matches.length) * 10) / 10,
         outputPES: Math.round(Math.max(0,Math.min(100, p.entryUsr + OUTPUT_PES_K*avgDelta)) * 10) / 10,
       };
@@ -1215,6 +1224,7 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
       const avgDelta = t.matches.reduce((s,x)=>s+x.delta*x.h2hFactor,0)/t.matches.length;
       return {
         ...t,
+        avgDelta,
         xTES: Math.round((t.matches.reduce((s,x)=>s+x.xPts,0)/t.matches.length) * 10) / 10,
         outputTES: Math.round(Math.max(0,Math.min(100, t.entryUsr + OUTPUT_PES_K*avgDelta)) * 10) / 10,
       };
@@ -5261,9 +5271,9 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
 // Platform-Admin-only 3-way switch for the Standings tab. Everyone else never sees this —
 // the tab always renders "pes" (today's official standings) for them.
 function StandingsViewToggle({view,onChange}){
-  const opts=[["pes","PES (Court-based)"],["delta","Delta (Performance Delta)"],["output","Output PES (Performance Based)"]];
-  return <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-    {opts.map(([k,label])=><div key={k} onClick={()=>onChange(k)} className="po-inp" style={{flex:"1 1 auto",textAlign:"center",padding:"7px 8px",borderRadius:8,cursor:"pointer",fontSize:11,fontWeight:600,border:`0.5px solid ${view===k?"#A78BFA":"var(--po-bdr)"}`,background:view===k?"#A78BFA22":"var(--po-inp)",color:view===k?"#A78BFA":"var(--po-dim)"}}>{label}</div>)}
+  const opts=[["pes","PES (Court-Based)"],["delta","Delta"],["output","PES (Performance Based)"]];
+  return <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"nowrap"}}>
+    {opts.map(([k,label])=><div key={k} onClick={()=>onChange(k)} style={{flex:"1 1 0",minWidth:0,textAlign:"center",padding:"7px 4px",borderRadius:8,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",border:`1.5px solid ${view===k?"#A78BFA":"var(--po-bdr)"}`,background:view===k?"#A78BFA22":"var(--po-inp)",color:view===k?"#A78BFA":"var(--po-dim)"}}>{label}</div>)}
   </div>;
 }
 function XStandingsPreview({rows}){
@@ -5281,8 +5291,7 @@ function XStandingsPreview({rows}){
             <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</div>
             {r.subtitle&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{r.subtitle}</div>}
           </span>
-          <span style={{fontSize:11,fontWeight:700,color:avgDelta>=0?"#34D399":"#EF4444",whiteSpace:"nowrap"}}>Avg Δ {avgDelta>=0?"+":""}{Math.round(avgDelta*100)}%</span>
-          <span style={{fontSize:14,fontWeight:700,color:"#A78BFA"}}>{r.score}%</span>
+          <span style={{fontSize:13,fontWeight:700,color:avgDelta>=0?"#34D399":"#EF4444",whiteSpace:"nowrap"}}>Avg Δ {avgDelta>=0?"+":""}{Math.round(avgDelta*100)}%</span>
           <span style={{fontSize:11,color:"var(--po-dim)"}}>{isOpen?"▲":"▼"}</span>
         </div>
         {isOpen&&<div style={{padding:"6px 2px"}}>
@@ -5295,7 +5304,6 @@ function XStandingsPreview({rows}){
                 <span style={{flex:1,color:"var(--po-text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.partnerName&&<span style={{color:"var(--po-dim)"}}>w/ {m.partnerName} </span>}vs {m.oppNames.join(" & ")}</span>
                 <span style={{color:"var(--po-dim)",whiteSpace:"nowrap"}}>{m.hasRealScore?`${m.scoreA}–${m.scoreB}`:"no score"}</span>
                 <span style={{fontWeight:700,color:m.delta>=0?"#34D399":"#EF4444",minWidth:38,textAlign:"right",whiteSpace:"nowrap"}}>{m.delta>=0?"+":""}{Math.round(m.delta*100)}%</span>
-                <span style={{fontWeight:700,color:"#A78BFA",minWidth:34,textAlign:"right"}}>{m.xPts}</span>
                 <span style={{fontSize:9,color:"var(--po-dim)"}}>{mOpen?"▲":"▼"}</span>
               </div>
               {mOpen&&<div style={{padding:"7px 10px",background:"var(--po-inp)",borderRadius:6,marginTop:2}}>
@@ -5311,7 +5319,26 @@ function XStandingsPreview({rows}){
         </div>}
       </div>;
     })}
-    <div style={{fontSize:10,color:"var(--po-dim)",marginTop:8,padding:"0 4px",lineHeight:1.5}}>🧪 Computed live from current USR and match history — not stored, not official. Expectation-adjusted: a big favorite winning narrowly can score below 50 even on a win. "no score" = matches recorded before score capture existed, treated as an average-margin win/loss.</div>
+    <div style={{fontSize:10,color:"var(--po-dim)",marginTop:8,padding:"0 4px",lineHeight:1.5}}>🧪 Computed live from current USR and match history — not stored, not official. Δ = actual result minus what the USR gap predicted; a big favorite winning narrowly can still score negative even on a win. "no score" = matches recorded before score capture existed, treated as an average-margin win/loss.</div>
+  </div>;
+}
+// Output PES / Output TES — deliberately flat, no expand/collapse: the owner only wants the
+// three numbers that matter (Entry USR, the delta that moved it, and the result), not the
+// per-match archaeology XStandingsPreview offers for the Delta view.
+function OutputPESTable({rows}){
+  if(!rows.length) return <div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No completed matches yet to preview.</div>;
+  return <div>
+    {rows.map((r,i)=><div key={r.key} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",borderRadius:8,background:"var(--po-inp)",marginBottom:6}}>
+      <span style={{fontSize:11,color:"var(--po-dim)",width:18}}>{i+1}</span>
+      <span style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</div>
+        {r.subtitle&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{r.subtitle}</div>}
+      </span>
+      <span style={{fontSize:11,color:"var(--po-dim)",textAlign:"right",whiteSpace:"nowrap"}}>Entry <b style={{color:"var(--po-text)"}}>{Math.round(r.entryUsr*10)/10}</b></span>
+      <span style={{fontSize:11,fontWeight:700,color:r.avgDelta>=0?"#34D399":"#EF4444",textAlign:"right",whiteSpace:"nowrap"}}>{r.avgDelta>=0?"+":""}{Math.round(r.avgDelta*100)}%</span>
+      <span style={{fontSize:15,fontWeight:700,color:"#A78BFA",textAlign:"right",whiteSpace:"nowrap"}}>{r.score}</span>
+    </div>)}
+    <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4,padding:"0 4px",lineHeight:1.5}}>🧪 Output PES = Entry USR + this event's performance delta. Computed live, not stored, not official — only becomes real if this event is closed with Output PES below.</div>
   </div>;
 }
 function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewProfile}){
@@ -7189,7 +7216,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {standingsView==="output"&&isPlatformAdmin&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
-        {plan?<XStandingsPreview rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,score:p.outputPES,matches:p.matches}))}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
+        {plan?<OutputPESTable rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES}))}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
     </>}
 
@@ -7373,7 +7400,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {standingsView==="output"&&isPlatformAdmin&&plan?.format==="ladder"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
-        <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),score:t.outputTES,matches:t.matches}))}/>
+        <OutputPESTable rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),entryUsr:t.entryUsr,avgDelta:t.avgDelta,score:t.outputTES}))}/>
       </>}
     </>}
   </>;

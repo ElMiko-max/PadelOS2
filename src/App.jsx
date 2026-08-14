@@ -132,7 +132,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.10";
+const APP_VERSION = "V0.08.11";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -7216,7 +7216,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {standingsView==="output"&&isPlatformAdmin&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
-        {plan?<OutputPESTable rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES}))}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
+        {plan?<OutputPESTable rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES})).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
     </>}
 
@@ -7400,7 +7400,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {standingsView==="output"&&isPlatformAdmin&&plan?.format==="ladder"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
-        <OutputPESTable rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),entryUsr:t.entryUsr,avgDelta:t.avgDelta,score:t.outputTES}))}/>
+        <OutputPESTable rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),entryUsr:t.entryUsr,avgDelta:t.avgDelta,score:t.outputTES})).sort((a,b)=>b.score-a.score)}/>
       </>}
     </>}
   </>;

@@ -42,6 +42,20 @@ const firebaseConfig = {
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh56tnDOdSJfa5FrY7cMLirnHXyw";
+// iOS Safari has no push support at all in a plain browser tab — Notification/Push only
+// become available once the site is added to the Home Screen and running standalone. There
+// is also no API to trigger that "Add to Home Screen" step from code (unlike Android Chrome's
+// beforeinstallprompt) — it's a fully manual, Apple-enforced action. So on iOS we skip the
+// auto-prompt entirely (it would be a silent no-op in a plain tab) and show install guidance
+// instead (see the banner near dataDegraded).
+function isIosNonStandalone(){
+  try {
+    const ua = navigator.userAgent || "";
+    const isIos = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const isStandalone = window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+    return isIos && !isStandalone;
+  } catch(e) { return false; }
+}
 // Requests notification permission, registers the service worker, and saves this
 // device's push token to Firestore so the Cloud Function knows where to send pushes.
 async function enablePushNotifications(userId){
@@ -132,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.12";
+const APP_VERSION = "V0.08.13";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3151,9 +3165,17 @@ export default function Matchkeeper() {
   const [eventCommFilter, setEventCommFilter] = useState("all");
   useEffect(() => { if (me?.id) { const saved = localStorage.getItem(`mk_ev_filter_${me.id}`); if (saved) setEventCommFilter(saved); } }, [me?.id]);
   useEffect(() => { if (me?.id) localStorage.setItem(`mk_ev_filter_${me.id}`, eventCommFilter); }, [eventCommFilter, me?.id]);
+  // iOS can never get push notifications from a plain browser tab (see isIosNonStandalone) —
+  // this nudges the user through the one manual step that unlocks it (Add to Home Screen),
+  // since there's no way to trigger that from code. Dismissed permanently once closed.
+  const [showIosInstallBanner, setShowIosInstallBanner] = useState(() => {
+    try { return isIosNonStandalone() && localStorage.getItem("mk_ios_install_dismissed")!=="1"; } catch(e) { return false; }
+  });
+  const dismissIosInstallBanner = () => { try { localStorage.setItem("mk_ios_install_dismissed","1"); } catch(e) {} setShowIosInstallBanner(false); };
   const autoPushTriedRef = useRef(false);
   useEffect(() => {
-    if (Capacitor.isNativePlatform() && linkedMe && !autoPushTriedRef.current) {
+    if (!linkedMe || autoPushTriedRef.current) return;
+    if (Capacitor.isNativePlatform()) {
       autoPushTriedRef.current = true;
       // Sequenced, not fired concurrently: Android can only show one runtime-permission
       // dialog at a time, and a second request arriving while one is already in flight gets
@@ -3164,6 +3186,12 @@ export default function Matchkeeper() {
         await Geolocation.requestPermissions().catch(e=>console.log("Location permission request failed", e));
         await MatchMode.ensureExactAlarmPermission().catch(e=>console.log("Exact alarm permission request failed", e));
       })();
+    } else if (!isIosNonStandalone()) {
+      // Android/desktop web — the Notification/Push API works directly in a plain browser
+      // tab, no install step needed, so this can auto-prompt exactly like native does. iOS
+      // is excluded on purpose (see isIosNonStandalone) — it gets the install banner instead.
+      autoPushTriedRef.current = true;
+      enablePushNotifications(linkedMe.id).catch(e=>console.log("Push enable failed", e));
     }
   }, [linkedMe]);
   const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
@@ -4624,6 +4652,11 @@ export default function Matchkeeper() {
       />
       <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
+        {showIosInstallBanner&&<div style={{fontSize:12,color:"#A5B4FC",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",gap:10,alignItems:"flex-start"}}>
+          <span style={{fontSize:18,lineHeight:1}}>📲</span>
+          <span style={{flex:1}}>Add Matchkeeper to your Home Screen to get notifications and the full app experience — tap <b>Share</b> in Safari's toolbar, then <b>"Add to Home Screen"</b>.</span>
+          <span onClick={dismissIosInstallBanner} style={{cursor:"pointer",color:"var(--po-dim)",fontSize:14,flexShrink:0}}>✕</span>
+        </div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
@@ -8125,12 +8158,19 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const isNative = Capacitor.isNativePlatform();
   useEffect(() => {
-    if (!isNative) return;
-    PushNotifications.checkPermissions().then(res => {
-      setPushStatus(res.receive === "granted" ? "on" : "error");
-      setPushBlocked(res.receive === "denied");
-      if (res.receive !== "granted") setPushErrDetail("Notifications permission not granted — enable it for Matchkeeper in your phone's system Settings app");
-    });
+    if (isNative) {
+      PushNotifications.checkPermissions().then(res => {
+        setPushStatus(res.receive === "granted" ? "on" : "error");
+        setPushBlocked(res.receive === "denied");
+        if (res.receive !== "granted") setPushErrDetail("Notifications permission not granted — enable it for Matchkeeper in your phone's system Settings app");
+      });
+    } else if ("Notification" in window) {
+      // Reflects whatever the auto-prompt-on-login already resolved (App.jsx's autoPushTriedRef
+      // effect) — without this, a web user who was already silently enabled at launch would
+      // still see "Enable" here as if nothing had happened.
+      if (Notification.permission === "granted") setPushStatus("on");
+      else if (Notification.permission === "denied") { setPushStatus("error"); setPushBlocked(true); setPushErrDetail("Browser notification permission was denied"); }
+    }
   }, [isNative]);
   const [locStatus,setLocStatus] = useState("idle"); // idle | working | on | off | error
   useEffect(() => {

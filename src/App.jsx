@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.03";
+const APP_VERSION = "V0.09.04";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3942,7 +3942,11 @@ export default function Matchkeeper() {
     const footballNumTeams=isFootballEv?(parseInt(d.numTeams)||3):undefined;
     // Football's cap is derived (team size × number of teams), not typed in directly — see
     // EventForm/EventEditForm, which hide the manual Max Players field for football entirely.
-    const derivedMaxPlayers=isFootballEv?(footballTeamSize*footballNumTeams||null):(d.maxPlayers?parseInt(d.maxPlayers)||null:null);
+    // Padel's cap is also derived, not typed in — courts×6, the same ratio the Min/Ideal/Max
+    // indicator already shows everywhere in the app, applied uniformly across Open Day/Closed
+    // Individuals/Closed Teams (courts×6 is always even, so Closed Teams' pairing requirement
+    // is automatically satisfied too — no separate per-type formula needed).
+    const derivedMaxPlayers=isFootballEv?(footballTeamSize*footballNumTeams||null):(courtsCount*6||null);
     // rotationMin isn't a form field anymore — round/match duration belongs to the actual
     // round/team generator (its own picker, e.g. CI's "Round duration" or CT's "Match duration"
     // at generation time), not the event create/edit form. This is just the seed default those
@@ -5262,7 +5266,7 @@ function EvCard({ev,me,users,venues,onClick}){
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0],maxPlayers:"",pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
+  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
   const venuePitches=v?.pitches||[];
@@ -5322,7 +5326,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
         </>
       : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div>}
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{(isFootball?[["Pitches",c],["Teams",f.numTeams||0],["Cost",`${tot} EGP`]]:[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]]).map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
-    {!isFootball&&<div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>}
+    {!isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 6 = <b>{(parseInt(f.courts)||0)*6}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
     <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
@@ -5338,14 +5342,14 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const maxC=v?v.courts.length:10;
   const isFootball=f.sport==="Football";
   const vPricing=getVenuePricing(v,f.sport);
-  // Football's cap isn't typed in directly — it's derived from team size × number of teams
-  // (the owner's rule), so the two stay in sync instead of drifting apart. Padel keeps the
-  // plain manual hard-cap field, unrelated to any team concept.
+  // Neither sport's cap is typed in directly anymore — football derives it from team size ×
+  // number of teams, padel derives it from courts × 6 (the same ratio the Min/Ideal/Max
+  // indicator already shows everywhere), so it always stays in sync with the real fields
+  // instead of being able to drift apart from them.
   useEffect(()=>{
-    if(!isFootball) return;
-    const computed=(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0);
+    const computed=isFootball?(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0):(parseInt(f.courts)||0)*6;
     if(computed>0) set("maxPlayers",String(computed));
-  },[isFootball,f.teamSize,f.numTeams]);
+  },[isFootball,f.teamSize,f.numTeams,f.courts]);
   const isCompleted = ev.status==="completed";
   const lockedType = !!ev.plan || isCompleted; // can't change type once a plan has been generated or event is completed
   const lockedCourts = isCompleted; // court count locked once completed — would corrupt historical match/break records
@@ -5370,23 +5374,24 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
 
       {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
 
-      {isFootball
-        ? <>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}>
-              <Inp label="Team size" value={f.teamSize} onChange={v2=>set("teamSize",v2.replace(/\D/g,""))} type="number"/>
-              <Inp label="Number of teams" value={f.numTeams} onChange={v2=>set("numTeams",v2.replace(/\D/g,""))} type="number"/>
-            </div>
-            <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>
-          </>
-        : <div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>}
+      {isFootball&&<>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}>
+          <Inp label="Team size" value={f.teamSize} onChange={v2=>set("teamSize",v2.replace(/\D/g,""))} type="number"/>
+          <Inp label="Number of teams" value={f.numTeams} onChange={v2=>set("numTeams",v2.replace(/\D/g,""))} type="number"/>
+        </div>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>
+      </>}
       {!lockedCourts&&<>
         {f.sport==="Football"
           ? <div style={{marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>ℹ️ Pitch selection isn't editable here yet ({ev.courts} pitch{ev.courts!==1?"es":""} currently) — recreate the event to change pitches.</div>
-          : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div>
-              <select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>
-                {Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n} courts (Ideal: {n*5}, Max: {n*6})</option>)}
-              </select>
-            </div>}
+          : <>
+              <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div>
+                <select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>
+                  {Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n} courts (Ideal: {n*5}, Max: {n*6})</option>)}
+                </select>
+              </div>
+              <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 6 = <b>{(parseInt(f.courts)||0)*6}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>
+            </>}
         <div style={{marginBottom:14}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Event Type{lockedType?" (locked)":""}</div>
           {getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>!lockedType&&set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:lockedType?"default":"pointer",opacity:lockedType&&f.eventType!==t.key?0.4:1,border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}>

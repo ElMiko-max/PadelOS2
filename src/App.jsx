@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.13";
+const APP_VERSION = "V0.08.14";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -301,6 +301,28 @@ function mmBuildCTLeaguePayload(round, comms, excludeEventId){
   });
   return [...pick(round?.matchesA, "A"), ...pick(round?.matchesB, "B")];
 }
+
+// ── Registration capacity + waitlist ───────────────────
+// ev.maxPlayers is an independent, optional admin-set cap — deliberately NOT derived from
+// courts (courts*4/5/6 is a padel-specific proxy that doesn't generalize, e.g. a 5-a-side
+// football session run on one shared pitch with a hard cap of 15 has no clean "courts" value).
+// No new data structure for the waitlist itself — active vs. waitlisted is purely a computed
+// split of ev.registrations by array position (registration order) against maxPlayers, so
+// "promotion" when someone cancels falls out of the math for free rather than needing its own
+// state transition. Not to be confused with plan.waitlisted, an unrelated pre-existing concept
+// (the single leftover player when Closed Teams has an odd headcount for pairing purposes).
+const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
+const splitRegsByCapacity = ev => {
+  const max = getMaxPlayers(ev);
+  if (!max) return { active: ev.registrations, waitlisted: [] };
+  return { active: ev.registrations.slice(0, max), waitlisted: ev.registrations.slice(max) };
+};
+const isRegWaitlisted = (ev, uid) => {
+  const max = getMaxPlayers(ev);
+  if (!max) return false;
+  const idx = ev.registrations.findIndex(r=>r.userId===uid);
+  return idx>=max;
+};
 
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
@@ -3887,7 +3909,7 @@ export default function Matchkeeper() {
   };
   const createEvent=(cid,d)=>{
     const id=_eid++;const v=venues.find(x=>x.id===parseInt(d.venueId));
-    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:parseInt(d.courts)||2,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:v?.pricePerHour||0,extraFee:v?.extraFee||0,plan:null,reservedCourts:v?.courts.length||2};
+    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:parseInt(d.courts)||2,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:v?.pricePerHour||0,extraFee:v?.extraFee||0,plan:null,reservedCourts:v?.courts.length||2,maxPlayers:d.maxPlayers?parseInt(d.maxPlayers)||null:null};
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
@@ -4137,11 +4159,25 @@ export default function Matchkeeper() {
     });
     toast2("Event closed ✓ — ratings updated");
   };
+  // willLandWaitlisted: computed BEFORE the mutation, from the event's current registration
+  // count vs. maxPlayers — whoever is about to be appended lands active or waitlisted purely
+  // by how many people are already ahead of them in ev.registrations (see splitRegsByCapacity).
+  const willLandWaitlisted = (ev, uid) => {
+    const max = getMaxPlayers(ev);
+    return !!(ev && max!=null && ev.registrations.length>=max && !ev.registrations.some(r=>r.userId===uid));
+  };
   const registerEv=(cid,eid)=>{
     const ev=getEv(cid,eid);
+    const waitlisted = willLandWaitlisted(ev, me.id);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
-    toast2("Registered ✓");
-    if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
+    if (waitlisted) {
+      const waitPos = ev.registrations.length - getMaxPlayers(ev) + 1;
+      toast2(`Event's full — you're #${waitPos} on the waitlist`);
+      if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${waitPos} on the waitlist for ${ev.name}`, "We'll notify you if a spot opens up.");
+    } else {
+      toast2("Registered ✓");
+      if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
+    }
     // Let the event's creator + community admins know someone registered themselves — the
     // admin-driven paths (addMember, registerViaInvite, approveEventJoin) don't need this,
     // since the admin already knows because they're the one who took the action.
@@ -4149,14 +4185,15 @@ export default function Matchkeeper() {
       const comm = comms.find(c=>c.id===cid);
       const adminIds = (comm?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
       const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
-      notify(recipients, "eventRegistration", ev, "🎾 New registration", `${me.nickname} just registered for ${ev.name}`);
+      notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
     }
   };
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
+    const waitlisted = willLandWaitlisted(ev, uid);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})}));
-    toast2(`${users.find(u=>u.id===uid)?.nickname} added ✓`);
-    if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
+    toast2(`${users.find(u=>u.id===uid)?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
+    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
   };
   // An invite link is deliberate access granted by an admin — it skips the regular-member
   // priority window entirely (that gate exists to stop random public sign-ups from queue-
@@ -4166,10 +4203,11 @@ export default function Matchkeeper() {
   // existing "Make Member" action, rather than a total stranger with zero community trace.
   const registerViaInvite=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
+    const waitlisted = willLandWaitlisted(ev, uid);
     updC(cid,c=>({...c,
       members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
-    if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
+    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
   };
   // Event-level join requests — same shape as community joinRequests, but scoped to one
   // event: anyone who finds the event (not just invited, not just regular members) can ask
@@ -4183,6 +4221,7 @@ export default function Matchkeeper() {
   };
   const approveEventJoin=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
+    const waitlisted = willLandWaitlisted(ev, uid);
     const updateOne=e=>{
       if(e.id!==eid) return e;
       const newJoinRequests=(e.joinRequests||[]).filter(r=>r.userId!==uid);
@@ -4191,8 +4230,8 @@ export default function Matchkeeper() {
       return {...e,joinRequests:newJoinRequests,registrations:newRegs};
     };
     updC(cid,c=>({...c,events:c.events.map(updateOne)}));
-    toast2("Approved ✓");
-    if (ev) notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
+    toast2(waitlisted?"Approved — waitlisted (event full)":"Approved ✓");
+    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
   };
   const rejectEventJoin=(cid,eid,uid)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)})}));
@@ -4240,7 +4279,22 @@ export default function Matchkeeper() {
   const votePoll=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.poll)return ev;const v={...ev.poll.votes};const my=v[me.id]||[];v[me.id]=my.includes(key)?my.filter(k=>k!==key):[...my,key];return{...ev,poll:{...ev.poll,votes:v}};})}));};
   const resolveT=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,type:key,poll:ev.poll?{...ev.poll,resolved:true,result:key}:null})}));toast2("Type set ✓");};
   const setPlan=(cid,eid,plan)=>updC(cid,c=>({...c,events:c.events.map(ev=>ev.id===eid?{...ev,plan}:ev)}));
-  const removeFromEvent=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));toast2("Removed from event");};
+  const removeFromEvent=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    // If the person leaving held an active (non-waitlisted) spot and someone's waiting,
+    // whoever is first in line is about to be pulled into the active range purely by the
+    // array shifting — no separate "promote" transaction, just notify the specific person
+    // this affects, since notify() lists don't reflect who newly crossed the threshold.
+    const max = getMaxPlayers(ev);
+    let promoted = null;
+    if (ev && max!=null) {
+      const idx = ev.registrations.findIndex(r=>r.userId===uid);
+      if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
+    }
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));
+    toast2("Removed from event");
+    if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
+  };
   const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");};
   const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
@@ -4297,7 +4351,7 @@ export default function Matchkeeper() {
   // CI
   const startCI=(cid,eid,n,dur)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    const players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+    const players=splitRegsByCapacity(ev).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
   const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");return true;};
@@ -4356,7 +4410,7 @@ export default function Matchkeeper() {
   };
   const editBreakCI=(cid,eid,ri,uid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const bpr=Math.max(0,ev.registrations.length-ev.courts*4);
+    const bpr=Math.max(0,splitRegsByCapacity(ev).active.length-ev.courts*4);
     const firmBreaks=ev.plan.firmBreaks||{};
     const isFirm=(firmBreaks[ri]||[]).includes(uid);
     const isSuggested=(ev.plan.breakPlan[ri]||[]).includes(uid)&&!isFirm;
@@ -4531,11 +4585,11 @@ export default function Matchkeeper() {
 
   const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    let players=ev.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+    let players=splitRegsByCapacity(ev).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
     if(players.length%2!==0){
       // Odd count — last player in registrations array goes to waiting list
-      const regs=ev.registrations;
+      const regs=splitRegsByCapacity(ev).active;
       const lastReg=regs[regs.length-1];
       const lastPlayer=players.find(p=>(p.userId||p.id)===lastReg?.userId);
       waitlisted=lastPlayer||players[players.length-1];
@@ -5152,13 +5206,13 @@ function EvCard({ev,me,users,venues,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts{creator?` · by ${creator.nickname}`:""}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--po-dim)",marginTop:3}}><span>{ev.registrations.length} registered</span><span>Min {ev.courts*4} · Ideal {ev.courts*5} · Max {ev.courts*6}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2,overflow:"hidden",marginTop:2}}><div style={{height:"100%",borderRadius:2,width:`${Math.min(100,(ev.registrations.length/(ev.courts*6||1))*100)}%`,background:ev.registrations.length>=ev.courts*6?"#EF4444":ev.registrations.length>=ev.courts*5?"#F59E0B":"#6366F1"}}/></div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.courts} courts{creator?` · by ${creator.nickname}`:""}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--po-dim)",marginTop:3}}><span>{splitRegsByCapacity(ev).active.length} registered{splitRegsByCapacity(ev).waitlisted.length>0?` · ${splitRegsByCapacity(ev).waitlisted.length} waiting`:""}</span><span>{getMaxPlayers(ev)?`Max ${getMaxPlayers(ev)}`:`Min ${ev.courts*4} · Ideal ${ev.courts*5} · Max ${ev.courts*6}`}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2,overflow:"hidden",marginTop:2}}><div style={{height:"100%",borderRadius:2,width:`${Math.min(100,(splitRegsByCapacity(ev).active.length/(getMaxPlayers(ev)||ev.courts*6||1))*100)}%`,background:splitRegsByCapacity(ev).active.length>=(getMaxPlayers(ev)||ev.courts*6)?"#EF4444":!getMaxPlayers(ev)&&splitRegsByCapacity(ev).active.length>=ev.courts*5?"#F59E0B":"#6366F1"}}/></div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",rotationMin:"20",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0]});
+  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",rotationMin:"20",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0],maxPlayers:""});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId)),c=parseInt(f.courts)||0,maxC=v?v.courts.length:10;
   const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60; return Math.max(0.5, mins/60); })();
   const tot=v?Math.round((v.pricePerHour+v.extraFee)*c*durHrs):0;
@@ -5178,6 +5232,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{v.courts.length} courts · {v.pricePerHour} EGP/hr{v.extraFee>0?` · +${v.extraFee} booking`:""}</div>}</div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[10,15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]].map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
+    <div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&EVENT_TYPES.map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
     <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
@@ -5187,7 +5242,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
 // ── Event Edit Form (courts + times only) ─────────────
 function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0]});
+  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):""});
   const set=(k,val)=>setF(p=>({...p,[k]:val}));
   const v=venues.find(x=>x.id===parseInt(f.venueId));
   const maxC=v?v.courts.length:10;
@@ -5213,6 +5268,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           event actually happened. */}
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{v.courts.length} courts · {v.pricePerHour} EGP/hr{v.extraFee>0?` · +${v.extraFee} booking`:""}</div>}</div>
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div></div>
+      <div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>
       {!lockedCourts&&<>
         <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div>
           <select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>
@@ -5226,7 +5282,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           </div>)}
         </div>
       </>}
-      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport})} style={{width:"100%"}}/>
+      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null})} style={{width:"100%"}}/>
     </Card>
   </>;
 }
@@ -5375,7 +5431,8 @@ function OutputPESTable({rows}){
   </div>;
 }
 function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewProfile}){
-  const bpr=Math.max(0,ev.registrations.length-tc*4);
+  const activeRegistrations=splitRegsByCapacity(ev).active;
+  const bpr=Math.max(0,activeRegistrations.length-tc*4);
 
   // Count completed rounds (all matches have winners)
   const completedRounds=plan.rounds.filter(r=>r.matches.every(m=>m.winner!=null)).length;
@@ -5390,8 +5447,8 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewP
   function validate(bp2){
     const w=[];
     bp2.forEach((r,ri)=>{if(r.length!==bpr)w.push(`R${ri+1}: ${r.length} breaks (needs ${bpr})`);});
-    ev.registrations.forEach(r=>{let last=-2;bp2.forEach((round,ri)=>{if(round.includes(r.userId)){if(ri-last===1)w.push(`${users.find(u=>u.id===r.userId)?.nickname}: consecutive breaks R${ri} & R${ri+1}`);last=ri;}});});
-    const counts={};ev.registrations.forEach(r=>{counts[r.userId]=bp2.filter(b=>b.includes(r.userId)).length;});
+    activeRegistrations.forEach(r=>{let last=-2;bp2.forEach((round,ri)=>{if(round.includes(r.userId)){if(ri-last===1)w.push(`${users.find(u=>u.id===r.userId)?.nickname}: consecutive breaks R${ri} & R${ri+1}`);last=ri;}});});
+    const counts={};activeRegistrations.forEach(r=>{counts[r.userId]=bp2.filter(b=>b.includes(r.userId)).length;});
     const vals=Object.values(counts);if(vals.length>0&&Math.max(...vals)-Math.min(...vals)>1)w.push(`Unequal breaks: max=${Math.max(...vals)}, min=${Math.min(...vals)}`);
     return w;
   }
@@ -6364,8 +6421,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const totC        = Math.round(courtTotal + extraFeeTotal + extraExp);
   const cinCnt      = effEv.checkedIn.length;
   // Open Events split cost by actual check-in; CI/CT have no check-in step,
-  // so cost is split across registered players instead (attendance is assumed).
-  const attendeeIds = isOpen ? effEv.checkedIn : effEv.registrations.map(r=>r.userId);
+  // so cost is split across registered (active, non-waitlisted) players instead
+  // (attendance is assumed).
+  const attendeeIds = isOpen ? effEv.checkedIn : splitRegsByCapacity(effEv).active.map(r=>r.userId);
   const attCnt      = attendeeIds.length;
   const payingCnt   = Math.max(0, attCnt - [...exemptedIds].filter(id=>attendeeIds.includes(id)).length);
   const cpp         = payingCnt>0?(totC/payingCnt).toFixed(0):"—";
@@ -6589,10 +6647,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
   const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
 
-  // CT calc
-  const ctCC   = isCT?calcCTCourts(effEv.registrations.length,effEv.reservedCourts||effEv.courts||2):null;
+  // CT calc — active (non-waitlisted) registrants only, matching what startCT will actually use
+  const activeRegCount = splitRegsByCapacity(effEv).active.length;
+  const ctCC   = isCT?calcCTCourts(activeRegCount,effEv.reservedCourts||effEv.courts||2):null;
   const selCtC = ctC??ctCC?.min??tc;
-  const nTeams = Math.floor(effEv.registrations.length/2);
+  const nTeams = Math.floor(activeRegCount/2);
   const breakTeams = Math.max(0,nTeams-selCtC*2);
   const ladderOK   = (breakTeams*2)<=selCtC;
   // Round 1 is "locked" once any match in it has a winner recorded — after this, no more player changes
@@ -6844,11 +6903,20 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       <PollBlock ev={effEv} me={me} isReg={isReg} isAdmin={isAdmin} onVote={act.vote} onResolveType={act.resolveType}/>
 
-      <div style={{marginBottom:12}}>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}><span>{effEv.registrations.length} registered</span><span>Min {minReq} · Ideal {ideal} · Max {maxCap}</span></div>
-        <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(effEv.registrations.length/maxCap)*100)}%`,background:effEv.registrations.length>=maxCap?"#EF4444":effEv.registrations.length>=ideal?"#F59E0B":"#6366F1"}}/></div>
-        {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:3}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
-      </div>
+      {(()=>{
+        const regCap=getMaxPlayers(effEv);
+        const {active:activeRegsForBar,waitlisted:waitlistedRegsForBar}=splitRegsByCapacity(effEv);
+        const shownCap=regCap??maxCap;
+        return <div style={{marginBottom:12}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}>
+            <span>{activeRegsForBar.length} registered{waitlistedRegsForBar.length>0?` · ${waitlistedRegsForBar.length} waiting`:""}</span>
+            <span>{regCap?`Max ${regCap}`:`Min ${minReq} · Ideal ${ideal} · Max ${maxCap}`}</span>
+          </div>
+          <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(activeRegsForBar.length/shownCap)*100)}%`,background:activeRegsForBar.length>=shownCap?"#EF4444":!regCap&&activeRegsForBar.length>=ideal?"#F59E0B":"#6366F1"}}/></div>
+          {waitlistedRegsForBar.length>0&&<div style={{fontSize:11,color:"#F59E0B",marginTop:3}}>⏳ {waitlistedRegsForBar.length} on the waitlist — first in line joins automatically if a spot opens</div>}
+          {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:3}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
+        </div>;
+      })()}
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12}}>
         {[["Courts",tc],["Registered",effEv.registrations.length],
@@ -6859,12 +6927,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </div>
 
       {!isCompleted&&effEv.status==="registration_open"&&<>
-        {canReg&&<Btn label="I'm In ✓" primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
+        {canReg&&<Btn label={getMaxPlayers(effEv)&&effEv.registrations.length>=getMaxPlayers(effEv)?"⏳ Join Waitlist":"I'm In ✓"} primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
         {!canReg&&!myReg&&(myEventJoinPending
           ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
           : <Btn label="🙋 Request to Join" onClick={act.requestEventJoin} style={{width:"100%",marginBottom:6}}/>)}
-        {myReg&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
-        {myReg&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
+        {myReg&&isRegWaitlisted(effEv,me.id)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
+        {myReg&&!isRegWaitlisted(effEv,me.id)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
+        {myReg&&!isRegWaitlisted(effEv,me.id)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
         {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
         {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with Output PES (Performance Based)" onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"transparent",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
@@ -6928,8 +6997,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </Card>;})}
       </>}
       {(()=>{
-        const waitlistedIds=new Set((plan?.waitlisted||[]).map(w=>w.userId));
-        const activeRegs=effEv.registrations.filter(r=>!waitlistedIds.has(r.userId));
+        const ctOddWaitlistedIds=new Set((plan?.waitlisted||[]).map(w=>w.userId));
+        const {active:capActiveRegs,waitlisted:capWaitlistedRegs}=splitRegsByCapacity(effEv);
+        const activeRegs=capActiveRegs.filter(r=>!ctOddWaitlistedIds.has(r.userId));
         return <><ST>Registered ({activeRegs.length})</ST>
         {activeRegs.map(r=>{
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
@@ -6993,7 +7063,24 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>
           </div>
         </Card>;
-      })}</>;})()}
+      })}
+      {capWaitlistedRegs.length>0&&<>
+        <ST>⏳ Waitlist ({capWaitlistedRegs.length}) — event full</ST>
+        {capWaitlistedRegs.map((r,wi)=>{
+          const u=users.find(u=>u.id===r.userId); if(!u) return null;
+          return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08",cursor:onViewProfile?"pointer":"default"}}>
+            <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
+              <Av u={u} size={34}/>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div>
+                <div style={{fontSize:11,color:"#F59E0B"}}>#{wi+1} on the waitlist — joins automatically if a spot opens</div>
+              </div>
+              {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
+            </div>
+          </Card>;
+        })}
+      </>}
+      </>;})()}
     </>}
 
     {/* MANAGE */}
@@ -7023,7 +7110,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>}
 
     {tab==="manage"&&isAdmin&&<>
-      {isOpen&&effEv.registrations.length<tc*4&&<Card style={{background:"#EF444411",border:"0.5px solid #EF444444",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#EF4444",marginBottom:4}}>⚠️ Insufficient Players</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>Need {tc*4} players. Currently {effEv.registrations.length}.</div></Card>}
+      {isOpen&&activeRegCount<tc*4&&<Card style={{background:"#EF444411",border:"0.5px solid #EF444444",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#EF4444",marginBottom:4}}>⚠️ Insufficient Players</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>Need {tc*4} players. Currently {activeRegCount}.</div></Card>}
       {!isOpen&&<Card style={{background:"#6366F111",border:"0.5px solid #6366F144",marginBottom:10}}><div style={{fontSize:11,color:"var(--po-sub)"}}>ℹ️ {isCI?"Closed Individuals":"Closed Teams"} events have no check-in step — cost is split across all {attCnt} registered players (attendance is assumed).</div></Card>}
       {sim&&attCnt>0&&<Card style={{background:"#6366F111",border:"0.5px solid #6366F144",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#A5B4FC",marginBottom:10}}>💰 Live Cost Settlement</div>{[["Total",`${totC} EGP`],[isOpen?"Checked In":"Registered",attCnt],["Paying",payingCnt],["Per Player",`${cpp} EGP`]].map(([k,val])=><div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #6366F122"}}><span style={{fontSize:13,color:"var(--po-dim)"}}>{k}</span><span style={{fontSize:14,fontWeight:700,color:k==="Per Player"?"#A5B4FC":"var(--po-text)"}}>{val}</span></div>)}</Card>}
       <ST>💰 Financial</ST>
@@ -7149,11 +7236,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="rounds"&&isCI&&<>
       {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Generate Round 1</div>
-        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players · {tc} courts · {Math.max(0,effEv.registrations.length-tc*4)} on break/round</div>
+        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{activeRegCount} players · {tc} courts · {Math.max(0,activeRegCount-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:16}}>💡 {totalR} rounds fit this event's booking window automatically ({roundDur}m each)</div>
-        {effEv.registrations.length<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur)} style={{width:"100%"}}/>}
+        {activeRegCount<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur)} style={{width:"100%"}}/>}
       </Card>}
       {plan&&<>
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -7257,7 +7344,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="teams"&&isCT&&<>
       {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Form Teams & Start</div>
-        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{effEv.registrations.length} players → {Math.floor(effEv.registrations.length/6)} pools → {Math.floor(effEv.registrations.length/2)} teams</div>
+        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{activeRegCount} players → {Math.floor(activeRegCount/6)} pools → {Math.floor(activeRegCount/2)} teams</div>
         {ctCC?.warning&&<div style={{padding:"8px 12px",background:"#F59E0B11",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:12,color:"#F59E0B",marginBottom:12}}>⚠️ {ctCC.warning}</div>}
         <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Courts:</div><div style={{display:"flex",gap:8}}>{[ctCC?.min,ctCC?.max].filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=><button key={n} onClick={()=>setCtC(n)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${selCtC===n?"#6366F1":"var(--po-bdr)"}`,background:selCtC===n?"#6366F122":"var(--po-inp)",color:selCtC===n?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600}}>{n} {n===ctCC?.min?"(min)":"(max)"}</button>)}</div></div>
         <div style={{marginBottom:16}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Format:</div>
@@ -7274,7 +7361,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
         {(()=>{
-          const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const cur=splitRegsByCapacity(effEv).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
           const autoTop=autoPools[0]?.length, autoBottom=autoPools[1]?.length;
@@ -7291,7 +7378,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </Card>}
       {plan&&<>
         {isAdmin&&!ctR1Locked&&(()=>{
-          const cur=effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const cur=splitRegsByCapacity(effEv).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
           const autoTop=autoPools[0]?.length;

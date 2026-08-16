@@ -3,6 +3,12 @@ node_modules/
 .env
 .env.*
 
+# dist/releases/ is a purely ephemeral, regenerated-right-before-deploy artifact (see
+# scripts/prepare-hosting-release.js) — release-archive/ is the real, permanent source of
+# truth for shipped APKs. Never track dist/releases/ itself, to avoid the risk of two tracked
+# copies of the same large binary drifting or doubling repo bloat.
+dist/releases/
+
 # Firebase service account keys — never commit these, regardless of name/location
 **/serviceAccountKey*.json
 **/*-admin-key.json

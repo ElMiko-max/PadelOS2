@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.00";
+const APP_VERSION = "V0.09.01";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -186,12 +186,28 @@ const SPORTS = ["Padel Tennis", "Football"];
 const DEFAULT_SPORT = "Padel Tennis";
 const SPORT_EMOJI = {"Padel Tennis":"🎾", "Football":"⚽"};
 const sportLabel = s => `${SPORT_EMOJI[s]||"🏅"} ${s}`;
+// Football pitches and padel courts at the same venue can cost different hourly rates — falls
+// back to the general (padel) price if a venue added Football without setting its own price yet.
+const getVenuePricing = (venue, sport) => {
+  if (!venue) return { pricePerHour: 0, extraFee: 0 };
+  if (sport === "Football") return { pricePerHour: venue.pricePerHourFootball ?? venue.pricePerHour ?? 0, extraFee: venue.extraFeeFootball ?? venue.extraFee ?? 0 };
+  return { pricePerHour: venue.pricePerHour ?? 0, extraFee: venue.extraFee ?? 0 };
+};
 
 const EVENT_TYPES = [
   { key:"open",         label:"Open Day",           desc:"Social · all levels · check-in" },
   { key:"closed_ind",   label:"Closed Individuals",  desc:"Competitive · rotating partners · ranked" },
   { key:"closed_teams", label:"Closed Teams",        desc:"Fixed teams · compete throughout" },
 ];
+// Football's on-pitch model is fixed teams for the whole session, not padel's rotating-doubles-
+// partner format — so Closed Individuals (built entirely around that rotation) doesn't apply.
+// Same underlying type keys/behavior as padel (nothing downstream changes), just sport-
+// appropriate labels, reordered with the team-based format first per the owner's call.
+const FOOTBALL_EVENT_TYPES = [
+  { key:"closed_teams", label:"League",       desc:"Fixed teams · compete throughout · standings" },
+  { key:"open",         label:"Open / Pickup", desc:"Social · check-in · teams picked on the day" },
+];
+const getEventTypesForSport = sport => sport==="Football" ? FOOTBALL_EVENT_TYPES : EVENT_TYPES;
 
 // ── AI Event Name Suggester (IDEA-022) ────────────────────────────
 // Client-side template + randomizer. No network call, no API cost — deliberately kept
@@ -207,16 +223,17 @@ const evNameDaypart = (time) => {
   return EVNAME_DAYPARTS.night;
 };
 const evNameWeekday = (date) => { const d=new Date(date); return isNaN(d.getTime())?"":d.toLocaleDateString("en-GB",{weekday:"long"}); };
-function suggestEventName({date,time,venueName,commName}){
+function suggestEventName({date,time,venueName,commName,sport}){
   const day = evNameWeekday(date);
   const part = evNameDaypart(time);
   const word = EVNAME_MOTIVATIONAL[Math.floor(Math.random()*EVNAME_MOTIVATIONAL.length)];
+  const sportWord = sport==="Football" ? "Football" : sport ? "Padel" : "";
   const templates = [
-    () => `${day} ${part} ${word}`.trim(),
-    () => venueName ? `${word} at ${venueName}` : `${day} ${word}`,
-    () => commName ? `${commName} ${word}` : `${part} ${word}`,
-    () => `${day} ${word}${venueName?` — ${venueName}`:""}`,
-    () => `${part} ${word} ${day?`· ${day}`:""}`.trim(),
+    () => `${day} ${part} ${sportWord} ${word}`.trim(),
+    () => venueName ? `${sportWord} ${word} at ${venueName}`.trim() : `${day} ${sportWord} ${word}`.trim(),
+    () => commName ? `${commName} ${sportWord} ${word}`.trim() : `${part} ${sportWord} ${word}`.trim(),
+    () => `${day} ${sportWord} ${word}${venueName?` — ${venueName}`:""}`.trim(),
+    () => `${part} ${sportWord} ${word} ${day?`· ${day}`:""}`.trim(),
   ];
   const pick = templates[Math.floor(Math.random()*templates.length)];
   return pick().replace(/\s+/g," ").trim();
@@ -1952,7 +1969,7 @@ function buildEventInfoCard(ev, venue, players, communityName, ctPlan=null, phot
     ["📍 Location", venue ? venue.name : "TBD"],
     ["⏱ Duration", durationLabel(ev.time, ev.timeTo)],
     ev.pitches?.length ? ["⚽ Pitches", ev.pitches.join(", ")] : ["🎾 Courts", `${ev.courts} courts`],
-    ["🏷 Format", EVENT_TYPE_LABELS[ev.type] || "Open"],
+    ["🏷 Format", getEventTypesForSport(ev.sport).find(t=>t.key===ev.type)?.label || EVENT_TYPE_LABELS[ev.type] || "Open"],
     ["👥 Players", `${totalCount} registered`],
   ];
   infoRows.forEach(([label,val])=>{
@@ -3886,7 +3903,14 @@ export default function Matchkeeper() {
   const joinCommunityViaInvite=(cid,uid)=>{updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));};
 
   // Venue
-  const saveVenue=(d,editId=null)=>{const courts=d.courtNames.filter(Boolean).map(n=>({name:n}));const pitches=d.pitchNames.filter(Boolean).map(n=>({name:n}));if(editId){setVenues(vs=>vs.map(v=>v.id===editId?{...v,...d,courts,pitches,status:"pending_edit"}:v));toast2("Saved · Pending review");}else{const id=_vid++;setVenues(vs=>[...vs,{id,...d,courts,pitches,status:"pending"}]);toast2("Added · Pending review");}go("list");};
+  // pricePerHour/extraFee (and their football counterparts) come in as strings from the form's
+  // number inputs (Inp always passes e.target.value) — parse them here so downstream cost math
+  // (which uses +, not just *) doesn't silently concatenate instead of adding.
+  const saveVenue=(d,editId=null)=>{
+    const courts=d.courtNames.filter(Boolean).map(n=>({name:n}));
+    const pitches=d.pitchNames.filter(Boolean).map(n=>({name:n}));
+    const numericD={...d,pricePerHour:parseFloat(d.pricePerHour)||0,extraFee:parseFloat(d.extraFee)||0,pricePerHourFootball:d.pricePerHourFootball?parseFloat(d.pricePerHourFootball)||0:null,extraFeeFootball:d.extraFeeFootball?parseFloat(d.extraFeeFootball)||0:null};
+    if(editId){setVenues(vs=>vs.map(v=>v.id===editId?{...v,...numericD,courts,pitches,status:"pending_edit"}:v));toast2("Saved · Pending review");}else{const id=_vid++;setVenues(vs=>[...vs,{id,...numericD,courts,pitches,status:"pending"}]);toast2("Added · Pending review");}go("list");};
 
   // Event
   const scheduleEventReminders = async (cid, eid, date, time) => {
@@ -3914,7 +3938,12 @@ export default function Matchkeeper() {
     // so every existing courts-count-based calc (cost, min/ideal/max fallback, CT court math)
     // keeps working unchanged for football too, without needing its own parallel code path.
     const courtsCount=isFootballEv?Math.max(1,(d.pitchNames||[]).length):(parseInt(d.courts)||2);
-    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:v?.pricePerHour||0,extraFee:v?.extraFee||0,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:d.maxPlayers?parseInt(d.maxPlayers)||null:null,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:isFootballEv?(parseInt(d.teamSize)||5):undefined,numTeams:isFootballEv?(parseInt(d.numTeams)||3):undefined};
+    const footballTeamSize=isFootballEv?(parseInt(d.teamSize)||5):undefined;
+    const footballNumTeams=isFootballEv?(parseInt(d.numTeams)||3):undefined;
+    // Football's cap is derived (team size × number of teams), not typed in directly — see
+    // EventForm/EventEditForm, which hide the manual Max Players field for football entirely.
+    const derivedMaxPlayers=isFootballEv?(footballTeamSize*footballNumTeams||null):(d.maxPlayers?parseInt(d.maxPlayers)||null:null);
+    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
@@ -3962,12 +3991,17 @@ export default function Matchkeeper() {
       time:newTime||ev.time,
       timeTo:newTimeTo||ev.timeTo,
       venueId:ev.venueId,
+      sport:ev.sport,
       courts:ev.courts,
       type:ev.type,
       rotationMin:ev.rotationMin,
       reservedCourts:ev.reservedCourts,
-      costPerCourt:v?.pricePerHour||0, // re-derived from the venue, not copied from the old event
-      extraFee:v?.extraFee||0,
+      costPerCourt:getVenuePricing(v,ev.sport).pricePerHour, // re-derived from the venue, not copied from the old event
+      extraFee:getVenuePricing(v,ev.sport).extraFee,
+      maxPlayers:ev.maxPlayers??null,
+      pitches:ev.pitches,
+      teamSize:ev.teamSize,
+      numTeams:ev.numTeams,
       // ── Everything else — every other tab starts completely fresh ──
       status:"registration_open",
       closedAt:null,
@@ -5178,17 +5212,21 @@ function VenueList({venues,onAdd,onEdit,onBack}){
     {safeVenues.length>6&&<input value={venueSearch} onChange={e=>setVenueSearch(e.target.value)} placeholder="🔍 Search venues..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>}
     {safeVenues.length===0&&brokenCount===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No venues yet.</div></Card>}
     {vq&&shownVenues.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No venues match "{venueSearch}"</div></Card>}
-    {shownVenues.map(v=><Card key={v.id}><div style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🏟</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{v.name}</span>{SEEDED_VENUE_IDS.has(v.id)&&<SeedBadge/>}{v.status==="pending"&&<Bdg label="⏳ Pending" color="#F59E0B"/>}{v.status==="pending_edit"&&<Bdg label="✏️ Edit Pending" color="#F59E0B"/>}{(!v.status||v.status==="approved")&&<Bdg label="✓ Approved" color="#34D399"/>}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>📍 {v.area} · {v.gov}</div><div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>{(v.sports?.length?v.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}<Bdg label={`${v.courts.length} courts`} color="#38BDF8"/>{v.pricePerHour>0&&<Bdg label={`${v.pricePerHour} EGP/hr`} color="#34D399"/>}{v.pricePerHour===0&&<Bdg label="Free" color="#34D399"/>}{v.extraFee>0&&<Bdg label={`+${v.extraFee} EGP booking`} color="#F59E0B"/>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{v.courts.map(c=>c.name).join(" · ")}</div></div><div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>{(v.mapsUrl||(typeof v.lat==="number"&&typeof v.lng==="number"))&&<MapOpenPicker venue={v} label="📍 Maps"/>}<SmBtn label="✏️ Edit" onClick={()=>onEdit(v.id)} color="#6366F1"/></div></div></Card>)}
+    {shownVenues.map(v=><Card key={v.id}><div style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🏟</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{v.name}</span>{SEEDED_VENUE_IDS.has(v.id)&&<SeedBadge/>}{v.status==="pending"&&<Bdg label="⏳ Pending" color="#F59E0B"/>}{v.status==="pending_edit"&&<Bdg label="✏️ Edit Pending" color="#F59E0B"/>}{(!v.status||v.status==="approved")&&<Bdg label="✓ Approved" color="#34D399"/>}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>📍 {v.area} · {v.gov}</div><div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>{(v.sports?.length?v.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}{(v.sports?.includes("Padel Tennis")??true)&&<Bdg label={`${v.courts.length} courts · ${v.pricePerHour>0?`${v.pricePerHour} EGP/hr`:"Free"}${v.extraFee>0?` +${v.extraFee}`:""}`} color="#38BDF8"/>}{v.sports?.includes("Football")&&<Bdg label={`${(v.pitches||[]).length} pitches · ${getVenuePricing(v,"Football").pricePerHour>0?`${getVenuePricing(v,"Football").pricePerHour} EGP/hr`:"Free"}${getVenuePricing(v,"Football").extraFee>0?` +${getVenuePricing(v,"Football").extraFee}`:""}`} color="#34D399"/>}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{[v.courts.length?v.courts.map(c=>c.name).join(" · "):null,v.pitches?.length?v.pitches.map(p=>p.name).join(" · "):null].filter(Boolean).join(" · ")}</div></div><div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>{(v.mapsUrl||(typeof v.lat==="number"&&typeof v.lng==="number"))&&<MapOpenPicker venue={v} label="📍 Maps"/>}<SmBtn label="✏️ Edit" onClick={()=>onEdit(v.id)} color="#6366F1"/></div></div></Card>)}
   </>;
 }
 function VenueForm({editV,onBack,onSave,egypt}){
   const ie=!!editV;
   const emptyCourtNames=Array(Math.max(0,10-(editV?.courts.length||0))).fill("");
   const emptyPitchNames=Array(Math.max(0,10-(editV?.pitches?.length||0))).fill("");
-  const [f,setF]=useState({name:editV?.name||"",gov:editV?.gov||"",area:editV?.area||"",sports:editV?.sports?.length?editV.sports:[DEFAULT_SPORT],pricePerHour:editV?String(editV.pricePerHour):"",extraFee:editV?String(editV.extraFee):"",mapsUrl:editV?.mapsUrl||"",lat:editV?.lat!=null?String(editV.lat):"",lng:editV?.lng!=null?String(editV.lng):"",courtNames:editV?[...editV.courts.map(c=>c.name),...emptyCourtNames]:["Court 1","Court 2","","","","","","","",""],pitchNames:editV?[...(editV.pitches||[]).map(p=>p.name),...emptyPitchNames]:["Pitch 1","Pitch 2","","","","","","","",""]});
+  const [f,setF]=useState({name:editV?.name||"",gov:editV?.gov||"",area:editV?.area||"",sports:editV?.sports?.length?editV.sports:[DEFAULT_SPORT],pricePerHour:editV?String(editV.pricePerHour):"",extraFee:editV?String(editV.extraFee):"",pricePerHourFootball:editV?.pricePerHourFootball!=null?String(editV.pricePerHourFootball):"",extraFeeFootball:editV?.extraFeeFootball!=null?String(editV.extraFeeFootball):"",mapsUrl:editV?.mapsUrl||"",lat:editV?.lat!=null?String(editV.lat):"",lng:editV?.lng!=null?String(editV.lng):"",courtNames:editV?[...editV.courts.map(c=>c.name),...emptyCourtNames]:["Court 1","Court 2","","","","","","","",""],pitchNames:editV?[...(editV.pitches||[]).map(p=>p.name),...emptyPitchNames]:["Pitch 1","Pitch 2","","","","","","","",""]});
   const set=(k,v)=>setF(p=>({...p,[k]:v})),setC=(i,v)=>setF(p=>{const n=[...p.courtNames];n[i]=v;return{...p,courtNames:n};}),setP=(i,v)=>setF(p=>{const n=[...p.pitchNames];n[i]=v;return{...p,pitchNames:n};});const areas=f.gov?(egypt||{})[f.gov]||[]:[];
+  const multiSport=f.sports.length>1;
   return <><BBtn onBack={onBack} label="Venues"/><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:ie?4:16}}>{ie?"Edit Venue":"Add Venue"}</div>{ie&&<div style={{fontSize:12,color:"#F59E0B",marginBottom:14,padding:"8px 12px",background:"#F59E0B11",borderRadius:8}}>✏️ Changes apply immediately. Pending global review.</div>}
-    <Card><Inp label="Venue Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Wadi Degla Club"/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:0}}><Drp label="المحافظة" value={f.gov} onChange={v=>{set("gov",v);set("area","");}} options={Object.keys(egypt||{}).map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={f.area} onChange={v=>set("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sports (select all that apply)</div><SportPicker selected={f.sports} onChange={v=>set("sports",v)}/></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label="Price/hr (EGP)" value={f.pricePerHour} onChange={v=>set("pricePerHour",v)} type="number"/><Inp label="Extra Booking (EGP)" value={f.extraFee} onChange={v=>set("extraFee",v)} type="number"/></div><Inp label="Google Maps URL" value={f.mapsUrl} onChange={v=>set("mapsUrl",v)} placeholder="https://maps.google.com/..."/>
+    <Card><Inp label="Venue Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Wadi Degla Club"/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:0}}><Drp label="المحافظة" value={f.gov} onChange={v=>{set("gov",v);set("area","");}} options={Object.keys(egypt||{}).map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={f.area} onChange={v=>set("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sports (select all that apply)</div><SportPicker selected={f.sports} onChange={v=>set("sports",v)}/></div>
+    {f.sports.includes("Padel Tennis")&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label={multiSport?"Padel Price/hr (EGP)":"Price/hr (EGP)"} value={f.pricePerHour} onChange={v=>set("pricePerHour",v)} type="number"/><Inp label={multiSport?"Padel Extra Booking (EGP)":"Extra Booking (EGP)"} value={f.extraFee} onChange={v=>set("extraFee",v)} type="number"/></div>}
+    {f.sports.includes("Football")&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label={multiSport?"Football Price/hr (EGP)":"Price/hr (EGP)"} value={f.pricePerHourFootball} onChange={v=>set("pricePerHourFootball",v)} type="number" placeholder={multiSport?"blank = same as padel":""}/><Inp label={multiSport?"Football Extra Booking (EGP)":"Extra Booking (EGP)"} value={f.extraFeeFootball} onChange={v=>set("extraFeeFootball",v)} type="number" placeholder={multiSport?"blank = same as padel":""}/></div>}
+    <Inp label="Google Maps URL" value={f.mapsUrl} onChange={v=>set("mapsUrl",v)} placeholder="https://maps.google.com/..."/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>📍 For "How far is it?" and one-tap navigation to work reliably, add coordinates below — shortened share links (maps.app.goo.gl/…) don't contain them. In Google Maps: long-press the location on the map, then tap the coordinates shown at the bottom to copy them.</div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label="Latitude (optional)" value={f.lat} onChange={v=>set("lat",v)} type="number" placeholder="e.g. 30.0333"/><Inp label="Longitude (optional)" value={f.lng} onChange={v=>set("lng",v)} type="number" placeholder="e.g. 31.4913"/></div>
     {f.sports.includes("Padel Tennis")&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Padel Court Names (up to 10)</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{f.courtNames.map((cn,i)=><input key={i} value={cn} onChange={e=>setC(i,e.target.value)} placeholder={`Court ${i+1}`} className="po-inp" style={{background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>)}</div></div>}
@@ -5242,9 +5280,14 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     set("numTeams",String(suggested));
   },[isFootball,f.pitchNames.length,f.numTeamsTouched]);
   const togglePitch=name=>setF(p=>({...p,pitchNames:p.pitchNames.includes(name)?p.pitchNames.filter(n=>n!==name):[...p.pitchNames,name]}));
+  useEffect(()=>{
+    const validKeys=getEventTypesForSport(f.sport).map(t=>t.key);
+    if(!validKeys.includes(f.eventType)) set("eventType",validKeys[0]);
+  },[f.sport]);
   const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60; return Math.max(0.5, mins/60); })();
-  const tot=v?Math.round((v.pricePerHour+v.extraFee)*c*durHrs):0;
-  const doSuggestName=()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,commName}));
+  const vPricing=getVenuePricing(v,f.sport);
+  const tot=v?Math.round((vPricing.pricePerHour+vPricing.extraFee)*c*durHrs):0;
+  const doSuggestName=()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,commName,sport:f.sport}));
   return <><BBtn onBack={onBack} label="Community"/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>New Event</div><Card>
     <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
       <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Friday Night Padel"/></div>
@@ -5257,7 +5300,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
       <Inp label="Start" value={f.time} onChange={v2=>set("time",v2)} type="time"/>
       <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
     </div>
-    <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {v.pricePerHour} EGP/hr{v.extraFee>0?` · +${v.extraFee} booking`:""}</div>}</div>
+    <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
     {isFootball
       ? <>
           {v&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Pitches (Pitch 1 selected by default)</div>{venuePitches.length===0?<div style={{fontSize:12,color:"#F59E0B",padding:"8px 10px",background:"#F59E0B11",borderRadius:8}}>This venue has no football pitches set up yet — add them by editing the venue.</div>:<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{venuePitches.map(p=><div key={p.name} onClick={()=>togglePitch(p.name)} style={{padding:"7px 12px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,border:`0.5px solid ${f.pitchNames.includes(p.name)?"#6366F1":"var(--po-bdr)"}`,background:f.pitchNames.includes(p.name)?"#6366F122":"var(--po-inp)",color:f.pitchNames.includes(p.name)?"#A5B4FC":"var(--po-dim)"}}>{p.name}</div>)}</div>}</div>}
@@ -5270,8 +5313,9 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
         </>
       : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[10,15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>}
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{(isFootball?[["Pitches",c],["Teams",f.numTeams||0],["Cost",`${tot} EGP`]]:[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]]).map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
-    <div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>
-    <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&EVENT_TYPES.map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
+    {!isFootball&&<div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>}
+    {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
+    <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
     <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
   </Card></>;
@@ -5280,10 +5324,20 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
 // ── Event Edit Form (courts + times only) ─────────────
 function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):""});
+  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3"});
   const set=(k,val)=>setF(p=>({...p,[k]:val}));
   const v=venues.find(x=>x.id===parseInt(f.venueId));
   const maxC=v?v.courts.length:10;
+  const isFootball=f.sport==="Football";
+  const vPricing=getVenuePricing(v,f.sport);
+  // Football's cap isn't typed in directly — it's derived from team size × number of teams
+  // (the owner's rule), so the two stay in sync instead of drifting apart. Padel keeps the
+  // plain manual hard-cap field, unrelated to any team concept.
+  useEffect(()=>{
+    if(!isFootball) return;
+    const computed=(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0);
+    if(computed>0) set("maxPlayers",String(computed));
+  },[isFootball,f.teamSize,f.numTeams]);
   const isCompleted = ev.status==="completed";
   const lockedType = !!ev.plan || isCompleted; // can't change type once a plan has been generated or event is completed
   const lockedCourts = isCompleted; // court count locked once completed — would corrupt historical match/break records
@@ -5292,7 +5346,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>ℹ️ {isCompleted?"This event is completed — date, time, and venue can still be corrected, but courts and type are locked to protect historical results.":lockedType?"Type is locked — a plan has already been generated for this event.":"Players and plan stay unchanged unless you change the event type."}</div>
       <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
         <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Monday at Galleria"/></div>
-        <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
+        <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,sport:f.sport}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
       </div>
       <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls" multiline/>
       {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
@@ -5304,9 +5358,17 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
       {/* Venue stays editable even after the event is completed — unlike courts/type, changing
           it can't corrupt historical match/break records, it's just correcting where the
           event actually happened. */}
-      <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{v.courts.length} courts · {v.pricePerHour} EGP/hr{v.extraFee>0?` · +${v.extraFee} booking`:""}</div>}</div>
+      <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${(v.pitches||[]).length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div></div>
-      <div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>
+      {isFootball
+        ? <>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}>
+              <Inp label="Team size" value={f.teamSize} onChange={v2=>set("teamSize",v2.replace(/\D/g,""))} type="number"/>
+              <Inp label="Number of teams" value={f.numTeams} onChange={v2=>set("numTeams",v2.replace(/\D/g,""))} type="number"/>
+            </div>
+            <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>
+          </>
+        : <div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>}
       {!lockedCourts&&<>
         {f.sport==="Football"
           ? <div style={{marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>ℹ️ Pitch selection isn't editable here yet ({ev.courts} pitch{ev.courts!==1?"es":""} currently) — recreate the event to change pitches.</div>
@@ -5317,12 +5379,12 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
             </div>}
         <div style={{marginBottom:14}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Event Type{lockedType?" (locked)":""}</div>
-          {EVENT_TYPES.map(t=><div key={t.key} onClick={()=>!lockedType&&set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:lockedType?"default":"pointer",opacity:lockedType&&f.eventType!==t.key?0.4:1,border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}>
+          {getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>!lockedType&&set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:lockedType?"default":"pointer",opacity:lockedType&&f.eventType!==t.key?0.4:1,border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}>
             <div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div>
           </div>)}
         </div>
       </>}
-      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null})} style={{width:"100%"}}/>
+      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})})} style={{width:"100%"}}/>
     </Card>
   </>;
 }
@@ -6904,7 +6966,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
           <input type="text" value={dupName} onChange={e=>setDupName(e.target.value)} placeholder="Event name" className="po-inp"
             style={{flex:1,padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-          <button type="button" onClick={()=>setDupName(suggestEventName({date:dupDate,time:dupTime,venueName:venues.find(v2=>v2.id===ev.venueId)?.name}))} title="Suggest a name" style={{padding:"8px 10px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨</button>
+          <button type="button" onClick={()=>setDupName(suggestEventName({date:dupDate,time:dupTime,venueName:venues.find(v2=>v2.id===ev.venueId)?.name,sport:ev.sport}))} title="Suggest a name" style={{padding:"8px 10px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨</button>
         </div>
         <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
           style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,marginBottom:10,boxSizing:"border-box"}}/>

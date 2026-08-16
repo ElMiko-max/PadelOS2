@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.08.15";
+const APP_VERSION = "V0.09.00";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there

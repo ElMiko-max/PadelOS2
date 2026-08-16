@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.02";
+const APP_VERSION = "V0.09.03";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3943,7 +3943,11 @@ export default function Matchkeeper() {
     // Football's cap is derived (team size × number of teams), not typed in directly — see
     // EventForm/EventEditForm, which hide the manual Max Players field for football entirely.
     const derivedMaxPlayers=isFootballEv?(footballTeamSize*footballNumTeams||null):(d.maxPlayers?parseInt(d.maxPlayers)||null:null);
-    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:parseInt(d.rotationMin)||15,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
+    // rotationMin isn't a form field anymore — round/match duration belongs to the actual
+    // round/team generator (its own picker, e.g. CI's "Round duration" or CT's "Match duration"
+    // at generation time), not the event create/edit form. This is just the seed default those
+    // pickers start from before the admin generates anything.
+    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
@@ -5258,7 +5262,7 @@ function EvCard({ev,me,users,venues,onClick}){
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",rotationMin:"20",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0],maxPlayers:"",pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
+  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0],maxPlayers:"",pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
   const venuePitches=v?.pitches||[];
@@ -5315,9 +5319,8 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
             <Inp label="Number of teams" value={f.numTeams} onChange={v2=>{set("numTeams",v2.replace(/\D/g,""));set("numTeamsTouched",true);}} type="number"/>
           </div>
           <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Default: 3 teams for 1 pitch, or 2 per pitch for more — adjust anytime.</div>
-          <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>{[10,15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div>
         </>
-      : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div><div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Rotation (min)</div><select value={f.rotationMin} onChange={e=>set("rotationMin",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:12}}>{[10,15,20,25,30].map(n=><option key={n} value={n}>{n} min</option>)}</select></div></div>}
+      : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div>}
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{(isFootball?[["Pitches",c],["Teams",f.numTeams||0],["Cost",`${tot} EGP`]]:[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]]).map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
     {!isFootball&&<div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}

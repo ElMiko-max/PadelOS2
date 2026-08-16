@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.04";
+const APP_VERSION = "V0.09.05";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -7435,9 +7435,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {/* CI STANDINGS */}
     {tab==="standings"&&isCI&&<>
       {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>{const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;const delta=Math.round(s.user.usr-before);return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};})}/>}
-      {isPlatformAdmin&&plan&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
+      {plan&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
 
-      {(standingsView==="pes"||!isPlatformAdmin)&&<>
+      {standingsView==="pes"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
         {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
           {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
@@ -7446,13 +7446,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </>}
       </>}
 
-      {standingsView==="delta"&&isPlatformAdmin&&<>
-        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Delta Standings — Performance Delta.</b> How each player did relative to what their current USR predicted — 50% = exactly as expected, above = overperformed, below = underperformed (even on a win). Computed live from current match data, not official, doesn't affect real standings.</div>
+      {standingsView==="delta"&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Delta Standings — Performance Delta.</b> How each player did relative to what their current USR predicted — 50% = exactly as expected, above = overperformed, below = underperformed (even on a win). Computed live from current match data, not official, doesn't affect real standings — view only.</div>
         {plan?<XStandingsPreview rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,score:p.xPES,matches:p.matches}))}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
 
-      {standingsView==="output"&&isPlatformAdmin&&<>
-        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
+      {standingsView==="output"&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable — view only. {isPlatformAdmin?`This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.`:"Only the Platform Admin can close an event using this instead of the standard scoring."}</div>
         {plan?<OutputPESTable rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES})).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
     </>}
@@ -7549,9 +7549,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const delta=Math.round(after-before);
         return {name:s.team?.name,players:teamPlayers,value:plan?.format==="ladder"?s.pts:s.wins,valueLabel:plan?.format==="ladder"?"pts":"wins",usrLine:`Avg USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
       })}/>}
-      {isPlatformAdmin&&plan?.format==="ladder"&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
+      {plan?.format==="ladder"&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
 
-      {(standingsView==="pes"||!isPlatformAdmin||plan?.format!=="ladder")&&<>
+      {(standingsView==="pes"||plan?.format!=="ladder")&&<>
       {/* Scoring info bar */}
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>
         {plan?.format==="ladder"
@@ -7630,13 +7630,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </>}
       </>}
 
-      {standingsView==="delta"&&isPlatformAdmin&&plan?.format==="ladder"&&<>
-        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Delta Standings — Performance Delta.</b> How each team did relative to what their avg USR predicted — 50% = exactly as expected, above = overperformed, below = underperformed (even on a win). Computed live from current match data, not official, doesn't affect real standings.</div>
+      {standingsView==="delta"&&plan?.format==="ladder"&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Delta Standings — Performance Delta.</b> How each team did relative to what their avg USR predicted — 50% = exactly as expected, above = overperformed, below = underperformed (even on a win). Computed live from current match data, not official, doesn't affect real standings — view only.</div>
         <XStandingsPreview rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),score:t.xTES,matches:t.matches}))}/>
       </>}
 
-      {standingsView==="output"&&isPlatformAdmin&&plan?.format==="ladder"&&<>
-        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable. This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.</div>
+      {standingsView==="output"&&plan?.format==="ladder"&&<>
+        <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable — view only. {isPlatformAdmin?`This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.`:"Only the Platform Admin can close an event using this instead of the standard scoring."}</div>
         <OutputPESTable rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),entryUsr:t.entryUsr,avgDelta:t.avgDelta,score:t.outputTES})).sort((a,b)=>b.score-a.score)}/>
       </>}
     </>}

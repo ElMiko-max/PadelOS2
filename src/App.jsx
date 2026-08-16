@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.01";
+const APP_VERSION = "V0.09.02";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -5289,18 +5289,24 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
   const tot=v?Math.round((vPricing.pricePerHour+vPricing.extraFee)*c*durHrs):0;
   const doSuggestName=()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,commName,sport:f.sport}));
   return <><BBtn onBack={onBack} label="Community"/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>New Event</div><Card>
+    {/* ── Common fields — same for every sport ── */}
     <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
       <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Friday Night Padel"/></div>
       <button type="button" onClick={doSuggestName} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
     </div>
     <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls, court 3 booked separately" multiline/>
-    {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
       <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
       <Inp label="Start" value={f.time} onChange={v2=>set("time",v2)} type="time"/>
       <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
     </div>
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
+    <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
+
+    {/* ── Sport ── */}
+    {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
+
+    {/* ── Sport-specific fields ── */}
     {isFootball
       ? <>
           {v&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Pitches (Pitch 1 selected by default)</div>{venuePitches.length===0?<div style={{fontSize:12,color:"#F59E0B",padding:"8px 10px",background:"#F59E0B11",borderRadius:8}}>This venue has no football pitches set up yet — add them by editing the venue.</div>:<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{venuePitches.map(p=><div key={p.name} onClick={()=>togglePitch(p.name)} style={{padding:"7px 12px",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,border:`0.5px solid ${f.pitchNames.includes(p.name)?"#6366F1":"var(--po-bdr)"}`,background:f.pitchNames.includes(p.name)?"#6366F122":"var(--po-inp)",color:f.pitchNames.includes(p.name)?"#A5B4FC":"var(--po-dim)"}}>{p.name}</div>)}</div>}</div>}
@@ -5316,7 +5322,6 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     {!isFootball&&<div style={{marginBottom:14}}><Inp label="Max players (optional — hard cap, independent of courts)" value={f.maxPlayers} onChange={v2=>set("maxPlayers",v2.replace(/\D/g,""))} placeholder="e.g. 15 — leave blank for no cap" type="number"/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:-8}}>Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div></div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
-    <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
     <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
   </Card></>;
 }
@@ -5349,7 +5354,6 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
         <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,sport:f.sport}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
       </div>
       <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls" multiline/>
-      {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
         <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
         <Inp label="Start Time" value={f.time} onChange={v2=>set("time",v2)} type="time"/>
@@ -5360,6 +5364,9 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           event actually happened. */}
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${(v.pitches||[]).length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div></div>
+
+      {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
+
       {isFootball
         ? <>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:0}}>

@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.06";
+const APP_VERSION = "V0.09.07";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3879,6 +3879,25 @@ export default function Matchkeeper() {
     if (me.id!==1) notify([1], "new_community", {communityId:id}, "🌱 New community created", `${me.nickname} created "${d.name}"`);
   };
   const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");goBack();};
+  // ── Centralized bookkeeping (opt-in, per community) ──────────────────
+  // Deliberately runs ALONGSIDE per-event cost-splitting, not instead of it — some
+  // communities self-settle per event (today's default, untouched), others additionally
+  // collect a recurring due into a shared fund for tips/balls/equipment. One flat ledger of
+  // dated entries is the whole model: type:"due" entries are member-linked payments (partial
+  // payments are just their own line item — "how much has X paid this month" is a sum, not a
+  // flag, so partial payments fall out for free without a separate paid/unpaid boolean),
+  // type:"expense" entries are free-text admin-recorded spending. Running balance is just the
+  // sum of every entry (due=income, expense=outflow) since the ledger began.
+  const setBookkeeping=(cid,fields)=>{updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),...fields}}));toast2("Saved ✓");};
+  const addLedgerEntry=(cid,entry)=>{
+    // Timestamp+random rather than a global counter — entries live nested inside each
+    // community's own blob, so a counter would need scanning every community's entries on
+    // load just to stay collision-free; this doesn't.
+    const id=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),entries:[...((c.bookkeeping||{}).entries||[]),{id,recordedBy:me.id,date:new Date().toISOString(),...entry}]}}));
+    toast2(entry.type==="due"?"Payment recorded ✓":"Expense added ✓");
+  };
+  const deleteLedgerEntry=(cid,entryId)=>{updC(cid,c=>({...c,bookkeeping:{...c.bookkeeping,entries:(c.bookkeeping?.entries||[]).filter(e=>e.id!==entryId)}}));toast2("Removed");};
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
   const requestJoin=(cid)=>{updC(cid,c=>c.joinRequests.some(r=>r.userId===me.id)?c:({...c,joinRequests:[...c.joinRequests,{userId:me.id,requestedAt:today}]}));toast2("Request sent ✓");};
@@ -4761,7 +4780,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5085,7 +5104,7 @@ function InviteModal({url,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange}){
+function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -5108,7 +5127,7 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
   const casualCount=regs.filter(m=>m.status==="casual").length;
   const guestCount=regs.filter(m=>m.status==="guest").length;
   const avgU=regs.length?Math.round(regs.reduce((s,m)=>s+(users.find(u=>u.id===m.userId)?.usr||0),0)/regs.length):0;
-  const tdefs=[["members","Members"],["events","Events"],["stats","Reports"],...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
+  const tdefs=[["members","Members"],["events","Events"],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
   const sortedMembersAll=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
   const memberQ=memberSearch.trim().toLowerCase();
@@ -5205,7 +5224,107 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
       </>}
     </>}
     {tab==="stats"&&(canViewPrivate?<CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
+    {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onDeleteLedgerEntry={onDeleteLedgerEntry}/>}
     {tab==="requests"&&isAdmin&&(comm.joinRequests.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No pending requests</div></Card>:comm.joinRequests.map(req=>{const u=users.find(u=>u.id===req.userId);if(!u)return null;return(<Card key={req.userId}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><Av u={u} size={38}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr} · {u.area}</div></div></div>{req.message&&<div style={{fontSize:12,color:"var(--po-sub)",background:"var(--po-inp)",borderRadius:6,padding:"7px 10px",marginBottom:10}}>{req.message}</div>}<div style={{display:"flex",gap:6}}><Btn label="Approve" primary onClick={()=>onApprove(req.userId)} style={{flex:1}}/><Btn label="Reject" danger onClick={()=>onReject(req.userId)} style={{flex:1}}/></div></Card>);}))}</>;
+}
+
+// ── Centralized Bookkeeping (opt-in, per-community ledger) ───────────
+// One flat list of dated entries is the whole model — type:"due" (member payment, partial
+// payments are just their own line item, summed rather than a paid/unpaid flag) and
+// type:"expense" (free-text admin spending). Runs alongside per-event cost-splitting, doesn't
+// replace it.
+function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry}){
+  const bk = comm.bookkeeping||{enabled:false,monthlyDue:100,entries:[]};
+  const entries = bk.entries||[];
+  const [monthlyDueInput,setMonthlyDueInput] = useState(String(bk.monthlyDue||100));
+  const [selMonth,setSelMonth] = useState(new Date().toISOString().slice(0,7)); // "2026-08"
+  const [payingId,setPayingId] = useState(null);
+  const [payAmount,setPayAmount] = useState("");
+  const [showExpense,setShowExpense] = useState(false);
+  const [expDesc,setExpDesc] = useState("");
+  const [expAmount,setExpAmount] = useState("");
+  const [showHistory,setShowHistory] = useState(false);
+
+  if (!bk.enabled) {
+    if (!isAdmin) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No shared ledger for this community yet.</div></Card>;
+    return <Card>
+      <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>💰 Enable Centralized Bookkeeping</div>
+      <div style={{fontSize:12,color:"var(--po-sub)",marginBottom:14}}>Collect a recurring monthly due from members into a shared fund (court tips, balls, equipment...) — tracked separately from, and alongside, per-event cost-splitting.</div>
+      <Inp label="Monthly due per member (EGP)" value={monthlyDueInput} onChange={setMonthlyDueInput} type="number"/>
+      <Btn label="Enable" primary onClick={()=>onSetBookkeeping({enabled:true,monthlyDue:parseFloat(monthlyDueInput)||100})} style={{width:"100%"}}/>
+    </Card>;
+  }
+
+  const balance = entries.reduce((s,e)=>s+(e.type==="due"?e.amount:-e.amount),0);
+  const paidInMonth = (uid,month) => entries.filter(e=>e.type==="due"&&e.memberId===uid&&e.month===month).reduce((s,e)=>s+e.amount,0);
+  const monthLabel = new Date(selMonth+"-01").toLocaleDateString("en-GB",{month:"long",year:"numeric"});
+  const shiftMonth = delta => { const [y,m]=selMonth.split("-").map(Number); const d=new Date(y,m-1+delta,1); setSelMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`); };
+  const sortedEntries = [...entries].sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  return <>
+    <Card style={{marginBottom:12,textAlign:"center"}}>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Fund Balance</div>
+      <div style={{fontSize:32,fontWeight:700,color:balance>=0?"#34D399":"#EF4444"}}>{balance.toLocaleString()} EGP</div>
+      {isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Monthly due: {bk.monthlyDue} EGP/member <span onClick={()=>{const v=prompt("New monthly due (EGP):",String(bk.monthlyDue));if(v&&!isNaN(parseFloat(v)))onSetBookkeeping({monthlyDue:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>}
+    </Card>
+
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+      <SmBtn label="←" onClick={()=>shiftMonth(-1)} color="#6366F1"/>
+      <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>{monthLabel}</div>
+      <SmBtn label="→" onClick={()=>shiftMonth(1)} color="#6366F1"/>
+    </div>
+
+    {regs.filter(m=>m.status!=="guest").map(m=>{
+      const u=users.find(x=>x.id===m.userId); if(!u) return null;
+      const paid=paidInMonth(u.id,selMonth);
+      const owed=Math.max(0,bk.monthlyDue-paid);
+      const status = owed===0?"paid":paid>0?"partial":"unpaid";
+      return <Card key={u.id} style={{marginBottom:6,padding:"8px 12px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <Av u={u} size={32}/>
+          <div style={{flex:1,minWidth:0,cursor:onViewProfile?"pointer":"default"}} onClick={()=>onViewProfile&&onViewProfile(u.id)}>
+            <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div>
+            <div style={{fontSize:11,color:status==="paid"?"#34D399":status==="partial"?"#F59E0B":"var(--po-dim)"}}>{paid}/{bk.monthlyDue} EGP{status==="paid"?" ✓ paid":status==="partial"?" · partial":""}</div>
+          </div>
+          {isAdmin&&status!=="paid"&&(payingId===u.id
+            ? <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                <input type="number" autoFocus value={payAmount} onChange={e=>setPayAmount(e.target.value)} placeholder={String(owed)} className="po-inp" style={{width:60,padding:"5px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}}/>
+                <SmBtn label="✓" onClick={()=>{const amt=parseFloat(payAmount)||owed;if(amt>0){onAddLedgerEntry({type:"due",memberId:u.id,amount:amt,month:selMonth,description:`Monthly due — ${monthLabel}`});}setPayingId(null);setPayAmount("");}} color="#34D399"/>
+                <SmBtn label="✕" onClick={()=>{setPayingId(null);setPayAmount("");}} color="#94A3B8"/>
+              </div>
+            : <SmBtn label="Record Payment" onClick={()=>{setPayingId(u.id);setPayAmount(String(owed));}} color="#6366F1"/>)}
+        </div>
+      </Card>;
+    })}
+
+    {isAdmin&&<div style={{marginTop:10}}>
+      {!showExpense
+        ? <SmBtn label="+ Add Expense" onClick={()=>setShowExpense(true)} color="#F59E0B" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/>
+        : <Card>
+            <Inp label="Description" value={expDesc} onChange={setExpDesc} placeholder="e.g. Court staff tip, balls, ice"/>
+            <Inp label="Amount (EGP)" value={expAmount} onChange={setExpAmount} type="number"/>
+            <div style={{display:"flex",gap:6}}>
+              <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc});setExpDesc("");setExpAmount("");setShowExpense(false);}}} style={{flex:1}}/>
+              <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");}} color="#94A3B8" style={{flex:1}}/>
+            </div>
+          </Card>}
+    </div>}
+
+    <SmBtn label={showHistory?"▲ Hide Full Ledger":`▼ Show Full Ledger (${entries.length} entries)`} onClick={()=>setShowHistory(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:12,marginBottom:showHistory?8:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>
+    {showHistory&&(sortedEntries.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No entries yet.</div></Card>:sortedEntries.map(e=>{
+      const memberName = e.memberId ? (users.find(u=>u.id===e.memberId)?.nickname||"—") : null;
+      return <Card key={e.id} style={{marginBottom:6,padding:"8px 12px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{memberName?`${memberName} — ${e.description||"Monthly due"}`:e.description}</div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(e.date.slice(0,10))}{e.month?` · ${e.month}`:""}</div>
+          </div>
+          <div style={{fontSize:14,fontWeight:700,color:e.type==="due"?"#34D399":"#EF4444"}}>{e.type==="due"?"+":"−"}{e.amount}</div>
+          {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this ledger entry?"))onDeleteLedgerEntry(e.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
+        </div>
+      </Card>;
+    }))}
+  </>;
 }
 
 // ── Venues ────────────────────────────────────────────

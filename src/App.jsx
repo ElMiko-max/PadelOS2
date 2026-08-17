@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.11";
+const APP_VERSION = "V0.09.12";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4996,7 +4996,22 @@ function SportPicker({selected,onChange,multi=true}){
 }
 function CommForm({comm,onBack,onSave,egypt}){
   const ie=!!comm;const [f,setF]=useState({name:comm?.name||"",description:comm?.description||"",country:"مصر",gov:comm?.gov||"",area:comm?.area||"",type:comm?.type||"public",sports:comm?.sports?.length?comm.sports:[DEFAULT_SPORT],promoteAfter:String(comm?.promoteAfter||3),demoteAfter:String(comm?.demoteAfter||4)});const set=(k,v)=>setF(p=>({...p,[k]:v}));
-  return <><BBtn onBack={onBack} label={ie?comm.name:"Communities"}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>{ie?"Edit Community":"New Community"}</div><Card><Inp label="Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Maadi Padel Club"/><Inp label="Description" value={f.description} onChange={v=>set("description",v)} multiline/><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div><AreaSel gov={f.gov} area={f.area} onChange={set} egypt={egypt}/><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sport</div><SportPicker selected={f.sports} onChange={v=>set("sports",v)} multi={false}/><div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Each community is built around one sport — its members, events, and ledger all live under it.</div></div><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div>{["public","private"].map(t=><div key={t} onClick={()=>set("type",t)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.type===t?"#6366F1":"var(--po-bdr)"}`,background:f.type===t?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.type===t?"#A5B4FC":"var(--po-text)",marginBottom:2,textTransform:"capitalize"}}>{t}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{t==="public"?"Discoverable · anyone can request · Admin approves":"Hidden · invitation only"}</div></div>)}</div>
+  // Once a community has real events, its sport can't be changed — event-scoped data (which
+  // event types were offered, footballSkill vs. usr, venue pricing per sport) is only coherent
+  // for the sport the community had at the time, so switching later would strand that history.
+  const sportLocked=ie&&(comm.events?.length>0);
+  return <><BBtn onBack={onBack} label={ie?comm.name:"Communities"}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>{ie?"Edit Community":"New Community"}</div><Card><Inp label="Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Maadi Padel Club"/><Inp label="Description" value={f.description} onChange={v=>set("description",v)} multiline/><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div><AreaSel gov={f.gov} area={f.area} onChange={set} egypt={egypt}/><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sport</div>
+      {sportLocked
+        ? <>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{f.sports.map(s=><div key={s} className="po-inp" style={{padding:"8px 14px",borderRadius:20,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",fontSize:12,fontWeight:600}}>{sportLabel(s)}</div>)}</div>
+            <div style={{fontSize:11,color:"#F59E0B",marginTop:4}}>🔒 Locked — this community already has events, so changing its sport now would strand that playing history.</div>
+          </>
+        : <>
+            <SportPicker selected={f.sports} onChange={v=>set("sports",v)} multi={false}/>
+            <div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Each community is built around one sport — its members, events, and ledger all live under it. Changeable until the first event is created.</div>
+          </>
+      }
+    </div><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div>{["public","private"].map(t=><div key={t} onClick={()=>set("type",t)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.type===t?"#6366F1":"var(--po-bdr)"}`,background:f.type===t?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.type===t?"#A5B4FC":"var(--po-text)",marginBottom:2,textTransform:"capitalize"}}>{t}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{t==="public"?"Discoverable · anyone can request · Admin approves":"Hidden · invitation only"}</div></div>)}</div>
     <div style={{marginBottom:14}}>
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Casual ↔ Regular thresholds</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>

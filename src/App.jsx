@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.07";
+const APP_VERSION = "V0.09.08";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -7990,13 +7990,21 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     </div>
   </div>}
   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-    {[["USR",user.usr],["Level",<span style={{color:lv.c,fontWeight:700}}>{lv.l}</span>],["Communities",mine.length],["Events",ec]].map(([l,v])=>
+    {[["🎾 Padel USR",user.usr],["🎾 Padel Level",<span style={{color:lv.c,fontWeight:700}}>{lv.l}</span>],["Communities",mine.length],["Events",ec]].map(([l,v])=>
       <div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 4px",textAlign:"center"}}>
         <div style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
         <div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>
       </div>
     )}
-  </div></Card>
+  </div>
+  {/* Football has no computed rating (no match-result history to derive one from yet) — just
+      the admin's manually-set A-E tier, shown separately so it's never confused with padel's
+      USR (a different, history-driven number on a different scale/meaning entirely). */}
+  {user.footballSkill&&<div style={{marginTop:8,padding:"8px 12px",background:"var(--po-inp)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+    <span style={{fontSize:12,color:"var(--po-dim)"}}>⚽ Football Skill Level</span>
+    <span style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{user.footballSkill}</span>
+  </div>}
+  </Card>
 
   {isMeTab&&<>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
@@ -8309,7 +8317,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <div onClick={()=>setLinkFilter(f=>f==="unlinked"?null:"unlinked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="unlinked"?0.4:1}}><Bdg label={`◌ ${users.length-linkedCount} unlinked${linkFilter==="unlinked"?" ✕":""}`} color="#F59E0B"/></div>
     </div>
     <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
-    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none"});}} style={{width:"100%",marginBottom:12}}/>
+    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none",footballSkill:""});}} style={{width:"100%",marginBottom:12}}/>
     {showAdd&&<Card style={{marginBottom:12}}>
       <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>{editing?"Edit User":"New User"}</div>
       {[["Nickname","nickname"],["Full Name","name"]].map(([l,k])=>
@@ -8317,8 +8325,10 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       )}
       <AreaSel gov={nf.gov} area={nf.area} onChange={set} egypt={egypt}/>
       <Inp label="Phone" value={nf.phone||""} onChange={v=>set("phone",v)}/>
-      <Inp label="Seed USR (0–100)" value={nf.usr} onChange={v=>set("usr",v)}/>
+      <Inp label="Seed USR (0–100) — Padel" value={nf.usr} onChange={v=>set("usr",v)}/>
       {editing&&<div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>The baseline used in USR calculations — changing it won't move their current USR until you confirm a recalculation.</div>}
+      <Drp label="Football Skill Level" value={nf.footballSkill||""} onChange={v=>set("footballSkill",v)} options={[{v:"",l:"Not Rated"},{v:"A",l:"A — Elite"},{v:"B",l:"B"},{v:"C",l:"C"},{v:"D",l:"D"},{v:"E",l:"E — Beginner"}]}/>
+      <div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>Manually set, not computed — football has no match-result history to derive a rating from yet.</div>
       <Drp label="Break Preference" value={nf.breakPref||"none"} onChange={v=>set("breakPref",v)} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
       <div style={{display:"flex",gap:8,marginTop:8}}>
         <Btn label="Save" primary onClick={()=>{
@@ -8353,7 +8363,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <div style={{display:"flex",gap:4}}>
           <SmBtn label="👁" onClick={()=>onViewProfile(u.id)} color="#6366F1"/>
           {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label:`Join Matchkeeper as ${u.nickname}`})}`)} color="#34D399"/>}
-          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none"});setShowAdd(true);}} color="#F59E0B"/>
+          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B"/>
           {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>}
         </div>
       </div>

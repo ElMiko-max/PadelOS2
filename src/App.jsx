@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.09";
+const APP_VERSION = "V0.09.10";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4805,6 +4805,7 @@ export default function Matchkeeper() {
             onRequestEventJoin={()=>requestEventJoin(comm.id,event.id)}
             onApproveEventJoin={uid=>approveEventJoin(comm.id,event.id,uid)}
             onRejectEventJoin={uid=>rejectEventJoin(comm.id,event.id,uid)}
+            onSetFootballSkill={setFootballSkill}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -5177,7 +5178,7 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
           {list.map(m=>{const u=users.find(u=>u.id===m.userId);if(!u)return null;const isMe=u.id===me.id;return(
             <Card key={m.userId} style={{cursor:"pointer"}}><div onClick={()=>onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
-              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}
+              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>🎾 USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}
                 {/* Community admins can set this directly (not Platform-Admin-only, unlike
                     padel's USR) — it's manually-assigned player data the community's own admin
                     owns, not a computed rating needing the same protection. */}
@@ -6344,7 +6345,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"info");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -6454,6 +6455,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       ? simMutate(e => ({...e, registrations:e.registrations.filter(r=>r.userId!==uid), checkedIn:e.checkedIn.filter(id=>id!==uid)}))
       : onRemoveFromEvent(uid),
     editGuestUsr: (uid,usr) => sim ? null /* not applicable in sim */ : onEditGuestUsr(uid,usr),
+    setFootballSkill: (uid,skill) => sim ? null /* not applicable in sim */ : onSetFootballSkill(uid,skill),
     editEventUsr: (uid,usr) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}))
       : onEditEventUsr(uid,usr),
@@ -7168,7 +7170,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       })()}
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12}}>
-        {[["Courts",tc],["Registered",effEv.registrations.length],
+        {[[effEv.sport==="Football"?"Pitches":"Courts",tc],["Registered",effEv.registrations.length],
           ...(isOpen?[["Checked In",cinCnt],["Per Person",`${cpp} EGP`]]:
               isCI?[["Rounds",plan?.rounds?.length||0],[`C1=${courtPts(1,tc)}pts`,`Brk=${bp}pts`]]:
               isCT?[["Teams",plan?.teams?.length||0],["Format",plan?.format||"—"]]:[])
@@ -7267,8 +7269,19 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
               </div>
-              {/* Guest USR - editable inline, saves on blur or Enter */}
-              {(u.isGuest||r.isGuest)&&isAdmin
+              {/* Football events show/edit footballSkill instead of padel USR — the padel USR
+                  override machinery (guest USR, event-only USR) has no meaning for football. */}
+              {effEv.sport==="Football"
+                ? (isAdmin
+                    ? <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
+                        <span style={{fontSize:11,color:"var(--po-dim)"}}>⚽ Skill:</span>
+                        <select value={u.footballSkill||""} onChange={e=>act.setFootballSkill(u.id,e.target.value)} className="po-inp" style={{fontSize:11,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
+                          <option value="">Not Rated</option>
+                          {["A","B","C","D","E"].map(g=><option key={g} value={g}>{g}</option>)}
+                        </select>
+                      </div>
+                    : <div style={{fontSize:11,color:"var(--po-dim)"}}>⚽ Skill: {u.footballSkill||"Not Rated"}</div>)
+                : (u.isGuest||r.isGuest)&&isAdmin
                 ? <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
                     <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
                     <input type="number" min="0" max="100" defaultValue={u.usr}
@@ -8002,21 +8015,37 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
     </div>
   </div>}
-  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
-    {[["🎾 Padel USR",user.usr],["🎾 Padel Level",<span style={{color:lv.c,fontWeight:700}}>{lv.l}</span>],["Communities",mine.length],["Events",ec]].map(([l,v])=>
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+    {[["Communities",mine.length],["Events",ec]].map(([l,v])=>
       <div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 4px",textAlign:"center"}}>
         <div style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
         <div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>
       </div>
     )}
   </div>
-  {/* Football has no computed rating (no match-result history to derive one from yet) — just
-      the admin's manually-set A-E tier, shown separately so it's never confused with padel's
-      USR (a different, history-driven number on a different scale/meaning entirely). */}
-  {user.footballSkill&&<div style={{marginTop:8,padding:"8px 12px",background:"var(--po-inp)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-    <span style={{fontSize:12,color:"var(--po-dim)"}}>⚽ Football Skill Level</span>
-    <span style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{user.footballSkill}</span>
-  </div>}
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
+    <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 10px"}}>
+      <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:4}}>🎾 Padel</div>
+      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between"}}>
+        <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
+        <span style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{user.usr}</span>
+      </div>
+      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginTop:2}}>
+        <span style={{fontSize:11,color:"var(--po-dim)"}}>Level</span>
+        <span style={{fontSize:14,fontWeight:700,color:lv.c}}>{lv.l}</span>
+      </div>
+    </div>
+    {/* Football has no computed rating (no match-result history to derive one from yet) — just
+        the admin's manually-set A-E tier. Always shown (with a "Not Rated" fallback) so the
+        profile visibly reflects football data even before an admin has set anything. */}
+    <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 10px"}}>
+      <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:4}}>⚽ Football</div>
+      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between"}}>
+        <span style={{fontSize:11,color:"var(--po-dim)"}}>Skill Level</span>
+        <span style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{user.footballSkill||"Not Rated"}</span>
+      </div>
+    </div>
+  </div>
   </Card>
 
   {isMeTab&&<>

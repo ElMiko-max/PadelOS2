@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.12";
+const APP_VERSION = "V0.09.13";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -1242,6 +1242,17 @@ function calcCTStandings(plan) {
   const allStats = Object.values(stats).filter(s=>s.team).sort((a,b)=>b.wins-a.wins||b.scoreDiff-a.scoreDiff||b.goalsFor-a.goalsFor);
   return allStats.map((s,i)=>({...s,group:plan.groupA.find(t=>t.id===s.team.id)?"A":"B",finalRank:i+1}));
 }
+// Total real matches played in an event (winner actually set, i.e. not a pending/unplayed
+// fixture) — used by community-wide reports, not per-player standings.
+const countMatchesPlayed = ev => {
+  if (!ev.plan) return 0;
+  if (ev.type==="closed_ind") return ev.plan.rounds.reduce((n,r)=>n+(r.matches||[]).filter(m=>m.winner).length,0);
+  if (ev.type==="closed_teams") {
+    if (ev.plan.format==="ladder") return ev.plan.rounds.reduce((n,r)=>n+(r.matchesA||[]).filter(m=>m.winner).length,0);
+    return ev.plan.rounds.reduce((n,r)=>n+[...(r.matchesA||[]),...(r.matchesB||[])].filter(m=>m.winner).length,0);
+  }
+  return 0;
+};
 
 // X-System preview for Closed Teams — Ladder format only (League has no court/margin
 // concept to move away from, left untouched). Per-team xTES computed from match details
@@ -4783,7 +4794,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5023,6 +5034,96 @@ function CommForm({comm,onBack,onSave,egypt}){
     <Btn label={ie?"Save Changes":"Create Community"} primary onClick={()=>{if(f.name&&f.gov&&f.area&&f.sports.length)onSave({...f,promoteAfter:parseInt(f.promoteAfter)||3,demoteAfter:parseInt(f.demoteAfter)||4});}} style={{width:"100%"}}/></Card></>;
 }
 
+// Community-wide report — aggregate numbers (events/matches/venues/attendance), separate from
+// CommStatsTab's per-member leaderboard below it. Pure/read-only, computed on demand.
+function CommOverview({comm, venues}){
+  const now = new Date();
+  const visibleEvents = comm.events.filter(ev=>!ev.archived && ev.status!=="cancelled");
+  if (visibleEvents.length===0) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No events yet — reports will appear once this community starts running events.</div></Card>;
+  const completedEvents = visibleEvents.filter(ev=>ev.status==="completed");
+  const totalMatches = completedEvents.reduce((n,ev)=>n+countMatchesPlayed(ev),0);
+
+  const venueCounts = {};
+  visibleEvents.forEach(ev=>{ if(ev.venueId!=null) venueCounts[ev.venueId]=(venueCounts[ev.venueId]||0)+1; });
+  const venueRows = Object.entries(venueCounts)
+    .map(([vid,count])=>({venue:venues.find(v=>v.id===parseInt(vid)), count}))
+    .filter(r=>r.venue)
+    .sort((a,b)=>b.count-a.count);
+  const maxVenueCount = venueRows[0]?.count||1;
+
+  const founded = comm.founded ? new Date(comm.founded) : null;
+  const ageMonths = founded ? Math.max(1, Math.round((now-founded)/(1000*60*60*24*30))) : 1;
+  const eventsPerMonth = (visibleEvents.length/ageMonths).toFixed(1);
+
+  const withCap = visibleEvents.filter(ev=>getMaxPlayers(ev));
+  const avgFillRate = withCap.length ? Math.round(withCap.reduce((s,ev)=>s+Math.min(1,ev.registrations.length/getMaxPlayers(ev)),0)/withCap.length*100) : null;
+  const withWaitlist = visibleEvents.filter(ev=>splitRegsByCapacity(ev).waitlisted.length>0).length;
+  const waitlistRate = visibleEvents.length ? Math.round(withWaitlist/visibleEvents.length*100) : 0;
+  const completedWithRegs = completedEvents.filter(ev=>ev.registrations.length>0);
+  const noShowRate = completedWithRegs.length ? Math.round(completedWithRegs.reduce((s,ev)=>{
+    const noShows = ev.registrations.filter(r=>!ev.checkedIn.includes(r.userId)).length;
+    return s + noShows/ev.registrations.length;
+  },0)/completedWithRegs.length*100) : null;
+
+  const months = Array.from({length:6},(_,i)=>{
+    const d=new Date(now.getFullYear(), now.getMonth()-5+i, 1);
+    return {key:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`, label:d.toLocaleDateString("en",{month:"short"})};
+  });
+  const monthCounts = months.map(m=>({...m, count: visibleEvents.filter(ev=>ev.date&&ev.date.startsWith(m.key)).length}));
+  const maxMonthCount = Math.max(1,...monthCounts.map(m=>m.count));
+
+  return <>
+    <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>📊 Overview</div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:12}}>
+      {[["Events",visibleEvents.length],["Matches",totalMatches],["Venues",venueRows.length],["Events/mo",eventsPerMonth]].map(([l,v])=>
+        <div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 4px",textAlign:"center"}}>
+          <div style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
+          <div style={{fontSize:9,color:"var(--po-dim)",marginTop:1}}>{l}</div>
+        </div>
+      )}
+    </div>
+
+    <Card style={{marginBottom:12}}>
+      <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Activity — last 6 months</div>
+      <div style={{display:"flex",alignItems:"flex-end",gap:6,height:60}}>
+        {monthCounts.map(m=>
+          <div key={m.key} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+            <div style={{width:"100%",background:"#6366F1",borderRadius:"4px 4px 0 0",height:`${Math.max(4,(m.count/maxMonthCount)*44)}px`,opacity:m.count?1:0.15}}/>
+            <div style={{fontSize:9,color:"var(--po-dim)"}}>{m.label}</div>
+          </div>
+        )}
+      </div>
+    </Card>
+
+    {venueRows.length>0&&<Card style={{marginBottom:12}}>
+      <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Venues Used</div>
+      {venueRows.slice(0,5).map(r=>
+        <div key={r.venue.id} style={{marginBottom:8}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-text)",marginBottom:3}}>
+            <span>{r.venue.name}</span><span style={{color:"var(--po-dim)"}}>{r.count} event{r.count!==1?"s":""}</span>
+          </div>
+          <div style={{height:5,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${(r.count/maxVenueCount)*100}%`,background:"#34D399",borderRadius:3}}/>
+          </div>
+        </div>
+      )}
+      {venueRows.length>5&&<div style={{fontSize:11,color:"var(--po-dim)"}}>+{venueRows.length-5} more</div>}
+    </Card>}
+
+    <Card style={{marginBottom:12}}>
+      <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Attendance Health</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+        {[["Avg. Fill", avgFillRate!=null?`${avgFillRate}%`:"—"],["No-Show", noShowRate!=null?`${noShowRate}%`:"—"],["Waitlisted", `${waitlistRate}%`]].map(([l,v])=>
+          <div key={l} style={{textAlign:"center"}}>
+            <div style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
+            <div style={{fontSize:9,color:"var(--po-dim)",marginTop:1}}>{l}</div>
+          </div>
+        )}
+      </div>
+      <div style={{fontSize:10,color:"var(--po-dim)",marginTop:8}}>Fill = registered ÷ capacity, averaged across events with a set capacity. No-show = registered but never checked in, averaged across completed events. Waitlisted = share of events that filled up and had at least one person on the waitlist.</div>
+    </Card>
+  </>;
+}
 function CommStatsTab({comm, users, onViewProfile}){
   const [view, setView] = useState("usr");
   const [perEvent, setPerEvent] = useState(false); // false=Total, true=Per Event — only relevant for additive stats (wins, pts)
@@ -5126,7 +5227,7 @@ function InviteModal({url,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry,onSetFootballSkill}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry,onSetFootballSkill}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -5255,7 +5356,7 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
       </>; })()}
       </>}
     </>}
-    {tab==="stats"&&(canViewPrivate?<CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
+    {tab==="stats"&&(canViewPrivate?<><CommOverview comm={comm} venues={venues}/><CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/></>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
     {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onDeleteLedgerEntry={onDeleteLedgerEntry}/>}
     {tab==="requests"&&isAdmin&&(comm.joinRequests.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No pending requests</div></Card>:comm.joinRequests.map(req=>{const u=users.find(u=>u.id===req.userId);if(!u)return null;return(<Card key={req.userId}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><Av u={u} size={38}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr} · {u.area}</div></div></div>{req.message&&<div style={{fontSize:12,color:"var(--po-sub)",background:"var(--po-inp)",borderRadius:6,padding:"7px 10px",marginBottom:10}}>{req.message}</div>}<div style={{display:"flex",gap:6}}><Btn label="Approve" primary onClick={()=>onApprove(req.userId)} style={{flex:1}}/><Btn label="Reject" danger onClick={()=>onReject(req.userId)} style={{flex:1}}/></div></Card>);}))}</>;
 }

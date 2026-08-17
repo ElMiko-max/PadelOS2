@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.08";
+const APP_VERSION = "V0.09.09";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4411,6 +4411,9 @@ export default function Matchkeeper() {
   };
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
+  // Community-admin-editable (not just Platform Admin) — a manually-set tier, not a computed
+  // rating, so there's no seed/recalculate machinery like padel's USR to protect here.
+  const setFootballSkill=(uid,skill)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,footballSkill:skill||null}:u));toast2("Football skill updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
   const setBreakPrefOverride=(cid,eid,uid,pref)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})})}));};
 
@@ -4780,7 +4783,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5104,7 +5107,7 @@ function InviteModal({url,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry}){
+function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry,onSetFootballSkill}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -5174,7 +5177,17 @@ function CommDetail({comm,users,me,uidLinks,onBack,onEdit,onApprove,onReject,onR
           {list.map(m=>{const u=users.find(u=>u.id===m.userId);if(!u)return null;const isMe=u.id===me.id;return(
             <Card key={m.userId} style={{cursor:"pointer"}}><div onClick={()=>onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
-              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
+              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}
+                {/* Community admins can set this directly (not Platform-Admin-only, unlike
+                    padel's USR) — it's manually-assigned player data the community's own admin
+                    owns, not a computed rating needing the same protection. */}
+                {isAdmin&&comm.sports?.includes("Football")&&<div onClick={e=>e.stopPropagation()} style={{marginTop:4,display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:10,color:"var(--po-dim)"}}>⚽ Skill:</span>
+                  <select value={u.footballSkill||""} onChange={e=>onSetFootballSkill(u.id,e.target.value)} className="po-inp" style={{fontSize:11,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
+                    <option value="">Not Rated</option>
+                    {["A","B","C","D","E"].map(g=><option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>}</div>
               {(isAdmin||(meIsPlatformAdmin&&m.role==="admin"))&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>

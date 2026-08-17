@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.05";
+const APP_VERSION = "V0.09.06";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -7051,6 +7051,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {myReg&&isRegWaitlisted(effEv,me.id)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
         {myReg&&!isRegWaitlisted(effEv,me.id)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
         {myReg&&!isRegWaitlisted(effEv,me.id)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
+        {/* Self-service unregister — was admin-only before (removeFromEvent's "✕" in Players),
+            leaving a registered player with no way to back out themselves. Same safety gate as
+            the admin's own remove button: locked once Round 1 is locked for CI/CT (would
+            corrupt matches players are already slotted into); Open events have no plan to lock
+            against, so this stays available for them right up to close. */}
+        {myReg&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} color="#EF4444" style={{width:"100%",marginBottom:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
         {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
         {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with Output PES (Performance Based)" onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"transparent",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}

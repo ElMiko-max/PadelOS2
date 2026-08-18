@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.20";
+const APP_VERSION = "V0.09.21";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -338,10 +338,13 @@ const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
 // position vs maxPlayers), so anyone waitlisted purely for tier reasons is automatically swept
 // into the active list in their original order — no separate "promotion" step needed.
 const isPriorityReg = (r, comm) => {
-  // addedBy is null ONLY for genuine self-service registration (registerEv/sim) — every other
-  // value ("admin", "invite", "approved", or an admin's own nickname via addGuest) means an
-  // admin took the action directly, which always counts as priority regardless of tier.
-  if (r.addedBy != null) return true;
+  // addedBy is null for genuine self-service registration (registerEv/sim). "approved" is a
+  // guest's join-request being let through by an admin — that only grants them a spot in the
+  // QUEUE (guests can't self-register at all, see canReg), it's deliberately NOT priority: they
+  // still land on the waitlist during the window and sweep to active after it passes, same as a
+  // self-registering Casual member — admin approval isn't the same thing as an admin directly
+  // placing someone (Add Member/Add Guest/Invite accept), which DOES bypass the window entirely.
+  if (r.addedBy != null && r.addedBy !== "approved") return true;
   return comm?.members?.find(m=>m.userId===r.userId)?.status==="regular";
 };
 const splitRegsByCapacity = (ev, comm) => {
@@ -6973,10 +6976,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const owingCnt    = Math.max(0, payingCnt - (attendeeIds.includes(payerId)&&!exemptedIds.has(payerId)?1:0)); // everyone paying except the collector themself
   const collectedSoFar = payingCnt>0 ? Math.round((totC/payingCnt)*paidCnt) : 0;
   const inRW   = new Date()<new Date(effEv.regularUntil);
-  // The registration window no longer blocks self-registration outright — Casual/Guest can
-  // still register directly, they just land on the waitlist during the window (enforced by
-  // splitRegsByCapacity's tier-aware split) instead of needing admin approval to even queue up.
-  const canReg = !myReg&&effEv.status==="registration_open";
+  // Casual members can self-register directly (they just land on the waitlist during the
+  // window — enforced by splitRegsByCapacity's tier-aware split). Guests (and anyone not yet a
+  // community member at all) still need admin approval to even queue up — they get the
+  // "Request to Join" flow instead; once approved they follow the exact same waitlist/sweep
+  // rule as a self-registering Casual (see isPriorityReg — "approved" is deliberately not
+  // priority), just gated behind an admin saying yes first.
+  const isGuestTier = !myMem || myMem.status==="guest";
+  const canReg = !myReg&&effEv.status==="registration_open"&&!isGuestTier;
   const myWouldWaitlist = !myReg && (()=>{
     const max=getMaxPlayers(effEv); if(!max) return false;
     const simEv={...effEv, registrations:[...effEv.registrations,{userId:me.id,addedBy:null}]};

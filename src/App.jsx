@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.19";
+const APP_VERSION = "V0.09.20";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -329,17 +329,34 @@ function mmBuildCTLeaguePayload(round, comms, excludeEventId){
 // state transition. Not to be confused with plan.waitlisted, an unrelated pre-existing concept
 // (the single leftover player when Closed Teams has an odd headcount for pairing purposes).
 const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
-const splitRegsByCapacity = ev => {
+// Registration priority window (2026-08-18): for the first 24h after an event opens
+// (ev.regularUntil), only "priority" registrations — Regular members, or anyone the admin
+// added/invited/approved directly — can hold an active (non-waitlisted) spot. Casual members
+// and guests who self-register during the window go straight onto the waitlist regardless of
+// capacity/position (no admin approval needed to register at all, just held back from an active
+// spot). Once the window passes, everyone reverts to plain chronological order (registration
+// position vs maxPlayers), so anyone waitlisted purely for tier reasons is automatically swept
+// into the active list in their original order — no separate "promotion" step needed.
+const isPriorityReg = (r, comm) => {
+  // addedBy is null ONLY for genuine self-service registration (registerEv/sim) — every other
+  // value ("admin", "invite", "approved", or an admin's own nickname via addGuest) means an
+  // admin took the action directly, which always counts as priority regardless of tier.
+  if (r.addedBy != null) return true;
+  return comm?.members?.find(m=>m.userId===r.userId)?.status==="regular";
+};
+const splitRegsByCapacity = (ev, comm) => {
   const max = getMaxPlayers(ev);
   if (!max) return { active: ev.registrations, waitlisted: [] };
-  return { active: ev.registrations.slice(0, max), waitlisted: ev.registrations.slice(max) };
+  const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
+  if (!windowActive || !comm) return { active: ev.registrations.slice(0, max), waitlisted: ev.registrations.slice(max) };
+  const active=[], waitlisted=[];
+  ev.registrations.forEach(r=>{
+    if (isPriorityReg(r,comm) && active.length<max) active.push(r);
+    else waitlisted.push(r);
+  });
+  return { active, waitlisted };
 };
-const isRegWaitlisted = (ev, uid) => {
-  const max = getMaxPlayers(ev);
-  if (!max) return false;
-  const idx = ev.registrations.findIndex(r=>r.userId===uid);
-  return idx>=max;
-};
+const isRegWaitlisted = (ev, uid, comm) => splitRegsByCapacity(ev, comm).waitlisted.some(r=>r.userId===uid);
 
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
@@ -4330,20 +4347,25 @@ export default function Matchkeeper() {
     });
     toast2("Event closed ✓ — ratings updated");
   };
-  // willLandWaitlisted: computed BEFORE the mutation, from the event's current registration
-  // count vs. maxPlayers — whoever is about to be appended lands active or waitlisted purely
-  // by how many people are already ahead of them in ev.registrations (see splitRegsByCapacity).
-  const willLandWaitlisted = (ev, uid) => {
+  // willLandWaitlisted: computed BEFORE the mutation, by simulating the new registration
+  // appended and running it through the same tier-aware splitRegsByCapacity real registrations
+  // use — so someone who'd be waitlisted purely for being non-priority during the registration
+  // window (see splitRegsByCapacity) predicts correctly too, not just plain capacity overflow.
+  const willLandWaitlisted = (ev, uid, comm, addedBy=null) => {
     const max = getMaxPlayers(ev);
-    return !!(ev && max!=null && ev.registrations.length>=max && !ev.registrations.some(r=>r.userId===uid));
+    if (!ev || max==null || ev.registrations.some(r=>r.userId===uid)) return {waitlisted:false, pos:0};
+    const simEv = {...ev, registrations:[...ev.registrations, {userId:uid, addedBy, registeredAt:new Date().toISOString()}]};
+    const {waitlisted} = splitRegsByCapacity(simEv, comm);
+    const onIt = waitlisted.some(r=>r.userId===uid);
+    return {waitlisted:onIt, pos:onIt?waitlisted.length:0};
   };
   const registerEv=(cid,eid)=>{
     const ev=getEv(cid,eid);
-    const waitlisted = willLandWaitlisted(ev, me.id);
+    const comm = comms.find(c=>c.id===cid);
+    const {waitlisted, pos:waitPos} = willLandWaitlisted(ev, me.id, comm, null);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
     if (waitlisted) {
-      const waitPos = ev.registrations.length - getMaxPlayers(ev) + 1;
-      toast2(`Event's full — you're #${waitPos} on the waitlist`);
+      toast2(`You're #${waitPos} on the waitlist`);
       if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${waitPos} on the waitlist for ${ev.name}`, "We'll notify you if a spot opens up.");
     } else {
       toast2("Registered ✓");
@@ -4353,7 +4375,6 @@ export default function Matchkeeper() {
     // admin-driven paths (addMember, registerViaInvite, approveEventJoin) don't need this,
     // since the admin already knows because they're the one who took the action.
     if (ev) {
-      const comm = comms.find(c=>c.id===cid);
       const adminIds = (comm?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
       const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
       notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
@@ -4361,7 +4382,8 @@ export default function Matchkeeper() {
   };
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
-    const waitlisted = willLandWaitlisted(ev, uid);
+    const comm = comms.find(c=>c.id===cid);
+    const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})}));
     toast2(`${users.find(u=>u.id===uid)?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
@@ -4374,7 +4396,8 @@ export default function Matchkeeper() {
   // existing "Make Member" action, rather than a total stranger with zero community trace.
   const registerViaInvite=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
-    const waitlisted = willLandWaitlisted(ev, uid);
+    const comm = comms.find(c=>c.id===cid);
+    const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
     updC(cid,c=>({...c,
       members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
@@ -4392,7 +4415,8 @@ export default function Matchkeeper() {
   };
   const approveEventJoin=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
-    const waitlisted = willLandWaitlisted(ev, uid);
+    const comm = comms.find(c=>c.id===cid);
+    const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
     const updateOne=e=>{
       if(e.id!==eid) return e;
       const newJoinRequests=(e.joinRequests||[]).filter(r=>r.userId!==uid);
@@ -4562,7 +4586,7 @@ export default function Matchkeeper() {
   // CI
   const startCI=(cid,eid,n,dur)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    const players=splitRegsByCapacity(ev).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+    const players=splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
   const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan,ev.retiredIds||[]));toast2("Next round generated ✓");return true;};
@@ -4621,7 +4645,7 @@ export default function Matchkeeper() {
   };
   const editBreakCI=(cid,eid,ri,uid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const bpr=Math.max(0,splitRegsByCapacity(ev).active.length-ev.courts*4);
+    const bpr=Math.max(0,splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.length-ev.courts*4);
     const firmBreaks=ev.plan.firmBreaks||{};
     const isFirm=(firmBreaks[ri]||[]).includes(uid);
     const isSuggested=(ev.plan.breakPlan[ri]||[]).includes(uid)&&!isFirm;
@@ -4796,11 +4820,12 @@ export default function Matchkeeper() {
 
   const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    let players=splitRegsByCapacity(ev).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+    const comm=comms.find(c=>c.id===cid);
+    let players=splitRegsByCapacity(ev,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
     if(players.length%2!==0){
       // Odd count — last player in registrations array goes to waiting list
-      const regs=splitRegsByCapacity(ev).active;
+      const regs=splitRegsByCapacity(ev,comm).active;
       const lastReg=regs[regs.length-1];
       const lastPlayer=players.find(p=>(p.userId||p.id)===lastReg?.userId);
       waitlisted=lastPlayer||players[players.length-1];
@@ -5190,7 +5215,7 @@ function CommOverview({comm, venues}){
 
   const withCap = visibleEvents.filter(ev=>getMaxPlayers(ev));
   const avgFillRate = withCap.length ? Math.round(withCap.reduce((s,ev)=>s+Math.min(1,ev.registrations.length/getMaxPlayers(ev)),0)/withCap.length*100) : null;
-  const withWaitlist = visibleEvents.filter(ev=>splitRegsByCapacity(ev).waitlisted.length>0).length;
+  const withWaitlist = visibleEvents.filter(ev=>splitRegsByCapacity(ev,comm).waitlisted.length>0).length;
   const waitlistRate = visibleEvents.length ? Math.round(withWaitlist/visibleEvents.length*100) : 0;
   const completedWithRegs = completedEvents.filter(ev=>ev.registrations.length>0);
   const noShowRate = completedWithRegs.length ? Math.round(completedWithRegs.reduce((s,ev)=>{
@@ -6620,6 +6645,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [addMemberSearch,setAddMemberSearch] = useState("");
   const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
+  const [openPlayerMenu,setOpenPlayerMenu] = useState(null); // userId whose Players-tab action menu is open
   const [photoUploading2,setPhotoUploading2] = useState(false);
   const [photoUploadProgress,setPhotoUploadProgress] = useState(null); // {done,total} while a multi-select batch is in flight
   const [photoUploadError,setPhotoUploadError] = useState("");
@@ -6936,7 +6962,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // Open Events split cost by actual check-in; CI/CT have no check-in step,
   // so cost is split across registered (active, non-waitlisted) players instead
   // (attendance is assumed).
-  const attendeeIds = isOpen ? effEv.checkedIn : splitRegsByCapacity(effEv).active.map(r=>r.userId);
+  const attendeeIds = isOpen ? effEv.checkedIn : splitRegsByCapacity(effEv,comm).active.map(r=>r.userId);
   const attCnt      = attendeeIds.length;
   const payingCnt   = Math.max(0, attCnt - [...exemptedIds].filter(id=>attendeeIds.includes(id)).length);
   const cpp         = payingCnt>0?(totC/payingCnt).toFixed(0):"—";
@@ -6947,7 +6973,15 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const owingCnt    = Math.max(0, payingCnt - (attendeeIds.includes(payerId)&&!exemptedIds.has(payerId)?1:0)); // everyone paying except the collector themself
   const collectedSoFar = payingCnt>0 ? Math.round((totC/payingCnt)*paidCnt) : 0;
   const inRW   = new Date()<new Date(effEv.regularUntil);
-  const canReg = !myReg&&effEv.status==="registration_open"&&(!inRW||isReg||isAdmin);
+  // The registration window no longer blocks self-registration outright — Casual/Guest can
+  // still register directly, they just land on the waitlist during the window (enforced by
+  // splitRegsByCapacity's tier-aware split) instead of needing admin approval to even queue up.
+  const canReg = !myReg&&effEv.status==="registration_open";
+  const myWouldWaitlist = !myReg && (()=>{
+    const max=getMaxPlayers(effEv); if(!max) return false;
+    const simEv={...effEv, registrations:[...effEv.registrations,{userId:me.id,addedBy:null}]};
+    return splitRegsByCapacity(simEv,comm).waitlisted.some(r=>r.userId===me.id);
+  })();
   const myEventJoinPending = (effEv.joinRequests||[]).some(r=>r.userId===me.id);
   const isDay  = sim||effEv.date===today;
   const plan   = effEv.plan;
@@ -7161,7 +7195,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
 
   // CT calc — active (non-waitlisted) registrants only, matching what startCT will actually use
-  const activeRegCount = splitRegsByCapacity(effEv).active.length;
+  const activeRegCount = splitRegsByCapacity(effEv,comm).active.length;
   const ctCC   = isCT?calcCTCourts(activeRegCount,effEv.reservedCourts||effEv.courts||2):null;
   const selCtC = ctC??ctCC?.min??tc;
   const nTeams = Math.floor(activeRegCount/2);
@@ -7417,7 +7451,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {(()=>{
         const regCap=getMaxPlayers(effEv);
-        const {active:activeRegsForBar,waitlisted:waitlistedRegsForBar}=splitRegsByCapacity(effEv);
+        const {active:activeRegsForBar,waitlisted:waitlistedRegsForBar}=splitRegsByCapacity(effEv,comm);
         const shownCap=regCap??maxCap;
         return <div style={{marginBottom:12}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}>
@@ -7439,13 +7473,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </div>
 
       {!isCompleted&&effEv.status==="registration_open"&&<>
-        {canReg&&<Btn label={getMaxPlayers(effEv)&&effEv.registrations.length>=getMaxPlayers(effEv)?"⏳ Join Waitlist":"I'm In ✓"} primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
+        {canReg&&<Btn label={myWouldWaitlist?"⏳ Join Waitlist":"I'm In ✓"} primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
+        {canReg&&myWouldWaitlist&&inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:-3,marginBottom:6,textAlign:"center"}}>Regular Members get priority for the first 24h — you'll move up automatically after {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})} if there's room.</div>}
         {!canReg&&!myReg&&(myEventJoinPending
           ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
           : <Btn label="🙋 Request to Join" onClick={act.requestEventJoin} style={{width:"100%",marginBottom:6}}/>)}
-        {myReg&&isRegWaitlisted(effEv,me.id)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
-        {myReg&&!isRegWaitlisted(effEv,me.id)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
-        {myReg&&!isRegWaitlisted(effEv,me.id)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
+        {myReg&&isRegWaitlisted(effEv,me.id,comm)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
+        {myReg&&!isRegWaitlisted(effEv,me.id,comm)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
+        {myReg&&!isRegWaitlisted(effEv,me.id,comm)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
         {/* Self-service unregister — was admin-only before (removeFromEvent's "✕" in Players),
             leaving a registered player with no way to back out themselves. Same safety gate as
             the admin's own remove button: locked once Round 1 is locked for CI/CT (would
@@ -7516,7 +7551,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </>}
       {(()=>{
         const ctOddWaitlistedIds=new Set((plan?.waitlisted||[]).map(w=>w.userId));
-        const {active:capActiveRegs,waitlisted:capWaitlistedRegs}=splitRegsByCapacity(effEv);
+        const {active:capActiveRegs,waitlisted:capWaitlistedRegs}=splitRegsByCapacity(effEv,comm);
         const activeRegs=capActiveRegs.filter(r=>!ctOddWaitlistedIds.has(r.userId));
         return <><ST>Registered ({activeRegs.length})</ST>
         {activeRegs.map(r=>{
@@ -7593,12 +7628,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {r.addedBy&&r.addedBy!=="admin"&&!r.isGuest&&<Bdg label={`by ${r.addedBy}`} color="#6366F1"/>}
               {r.addedBy==="admin"&&!r.isGuest&&<Bdg label="Added by Admin" color="#6366F1"/>}
               {(r.isGuest||u.isGuest)&&<Bdg label={r.addedBy?`Guest · by ${r.addedBy}`:"Guest"} color="#F59E0B"/>}
-              {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
-              {isAdmin&&onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
-              {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{padding:"4px 8px",fontSize:11}}/>}
-              {isAdmin&&effEv.status!=="completed"&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{padding:"4px 8px",fontSize:11}}/>}
-              {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
+              {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+                {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:170,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+                  {isOpen&&!ci2&&isDay&&<SmBtn label="✓ Check In" onClick={()=>{act.checkIn(u.id);setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`);setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{width:"100%"}}/>}
+                  {effEv.status!=="completed"&&effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{setOpenPlayerMenu(null);if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{width:"100%"}}/>}
+                  {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕ Remove" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
+                </div>}
+              </div>}
             </div>
           </div>
         </Card>;
@@ -7607,11 +7647,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <ST>⏳ Waitlist ({capWaitlistedRegs.length}) — event full</ST>
         {capWaitlistedRegs.map((r,wi)=>{
           const u=users.find(u=>u.id===r.userId); if(!u) return null;
+          const wMStatus=comm.members?.find(m=>m.userId===u.id)?.status;
           return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08",cursor:onViewProfile?"pointer":"default"}}>
             <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={34}/>
               <div style={{flex:1}}>
-                <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</div>
+                <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                  <span>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
+                  {wMStatus&&sBdg(wMStatus)}
+                  {u.isGuest&&<span style={{fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
+                </div>
                 <div style={{fontSize:11,color:"#F59E0B"}}>#{wi+1} on the waitlist — joins automatically if a spot opens</div>
               </div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
@@ -7900,7 +7945,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
         {(()=>{
-          const cur=splitRegsByCapacity(effEv).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
           const autoTop=autoPools[0]?.length, autoBottom=autoPools[1]?.length;
@@ -7917,7 +7962,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </Card>}
       {plan&&<>
         {isAdmin&&!ctR1Locked&&(()=>{
-          const cur=splitRegsByCapacity(effEv).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
           const autoTop=autoPools[0]?.length;

@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.16";
+const APP_VERSION = "V0.09.17";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4483,6 +4483,9 @@ export default function Matchkeeper() {
     toast2(isRetiring?(ids.length>1?"Team marked retired 🚑":"Player marked retired 🚑"):"Retirement undone");
   };
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
+  // Event-scoped admin — promoted/demoted per event, not community-wide (EvDetail's own
+  // isAdmin check ORs this in, nowhere else in the app reads it).
+  const toggleEventAdmin=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const a=new Set(ev.eventAdmins||[]);const promoting=!a.has(uid);promoting?a.add(uid):a.delete(uid);return{...ev,eventAdmins:[...a]};})}));toast2("Event admin updated ✓");};
   // An admin's phone can only meaningfully show one event's Match Mode widget at a time —
   // starting a new one clears matchModeStartAt on any OTHER event that still has it set
   // (across every community, not just this one), so at most one event is ever "live"
@@ -4925,6 +4928,7 @@ export default function Matchkeeper() {
             onRejectEventJoin={uid=>rejectEventJoin(comm.id,event.id,uid)}
             onSetFootballSkill={setFootballSkill}
             onRetirePlayer={uid=>retirePlayer(comm.id,event.id,uid)}
+            onToggleEventAdmin={uid=>toggleEventAdmin(comm.id,event.id,uid)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -6572,7 +6576,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"info");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -6684,6 +6688,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     editGuestUsr: (uid,usr) => sim ? null /* not applicable in sim */ : onEditGuestUsr(uid,usr),
     setFootballSkill: (uid,skill) => sim ? null /* not applicable in sim */ : onSetFootballSkill(uid,skill),
     retirePlayer: (uid) => sim ? null /* not applicable in sim */ : onRetirePlayer(uid),
+    toggleEventAdmin: (uid) => sim ? null /* not applicable in sim */ : onToggleEventAdmin(uid),
     editEventUsr: (uid,usr) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}))
       : onEditEventUsr(uid,usr),
@@ -6868,7 +6873,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
   const venue  = venues.find(v=>v.id===effEv.venueId);
   const myMem  = comm.members.find(m=>m.userId===me.id);
-  const isAdmin= myMem?.role==="owner"||myMem?.role==="admin";
+  // Real (community-level) admin — only this can grant/revoke event-scoped admin, so an
+  // event admin can never promote anyone themselves (no privilege escalation loophole).
+  const isRealAdmin = myMem?.role==="owner"||myMem?.role==="admin";
+  const isEventAdmin = (effEv.eventAdmins||[]).includes(me.id);
+  // Event-scoped admin (promoted per-event, not community-wide) gets full admin treatment
+  // everywhere in THIS screen only — nothing outside EvDetail ever reads eventAdmins.
+  const isAdmin= isRealAdmin||isEventAdmin;
   const isPlatformAdmin = me?.id===1;
   const isReg  = myMem?.status==="regular";
   const myReg  = effEv.registrations.find(r=>r.userId===me.id);
@@ -7490,14 +7501,20 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
         const ci2=effEv.checkedIn.includes(u.id);
         const isRetired=(effEv.retiredIds||[]).includes(u.id);
+        const mStatus=comm.members?.find(m=>m.userId===u.id)?.status;
+        const uMem=comm.members?.find(m=>m.userId===u.id);
+        const uIsCommAdmin=uMem?.role==="owner"||uMem?.role==="admin";
+        const uIsEventAdmin=(effEv.eventAdmins||[]).includes(u.id);
         return <Card key={r.userId} style={{opacity:isRetired?0.6:1}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <Av u={u} size={34}/>
             <div style={{flex:1}}>
-              <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6}}>
+              <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
+                {mStatus&&sBdg(mStatus)}
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
                 {isRetired&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
+                {uIsEventAdmin&&<span style={{marginLeft:4,fontSize:10,color:"#A78BFA",fontWeight:700}}>🛡️ EVENT ADMIN</span>}
               </div>
               {/* Football events show/edit footballSkill instead of padel USR — the padel USR
                   override machinery (guest USR, event-only USR) has no meaning for football. */}
@@ -7557,6 +7574,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
               {isAdmin&&onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
+              {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&effEv.status!=="completed"&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>

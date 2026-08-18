@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.23";
+const APP_VERSION = "V0.09.24";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3645,6 +3645,20 @@ export default function Matchkeeper() {
     return unsub;
   }, [authUser]);
   const linkUidToUser = (firebaseUid, userId) => setDoc(doc(db,"padelos_links",firebaseUid), {userId}).catch(e=>console.log("Firestore write error (uidLinks)", e));
+  // Reverses an incorrect claim/link (see BUGS.md — targeted invite links used to auto-link
+  // WHOEVER opened them with zero identity verification; if a link got forwarded or opened by
+  // the wrong person, they were silently and permanently merged into that profile). Deletes the
+  // padelos_links/{firebaseUid} doc, restoring the profile to unclaimed, and clears the
+  // email/photoURL the wrongful claim overwrote so the admin can hand-correct the real owner.
+  const unlinkUser = (userId) => {
+    const entry = Object.entries(uidLinks).find(([,uid])=>uid===userId);
+    if (!entry) { toast2("This user isn't linked to any account","err"); return; }
+    const [firebaseUid] = entry;
+    deleteDoc(doc(db,"padelos_links",firebaseUid)).catch(e=>console.log("Firestore delete error (uidLinks)", e));
+    setUidLinks(links => { const n={...links}; delete n[firebaseUid]; return n; });
+    setUsers(us => us.map(u => u.id===userId ? {...u, email:"", photoURL:""} : u));
+    toast2("Unlinked ✓ — profile is unclaimed again");
+  };
 
   // invites — admin-generated shareable links (Enhancement #1). Same one-blob-doc pattern as
   // claimRequests/notifications; codes are short random tokens resolved client-side.
@@ -3679,11 +3693,17 @@ export default function Matchkeeper() {
     setInvites(inv => [...inv, {id, code, createdBy:me.id, createdAt:new Date().toISOString(), targetUserId:targetUserId??null, communityId:communityId??null, eventId:eventId??null, label:label||""}]);
     return code;
   };
-  // An invite link skips the generic "which one is you?" search screen: a targetUserId invite
-  // auto-requests that exact profile (still goes through the normal admin-approval queue —
-  // this can't impersonate anyone, it just removes the manual search step), and an invite
-  // with no target (pure signup/community/event) goes straight to a fresh profile.
+  // An invite link skips the generic "which one is you?" search screen for a targeted invite —
+  // but it does NOT skip verifying identity. A targeted invite used to call claimViaInvite
+  // straight from this effect, linking whoever was signed in with zero confirmation — if the
+  // link got forwarded, shared in the wrong chat, or opened by someone other than the intended
+  // person, they were silently and permanently merged into that profile (see BUGS.md). Now this
+  // effect only ever stages a confirmation (pendingInviteConfirm, rendered below) — the actual
+  // claimViaInvite call happens only after the signed-in person explicitly says "yes, that's
+  // me". An invite with no target (pure signup/community/event) still goes straight to a fresh
+  // profile, since there's no existing identity to misattribute.
   const autoInviteClaimRef = useRef(null);
+  const [pendingInviteConfirm, setPendingInviteConfirm] = useState(null); // {inv, target} | null
   useEffect(() => {
     if (!authUser || linkedMe || !dataLoaded) return;
     const code = readPendingInvite();
@@ -3693,13 +3713,13 @@ export default function Matchkeeper() {
     const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
     const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
     if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
-      autoInviteClaimRef.current = code;
-      claimViaInvite(inv.targetUserId, inv);
+      const target = users.find(u=>u.id===inv.targetUserId);
+      if (target) setPendingInviteConfirm({inv, target});
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
       createFreshProfile();
     }
-  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests]);
+  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests, users]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
   // both a brand-new profile and a targeted claim of an existing one (self-picked claims from
   // the public unclaimed list are the only path still needing admin approval, and don't carry
@@ -3746,7 +3766,7 @@ export default function Matchkeeper() {
   const wasAuthedRef = useRef(false);
   useEffect(() => {
     if (authUser) { wasAuthedRef.current = true; }
-    else if (wasAuthedRef.current) { clearPendingInvite(); wasAuthedRef.current = false; }
+    else if (wasAuthedRef.current) { clearPendingInvite(); setPendingInviteConfirm(null); wasAuthedRef.current = false; }
   }, [authUser]);
 
   useEffect(() => {
@@ -4895,6 +4915,19 @@ export default function Matchkeeper() {
     return <LoginScreen/>;
   }
   if (!linkedMe) {
+    if (pendingInviteConfirm) {
+      const {inv, target} = pendingInviteConfirm;
+      return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{maxWidth:360,textAlign:"center"}}>
+          <div style={{fontSize:32,marginBottom:12}}>🔗</div>
+          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
+          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>This invite link will connect your account to <b style={{color:"#F1F5F9"}}>{target.nickname}</b>'s profile{target.area&&target.area!=="—"?` (${target.area})`:""}. Only confirm if that's really you — if this link was forwarded to you by mistake, don't claim someone else's profile.</div>
+          <button onClick={()=>{autoInviteClaimRef.current=inv.code;claimViaInvite(inv.targetUserId,inv);setPendingInviteConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
+          <div onClick={()=>{clearPendingInvite();autoInviteClaimRef.current=inv.code;setPendingInviteConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — let me pick my own profile</div>
+          <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
+        </div>
+      </div>;
+    }
     if (myPendingRequest) {
       const target = users.find(u=>u.id===myPendingRequest.userId);
       return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
@@ -5024,7 +5057,7 @@ export default function Matchkeeper() {
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
-        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt}
+        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -8673,7 +8706,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -8780,6 +8813,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <div style={{display:"flex",gap:4}}>
           <SmBtn label="👁" onClick={()=>onViewProfile(u.id)} color="#6366F1"/>
           {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label:`Join Matchkeeper as ${u.nickname}`})}`)} color="#34D399"/>}
+          {onUnlinkUser&&Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔓 Unlink" onClick={()=>{if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444"/>}
           <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B"/>
           {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>}
         </div>

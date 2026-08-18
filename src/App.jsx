@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.13";
+const APP_VERSION = "V0.09.14";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -449,7 +449,12 @@ function genRound1(players, courts, totalRounds) {
   const matches=[]; for(let c=0;c<courts;c++){const cp=playing.slice(c*4,(c+1)*4);if(cp.length<4)break;const pair=snakePairCI(cp);matches.push({court:c+1,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
   return {rounds:[{round:1,matches,onBreak,onBreakIds}],courts,totalRounds,breakPlan,partnerHistory:{},sorted};
 }
-function genNextRoundCI(plan) {
+// retiredIds: players marked retired mid-event (Enhancement #24) — dropped from every future
+// round's matches AND break list from here on (they stop accruing anything, matches or break
+// points, the instant they retire). If dropping one from a court's win/loss bucket leaves it
+// short, backfill from this round's own break pool (fewest breaks-so-far called up first, same
+// priority order buildBreakPlan itself uses) rather than leaving a court empty.
+function genNextRoundCI(plan, retiredIds=[]) {
   const {rounds,courts,breakPlan,sorted}=plan, ri=rounds.length, lastRound=rounds[ri-1];
   const ph=JSON.parse(JSON.stringify(plan.partnerHistory||{}));
   const lastRoundPairs=new Set();
@@ -457,7 +462,7 @@ function genNextRoundCI(plan) {
   const newBreakIds=breakPlan[ri]||[], buckets={};
   for(let c=1;c<=courts;c++) buckets[c]=[];
   lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
-  for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId));
+  for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
   // Where a player belongs (whether returning from break, or newly going on break this round)
   // is not "the court they last sat on" — it's the court their last ACTUAL result would have
   // earned them (win promotes, loss relegates), applying the same movement rule as everyone
@@ -475,8 +480,8 @@ function genNextRoundCI(plan) {
     }
     return null;
   };
-  const onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: findExpectedReturnCourt(p.userId)}));
-  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId));
+  const onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: findExpectedReturnCourt(p.userId)}));
+  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
   returning.forEach(rp=>{
     const targetCourt=findExpectedReturnCourt(rp.userId);
     const sameCourtHasRoom=targetCourt&&buckets[targetCourt]&&buckets[targetCourt].length<4;
@@ -484,8 +489,20 @@ function genNextRoundCI(plan) {
     const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
     if(needy)buckets[parseInt(needy[0])].push(rp);
   });
+  if(retiredIds.length){
+    const breakCountSoFar={};
+    rounds.forEach(r=>(r.onBreakIds||[]).forEach(uid=>{breakCountSoFar[uid]=(breakCountSoFar[uid]||0)+1;}));
+    const callUpPool=[...onBreak].sort((a,b)=>(breakCountSoFar[a.userId]||0)-(breakCountSoFar[b.userId]||0));
+    for(let c=1;c<=courts;c++){
+      while(buckets[c].length>0&&buckets[c].length<4&&callUpPool.length){
+        const p=callUpPool.shift();
+        buckets[c].push(p);
+        const oi=onBreak.findIndex(x=>x.userId===p.userId); if(oi>=0) onBreak.splice(oi,1);
+      }
+    }
+  }
   const matches=[]; for(let c=1;c<=courts;c++){const cp=buckets[c].slice(0,4);if(cp.length<4)continue;const pair=diversePair(cp,ph,lastRoundPairs);matches.push({court:c,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
-  return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds}],partnerHistory:ph};
+  return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds.filter(id=>!retiredIds.includes(id))}],partnerHistory:ph};
 }
 function regenerateBreakPlan(plan, playedRounds) {
   // Keep breaks for played rounds as-is
@@ -4375,6 +4392,34 @@ export default function Matchkeeper() {
   const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");};
   const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
+  // Retiring mid-event: from here on the player is skipped when future CI rounds are generated
+  // (genNextRoundCI filters ev.retiredIds — past rounds/results are untouched). Finance default:
+  // retiring before the event's scheduled midpoint exempts them from the rest of the cost split,
+  // retiring after it they still owe their share — either way it just seeds the existing
+  // `exempted` set, so the admin can override it same as any other exemption from the Finance tab.
+  // Un-retiring never touches the exempt flag — only the moment of retiring sets a default.
+  const retirePlayer=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    if(!ev) return;
+    const isRetiring=!(ev.retiredIds||[]).includes(uid);
+    updC(cid,c=>({...c,events:c.events.map(e=>{
+      if(e.id!==eid) return e;
+      const ret=new Set(e.retiredIds||[]);
+      ret.has(uid)?ret.delete(uid):ret.add(uid);
+      let exempted=e.exempted||[];
+      if(isRetiring){
+        const start=e.date&&e.time?new Date(`${e.date}T${e.time}`).getTime():null;
+        const end=e.date&&e.timeTo?new Date(`${e.date}T${e.timeTo}`).getTime():null;
+        const mid=(start&&end)?(start+end)/2:null;
+        const beforeMid=mid!=null?Date.now()<mid:true;
+        const exSet=new Set(exempted);
+        beforeMid?exSet.add(uid):exSet.delete(uid);
+        exempted=[...exSet];
+      }
+      return {...e,retiredIds:[...ret],exempted};
+    })}));
+    toast2(isRetiring?"Player marked retired 🚑":"Retirement undone");
+  };
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
   // An admin's phone can only meaningfully show one event's Match Mode widget at a time —
   // starting a new one clears matchModeStartAt on any OTHER event that still has it set
@@ -4434,7 +4479,7 @@ export default function Matchkeeper() {
     const players=splitRegsByCapacity(ev).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
-  const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan));toast2("Next round generated ✓");return true;};
+  const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan,ev.retiredIds||[]));toast2("Next round generated ✓");return true;};
   // sA/sB default to an implied 1-0/0-1 when omitted (native widget taps, which only ever
   // declare a winner, no real score) — same pattern CT Ladder's widget already uses.
   const setWinCI=(cid,eid,ri,mi,w,sA,sB)=>{
@@ -4817,6 +4862,7 @@ export default function Matchkeeper() {
             onApproveEventJoin={uid=>approveEventJoin(comm.id,event.id,uid)}
             onRejectEventJoin={uid=>rejectEventJoin(comm.id,event.id,uid)}
             onSetFootballSkill={setFootballSkill}
+            onRetirePlayer={uid=>retirePlayer(comm.id,event.id,uid)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
@@ -6464,7 +6510,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"info");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -6575,6 +6621,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       : onRemoveFromEvent(uid),
     editGuestUsr: (uid,usr) => sim ? null /* not applicable in sim */ : onEditGuestUsr(uid,usr),
     setFootballSkill: (uid,skill) => sim ? null /* not applicable in sim */ : onSetFootballSkill(uid,skill),
+    retirePlayer: (uid) => sim ? null /* not applicable in sim */ : onRetirePlayer(uid),
     editEventUsr: (uid,usr) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}))
       : onEditEventUsr(uid,usr),
@@ -7380,13 +7427,15 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {activeRegs.map(r=>{
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
         const ci2=effEv.checkedIn.includes(u.id);
-        return <Card key={r.userId}>
+        const isRetired=(effEv.retiredIds||[]).includes(u.id);
+        return <Card key={r.userId} style={{opacity:isRetired?0.6:1}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <Av u={u} size={34}/>
             <div style={{flex:1}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6}}>
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
+                {isRetired&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
               </div>
               {/* Football events show/edit footballSkill instead of padel USR — the padel USR
                   override machinery (guest USR, event-only USR) has no meaning for football. */}
@@ -7446,6 +7495,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
               {isAdmin&&onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
+              {isAdmin&&effEv.status!=="completed"&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{if(isRetired||window.confirm(`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
           </div>

@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.22";
+const APP_VERSION = "V0.09.23";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -5673,7 +5673,33 @@ function EvCard({ev,me,users,venues,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--po-dim)",marginTop:3}}><span>{splitRegsByCapacity(ev).active.length} registered{splitRegsByCapacity(ev).waitlisted.length>0?` · ${splitRegsByCapacity(ev).waitlisted.length} waiting`:""}</span><span>{getMaxPlayers(ev)?`Max ${getMaxPlayers(ev)}`:`Min ${ev.courts*4} · Max ${ev.courts*5}`}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2,overflow:"hidden",marginTop:2}}><div style={{height:"100%",borderRadius:2,width:`${Math.min(100,(splitRegsByCapacity(ev).active.length/(getMaxPlayers(ev)||ev.courts*5||1))*100)}%`,background:splitRegsByCapacity(ev).active.length>=(getMaxPlayers(ev)||ev.courts*5)?"#EF4444":!getMaxPlayers(ev)&&splitRegsByCapacity(ev).active.length>=ev.courts*4?"#F59E0B":"#6366F1"}}/></div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
+              // Compact version of the graduated Min/Max capacity indicator (V0.09.22, EvDetail)
+              // — same status-pill + Min-tick language, scaled down for a list card (no marker
+              // dot or Start/Max text labels, the fill edge itself shows position at this size).
+              const {active,waitlisted}=splitRegsByCapacity(ev);
+              const cnt=active.length;
+              const shownCap=getMaxPlayers(ev)||ev.courts*5||1;
+              const minReq=ev.courts*4;
+              const pct=Math.min(100,(cnt/shownCap)*100);
+              const minPct=Math.min(100,(minReq/shownCap)*100);
+              const showMinTick=minReq>0&&minReq<shownCap;
+              const isFull=cnt>=shownCap;
+              const pastMin=cnt>=minReq;
+              const barColor=isFull?"#EF4444":pastMin?"#34D399":"#6366F1";
+              const statusLabel=isFull?"Full":pastMin?"On track":`Needs ${Math.max(0,minReq-cnt)}`;
+              return <div style={{marginTop:4}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+                  <span style={{fontSize:11,fontWeight:700,color:"var(--po-text)"}}>{cnt}<span style={{fontWeight:500,color:"var(--po-dim)"}}> / {shownCap} registered</span></span>
+                  <span style={{fontSize:9,fontWeight:700,padding:"1px 7px",borderRadius:20,color:barColor,background:`${barColor}22`}}>{statusLabel}</span>
+                </div>
+                <div style={{height:6,borderRadius:3,background:"var(--po-bdr)",position:"relative"}}>
+                  <div style={{position:"absolute",left:0,top:0,height:"100%",borderRadius:3,width:`${pct}%`,background:barColor,transition:"width 0.3s"}}/>
+                  {showMinTick&&<div style={{position:"absolute",top:-2,left:`${minPct}%`,width:2,height:10,background:"var(--po-card)",borderLeft:"2px solid var(--po-bg)",transform:"translateX(-1px)"}}/>}
+                </div>
+                {waitlisted.length>0&&<div style={{fontSize:10,color:"#F59E0B",marginTop:3}}>⏳ {waitlisted.length} waiting</div>}
+              </div>;
+            })()}<div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────

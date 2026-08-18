@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.18";
+const APP_VERSION = "V0.09.19";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4054,18 +4054,19 @@ export default function Matchkeeper() {
     const id=_eid++;const v=venues.find(x=>x.id===parseInt(d.venueId));
     const isFootballEv=d.sport==="Football";
     // Football has no "courts" picker — courts is derived from how many pitches were selected,
-    // so every existing courts-count-based calc (cost, min/ideal/max fallback, CT court math)
+    // so every existing courts-count-based calc (cost, min/max fallback, CT court math)
     // keeps working unchanged for football too, without needing its own parallel code path.
     const courtsCount=isFootballEv?Math.max(1,(d.pitchNames||[]).length):(parseInt(d.courts)||2);
     const footballTeamSize=isFootballEv?(parseInt(d.teamSize)||5):undefined;
     const footballNumTeams=isFootballEv?(parseInt(d.numTeams)||3):undefined;
     // Football's cap is derived (team size × number of teams), not typed in directly — see
     // EventForm/EventEditForm, which hide the manual Max Players field for football entirely.
-    // Padel's cap is also derived, not typed in — courts×6, the same ratio the Min/Ideal/Max
-    // indicator already shows everywhere in the app, applied uniformly across Open Day/Closed
-    // Individuals/Closed Teams (courts×6 is always even, so Closed Teams' pairing requirement
-    // is automatically satisfied too — no separate per-type formula needed).
-    const derivedMaxPlayers=isFootballEv?(footballTeamSize*footballNumTeams||null):(courtsCount*6||null);
+    // Padel's cap is also derived, not typed in — courts×5 is the real default max (courts×6
+    // is only an exception ceiling for unusual manual cases, not the standard cap — changed
+    // 2026-08-18 per admin direction), applied uniformly across Open Day/Closed
+    // Individuals/Closed Teams. If this lands on an odd number for Closed Teams, the existing
+    // single-leftover-waitlist mechanism (plan.waitlisted) already handles the odd player out.
+    const derivedMaxPlayers=isFootballEv?(footballTeamSize*footballNumTeams||null):(courtsCount*5||null);
     // rotationMin isn't a form field anymore — round/match duration belongs to the actual
     // round/team generator (its own picker, e.g. CI's "Round duration" or CT's "Match duration"
     // at generation time), not the event create/edit form. This is just the seed default those
@@ -5644,7 +5645,7 @@ function EvCard({ev,me,users,venues,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--po-dim)",marginTop:3}}><span>{splitRegsByCapacity(ev).active.length} registered{splitRegsByCapacity(ev).waitlisted.length>0?` · ${splitRegsByCapacity(ev).waitlisted.length} waiting`:""}</span><span>{getMaxPlayers(ev)?`Max ${getMaxPlayers(ev)}`:`Min ${ev.courts*4} · Ideal ${ev.courts*5} · Max ${ev.courts*6}`}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2,overflow:"hidden",marginTop:2}}><div style={{height:"100%",borderRadius:2,width:`${Math.min(100,(splitRegsByCapacity(ev).active.length/(getMaxPlayers(ev)||ev.courts*6||1))*100)}%`,background:splitRegsByCapacity(ev).active.length>=(getMaxPlayers(ev)||ev.courts*6)?"#EF4444":!getMaxPlayers(ev)&&splitRegsByCapacity(ev).active.length>=ev.courts*5?"#F59E0B":"#6366F1"}}/></div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--po-dim)",marginTop:3}}><span>{splitRegsByCapacity(ev).active.length} registered{splitRegsByCapacity(ev).waitlisted.length>0?` · ${splitRegsByCapacity(ev).waitlisted.length} waiting`:""}</span><span>{getMaxPlayers(ev)?`Max ${getMaxPlayers(ev)}`:`Min ${ev.courts*4} · Max ${ev.courts*5}`}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2,overflow:"hidden",marginTop:2}}><div style={{height:"100%",borderRadius:2,width:`${Math.min(100,(splitRegsByCapacity(ev).active.length/(getMaxPlayers(ev)||ev.courts*5||1))*100)}%`,background:splitRegsByCapacity(ev).active.length>=(getMaxPlayers(ev)||ev.courts*5)?"#EF4444":!getMaxPlayers(ev)&&splitRegsByCapacity(ev).active.length>=ev.courts*4?"#F59E0B":"#6366F1"}}/></div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -5709,8 +5710,8 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
           <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Default: 3 teams for 1 pitch, or 2 per pitch for more — adjust anytime.</div>
         </>
       : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div><select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>{Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}</option>)}</select></div>}
-    {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{(isFootball?[["Pitches",c],["Teams",f.numTeams||0],["Cost",`${tot} EGP`]]:[["Ideal",c*5],["Max",c*6],["Cost",`${tot} EGP`]]).map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
-    {!isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 6 = <b>{(parseInt(f.courts)||0)*6}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
+    {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{(isFootball?[["Pitches",c],["Teams",f.numTeams||0],["Cost",`${tot} EGP`]]:[["Min",c*4],["Max",c*5],["Cost",`${tot} EGP`]]).map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
+    {!isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 5 = <b>{(parseInt(f.courts)||0)*5}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
     <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
@@ -5727,11 +5728,13 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const isFootball=f.sport==="Football";
   const vPricing=getVenuePricing(v,f.sport);
   // Neither sport's cap is typed in directly anymore — football derives it from team size ×
-  // number of teams, padel derives it from courts × 6 (the same ratio the Min/Ideal/Max
-  // indicator already shows everywhere), so it always stays in sync with the real fields
-  // instead of being able to drift apart from them.
+  // number of teams, padel derives it from courts × 5 (the real default max — courts×6 is only
+  // an exception ceiling for unusual manual cases, changed 2026-08-18 per admin direction), so
+  // it always stays in sync with the real fields instead of being able to drift apart from
+  // them. Opening Edit on an existing event and saving recomputes and applies this immediately,
+  // which is how an already-live event's cap gets corrected without touching Firestore by hand.
   useEffect(()=>{
-    const computed=isFootball?(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0):(parseInt(f.courts)||0)*6;
+    const computed=isFootball?(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0):(parseInt(f.courts)||0)*5;
     if(computed>0) set("maxPlayers",String(computed));
   },[isFootball,f.teamSize,f.numTeams,f.courts]);
   const isCompleted = ev.status==="completed";
@@ -5771,10 +5774,10 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           : <>
               <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Courts (max {maxC})</div>
                 <select value={f.courts} onChange={e=>set("courts",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}>
-                  {Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n} courts (Ideal: {n*5}, Max: {n*6})</option>)}
+                  {Array.from({length:maxC},(_,i)=>i+1).map(n=><option key={n} value={n}>{n} courts (Min: {n*4}, Max: {n*5})</option>)}
                 </select>
               </div>
-              <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 6 = <b>{(parseInt(f.courts)||0)*6}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>
+              <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 5 = <b>{(parseInt(f.courts)||0)*5}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>
             </>}
         <div style={{marginBottom:14}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Event Type{lockedType?" (locked)":""}</div>
@@ -6909,7 +6912,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const isCT   = effEv.type==="closed_teams";
   const tc     = effEv.courts;
   const bp     = breakPts(tc);
-  const minReq = tc*4, ideal  = tc*5, maxCap=tc*6;
+  const minReq = tc*4, maxCap=tc*5;
   // Financial model:
   // Total = (courtCost × courts × durationHours) + (extraFee × courts × durationHours) + one flat additional amount
   // Paying = checkedIn - exempted
@@ -7419,9 +7422,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         return <div style={{marginBottom:12}}>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}>
             <span>{activeRegsForBar.length} registered{waitlistedRegsForBar.length>0?` · ${waitlistedRegsForBar.length} waiting`:""}</span>
-            <span>{regCap?`Max ${regCap}`:`Min ${minReq} · Ideal ${ideal} · Max ${maxCap}`}</span>
+            <span>{regCap?`Max ${regCap}`:`Min ${minReq} · Max ${maxCap}`}</span>
           </div>
-          <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(activeRegsForBar.length/shownCap)*100)}%`,background:activeRegsForBar.length>=shownCap?"#EF4444":!regCap&&activeRegsForBar.length>=ideal?"#F59E0B":"#6366F1"}}/></div>
+          <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(activeRegsForBar.length/shownCap)*100)}%`,background:activeRegsForBar.length>=shownCap?"#EF4444":!regCap&&activeRegsForBar.length>=minReq?"#F59E0B":"#6366F1"}}/></div>
           {waitlistedRegsForBar.length>0&&<div style={{fontSize:11,color:"#F59E0B",marginTop:3}}>⏳ {waitlistedRegsForBar.length} on the waitlist — first in line joins automatically if a spot opens</div>}
           {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:3}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
         </div>;

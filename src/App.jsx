@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.17";
+const APP_VERSION = "V0.09.18";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -634,6 +634,26 @@ function personalRoundsCI(uid, plan){
     if(played||onBreak) return i+1;
   }
   return plan.rounds.length;
+}
+// Historical padel USR "as of that event" — captured once when the event's plan/rounds were
+// generated (plan.sorted for Closed Individuals, plan.teams[].players for Closed Teams), not
+// the player's current live USR, which drifts over time via later events. Anywhere a player's
+// name is shown in the context of a specific (padel) event should use this, not u.usr, per
+// explicit admin request 2026-08-18 — falls back to liveUsr when no snapshot exists yet (no
+// plan generated, e.g. Open Day, or Closed events before Round 1 / team formation).
+function historicUsr(uid, plan, liveUsr){
+  if(!plan) return liveUsr;
+  if(plan.sorted){
+    const p=plan.sorted.find(p=>p.userId===uid);
+    if(p) return p.usr;
+  }
+  if(plan.teams){
+    for(const t of plan.teams){
+      const p=t.players?.find(p=>p.userId===uid);
+      if(p) return p.usr;
+    }
+  }
+  return liveUsr;
 }
 
 // X-System preview for Closed Individuals — per-player xPES computed from match details
@@ -5817,7 +5837,7 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
           const pes = mp>0 ? Math.round((s.pts/mp)*100*10)/10 : 0;
           return <tr key={s.user.id}>
             <td style={{position:"sticky",left:0,zIndex:2,background:rowBg(i),padding:"6px 10px",fontSize:12,fontWeight:600,color:"var(--po-text)",whiteSpace:"nowrap",borderBottom:"0.5px solid var(--po-bdr)",boxShadow:"2px 0 4px -2px rgba(0,0,0,0.3)"}}>
-              {i===0?"🏆 ":tied?`[${i+1}] `:`${i+1} `}{s.user.nickname} <span style={{fontSize:10,color:"var(--po-dim)",fontWeight:400}}>({s.user.usr})</span>
+              {i===0?"🏆 ":tied?`[${i+1}] `:`${i+1} `}{s.user.nickname} <span style={{fontSize:10,color:"var(--po-dim)",fontWeight:400}}>({historicUsr(s.user.id,plan,s.user.usr)})</span>
             </td>
             {plan.rounds.map((r,ri)=>{
               const c=cellFor(s.user.id,r);
@@ -6278,7 +6298,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
           return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"3px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}>
             <div style={{fontSize:12,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:1}}>{team?.name} <span style={{fontSize:10,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div>
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4}}>
-              {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname}{badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
+              {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname} ({p.usr}){badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
             </div>
           </div>;}
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
@@ -7277,12 +7297,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     }
     return <div onClick={()=>isAdmin&&!isCompleted&&tapP(ri,p.userId)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,cursor:isAdmin?"pointer":"default",userSelect:"none",border:`2px solid ${isSel?"#FBBF24":isTgt?"#34D399":"transparent"}`,background:isSel?"#FBBF2422":isTgt?"#34D39922":"transparent"}}>
       <Av u={p} size={28}/>
-      <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname}</span>
+      <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({p.usr})</span></span>
       {matchBadge?.isDream&&<span title="ماتش جامد — this is their Dream Match" style={{fontSize:12}}>🔥</span>}
       {matchBadge?.isFunny&&<span title="ماتش مسخرة — this is their Funny Match" style={{fontSize:12}}>😂</span>}
       {p.wouldBeCourt&&<span title="Court they'd have played on by USR rank" style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
-      <span style={{fontSize:11,color:"var(--po-dim)"}}>{p.usr}</span>
     </div>;
   }
   function WinCI({m,ri,mi}){
@@ -7510,7 +7529,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <Av u={u} size={34}/>
             <div style={{flex:1}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
+                <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
                 {mStatus&&sBdg(mStatus)}
                 {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
                 {isRetired&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
@@ -7589,7 +7608,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={34}/>
               <div style={{flex:1}}>
-                <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div>
+                <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</div>
                 <div style={{fontSize:11,color:"#F59E0B"}}>#{wi+1} on the waitlist — joins automatically if a spot opens</div>
               </div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
@@ -7840,7 +7859,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {standingsView==="pes"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
         {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
-          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
+          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({historicUsr(s.user.id,plan,s.user.usr)})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
           {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
         </>}
@@ -8375,7 +8394,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               {isCTEvent&&<span style={{fontSize:9,background:"#06B6D422",color:"#06B6D4",borderRadius:3,padding:"0 4px",fontWeight:700}}>CT ×0.5</span>}
               {h.retired&&<span style={{fontSize:9,background:"#EF444422",color:"#EF4444",borderRadius:3,padding:"0 4px",fontWeight:700}}>🚑 RETIRED</span>}
             </div>
-            <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>{h.eventName}</div>
+            <div onClick={e=>{if(hostComm){e.stopPropagation();onOpenEvent&&onOpenEvent(hostComm.id,h.eventId);}}} style={{fontSize:12,fontWeight:600,color:hostComm?"#6366F1":"var(--po-text)",cursor:hostComm?"pointer":"default"}}>{h.eventName}</div>
           </div>
           <div style={{textAlign:"right",fontSize:13,fontWeight:700,color:isCTEvent?"#06B6D4":"#6366F1"}}>{h.pes}%</div>
           <div style={{textAlign:"right"}}>
@@ -8392,7 +8411,6 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
                 <div style={{fontSize:9,color:"var(--po-dim)"}}>{l}</div>
               </div>)}
           </div>:<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>No detailed stats available for this event.</div>}
-          {hostComm&&<div onClick={()=>onOpenEvent&&onOpenEvent(hostComm.id,h.eventId)} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",textAlign:"center"}}>Open event →</div>}
         </div>}
         </div>;
       })}
@@ -8451,7 +8469,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         {isOpen&&<div style={{padding:"0 12px 10px"}}>
           {history.map((h,hi)=><div key={hi} style={{padding:"7px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
-              <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
+              <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · <span onClick={e=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===h.eventId));if(hc){e.stopPropagation();onOpenEvent&&onOpenEvent(hc.id,h.eventId);}}} style={{color:"#6366F1",cursor:"pointer",fontWeight:600}}>{h.eventName}</span> <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
               <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
             </div>
             <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"
@@ -8477,7 +8495,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               {isOpen&&<div style={{padding:"0 12px 8px"}}>
                 {p.history.map((h,hi)=><div key={hi} style={{padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
-                    <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · {h.eventName} <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
+                    <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · <span onClick={e=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===h.eventId));if(hc){e.stopPropagation();onOpenEvent&&onOpenEvent(hc.id,h.eventId);}}} style={{color:"#6366F1",cursor:"pointer",fontWeight:600}}>{h.eventName}</span> <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
                     <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
                   </div>
                   <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"

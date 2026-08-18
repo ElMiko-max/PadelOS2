@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.24";
+const APP_VERSION = "V0.09.25";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -1693,7 +1693,7 @@ const INIT_COMMS = [
   },
 ];
 
-let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_crid=1,_invid=1;
+let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_invid=1;
 
 // ── Helpers ───────────────────────────────────────────
 const usrLv  = u => u>=80?{l:"A",c:"#C084FC"}:u>=65?{l:"B",c:"#38BDF8"}:u>=50?{l:"C",c:"#34D399"}:u>=35?{l:"D",c:"#FBBF24"}:{l:"E",c:"#F87171"};
@@ -3232,47 +3232,13 @@ function LoginScreen(){
   </div>;
 }
 
-// ══════════════════════════════════════════════════════
-//  CLAIM PROFILE — first login after this account isn't linked to anyone yet.
-//  Picking an existing player keeps their whole history (USR, past events);
-//  "That's not me" is the only path that creates a brand new profile.
-// ══════════════════════════════════════════════════════
-function ClaimProfileScreen({authUser,unclaimed,wasRejected,onClaim,onCreateNew,onSignOut,degraded,diagText}){
-  const [q,setQ] = useState("");
-  const filtered = unclaimed.filter(u => u.nickname.toLowerCase().includes(q.toLowerCase()) || u.name.toLowerCase().includes(q.toLowerCase()));
-  return <div style={{minHeight:"100vh",background:"#0E1117",padding:"32px 20px"}}>
-    <div style={{maxWidth:420,margin:"0 auto"}}>
-      <div style={{textAlign:"center",marginBottom:20}}>
-        <div style={{fontSize:19,fontWeight:700,color:"#F1F5F9"}}>Which one is you?</div>
-        <div style={{fontSize:13,color:"#64748B",marginTop:6}}>Signed in as {authUser.email || authUser.displayName}. Pick your existing player profile so your history carries over — an admin will confirm it's really you. Only choose "That's not me" if you're genuinely new.</div>
-        {wasRejected&&<div style={{fontSize:12,color:"#F87171",background:"#F8717122",border:"0.5px solid #F8717144",borderRadius:8,padding:"8px 10px",marginTop:12}}>Your last request wasn't approved. Double check you're picking the right name, or create a new profile instead.</div>}
-        {degraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginTop:12,textAlign:"left"}}>⚠️ Couldn't load the full player list right now (connection issue). This list may be incomplete. Please close the app and reopen it before picking a name or creating a new profile — don't proceed on a spotty connection.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
-      </div>
-
-      <input placeholder="Search your name…" value={q} onChange={e=>setQ(e.target.value)}
-        style={{width:"100%",background:"#161B22",border:"0.5px solid #30363D",borderRadius:8,padding:"11px 12px",color:"#F1F5F9",fontSize:14,marginBottom:14,boxSizing:"border-box"}}/>
-
-      <div style={{maxHeight:380,overflowY:"auto",display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
-        {filtered.map(u=>{
-          const lv = usrLv(u.usr);
-          return <div key={u.id} onClick={()=>onClaim(u.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:10,background:"#161B22",border:"0.5px solid #30363D",cursor:"pointer"}}>
-            <Av u={u} size={34}/>
-            <div style={{flex:1}}>
-              <div style={{fontSize:14,fontWeight:600,color:"#F1F5F9"}}>{u.nickname}</div>
-              <div style={{fontSize:11,color:"#64748B"}}>{u.name} · USR {u.usr}</div>
-            </div>
-          </div>;
-        })}
-        {filtered.length===0&&<div style={{textAlign:"center",fontSize:13,color:"#64748B",padding:"16px 0"}}>No match — try a different search, or create a new profile below.</div>}
-      </div>
-
-      <button onClick={onCreateNew} style={{width:"100%",padding:"11px",borderRadius:8,border:"0.5px solid #30363D",background:"transparent",color:"#94A3B8",fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:10}}>
-        That's not me — create a new profile
-      </button>
-      <div onClick={onSignOut} style={{textAlign:"center",fontSize:12,color:"#64748B",cursor:"pointer"}}>Wrong account? Sign out</div>
-    </div>
-  </div>;
-}
+// The old generic "Which one is you?" self-service claim screen (search + pick from every
+// unclaimed profile) was removed — see BUGS.md #17. It carried the exact same identity risk as
+// the invite-link bug (a stranger self-selecting someone else's existing profile), just via a
+// list instead of a URL, and doesn't scale as the player base grows. Existing pre-created
+// profiles are now claimed ONLY through a targeted invite link with its "Is this you?"
+// confirmation (see pendingInviteConfirm below); anyone signing in with no such invite pending
+// just gets a brand-new profile automatically (see the auto-fresh-profile effect below).
 
 export default function Matchkeeper() {
   useEffect(() => { document.title = `Matchkeeper ${APP_VERSION}`; }, []);
@@ -3281,7 +3247,6 @@ export default function Matchkeeper() {
   const [egypt, setEgypt] = useState(INIT_EGYPT);
   const [comms,  setComms]  = useState(INIT_COMMS);
   const [notifications, setNotifications] = useState([]);
-  const [claimRequests, setClaimRequests] = useState([]); // {id, userId, firebaseUid, email, displayName, requestedAt, status}
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
   const [invites, setInvites] = useState([]); // {id, code, createdBy, createdAt, label, communityId, eventId}
   const [authUser, setAuthUser] = useState(null);
@@ -3313,11 +3278,11 @@ export default function Matchkeeper() {
   }, []);
 
   // Which local Matchkeeper profile belongs to the signed-in Firebase account, if any.
-  // Claiming an existing profile requires admin approval (see claimRequests) so nobody
-  // can just pick someone else's name — only "not on this list" is immediate, since it
-  // can't impersonate anyone. The actual firebaseUid→userId link lives in its own
-  // per-document collection (uidLinks, synced above) — never in the users blob — so it
-  // can't be silently reverted by an unrelated users-array write from another device.
+  // Existing profiles can only ever be linked through a targeted invite (with its "Is this
+  // you?" confirmation — see pendingInviteConfirm below), never by self-picking a name off a
+  // list. The actual firebaseUid→userId link lives in its own per-document collection
+  // (uidLinks, synced above) — never in the users blob — so it can't be silently reverted by
+  // an unrelated users-array write from another device.
   const linkedUserId = authUser ? uidLinks[authUser.uid] : null;
   const linkedMe = linkedUserId!=null ? (users.find(u => u.id===linkedUserId) || null) : null;
   const me = linkedMe || users[0];
@@ -3353,32 +3318,9 @@ export default function Matchkeeper() {
       enablePushNotifications(linkedMe.id).catch(e=>console.log("Push enable failed", e));
     }
   }, [linkedMe]);
-  const myPendingRequest = authUser ? claimRequests.find(r => r.firebaseUid===authUser.uid && r.status==="pending") : null;
-  const myLastRequest = authUser ? [...claimRequests].reverse().find(r => r.firebaseUid===authUser.uid) : null;
-  const requestClaim = (userId) => {
-    if (userId === 1) { // the seed owner profile — approving anyone else requires *someone* already linked, so this one is instant
-      linkUidToUser(authUser.uid, 1);
-      setUsers(us => us.map(u => u.id===1 ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
-      return;
-    }
-    const id = _crid++;
-    setClaimRequests(rs => [...rs, {id, userId, firebaseUid:authUser.uid, email:authUser.email, photoURL:authUser.photoURL||"", displayName:authUser.displayName||"", requestedAt:new Date().toISOString(), status:"pending"}]);
-    const claimedName = users.find(u=>u.id===userId)?.nickname || "a player";
-    notify([1], "claimRequest", null, "🙋 New claim request", `${authUser.displayName||authUser.email||"Someone"} wants to be linked as ${claimedName} — review in Requests.`);
-  };
-  const approveClaim = (reqId) => {
-    setClaimRequests(rs => rs.map(r => r.id===reqId ? {...r, status:"approved"} : r));
-    const req = claimRequests.find(r => r.id===reqId);
-    if (req) {
-      linkUidToUser(req.firebaseUid, req.userId);
-      setUsers(us => us.map(u => u.id===req.userId ? {...u, email:req.email||u.email, photoURL:u.photoURL||req.photoURL||""} : u));
-    }
-  };
-  const rejectClaim = (reqId) => setClaimRequests(rs => rs.map(r => r.id===reqId ? {...r, status:"rejected"} : r));
-  // Links a signed-in Firebase account straight to an existing profile, no approval queue —
-  // safe ONLY when driven by an admin-generated targeted invite (see Effect A below), since
-  // the admin choosing to send that specific link to that specific person IS the approval.
-  // A person self-picking a name off the public unclaimed list still goes through requestClaim.
+  // Links a signed-in Firebase account straight to an existing profile — safe ONLY when driven
+  // by an admin-generated targeted invite (see pendingInviteConfirm below), since it's gated on
+  // the signed-in person explicitly confirming "yes, that's me" before this ever runs.
   const claimViaInvite = (userId, inv) => {
     linkUidToUser(authUser.uid, userId);
     setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
@@ -3448,21 +3390,21 @@ export default function Matchkeeper() {
     cardShadow:"0 2px 8px #6366F118", accent:"#4F46E5", accentLight:"#EEF2FF",
   };
 
-  // ── Firestore sync (Phase 2) — comms/users/venues/notifications/claimRequests are
+  // ── Firestore sync (Phase 2) — comms/users/venues/notifications are
   // shared cloud data now; every signed-in device sees the same thing in real time.
   // `dark` stays a local device preference in localStorage.
   // syncedRef tracks, per key, the JSON of whatever we last received FROM Firestore or
   // sent TO it — this is what stops the listen-effect and write-effect from echoing
   // back and forth into an infinite loop.
-  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, claimRequests:null, egypt:null});
+  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, egypt:null});
   // Tracks whether each collection has EVER returned real data this session. Firestore's
   // onSnapshot can occasionally misfire "not found" on a transient network blip even when
   // the document genuinely exists — this flag is what stops that from being mistaken for
   // "first-time setup" and destructively overwriting live data with empty seed defaults.
-  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, claimRequests:false, egypt:false});
+  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
-  const dataLoaded = ["comms","users","venues","notifications","claimRequests","uidLinks","invites","egypt"].every(k => loadedKeys.includes(k));
+  const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt"].every(k => loadedKeys.includes(k));
   // Captures the real Firestore error (code + message) whenever a collection fails to load,
   // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
   const [loadDiag, setLoadDiag] = useState({});
@@ -3605,31 +3547,6 @@ export default function Matchkeeper() {
     setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify(notifications)}).catch(e=>console.log("Firestore write error (notifications)", e));
   }, [notifications, dataLoaded]);
 
-  // claimRequests
-  useEffect(() => {
-    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
-    const unsub = onSnapshot(doc(db,"padelos","claimRequests"), snap => {
-      if (snap.exists()) {
-        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
-        const json = JSON.stringify(remote);
-        if (json !== syncedRef.current.claimRequests) { syncedRef.current.claimRequests = json; setClaimRequests(remote);
-          _crid = Math.max(_crid, ...remote.map(r=>r.id), 0) + 1;
-        }
-        everRealRef.current.claimRequests = true;
-      } else if (!everRealRef.current.claimRequests) { syncedRef.current.claimRequests = JSON.stringify([]); setClaimRequests([]); } // local fallback only — never auto-write seed data to Firestore
-      markLoaded("claimRequests");
-    }, e => { console.log("Firestore claimRequests error", e); recordDiag("claimRequests", `${e.code||"error"}: ${e.message||e}`); markLoaded("claimRequests"); });
-    return unsub;
-  }, [authUser]);
-  useEffect(() => {
-    if (!dataLoaded) return;
-    if (!everRealRef.current.claimRequests) { console.log("Blocked write: haven't confirmed real claimRequests data this session yet"); return; }
-    const json = JSON.stringify(claimRequests);
-    if (json === syncedRef.current.claimRequests) return;
-    syncedRef.current.claimRequests = json;
-    setDoc(doc(db,"padelos","claimRequests"), {value:JSON.stringify(claimRequests)}).catch(e=>console.log("Firestore write error (claimRequests)", e));
-  }, [claimRequests, dataLoaded]);
-
   // uidLinks — one Firestore document PER identity link (padelos_links/{firebaseUid} = {userId}).
   // Deliberately NOT part of the users blob: this is the exact data that was getting lost
   // (a claim approval silently reverted) when a stale device overwrote the whole users
@@ -3661,7 +3578,7 @@ export default function Matchkeeper() {
   };
 
   // invites — admin-generated shareable links (Enhancement #1). Same one-blob-doc pattern as
-  // claimRequests/notifications; codes are short random tokens resolved client-side.
+  // notifications; codes are short random tokens resolved client-side.
   useEffect(() => {
     if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
     const unsub = onSnapshot(doc(db,"padelos","invites"), snap => {
@@ -3711,21 +3628,37 @@ export default function Matchkeeper() {
     const inv = invites.find(i=>i.code===code);
     if (!inv) return;
     const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
-    const alreadyPending = claimRequests.some(r=>r.userId===inv.targetUserId&&r.status==="pending");
-    if (inv.targetUserId!=null && !alreadyClaimed && !alreadyPending) {
+    if (inv.targetUserId!=null && !alreadyClaimed) {
       const target = users.find(u=>u.id===inv.targetUserId);
       if (target) setPendingInviteConfirm({inv, target});
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
       createFreshProfile();
     }
-  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, claimRequests, users]);
+  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users]);
+  // No generic "which one is you?" self-service claim screen anymore (see BUGS.md #17) —
+  // anyone signing in with no pending targeted invite just gets a brand-new profile, same as an
+  // untargeted invite already did. One bootstrap exception: if the platform-owner seed profile
+  // (#1) has no linked account at all yet (first-ever setup, or the owner's own device/session
+  // got wiped), link straight to it instead of creating a duplicate — there's nobody else who
+  // could send #1 an invite link, so #1 can't rely on the normal targeted-invite path itself.
+  const autoFreshProfileRef = useRef(false);
+  useEffect(() => {
+    if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm) return;
+    if (readPendingInvite()) return; // the invite-claim effect above owns this case
+    if (autoFreshProfileRef.current) return;
+    autoFreshProfileRef.current = true;
+    if (!Object.values(uidLinks).includes(1)) {
+      linkUidToUser(authUser.uid, 1);
+      setUsers(us => us.map(u => u.id===1 ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
+    } else {
+      createFreshProfile();
+    }
+  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, uidLinks]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
-  // both a brand-new profile and a targeted claim of an existing one (self-picked claims from
-  // the public unclaimed list are the only path still needing admin approval, and don't carry
-  // a pending invite) — join them to the invited community/event. Deliberately re-checked on
-  // every render where these
-  // deps change (not just right after auth) so a claim approved later still gets applied the
+  // both a brand-new profile and a confirmed targeted claim of an existing one — join them to
+  // the invited community/event. Deliberately re-checked on every render where these
+  // deps change (not just right after auth) so this still applies the
   // next time the app is open, since the invite code just sits in localStorage until consumed.
   const appliedInviteRef = useRef(null);
   useEffect(() => {
@@ -3766,7 +3699,7 @@ export default function Matchkeeper() {
   const wasAuthedRef = useRef(false);
   useEffect(() => {
     if (authUser) { wasAuthedRef.current = true; }
-    else if (wasAuthedRef.current) { clearPendingInvite(); setPendingInviteConfirm(null); wasAuthedRef.current = false; }
+    else if (wasAuthedRef.current) { clearPendingInvite(); setPendingInviteConfirm(null); autoFreshProfileRef.current = false; wasAuthedRef.current = false; }
   }, [authUser]);
 
   useEffect(() => {
@@ -3929,7 +3862,6 @@ export default function Matchkeeper() {
       setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)});
       setDoc(doc(db,"padelos","venues"), {value:JSON.stringify(INIT_VENUES)});
       setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify([])});
-      setDoc(doc(db,"padelos","claimRequests"), {value:JSON.stringify([])});
     } catch(e) {}
     window.location.reload();
   };
@@ -3970,12 +3902,10 @@ export default function Matchkeeper() {
   const markAllNotifRead = () => setNotifications(ns => ns.map(n => n.userId===me.id?{...n,read:true}:n));
   // Enhancement #19 — a tapped notification takes you to whatever it's actually about,
   // instead of leaving you wherever you happened to be. Covers every notify() call site:
-  // event+community context (most types) already carries both ids; claimRequest has neither
-  // (it's about the Platform Admin Claims tab, not a community/event); community-only
-  // context (new_community) carries just communityId.
+  // event+community context (most types) already carries both ids; community-only context
+  // (new_community) carries just communityId.
   const openNotif = (n) => {
     markNotifRead(n.id);
-    if (n.type==="claimRequest") { setNavHistory(h=>[...h,{nav,view}]); setNav("platform"); setView({screen:"admin",tab:"claims"}); return; }
     if (n.communityId && n.eventId) { goEvent(n.communityId, n.eventId); return; }
     if (n.communityId) { goComm(n.communityId); return; }
   };
@@ -4923,26 +4853,17 @@ export default function Matchkeeper() {
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>This invite link will connect your account to <b style={{color:"#F1F5F9"}}>{target.nickname}</b>'s profile{target.area&&target.area!=="—"?` (${target.area})`:""}. Only confirm if that's really you — if this link was forwarded to you by mistake, don't claim someone else's profile.</div>
           <button onClick={()=>{autoInviteClaimRef.current=inv.code;claimViaInvite(inv.targetUserId,inv);setPendingInviteConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
-          <div onClick={()=>{clearPendingInvite();autoInviteClaimRef.current=inv.code;setPendingInviteConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — let me pick my own profile</div>
+          <div onClick={()=>{clearPendingInvite();autoInviteClaimRef.current=inv.code;setPendingInviteConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
         </div>
       </div>;
     }
-    if (myPendingRequest) {
-      const target = users.find(u=>u.id===myPendingRequest.userId);
-      return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-        <div style={{maxWidth:360,textAlign:"center"}}>
-          <div style={{fontSize:32,marginBottom:12}}>⏳</div>
-          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Waiting for approval</div>
-          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You asked to claim <b style={{color:"#F1F5F9"}}>{target?.nickname}</b>'s profile. A community admin needs to confirm that's really you before you can continue.</div>
-          <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
-        </div>
-      </div>;
-    }
-    const pendingUserIds = new Set(claimRequests.filter(r=>r.status==="pending").map(r=>r.userId));
-    const claimedUserIds = new Set(Object.values(uidLinks));
-    const unclaimed = users.filter(u => !claimedUserIds.has(u.id) && !pendingUserIds.has(u.id));
-    return <ClaimProfileScreen authUser={authUser} unclaimed={unclaimed} wasRejected={myLastRequest?.status==="rejected"} onClaim={requestClaim} onCreateNew={createFreshProfile} onSignOut={()=>signOut(fbAuth)} degraded={dataDegraded} diagText={diagText}/>;
+    // No pending invite to confirm — the auto-fresh-profile effect above (or the id===1
+    // bootstrap it falls back to) handles this case within a render or two, nothing to show
+    // here beyond a brief loading state for that gap.
+    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{color:"#64748B",fontSize:14}}>Setting up your profile…</div>
+    </div>;
   }
 
   return (
@@ -5081,7 +5002,6 @@ export default function Matchkeeper() {
           }}
           onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
-          claimRequests={claimRequests} onApproveClaim={approveClaim} onRejectClaim={rejectClaim}
           onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
@@ -8706,7 +8626,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,claimRequests=[],onApproveClaim,onRejectClaim,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -8719,7 +8639,6 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
-  const pendingClaims = claimRequests.filter(r=>r.status==="pending");
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
   const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
   const q=userSearch.trim().toLowerCase();
@@ -8737,29 +8656,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <Tabs tabs={[["users",`Users (${users.length})`],["claims",`Claims${pendingClaims.length>0?` (${pendingClaims.length})`:""}`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
-
-  {tab==="claims"&&<>
-    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>When someone signs in and picks an existing player as themself, it lands here — confirm it's really them before their account gets linked.</div>
-    {pendingClaims.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No pending claims.</div></Card>}
-    {pendingClaims.map(r=>{
-      const target = users.find(u=>u.id===r.userId);
-      if (!target) return null;
-      return <Card key={r.id} style={{marginBottom:8}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-          <Av u={target} size={36}/>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Claiming: {target.nickname}</div>
-            <div style={{fontSize:11,color:"var(--po-dim)"}}>{r.email||r.displayName||"—"} · {timeAgo(r.requestedAt)}</div>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:8}}>
-          <Btn label="✓ Approve" primary onClick={()=>onApproveClaim(r.id)} style={{flex:1}}/>
-          <Btn label="✗ Reject" onClick={()=>onRejectClaim(r.id)} style={{flex:1}}/>
-        </div>
-      </Card>;
-    })}
-  </>}
+  <Tabs tabs={[["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="users"&&<>
     <div style={{display:"flex",gap:6,marginBottom:12}}>

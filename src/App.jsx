@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.25";
+const APP_VERSION = "V0.09.26";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -1969,7 +1969,7 @@ function canvasToFileSync(canvas, name){
   return new File([u8arr], name, {type:mime});
 }
 
-async function shareImages(canvases, baseName){
+async function shareImages(canvases, baseName, text){
   const diag=[];
   const files = canvases.map((c,i)=>canvasToFileSync(c,`${baseName}_${i+1}.png`));
   diag.push(`files ready: ${files.length}`);
@@ -1987,7 +1987,7 @@ async function shareImages(canvases, baseName){
         const result = await Filesystem.writeFile({path:f.name, data:base64, directory:Directory.Cache});
         savedUris.push(result.uri);
       }
-      await Share.share({title:baseName, files:savedUris});
+      await Share.share({title:baseName, text, files:savedUris});
       return {status:"shared", diag:["shared natively"]};
     } catch(e) {
       if (e && (e.message||"").toLowerCase().includes("cancel")) return {status:"shared", diag:["user cancelled"]};
@@ -2005,7 +2005,7 @@ async function shareImages(canvases, baseName){
     diag.push(`canShare(multi files): ${canMulti}`);
     if(canMulti){
       try{
-        await navigator.share({files, title:baseName});
+        await navigator.share({files, title:baseName, text});
         return {status:"shared", diag};
       }catch(e){
         if(e && e.name==="AbortError") return {status:"shared", diag:["user cancelled"]};
@@ -2019,7 +2019,7 @@ async function shareImages(canvases, baseName){
       try{ canOne=navigator.canShare({files:[f]}); }catch(e){ diag.push(`canShare(1) threw: ${e.message}`); }
       if(canOne){
         try{
-          await navigator.share({files:[f], title:baseName});
+          await navigator.share({files:[f], title:baseName, text});
           anyShared=true;
         }catch(e){
           if(e && e.name==="AbortError"){ anyShared=true; continue; }
@@ -5317,19 +5317,28 @@ function CommStatsTab({comm, users, onViewProfile}){
 // Shared "here's your link" popup for any invite (community or event) — copy or hand off to
 // the native share sheet (WhatsApp etc). Works for a brand-new recipient or an existing one;
 // the app resolves what to do with it on open (see the invite-handling effects up top).
-function InviteModal({url,onClose}){
+// Enhancement #31 — the invite message was one generic line ("Join me on Matchkeeper — tap to
+// open:") regardless of what the invite was actually for. Every invite already carries a
+// `label` describing exactly that (createInvite's label — "Join {event}", "Join {community}",
+// "Join Matchkeeper as {nickname}") but it was only ever stored, never shown to the sender or
+// put in the shared message. Now it drives both the on-screen heading and the share text.
+function InviteModal({url,label,onClose}){
   const [copied,setCopied]=useState(false);
   const copy=async()=>{
     try{ await navigator.clipboard.writeText(url); setCopied(true); setTimeout(()=>setCopied(false),1500); }
     catch(e){ console.log("Clipboard copy failed", e); }
   };
+  const shareTitle = label ? `${label} on Matchkeeper` : "Join me on Matchkeeper";
+  const shareText = label
+    ? `${label} on Matchkeeper — tap the link to jump straight in, no account hassle if you don't have one yet:`
+    : "Join me on Matchkeeper — tap to open:";
   const share=async()=>{
-    try{ await Share.share({title:"Join me on Matchkeeper",text:"Join me on Matchkeeper — tap to open:",url}); }
+    try{ await Share.share({title:shareTitle,text:shareText,url}); }
     catch(e){ console.log("Share failed", e); }
   };
   return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:360,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
-      <div style={{fontSize:16,fontWeight:700,color:"var(--po-text)",marginBottom:4}}>🔗 Invite Link</div>
+      <div style={{fontSize:16,fontWeight:700,color:"var(--po-text)",marginBottom:4}}>🔗 {label||"Invite Link"}</div>
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14}}>Share this with anyone — works whether they already have Matchkeeper or not.</div>
       <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",fontSize:12,color:"var(--po-text)",wordBreak:"break-all",marginBottom:14,fontFamily:"monospace"}}>{url}</div>
       <div style={{display:"flex",gap:8}}>
@@ -5394,9 +5403,9 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       {isAdmin&&<>
         <div style={{display:"flex",gap:6,marginBottom:12}}>
           <SmBtn label={showInvite?"▲ Hide":"+ Invite Platform User"} onClick={()=>setShowInvite(o=>!o)} color="#6366F1" style={{flex:1}}/>
-          {onCreateInvite&&<SmBtn label="🔗 Invite Link" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,label:`Join ${comm.name}`})}`)} color="#34D399" style={{flex:1}}/>}
+          {onCreateInvite&&<SmBtn label="🔗 Invite Link" onClick={()=>{const label=`Join ${comm.name}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,label})}`,label});}} color="#34D399" style={{flex:1}}/>}
         </div>
-        {inviteUrl&&<InviteModal url={inviteUrl} onClose={()=>setInviteUrl(null)}/>}
+        {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
         {showInvite&&nonMembers.length>0&&<Card style={{marginBottom:12}}>
           {nonMembers.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
             <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>USR {u.usr} · {u.area}</span></div>
@@ -5425,7 +5434,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
               {(isAdmin||(meIsPlatformAdmin&&m.role==="admin"))&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
-                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,label:`Join ${comm.name}`})}`);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join ${comm.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,label})}`,label});setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>{onConvertGuest(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>{onToggleStatus(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>{onPromote(u.id);setOpenMemberMenu(null);}} color="#6366F1" style={{width:"100%"}}/>}
@@ -7253,7 +7262,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           onToast&&onToast("Couldn't build the Round 1 card","err");
         }
       }
-      const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_"));
+      // Enhancement #30 — the images alone carried no accompanying message, so whoever
+      // received them via WhatsApp/etc had no text context (date, time, or where it even is)
+      // without opening each image. Location comes from the venue's Maps link when set.
+      const shareText = [
+        `🎾 ${effEv.name}`,
+        `📅 ${fmtD(effEv.date)}${effEv.time?` · ${fmtT(effEv.time)}${effEv.timeTo?` – ${fmtT(effEv.timeTo)}`:""}`:""}`,
+        `📍 ${venue?.name||"TBA"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
+        `👥 ${comm.name}`,
+        ``,
+        `Join us on Matchkeeper!`,
+      ].join("\n");
+      const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_"), shareText);
       if(result.status==="shared"){ onToast&&onToast(`Shared ✓ (${cards.length} image${cards.length>1?"s":""})`); }
       else { onToast&&onToast(`Native share unavailable — ${cards.length} image(s) downloaded`); setShareDiag(result.diag); }
     }catch(e){
@@ -7288,7 +7308,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));
         if(plan) cards.push(buildRoundResultsCard(effEv,venue,plan,comm.name));
       }
-      const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results");
+      const shareText = [
+        `🏆 ${effEv.name} — Results`,
+        `📅 ${fmtD(effEv.date)}`,
+        `📍 ${venue?.name||"—"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
+        `👥 ${comm.name}`,
+      ].join("\n");
+      const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results", shareText);
       if(result.status==="shared"){ onToast&&onToast(`Shared ✓ (${cards.length} image${cards.length>1?"s":""})`); }
       else { onToast&&onToast(`Native share unavailable — ${cards.length} image(s) downloaded`); setShareDiag(result.diag); }
     }catch(e){
@@ -7520,7 +7546,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {isCT&&!ctR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players and regenerate teams until Round 1 has results.</div>}
       {isCI&&ciR1Locked&&<div style={{marginBottom:10,padding:"8px 12px",background:"#EF444411",border:"0.5px solid #EF444433",borderRadius:8,fontSize:12,color:"#EF4444"}}>🔒 Round 1 has results — player list is now frozen.</div>}
       {isCI&&!ciR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players until Round 1 has results.</div>}
-      {inviteUrl&&<InviteModal url={inviteUrl} onClose={()=>setInviteUrl(null)}/>}
+      {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
       {isAdmin&&(effEv.joinRequests||[]).length>0&&<Card style={{marginBottom:10,borderColor:"#FBBF2466",background:"#FBBF240A"}}>
         <ST>🙋 Requests to Join ({effEv.joinRequests.length})</ST>
         {effEv.joinRequests.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return <div key={r.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
@@ -7529,7 +7555,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <SmBtn label="✕" onClick={()=>act.rejectEventJoin(u.id)} color="#EF4444"/>
         </div>;})}
       </Card>}
-      {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{flex:1}}/>}<Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
+      {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>{const label=`Join ${effEv.name}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label})}`,label});}} color="#34D399" style={{flex:1}}/>}<Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
       {showAddM&&(()=>{const candidates=comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).map(m=>users.find(u=>u.id===m.userId)).filter(Boolean);const amQ=addMemberSearch.trim().toLowerCase();const shownCandidates=amQ?candidates.filter(u=>u.nickname?.toLowerCase().includes(amQ)||u.name?.toLowerCase().includes(amQ)):candidates;return <Card style={{marginBottom:10}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Select member to add:</div>{candidates.length>6&&<input value={addMemberSearch} onChange={e=>setAddMemberSearch(e.target.value)} placeholder="🔍 Search members..." className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:8}}/>}{shownCandidates.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}><Av u={u} size={30}/><div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><SmBtn label="Add" onClick={()=>act.addMember(u.id)} color="#6366F1"/></div>)}{candidates.length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>All community members are registered ✓</div>}{candidates.length>0&&shownCandidates.length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>No members match "{addMemberSearch}"</div>}<SmBtn label="✓ Done" onClick={()=>{setSAM(false);setAddMemberSearch("");}} color="#34D399" style={{width:"100%",marginTop:8}}/></Card>;})()}
       {showAddG&&<Card style={{marginBottom:10}}>
         <div style={{fontSize:12,color:"#F59E0B",marginBottom:8}}>⚠️ Nickname and phone required for guests</div>
@@ -7642,7 +7668,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:170,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
                   {isOpen&&!ci2&&isDay&&<SmBtn label="✓ Check In" onClick={()=>{act.checkIn(u.id);setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
-                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`);setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
+                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join ${effEv.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label});setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{width:"100%"}}/>}
                   {effEv.status!=="completed"&&effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{setOpenPlayerMenu(null);if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{width:"100%"}}/>}
                   {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕ Remove" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
@@ -8709,14 +8735,14 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         </div>
         <div style={{display:"flex",gap:4}}>
           <SmBtn label="👁" onClick={()=>onViewProfile(u.id)} color="#6366F1"/>
-          {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label:`Join Matchkeeper as ${u.nickname}`})}`)} color="#34D399"/>}
+          {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399"/>}
           {onUnlinkUser&&Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔓 Unlink" onClick={()=>{if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444"/>}
           <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B"/>
           {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>}
         </div>
       </div>
     </Card>)}
-    {inviteUrl&&<InviteModal url={inviteUrl} onClose={()=>setInviteUrl(null)}/>}
+    {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
   </>}
 
   {tab==="archived"&&<>

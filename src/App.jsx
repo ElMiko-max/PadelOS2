@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.21";
+const APP_VERSION = "V0.09.22";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -7457,17 +7457,40 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       <PollBlock ev={effEv} me={me} isReg={isReg} isAdmin={isAdmin} onVote={act.vote} onResolveType={act.resolveType}/>
 
       {(()=>{
+        // Graduated Min/Max capacity indicator (approved design, replaces the old plain bar +
+        // text) — a moving marker on a Min→Max track instead of a single number. Deliberately
+        // no "exceptional max" (courts×6) tier: that number isn't reachable through anything in
+        // the app today, so showing it would promise capacity that doesn't actually exist.
         const regCap=getMaxPlayers(effEv);
         const {active:activeRegsForBar,waitlisted:waitlistedRegsForBar}=splitRegsByCapacity(effEv,comm);
         const shownCap=regCap??maxCap;
+        const cnt=activeRegsForBar.length;
+        const pct=shownCap>0?Math.min(100,(cnt/shownCap)*100):0;
+        const minPct=shownCap>0?Math.min(100,(minReq/shownCap)*100):0;
+        const showMinTick=minReq>0&&minReq<shownCap;
+        const isFull=cnt>=shownCap;
+        const pastMin=cnt>=minReq;
+        const barColor=isFull?"#EF4444":pastMin?"#34D399":"#6366F1";
+        const statusLabel=isFull?"Full":pastMin?"On track":`Needs ${Math.max(0,minReq-cnt)} more`;
         return <div style={{marginBottom:12}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--po-dim)",marginBottom:4}}>
-            <span>{activeRegsForBar.length} registered{waitlistedRegsForBar.length>0?` · ${waitlistedRegsForBar.length} waiting`:""}</span>
-            <span>{regCap?`Max ${regCap}`:`Min ${minReq} · Max ${maxCap}`}</span>
+          <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:10}}>
+            <div><span style={{fontSize:20,fontWeight:800,color:"var(--po-text)"}}>{cnt}</span><span style={{fontSize:12,fontWeight:600,color:"var(--po-dim)"}}> / {shownCap} registered</span></div>
+            <span style={{fontSize:10,fontWeight:700,padding:"3px 9px",borderRadius:20,color:barColor,background:`${barColor}22`,whiteSpace:"nowrap"}}>{statusLabel}</span>
           </div>
-          <div style={{height:6,background:"var(--po-bdr)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,transition:"width 0.3s",width:`${Math.min(100,(activeRegsForBar.length/shownCap)*100)}%`,background:activeRegsForBar.length>=shownCap?"#EF4444":!regCap&&activeRegsForBar.length>=minReq?"#F59E0B":"#6366F1"}}/></div>
-          {waitlistedRegsForBar.length>0&&<div style={{fontSize:11,color:"#F59E0B",marginTop:3}}>⏳ {waitlistedRegsForBar.length} on the waitlist — first in line joins automatically if a spot opens</div>}
-          {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:3}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
+          <div style={{position:"relative",padding:"0 1px",marginBottom:6}}>
+            <div style={{height:8,borderRadius:4,background:"var(--po-bdr)",position:"relative"}}>
+              <div style={{position:"absolute",left:0,top:0,height:"100%",borderRadius:4,width:`${pct}%`,background:barColor,transition:"width 0.3s"}}/>
+              {showMinTick&&<div style={{position:"absolute",top:-3,left:`${minPct}%`,width:2,height:14,background:"var(--po-card)",borderLeft:"2px solid var(--po-bg)",transform:"translateX(-1px)"}}/>}
+              <div style={{position:"absolute",top:"50%",left:`${pct}%`,width:14,height:14,borderRadius:"50%",background:barColor,border:"3px solid var(--po-card)",transform:"translate(-50%,-50%)",boxShadow:"0 1px 4px rgba(0,0,0,0.25)",transition:"left 0.3s"}}/>
+            </div>
+          </div>
+          <div style={{position:"relative",fontSize:10,fontWeight:600,color:"var(--po-dim)",height:24}}>
+            <div style={{position:"absolute",left:0,textAlign:"left"}}><div style={{fontSize:11,fontWeight:800,color:"var(--po-text)"}}>0</div>Start</div>
+            {showMinTick&&<div style={{position:"absolute",left:`${minPct}%`,transform:"translateX(-50%)",textAlign:"center"}}><div style={{fontSize:11,fontWeight:800,color:"var(--po-text)"}}>{minReq}</div>Min</div>}
+            <div style={{position:"absolute",right:0,textAlign:"right"}}><div style={{fontSize:11,fontWeight:800,color:"var(--po-text)"}}>{shownCap}</div>Max</div>
+          </div>
+          {waitlistedRegsForBar.length>0&&<div style={{marginTop:10,display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#F59E0B",background:"#F59E0B22",padding:"8px 10px",borderRadius:8}}>⏳ {waitlistedRegsForBar.length} on the waitlist — first in line joins automatically if a spot opens</div>}
+          {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:6}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
         </div>;
       })()}
 

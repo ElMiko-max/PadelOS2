@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.14";
+const APP_VERSION = "V0.09.15";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -622,6 +622,19 @@ function maxPossibleCI(plan){
 function personalMaxCI(breaks, generatedRounds, tc){
   return (generatedRounds-breaks)*courtPts(1,tc) + breaks*breakPts(tc);
 }
+// How many rounds should count toward a player's theoretical max — normally the whole event
+// (plan.rounds.length), but a retired player (Enhancement #24) stops being generated into any
+// round after they retire, so counting the full event length against them would understate
+// their PES. Capped at the round of their last real appearance (played or on break) instead.
+function personalRoundsCI(uid, plan){
+  for(let i=plan.rounds.length-1;i>=0;i--){
+    const r=plan.rounds[i];
+    const played=r.matches.some(m=>m.teamA.some(p=>p.userId===uid)||m.teamB.some(p=>p.userId===uid));
+    const onBreak=(r.onBreakIds||[]).includes(uid);
+    if(played||onBreak) return i+1;
+  }
+  return plan.rounds.length;
+}
 
 // X-System preview for Closed Individuals — per-player xPES computed from match details
 // (score margin, opponent USR, head-to-head) instead of court position. Pure/read-only,
@@ -1084,13 +1097,17 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
   return plan;
 }
 
-// CT Ladder: generate next match
-function genNextCTLadder(plan) {
-  const { rounds, courts, sorted, breakPlan } = plan;
+// CT Ladder: generate next match. retiredIds: PLAYER ids marked retired (Enhancement #24) —
+// retiring one player retires their whole team (fixed doubles, no "continue short-handed"
+// mode), so the whole team is dropped from every future round, with a break-pool backfill if a
+// court runs short — same approach as genNextRoundCI's individual-player version.
+function genNextCTLadder(plan, retiredIds=[]) {
+  const { rounds, courts, sorted, breakPlan, teams } = plan;
+  const retiredTeamIds = retiredIds.length ? (teams||[]).filter(t=>t.players?.some(p=>retiredIds.includes(p.userId))).map(t=>t.id) : [];
   const ri = rounds.length;
   const lastRound = rounds[ri-1];
   const newBreakIds = breakPlan[ri] || [];
-  const onBreak = sorted.filter(t => newBreakIds.includes(t.id));
+  const onBreak = sorted.filter(t => newBreakIds.includes(t.id) && !retiredTeamIds.includes(t.id));
 
   // Court ladder: winners up, losers down
   const buckets = {}; for(let c=1;c<=courts;c++) buckets[c]=[];
@@ -1100,11 +1117,11 @@ function genNextCTLadder(plan) {
     buckets[Math.max(1,m.court-1)].push(W);
     buckets[Math.min(courts,m.court+1)].push(L);
   });
-  // Remove teams on break
-  for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id));
+  // Remove teams on break or retired
+  for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
   // Add returning teams — prefer sending each team back to the court they last competed
   // on (before their break), falling back to the neediest court if that one's still full.
-  const returning = sorted.filter(t=>(lastRound.onBreakIds||[]).includes(t.id)&&!newBreakIds.includes(t.id));
+  const returning = sorted.filter(t=>(lastRound.onBreakIds||[]).includes(t.id)&&!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
   const findLastCourtCT=(tid)=>{
     for(let i=rounds.length-1;i>=0;i--){
       for(const m of rounds[i].matchesA||[]){
@@ -1121,12 +1138,25 @@ function genNextCTLadder(plan) {
     if(needy)buckets[parseInt(needy[0])].push(t);
   });
 
+  if(retiredTeamIds.length){
+    const breakCountSoFar={};
+    rounds.forEach(r=>(r.onBreakIds||[]).forEach(id=>{breakCountSoFar[id]=(breakCountSoFar[id]||0)+1;}));
+    const callUpPool=[...onBreak].sort((a,b)=>(breakCountSoFar[a.id]||0)-(breakCountSoFar[b.id]||0));
+    for(let c=1;c<=courts;c++){
+      while(buckets[c].length>0&&buckets[c].length<2&&callUpPool.length){
+        const t=callUpPool.shift();
+        buckets[c].push(t);
+        const oi=onBreak.findIndex(x=>x.id===t.id); if(oi>=0) onBreak.splice(oi,1);
+      }
+    }
+  }
+
   const matches=[];
   for(let c=1;c<=courts;c++) {
     const cp=buckets[c].slice(0,2);
     if(cp.length>=2) matches.push({court:c,teamA:cp[0],teamB:cp[1],winner:null,scoreA:0,scoreB:0});
   }
-  return {...plan, rounds:[...rounds,{roundNum:ri+1,type:"ladder",matchesA:matches,matchesB:[],onBreak,onBreakIds:newBreakIds}]};
+  return {...plan, rounds:[...rounds,{roundNum:ri+1,type:"ladder",matchesA:matches,matchesB:[],onBreak,onBreakIds:newBreakIds.filter(id=>!retiredTeamIds.includes(id))}]};
 }
 
 // CT Ladder scoring
@@ -1164,8 +1194,18 @@ function ctTeamMaxPts(teamId, plan){
   const tc = plan.courts;
   const c1 = ctLadderCourtPts(1, tc);
   const bp = ctLadderBreakPts(tc);
-  const totalRounds = (plan.rounds||[]).length;
-  const breakCount = (plan.rounds||[]).filter(r=>
+  // Same fix as personalRoundsCI, team-flavored: a retired team (Enhancement #24) stops
+  // appearing in any round — matches or break list — after retiring, so counting the event's
+  // full round count against them would understate their TES. Cap at their last appearance.
+  const rounds = plan.rounds||[];
+  let totalRounds = rounds.length;
+  for(let i=rounds.length-1;i>=0;i--){
+    const r=rounds[i];
+    const played=(r.matchesA||[]).some(m=>m.teamA?.id===teamId||m.teamB?.id===teamId);
+    const onBreak=(r.onBreak||[]).some(t=>(t.id||t.teamId)===teamId)||(r.onBreakIds||[]).includes(teamId);
+    if(played||onBreak){ totalRounds=i+1; break; }
+  }
+  const breakCount = rounds.slice(0,totalRounds).filter(r=>
     (r.onBreak||[]).some(t=>(t.id||t.teamId)===teamId) ||
     (r.onBreakIds||[]).includes(teamId)
   ).length;
@@ -1191,8 +1231,14 @@ function ctEventMaxPts(plan){
   return (totalRounds-avgBreaks)*c1 + avgBreaks*bp;
 }
 
-function applyPromoRelegation(plan) {
-  const { groupA, groupB, courts, rounds, leagueRound } = plan;
+// retiredIds: PLAYER ids marked retired (Enhancement #24) — retiring one player retires their
+// whole team, so retired teams are dropped from both groups before ranking/promotion math runs,
+// and simply never reappear in any future league round.
+function applyPromoRelegation(plan, retiredIds=[]) {
+  const { groupA: rawGroupA, groupB: rawGroupB, courts, rounds, leagueRound, teams } = plan;
+  const retiredTeamIds = retiredIds.length ? (teams||[]).filter(t=>t.players?.some(p=>retiredIds.includes(p.userId))).map(t=>t.id) : [];
+  const groupA = retiredTeamIds.length ? rawGroupA.filter(t=>!retiredTeamIds.includes(t.id)) : rawGroupA;
+  const groupB = retiredTeamIds.length ? rawGroupB.filter(t=>!retiredTeamIds.includes(t.id)) : rawGroupB;
   const rankedA = rankGroupCT(groupA, rounds);
   const rankedB = rankGroupCT(groupB, rounds);
   const sA = groupA.length, sB = groupB.length;
@@ -1202,6 +1248,8 @@ function applyPromoRelegation(plan) {
   if (sA > sB)       { upCount=1; downCount=2; }
   else if (sA < sB)  { upCount=2; downCount=1; }
   else                { upCount=1; downCount=1; }
+  upCount = Math.min(upCount, rankedB.length);
+  downCount = Math.min(downCount, rankedA.length);
 
   const promoted  = rankedB.slice(0, upCount);
   const relegated = rankedA.slice(rankedA.length-downCount).filter(Boolean);
@@ -2325,7 +2373,7 @@ function buildStandingsCard(ev,venue,ciStands,tc,plan,communityName){
   y = drawEventStrip(ctx, w, y, ev, venue);
 
   ciStands.forEach((s,i)=>{
-    const maxPts = personalMaxCI(s.breaks, plan.rounds.length, tc);
+    const maxPts = personalMaxCI(s.breaks, personalRoundsCI(s.user.id, plan), tc);
     const pes = maxPts>0 ? Math.round((s.pts/maxPts)*100*10)/10 : 0;
     const isTop = i===0;
     ctx.fillStyle = isTop ? "#FEF3C7" : COLORS.card;
@@ -2385,7 +2433,7 @@ function buildResultsTableCard(ev,venue,plan,ciStands,tc,communityName){
   };
   const rowH = 30;
   ciStands.forEach((s,i)=>{
-    const maxPts = personalMaxCI(s.breaks, plan.rounds.length, tc);
+    const maxPts = personalMaxCI(s.breaks, personalRoundsCI(s.user.id, plan), tc);
     const pes = maxPts>0 ? Math.round((s.pts/maxPts)*100*10)/10 : 0;
     ctx.fillStyle = i%2===0 ? COLORS.card : COLORS.cardAlt;
     ctx.fillRect(tableX, y, tableW, rowH);
@@ -3679,10 +3727,10 @@ export default function Matchkeeper() {
         const stands = standingsCache[ev.id];
         const s = stands.find(s => s.user.id === u.id);
         if (!s) return;
-        const maxPts = personalMaxCI(s.breaks, plan.rounds.length, plan.courts);
+        const maxPts = personalMaxCI(s.breaks, personalRoundsCI(u.id, plan), plan.courts);
         if (maxPts <= 0) return;
         const pes = Math.round((s.pts / maxPts) * 100 * 10) / 10;
-        updatedUser.usrHistory.push({eventId: ev.id, eventName: ev.name, date: ev.date, pes, type:"ci"});
+        updatedUser.usrHistory.push({eventId: ev.id, eventName: ev.name, date: ev.date, pes, type:"ci", retired:(ev.retiredIds||[]).includes(u.id)});
         anyUpdate = true;
       });
       if (!anyUpdate && updatedUser.usrHistory === u.usrHistory) return u;
@@ -4152,12 +4200,12 @@ export default function Matchkeeper() {
       setUsers(us=>us.map(u=>{
         const s=stands.find(s=>s.user.id===u.id);
         if(!s)return u;
-        const maxPts=personalMaxCI(s.breaks,plan.rounds.length,plan.courts);
+        const maxPts=personalMaxCI(s.breaks,personalRoundsCI(u.id,plan),plan.courts);
         if(maxPts<=0)return u;
         const standardPes=Math.round((s.pts/maxPts)*100*10)/10;
         const xEntry=xPreview?.find(x=>x.userId===u.id);
         const pes=xEntry?xEntry.outputPES:standardPes;
-        const hist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes, type:"ci"}];
+        const hist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes, type:"ci", retired:(ev.retiredIds||[]).includes(u.id)}];
         const seedUsr = u.seedUsr ?? u.usr;
         const newUsr = calcWeightedUSR(hist, seedUsr);
         return {...u, usr:newUsr, usrHistory:hist, seedUsr: u.seedUsr ?? u.usr};
@@ -4210,7 +4258,7 @@ export default function Matchkeeper() {
 
         // Calculate new TR using same seed-padded rolling average as USR
         const newEntry={comboKey,partnerId:partner.userId,partnerName:partner.nickname,
-          eventId:eid,eventName:ev.name,date:ev.date,format,tes};
+          eventId:eid,eventName:ev.name,date:ev.date,format,tes,retired:(ev.retiredIds||[]).includes(u.id)};
         const comboHist=[...comboHistory,newEntry];
         const padded=comboHist.length<5
           ?[...Array(5-comboHist.length).fill({tes:seedTr}),...comboHist]
@@ -4220,7 +4268,7 @@ export default function Matchkeeper() {
 
         // Also add TES to usrHistory with weight 0.5 → affects USR
         const seedUsr = u.seedUsr ?? u.usr;
-        const usrHist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes:tes, type:"ct"}];
+        const usrHist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes:tes, type:"ct", retired:(ev.retiredIds||[]).includes(u.id)}];
         const newUsr = calcWeightedUSR(usrHist, seedUsr);
 
         const otherHistory=prevHistory.filter(h=>h.comboKey!==comboKey);
@@ -4392,20 +4440,26 @@ export default function Matchkeeper() {
   const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");};
   const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
-  // Retiring mid-event: from here on the player is skipped when future CI rounds are generated
-  // (genNextRoundCI filters ev.retiredIds — past rounds/results are untouched). Finance default:
-  // retiring before the event's scheduled midpoint exempts them from the rest of the cost split,
-  // retiring after it they still owe their share — either way it just seeds the existing
-  // `exempted` set, so the admin can override it same as any other exemption from the Finance tab.
-  // Un-retiring never touches the exempt flag — only the moment of retiring sets a default.
+  // Retiring mid-event: from here on the player is skipped when future rounds/matches are
+  // generated (genNextRoundCI / genNextCTLadder / applyPromoRelegation all filter
+  // ev.retiredIds — past rounds/results are untouched). Closed Teams is fixed doubles with no
+  // "continue short-handed" mode, so retiring one player retires their whole team together.
+  // Finance default: retiring before the event's scheduled midpoint exempts them from the rest
+  // of the cost split, retiring after it they still owe their share — either way it just seeds
+  // the existing `exempted` set, so the admin can override it same as any other exemption from
+  // the Finance tab. Un-retiring never touches the exempt flag — only retiring sets a default.
   const retirePlayer=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     if(!ev) return;
     const isRetiring=!(ev.retiredIds||[]).includes(uid);
+    const teamMateIds = ev.type==="closed_teams"&&ev.plan
+      ? (ev.plan.teams?.find(t=>t.players?.some(p=>p.userId===uid))?.players||[]).map(p=>p.userId)
+      : [uid];
+    const ids = teamMateIds.length ? teamMateIds : [uid];
     updC(cid,c=>({...c,events:c.events.map(e=>{
       if(e.id!==eid) return e;
       const ret=new Set(e.retiredIds||[]);
-      ret.has(uid)?ret.delete(uid):ret.add(uid);
+      ids.forEach(id=>{ isRetiring?ret.add(id):ret.delete(id); });
       let exempted=e.exempted||[];
       if(isRetiring){
         const start=e.date&&e.time?new Date(`${e.date}T${e.time}`).getTime():null;
@@ -4413,12 +4467,12 @@ export default function Matchkeeper() {
         const mid=(start&&end)?(start+end)/2:null;
         const beforeMid=mid!=null?Date.now()<mid:true;
         const exSet=new Set(exempted);
-        beforeMid?exSet.add(uid):exSet.delete(uid);
+        ids.forEach(id=>{ beforeMid?exSet.add(id):exSet.delete(id); });
         exempted=[...exSet];
       }
       return {...e,retiredIds:[...ret],exempted};
     })}));
-    toast2(isRetiring?"Player marked retired 🚑":"Retirement undone");
+    toast2(isRetiring?(ids.length>1?"Team marked retired 🚑":"Player marked retired 🚑"):"Retirement undone");
   };
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
   // An admin's phone can only meaningfully show one event's Match Mode widget at a time —
@@ -4734,8 +4788,8 @@ export default function Matchkeeper() {
   // Toggles whether a League match shows on the Match Mode widget — display-only there
   // (no tap-to-record), so this doesn't touch winner/score at all, just the "live" flag.
   const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
-  const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan));toast2("Groups reshuffled ✓");};
-  const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan));toast2("Next match generated ✓");return true;};
+  const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan,ev.retiredIds||[]));toast2("Groups reshuffled ✓");};
+  const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan,ev.retiredIds||[]));toast2("Next match generated ✓");return true;};
   const swapCTLadder=(cid,eid,ri,tidA,tidB)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
       if(ev.id!==eid||!ev.plan)return ev;
@@ -5191,7 +5245,7 @@ function CommStatsTab({comm, users, onViewProfile}){
       if(ev.type==="closed_ind"&&ev.plan){
         const stands=ciCache[ev.id];
         const s=stands.find(s=>s.user.id===u.id);
-        if(s){wins+=s.wins; totalPts+=s.pts; totalMaxPts+=personalMaxCI(s.breaks,ev.plan.rounds.length,ev.plan.courts);}
+        if(s){wins+=s.wins; totalPts+=s.pts; totalMaxPts+=personalMaxCI(s.breaks,personalRoundsCI(u.id,ev.plan),ev.plan.courts);}
       }
       if(ev.type==="closed_teams"&&ev.plan){
         const stands=ctCache[ev.id];
@@ -5747,7 +5801,7 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
         {ciStands.map((s,i)=>{
           // detect ties for bracket display
           const tied = ciStands.filter(x=>x.pts===s.pts&&x.wins===s.wins&&x.courtWinSum===s.courtWinSum).length>1;
-          const mp = personalMaxCI(s.breaks, plan.rounds.length, tc);
+          const mp = personalMaxCI(s.breaks, personalRoundsCI(s.user.id, plan), tc);
           const pes = mp>0 ? Math.round((s.pts/mp)*100*10)/10 : 0;
           return <tr key={s.user.id}>
             <td style={{position:"sticky",left:0,zIndex:2,background:rowBg(i),padding:"6px 10px",fontSize:12,fontWeight:600,color:"var(--po-text)",whiteSpace:"nowrap",borderBottom:"0.5px solid var(--po-bdr)",boxShadow:"2px 0 4px -2px rgba(0,0,0,0.3)"}}>
@@ -6644,7 +6698,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         })
       : onSetWinCI(ri,mi,w,sA,sB),
     nextRound: () => sim
-      ? simMutate(e => e.plan ? {...e, plan: genNextRoundCI(e.plan)} : e)
+      ? simMutate(e => e.plan ? {...e, plan: genNextRoundCI(e.plan,e.retiredIds||[])} : e)
       : onNextRound(),
     swap: (ri,a,b) => sim
       ? simMutate(e => {
@@ -6757,10 +6811,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         })
       : onToggleCTLeagueLive(ri,mi,side),
     applyPromo: () => sim
-      ? simMutate(e => e.plan ? {...e, plan: applyPromoRelegation(e.plan)} : e)
+      ? simMutate(e => e.plan ? {...e, plan: applyPromoRelegation(e.plan,e.retiredIds||[])} : e)
       : onApplyPromo(),
     nextCTLadder: () => sim
-      ? simMutate(e => e.plan ? {...e, plan: genNextCTLadder(e.plan)} : e)
+      ? simMutate(e => e.plan ? {...e, plan: genNextCTLadder(e.plan,e.retiredIds||[])} : e)
       : onNextCTLadder(),
     swapCTLadder: (ri,tidA,tidB) => sim
       ? simMutate(e => {
@@ -7495,7 +7549,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {isOpen&&!ci2&&isAdmin&&isDay&&<SmBtn label="✓ In" onClick={()=>act.checkIn(u.id)} color="#34D399"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
               {isAdmin&&onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>setInviteUrl(`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label:`Join ${effEv.name}`})}`)} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
-              {isAdmin&&effEv.status!=="completed"&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{if(isRetired||window.confirm(`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{padding:"4px 8px",fontSize:11}}/>}
+              {isAdmin&&effEv.status!=="completed"&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
           </div>
@@ -7760,7 +7814,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {standingsView==="pes"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
         {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
-          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,plan.rounds.length,tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
+          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
           {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
         </>}
@@ -8090,7 +8144,10 @@ function ComboCard({combo, lv, eventsDesc, teamName, onRename}){
         return <div key={i} style={{display:"grid",gridTemplateColumns:"72px 1fr 44px 44px",gap:4,padding:"9px 14px",borderBottom:i<eventsDesc.length-1?"0.5px solid var(--po-bdr)":"none",alignItems:"center"}}>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(h.date)}</div>
           <div>
-            <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:1}}>#{h.eventId} · {h.format==="ladder"?"Ladder":"League"}</div>
+            <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:1,display:"flex",alignItems:"center",gap:4}}>
+              <span>#{h.eventId} · {h.format==="ladder"?"Ladder":"League"}</span>
+              {h.retired&&<span style={{fontSize:9,background:"#EF444422",color:"#EF4444",borderRadius:3,padding:"0 4px",fontWeight:700}}>🚑 RETIRED</span>}
+            </div>
             <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>{h.eventName}</div>
           </div>
           <div style={{textAlign:"right",fontSize:13,fontWeight:700,color:"#6366F1"}}>{h.tes}%</div>
@@ -8290,6 +8347,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4}}>
               #{h.eventId}
               {isCTEvent&&<span style={{fontSize:9,background:"#06B6D422",color:"#06B6D4",borderRadius:3,padding:"0 4px",fontWeight:700}}>CT ×0.5</span>}
+              {h.retired&&<span style={{fontSize:9,background:"#EF444422",color:"#EF4444",borderRadius:3,padding:"0 4px",fontWeight:700}}>🚑 RETIRED</span>}
             </div>
             <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>{h.eventName}</div>
           </div>

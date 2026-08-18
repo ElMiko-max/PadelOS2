@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.15";
+const APP_VERSION = "V0.09.16";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -1172,6 +1172,10 @@ function calcWeightedUSR(usrHistory, seedUsr){
   const hist=[...usrHistory].reverse();
   let weightedSum=0, totalWeight=0;
   for(const h of hist){
+    // Retired events (Enhancement #24) stay visible in the player's history but never move
+    // their USR — skip entirely rather than `break`, so it doesn't consume any of the
+    // rolling-window budget either (the next real event behind it still counts normally).
+    if(h.retired) continue;
     if(totalWeight>=5.0) break;
     const w = h.type==="ct" ? 0.5 : 1.0;
     const remaining = 5.0 - totalWeight;
@@ -4260,9 +4264,13 @@ export default function Matchkeeper() {
         const newEntry={comboKey,partnerId:partner.userId,partnerName:partner.nickname,
           eventId:eid,eventName:ev.name,date:ev.date,format,tes,retired:(ev.retiredIds||[]).includes(u.id)};
         const comboHist=[...comboHistory,newEntry];
-        const padded=comboHist.length<5
-          ?[...Array(5-comboHist.length).fill({tes:seedTr}),...comboHist]
-          :comboHist.slice(-5);
+        // Retired events stay in teamsHistory (below) for visibility but never move TR — same
+        // rule as calcWeightedUSR, just filtered locally since TR's rolling average isn't
+        // computed through that shared function.
+        const ratedHist=comboHist.filter(h=>!h.retired);
+        const padded=ratedHist.length<5
+          ?[...Array(5-ratedHist.length).fill({tes:seedTr}),...ratedHist]
+          :ratedHist.slice(-5);
         const newTr=Math.round(padded.reduce((sum,h)=>sum+h.tes,0)/padded.length);
         newEntry.tr=newTr;
 

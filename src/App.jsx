@@ -25,7 +25,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 
@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.26";
+const APP_VERSION = "V0.09.27";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3575,6 +3575,8 @@ export default function Matchkeeper() {
     setUidLinks(links => { const n={...links}; delete n[firebaseUid]; return n; });
     setUsers(us => us.map(u => u.id===userId ? {...u, email:"", photoURL:""} : u));
     toast2("Unlinked ✓ — profile is unclaimed again");
+    const u=users.find(u=>u.id===userId);
+    logAudit("user.unlink", `${me.nickname} unlinked ${u?.nickname||userId}'s account`, "user", userId);
   };
 
   // invites — admin-generated shareable links (Enhancement #1). Same one-blob-doc pattern as
@@ -3779,6 +3781,46 @@ export default function Matchkeeper() {
       toast2("Data exported ✓");
     } catch(e) { toast2("Export failed","err"); }
   };
+  // Audit Trail (Enhancement #26) — Platform-Admin-only oversight log of who did what. One
+  // document per entry (padelos_audit/<autoId>), same "many small docs" pattern as backups and
+  // uidLinks, not the single-blob pattern the rest of the app uses — a blob can't sensibly hold
+  // an append-only, ever-growing log. Only admin-level/sensitive actions are logged (not every
+  // click — routine reads and simple navigation stay out); the console shows the most recent
+  // 200, no automatic deletion for now.
+  const [auditLog, setAuditLog] = useState([]);
+  useEffect(() => {
+    if (!authUser) return;
+    const q = query(collection(db,"padelos_audit"), orderBy("ts","desc"), limit(200));
+    const unsub = onSnapshot(q, snap => {
+      setAuditLog(snap.docs.map(d => ({id:d.id, ...d.data()})));
+    }, e => console.log("Firestore audit error", e));
+    return unsub;
+  }, [authUser]);
+  // Returns the write promise (most callers ignore it — fire-and-forget) so the handful of
+  // callers that reload/navigate away immediately after (factoryReset) can await it first,
+  // since window.location.reload() would otherwise kill the in-flight write.
+  const logAudit = (action, summary, targetType, targetId) => {
+    return addDoc(collection(db,"padelos_audit"), {
+      ts: new Date().toISOString(),
+      actorId: me?.id ?? null,
+      actorName: me?.nickname || "Unknown",
+      action, summary,
+      targetType: targetType ?? null,
+      targetId: targetId ?? null,
+    }).catch(e => console.log("Firestore write error (audit)", e));
+  };
+  // Sign-in logging deliberately watches `linkedMe` becoming set, not the raw
+  // onAuthStateChanged callback — that callback's closure is created on first mount, before
+  // uidLinks has even loaded, so `me` inside it would stay stuck at the users[0] fallback
+  // instead of the real signed-in person. Ref-guarded so it only logs once per fresh sign-in
+  // (this app session), not on every re-render while linkedMe stays truthy.
+  const loginLoggedRef = useRef(false);
+  useEffect(() => {
+    if (!linkedMe) { loginLoggedRef.current = false; return; }
+    if (loginLoggedRef.current) return;
+    loginLoggedRef.current = true;
+    logAudit("auth.signin", `${linkedMe.nickname} signed in`, "user", linkedMe.id);
+  }, [linkedMe]);
   // Manual backup — Platform Admin only. Writes a full snapshot to its own document
   // (padelos_backups/<timestamp>) so a bad edit or bug can be rolled back without
   // relying on someone remembering to export a JSON file beforehand.
@@ -3815,6 +3857,7 @@ export default function Matchkeeper() {
       setVenues(snap.venues||[]);
       setComms(snap.comms||[]);
       toast2(`Restored backup from ${timeAgo(b.createdAt)} ✓`);
+      logAudit("admin.restoreBackup", `${me.nickname} restored a backup from ${timeAgo(b.createdAt)}`, "backup", backupId);
     } catch(e) { console.log("Restore backup error", e); toast2("Restore failed — backup data unreadable","err"); }
   };
   const deleteBackup = async (backupId) => {
@@ -3854,8 +3897,9 @@ export default function Matchkeeper() {
     if (total > 0) toast2(`Repaired ${fixed} event ID(s) and ${venuesFixed} venue(s) ✓`);
     else toast2("No issues found — data is clean ✓");
   };
-  const factoryReset = () => {
+  const factoryReset = async () => {
     try {
+      await logAudit("admin.factoryReset", `${me.nickname} performed a Factory Reset — all data wiped to seed defaults`, null, null);
       localStorage.removeItem('padelos_v10');
       localStorage.removeItem('padelos_v09');
       setDoc(doc(db,"padelos","comms"), {value:JSON.stringify(INIT_COMMS)});
@@ -3947,6 +3991,7 @@ export default function Matchkeeper() {
   // Community
   const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
     if (me.id!==1) notify([1], "new_community", {communityId:id}, "🌱 New community created", `${me.nickname} created "${d.name}"`);
+    logAudit("community.create", `${me.nickname} created community "${d.name}"`, "community", id);
   };
   const saveComm=(id,d)=>{updC(id,c=>({...c,...d}));toast2("Saved ✓");goBack();};
   // ── Centralized bookkeeping (opt-in, per community) ──────────────────
@@ -3971,8 +4016,14 @@ export default function Matchkeeper() {
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
   const requestJoin=(cid)=>{updC(cid,c=>c.joinRequests.some(r=>r.userId===me.id)?c:({...c,joinRequests:[...c.joinRequests,{userId:me.id,requestedAt:today}]}));toast2("Request sent ✓");};
-  const promoteM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,role:"admin"}:m)}));toast2("Promoted ✓");};
-  const kickM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.filter(m=>m.userId!==uid)}));toast2("Removed");};
+  const promoteM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,role:"admin"}:m)}));toast2("Promoted ✓");
+    const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
+    logAudit("member.promote", `${me.nickname} promoted ${u?.nickname||uid} to admin in ${c?.name||cid}`, "community", cid);
+  };
+  const kickM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.filter(m=>m.userId!==uid)}));toast2("Removed");
+    const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
+    logAudit("member.remove", `${me.nickname} removed ${u?.nickname||uid} from ${c?.name||cid}`, "community", cid);
+  };
   // Covers the "original owner disappeared/quit/is gone" case — either the owner steps down
   // themselves, or (if they truly can't be reached) the Platform Admin does it for them.
   // Single-owner model: the previous owner becomes a regular admin, never removed outright.
@@ -3982,8 +4033,16 @@ export default function Matchkeeper() {
       m.role==="owner"?{...m,role:"admin"}:m
     )}));
     toast2("Ownership transferred ✓");
+    const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===newOwnerId);
+    logAudit("member.transferOwnership", `${me.nickname} made ${u?.nickname||newOwnerId} owner of ${c?.name||cid}`, "community", cid);
   };
-  const toggleMemberStatus=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,status:m.status==="regular"?"casual":"regular"}:m)}));toast2("Status updated ✓");};
+  const toggleMemberStatus=(cid,uid)=>{
+    let newStatus=null;
+    updC(cid,c=>({...c,members:c.members.map(m=>{if(m.userId!==uid)return m;newStatus=m.status==="regular"?"casual":"regular";return{...m,status:newStatus};})}));
+    toast2("Status updated ✓");
+    const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
+    logAudit("member.statusChange", `${me.nickname} set ${u?.nickname||uid} to ${newStatus} in ${c?.name||cid}`, "community", cid);
+  };
   const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2(`${u?.nickname} added ✓`);};
   // A community invite targeted at a specific person joins them immediately, no approval
   // queue — same reasoning as claimViaInvite: the admin picking exactly this person to send
@@ -4046,6 +4105,7 @@ export default function Matchkeeper() {
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
     if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
+    logAudit("event.create", `${me.nickname} created event "${ev.name}" in ${comm?.name||cid}`, "event", id);
     if (!d.pollMode && ev.type && ev.visibility!=="private") {
       const recipients = (comm?.members||[]).filter(m=>m.userId!==me.id).map(m=>m.userId);
       notify(recipients, "reg_open", ev, `🎾 New event: ${ev.name}`, `Registration is open — ${fmtD(ev.date)}`);
@@ -4054,6 +4114,7 @@ export default function Matchkeeper() {
   const editEvent=(cid,eid,d)=>{
     const before = getEv(cid,eid);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...d})}));toast2("Event updated ✓");goBack();
+    logAudit("event.edit", `${me.nickname} edited event "${before?.name||eid}"`, "event", eid);
     if (before) {
       const changed = [];
       if (d.date!==undefined && d.date!==before.date) changed.push("date");
@@ -4137,6 +4198,7 @@ export default function Matchkeeper() {
       return after;
     });
     toast2("Event deleted (id "+eid+")");
+    logAudit("event.delete", `${me.nickname} deleted event "${ev.name}"`, "event", eid);
     goBack();
   };
   const archiveEvent=(cid,eid)=>{
@@ -4150,12 +4212,15 @@ export default function Matchkeeper() {
       return updated;
     });
     toast2("Event archived (id "+eid+")");
+    logAudit("event.archive", `${me.nickname} archived event "${ev.name}"`, "event", eid);
     goBack();
   };
   const unarchiveEvent=(cid,eid)=>{
     console.log("[unarchiveEvent] called with", {cid, eid});
     updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,archived:false,archivedAt:null})}));
     toast2("Event restored");
+    const ev=getEv(cid,eid);
+    logAudit("event.unarchive", `${me.nickname} unarchived event "${ev?.name||eid}"`, "event", eid);
   };
   // Bulk versions for the Events list "Select" mode — unlike the single-event
   // archiveEvent/deleteEvent above, these don't navigate away (the caller stays
@@ -4299,6 +4364,7 @@ export default function Matchkeeper() {
       return {...c, events:updatedEvents, members:updatedMembers};
     });
     toast2("Event closed ✓ — ratings updated");
+    logAudit("event.close", `${me.nickname} closed event "${ev.name}"${scoringMethod==="new"?" (Output PES scoring)":""}`, "event", eid);
   };
   // willLandWaitlisted: computed BEFORE the mutation, by simulating the new registration
   // appended and running it through the same tier-aware splitRegsByCapacity real registrations
@@ -4332,6 +4398,7 @@ export default function Matchkeeper() {
       const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
       notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
     }
+    logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
   };
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -4442,6 +4509,8 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
+    const u=users.find(u=>u.id===uid);
+    logAudit("event.unregister", `${me.nickname} ${uid===me.id?"unregistered themselves":`removed ${u?.nickname||uid}`} from "${ev?.name||eid}"`, "event", eid);
   };
   const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");};
   const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
@@ -4479,11 +4548,20 @@ export default function Matchkeeper() {
       return {...e,retiredIds:[...ret],exempted};
     })}));
     toast2(isRetiring?(ids.length>1?"Team marked retired 🚑":"Player marked retired 🚑"):"Retirement undone");
+    const names=ids.map(id=>users.find(u=>u.id===id)?.nickname||id).join(", ");
+    logAudit(isRetiring?"player.retire":"player.unretire", `${me.nickname} ${isRetiring?"retired":"un-retired"} ${names} from "${ev.name}"`, "event", eid);
   };
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
   // Event-scoped admin — promoted/demoted per event, not community-wide (EvDetail's own
   // isAdmin check ORs this in, nowhere else in the app reads it).
-  const toggleEventAdmin=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const a=new Set(ev.eventAdmins||[]);const promoting=!a.has(uid);promoting?a.add(uid):a.delete(uid);return{...ev,eventAdmins:[...a]};})}));toast2("Event admin updated ✓");};
+  const toggleEventAdmin=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    let promoting=null;
+    updC(cid,c=>({...c,events:c.events.map(e=>{if(e.id!==eid)return e;const a=new Set(e.eventAdmins||[]);promoting=!a.has(uid);promoting?a.add(uid):a.delete(uid);return{...e,eventAdmins:[...a]};})}));
+    toast2("Event admin updated ✓");
+    const u=users.find(u=>u.id===uid);
+    logAudit(promoting?"eventAdmin.promote":"eventAdmin.demote", `${me.nickname} ${promoting?"made":"removed"} ${u?.nickname||uid} ${promoting?"an admin for":"as admin for"} "${ev?.name||eid}"`, "event", eid);
+  };
   // An admin's phone can only meaningfully show one event's Match Mode widget at a time —
   // starting a new one clears matchModeStartAt on any OTHER event that still has it set
   // (across every community, not just this one), so at most one event is ever "live"
@@ -4529,11 +4607,18 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,mmScheduledFor:startAt}})}));
   };
   const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
-  const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");};
+  const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");
+    const u=users.find(u=>u.id===uid);
+    logAudit("usr.editGuest", `${me.nickname} set ${u?.nickname||uid}'s guest USR to ${usr}`, "user", uid);
+  };
   // Community-admin-editable (not just Platform Admin) — a manually-set tier, not a computed
   // rating, so there's no seed/recalculate machinery like padel's USR to protect here.
   const setFootballSkill=(uid,skill)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,footballSkill:skill||null}:u));toast2("Football skill updated ✓");};
-  const editEventUsr=(cid,eid,uid,usr)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));};
+  const editEventUsr=(cid,eid,uid,usr)=>{
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));
+    const ev=getEv(cid,eid),u=users.find(u=>u.id===uid);
+    logAudit("usr.editEventOverride", `${me.nickname} set ${u?.nickname||uid}'s USR to ${usr===""?"(cleared)":usr} for "${ev?.name||eid}" only`, "event", eid);
+  };
   const setBreakPrefOverride=(cid,eid,uid,pref)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})})}));};
 
   // CI
@@ -5000,9 +5085,9 @@ export default function Matchkeeper() {
             setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr)}:u));
             toast2("USR recalculated from seed ✓");
           }}
-          onDeleteUser={uid=>{setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");}}
+          onDeleteUser={uid=>{const u=users.find(u=>u.id===uid);setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");logAudit("user.delete", `${me.nickname} deleted user ${u?.nickname||uid}`, "user", uid);}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} auditLog={auditLog}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -8652,7 +8737,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[]}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -8660,6 +8745,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
   const [showAdd,setShowAdd]=useState(false);
   const [userSearch,setUserSearch]=useState("");
+  const [auditSearch,setAuditSearch]=useState("");
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const [newGovName,setNewGovName]=useState("");
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
@@ -8682,7 +8768,26 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <Tabs tabs={[["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <Tabs tabs={[["users",`Users (${users.length})`],["audit","🕵️ Audit Trail"],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+
+  {tab==="audit"&&(()=>{
+    const aq=auditSearch.trim().toLowerCase();
+    const filtered=auditLog.filter(e=>!aq||e.actorName?.toLowerCase().includes(aq)||e.summary?.toLowerCase().includes(aq)||e.action?.toLowerCase().includes(aq));
+    return <>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Oversight log of admin-level and sensitive actions — who did what, and when. Shows the most recent {auditLog.length} entries (up to 200). Routine browsing isn't logged, only writes that change or affect someone else's data.</div>
+      <input value={auditSearch} onChange={e=>setAuditSearch(e.target.value)} placeholder="🔍 Search by person or action..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
+      {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":`No matches for "${auditSearch}"`}</div></Card>}
+      {filtered.map(e=>
+        <Card key={e.id} style={{marginBottom:6,padding:"10px 12px"}}>
+          <div style={{fontSize:12,color:"var(--po-text)",lineHeight:1.4}}>{e.summary}</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+            <span style={{fontSize:9,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"0 4px"}}>{e.action}</span>
+            <span style={{fontSize:10,color:"var(--po-dim)"}}>{timeAgo(e.ts)}</span>
+          </div>
+        </Card>
+      )}
+    </>;
+  })()}
 
   {tab==="users"&&<>
     <div style={{display:"flex",gap:6,marginBottom:12}}>

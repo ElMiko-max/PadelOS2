@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.37";
+const APP_VERSION = "V0.09.38";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3794,6 +3794,19 @@ export default function Matchkeeper() {
     if (id!==me.id) { const u=users.find(u=>u.id===id); logAudit("user.edit", `${me.nickname} edited ${u?.nickname||id}'s profile`, "user", id); }
     return true;
   };
+  // A player who has actually played (usrHistory.length>0) can never be fully deleted — their
+  // history line is permanent, per the admin's explicit rule. Suspend is the alternative:
+  // reversible, blocks the account from signing in/using the app, but touches nothing else —
+  // every historical roster/standing they're part of stays exactly as-is. id 1 (platform
+  // owner) is hard-exempted to avoid a self-lockout.
+  const suspendUser = (id) => {
+    if (id===1) { toast2("Can't suspend the platform owner account", "err"); return; }
+    const u = users.find(u=>u.id===id);
+    const next = !u?.suspended;
+    setUsers(us => us.map(u => u.id===id ? {...u, suspended:next} : u));
+    toast2(next?"Suspended":"Unsuspended ✓");
+    logAudit(next?"user.suspend":"user.unsuspend", `${me.nickname} ${next?"suspended":"unsuspended"} ${u?.nickname||id}`, "user", id);
+  };
   const deleteUser = (id) => {
     const u = users.find(u=>u.id===id);
     setUsers(us => us.filter(u => u.id!==id));
@@ -5024,6 +5037,16 @@ export default function Matchkeeper() {
   if (!authUser) {
     return <LoginScreen/>;
   }
+  if (linkedMe?.suspended) {
+    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{maxWidth:340,textAlign:"center"}}>
+        <div style={{fontSize:32,marginBottom:12}}>🚫</div>
+        <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Account Suspended</div>
+        <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>A platform admin has suspended your account. Your match history and stats are untouched, but you can't sign in or use the app right now — contact the admin if you think this is a mistake.</div>
+        <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
+      </div>
+    </div>;
+  }
   if (!linkedMe) {
     if (pendingInviteConfirm) {
       const {inv, target} = pendingInviteConfirm;
@@ -5184,7 +5207,7 @@ export default function Matchkeeper() {
           }}
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -9005,7 +9028,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -9197,6 +9220,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             <span style={{fontSize:10,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"0 4px"}}>#{u.id}</span>
             {SEEDED_USER_IDS.has(u.id)&&<SeedBadge/>}
             {u.isGuest&&<Bdg label="Guest" color="#F59E0B"/>}
+            {u.suspended&&<Bdg label="🚫 Suspended" color="#EF4444"/>}
           </div>
           <div style={{fontSize:11,color:"var(--po-dim)"}}>{u.name||"—"} · USR {u.usr} · seed {u.seedUsr??u.usr}</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{u.area} · {u.gov}</div>
@@ -9206,19 +9230,19 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399"/>}
           {onUnlinkUser&&Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔓 Unlink" onClick={()=>{if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444"/>}
           <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B"/>
-          {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{
-            // Deleting only removes this player going forward (memberships, event
-            // registrations, their account link) — it does NOT rewrite already-completed
-            // events' match/team data, which still references their old id. Most views
-            // null-guard that lookup, so nothing crashes, but their name silently disappears
-            // from any historical roster/standings they were part of. Worth surfacing at
-            // delete-time, not just discovering it after the fact.
-            const hasHistory = (u.usrHistory?.length>0) || comms.some(c=>c.members.some(m=>m.userId===u.id)||c.events.some(ev=>ev.registrations.some(r=>r.userId===u.id)));
-            const msg = hasHistory
-              ? `Delete ${u.nickname}?\n\nThis player has recorded history — community membership, event registrations, or match results. Deleting removes them going forward, but any ALREADY-COMPLETED events they appeared in still reference their old id: those historical rosters/standings will just show one fewer name, not get rewritten.\n\nIf you only want to free up their email/Google login without losing their history, use "🔓 Unlink" instead.\n\nThis cannot be undone.`
-              : `Delete ${u.nickname}?\nThis cannot be undone.`;
-            if(window.confirm(msg))onDeleteUser(u.id);
-          }} color="#EF4444"/>}
+          {/* A player who has actually played (usrHistory.length>0) can never be fully
+              deleted — their history line is permanent. Suspend is the only option for
+              them: reversible, blocks the account from being used, touches nothing else.
+              A user with no play history (never got past joining/registering) can still be
+              deleted outright — nothing of substance would be lost. */}
+          {(u.usrHistory?.length>0)
+            ? (u.id!==1&&<SmBtn label={u.suspended?"▶ Unsuspend":"⏸ Suspend"} onClick={()=>{
+                const msg = u.suspended
+                  ? `Unsuspend ${u.nickname}?\n\nThey'll be able to sign in and use the app again.`
+                  : `Suspend ${u.nickname}?\n\nThey won't be able to sign in or use the app until unsuspended. All their match history, stats, and team/event records stay exactly as they are — nothing is deleted or hidden from other players' views. This player has real match history, so they can't be permanently deleted — suspend is the only way to disable their account.`;
+                if(window.confirm(msg))onSuspendUser(u.id);
+              }} color={u.suspended?"#34D399":"#F59E0B"}/>)
+            : (!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>)}
         </div>
       </div>
     </Card>)}

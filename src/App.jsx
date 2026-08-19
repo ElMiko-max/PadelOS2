@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.39";
+const APP_VERSION = "V0.09.40";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -1209,7 +1209,7 @@ const ctLadderBreakPts = (tc) => Math.floor((tc+1)/2);
 // Weighted USR calculation: CI events weight=1.0, CT events weight=0.5
 // Rolling window = last entries until sum(weights) >= 5.0
 // Seed entries (from initial USR) always weight=1.0
-function calcWeightedUSR(usrHistory, seedUsr){
+function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
   if(!usrHistory||usrHistory.length===0) return seedUsr;
   // Build the working list newest-first
   const hist=[...usrHistory].reverse();
@@ -1219,17 +1219,20 @@ function calcWeightedUSR(usrHistory, seedUsr){
     // their USR — skip entirely rather than `break`, so it doesn't consume any of the
     // rolling-window budget either (the next real event behind it still counts normally).
     if(h.retired) continue;
-    if(totalWeight>=5.0) break;
+    // Frozen by a past window-size change (see setUsrWindowSize) — an event that already fell
+    // outside someone's active window never re-enters it, even if the window later grows.
+    if(h.excludedFromWindow) continue;
+    if(totalWeight>=windowSize) break;
     const w = h.type==="ct" ? 0.5 : 1.0;
-    const remaining = 5.0 - totalWeight;
+    const remaining = windowSize - totalWeight;
     const actualW = Math.min(w, remaining);
     weightedSum += h.pes * actualW;
     totalWeight += actualW;
   }
   // Fill remaining weight with seed
-  if(totalWeight < 5.0){
-    weightedSum += seedUsr * (5.0 - totalWeight);
-    totalWeight = 5.0;
+  if(totalWeight < windowSize){
+    weightedSum += seedUsr * (windowSize - totalWeight);
+    totalWeight = windowSize;
   }
   return Math.round(weightedSum / totalWeight);
 }
@@ -3103,6 +3106,17 @@ function BBtn({onBack,label="Back",sticky=false,subLabel,eventLabel}){
 function Inp({label,value,onChange,placeholder="",type="text",multiline}){const s={width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,resize:"vertical",boxSizing:"border-box"};return <div style={{marginBottom:12}}><div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>{label}</div>{multiline?<textarea className="po-inp" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={3} style={s}/>:<input className="po-inp" type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={s}/>}</div>;}
 function Drp({label,value,onChange,options}){return <div style={{marginBottom:12}}><div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>{label}</div><select className="po-inp" value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">اختر...</option>{options.map(o=><option key={o.v||o} value={o.v||o}>{o.l||o.v||o}</option>)}</select></div>;}
 function Tabs({tabs,active,onChange}){return <div className="po-inp" style={{display:"flex",gap:4,background:"var(--po-inp)",borderRadius:8,padding:4,marginBottom:14}}>{tabs.map(([k,l])=><button key={k} onClick={()=>onChange(k)} style={{flex:1,padding:"8px 0",borderRadius:6,border:active===k?"2px solid #6366F1":"2px solid transparent",fontSize:12,fontWeight:active===k?700:500,cursor:"pointer",background:active===k?"#6366F1":"transparent",color:active===k?"#FFFFFF":"var(--po-dim)",transition:"all 0.15s"}}>{l}</button>)}</div>;}
+// Same look as Tabs, split across two stacked rows — for screens with too many tabs for one row
+// (Platform Admin) to stay comfortable on a phone width without squeezing labels unreadable.
+function TwoRowTabs({tabs,active,onChange}){
+  const mid=Math.ceil(tabs.length/2);
+  const rows=[tabs.slice(0,mid),tabs.slice(mid)];
+  return <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:14}}>
+    {rows.map((row,ri)=><div key={ri} className="po-inp" style={{display:"flex",gap:4,background:"var(--po-inp)",borderRadius:8,padding:4}}>
+      {row.map(([k,l])=><button key={k} onClick={()=>onChange(k)} style={{flex:1,padding:"8px 0",borderRadius:6,border:active===k?"2px solid #6366F1":"2px solid transparent",fontSize:12,fontWeight:active===k?700:500,cursor:"pointer",background:active===k?"#6366F1":"transparent",color:active===k?"#FFFFFF":"var(--po-dim)",transition:"all 0.15s"}}>{l}</button>)}
+    </div>)}
+  </div>;
+}
 function rBdg(r){const m={owner:["#C084FC","Owner"],admin:["#38BDF8","Admin"],member:["#64748B","Member"]};const[c,l]=m[r]||["#64748B",r];return <Bdg label={l} color={c}/>;}
 function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"],guest:["#F59E0B","Guest"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
 function AreaSel({gov,area,onChange,egypt}){const govs=Object.keys(egypt||{}),areas=gov?(egypt||{})[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
@@ -3249,6 +3263,7 @@ export default function Matchkeeper() {
   const [venues, setVenues] = useState(INIT_VENUES);
   const [egypt, setEgypt] = useState(INIT_EGYPT);
   const [expenseCategories, setExpenseCategories] = useState(INIT_EXPENSE_CATEGORIES);
+  const [usrWindowSize, setUsrWindowSizeRaw] = useState(5);
   const [comms,  setComms]  = useState(INIT_COMMS);
   const [notifications, setNotifications] = useState([]);
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
@@ -3400,12 +3415,12 @@ export default function Matchkeeper() {
   // syncedRef tracks, per key, the JSON of whatever we last received FROM Firestore or
   // sent TO it — this is what stops the listen-effect and write-effect from echoing
   // back and forth into an infinite loop.
-  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null});
+  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null, usrWindowSize:null});
   // Tracks whether each collection has EVER returned real data this session. Firestore's
   // onSnapshot can occasionally misfire "not found" on a transient network blip even when
   // the document genuinely exists — this flag is what stops that from being mistaken for
   // "first-time setup" and destructively overwriting live data with empty seed defaults.
-  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false});
+  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
   const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt"].every(k => loadedKeys.includes(k));
@@ -3547,6 +3562,28 @@ export default function Matchkeeper() {
     syncedRef.current.expenseCategories = json;
     setDoc(doc(db,"padelos","expenseCategories"), {value:JSON.stringify(expenseCategories)}).catch(e=>console.log("Firestore write error (expenseCategories)", e));
   }, [expenseCategories]);
+
+  // usrWindowSize (rolling-average window for calcWeightedUSR, platform-admin-maintainable)
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = onSnapshot(doc(db,"padelos","usrWindowSize"), snap => {
+      if (snap.exists()) {
+        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        const json = JSON.stringify(remote);
+        if (json !== syncedRef.current.usrWindowSize) { syncedRef.current.usrWindowSize = json; setUsrWindowSizeRaw(remote); }
+        everRealRef.current.usrWindowSize = true;
+      } else if (!everRealRef.current.usrWindowSize) { syncedRef.current.usrWindowSize = JSON.stringify(5); setUsrWindowSizeRaw(5); }
+      markLoaded("usrWindowSize");
+    }, e => { console.log("Firestore usrWindowSize error", e); markLoaded("usrWindowSize"); });
+    return unsub;
+  }, [authUser]);
+  useEffect(() => {
+    if (!everRealRef.current.usrWindowSize) { console.log("Blocked write: haven't confirmed real usrWindowSize data this session yet"); return; }
+    const json = JSON.stringify(usrWindowSize);
+    if (json === syncedRef.current.usrWindowSize) return;
+    syncedRef.current.usrWindowSize = json;
+    setDoc(doc(db,"padelos","usrWindowSize"), {value:JSON.stringify(usrWindowSize)}).catch(e=>console.log("Firestore write error (usrWindowSize)", e));
+  }, [usrWindowSize]);
 
   // notifications
   useEffect(() => {
@@ -3774,7 +3811,7 @@ export default function Matchkeeper() {
       const hist = updatedUser.usrHistory;
       if (hist.length === 0) return u;
       const seedUsr = u.seedUsr ?? u.usr;
-      const newUsr = calcWeightedUSR(hist, seedUsr);
+      const newUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
       return {...updatedUser, usr: newUsr, seedUsr: u.seedUsr ?? u.usr};
     });
 
@@ -3806,6 +3843,42 @@ export default function Matchkeeper() {
     setUsers(us => us.map(u => u.id===id ? {...u, suspended:next} : u));
     toast2(next?"Suspended":"Unsuspended ✓");
     logAudit(next?"user.suspend":"user.unsuspend", `${me.nickname} ${next?"suspended":"unsuspended"} ${u?.nickname||id}`, "user", id);
+  };
+  // Changing the USR rolling-average window (calcWeightedUSR's windowSize) must never
+  // retroactively pull an already-dropped event back into anyone's average. Before applying the
+  // new size, freeze every usrHistory entry that's currently OUTSIDE the *old* window (per user,
+  // walking newest-first exactly like calcWeightedUSR does) — those get excludedFromWindow:true
+  // permanently, regardless of which direction the size changes later. Nothing about anyone's
+  // live .usr changes at this moment; the new size only affects what gets counted starting with
+  // the next event they complete (a growing window just has less-than-full budget to fill until
+  // enough new events accrue, which is exactly the "grow forward, don't refill from history" ask).
+  const setUsrWindowSize = (newSize) => {
+    const oldSize = usrWindowSize;
+    if (newSize===oldSize) return;
+    setUsers(us => us.map(u => {
+      const hist = u.usrHistory||[];
+      if (!hist.length) return u;
+      const chron = [...hist].reverse();
+      let totalWeight = 0;
+      const activeEventIds = new Set();
+      for (const h of chron) {
+        if (h.retired || h.excludedFromWindow) continue;
+        if (totalWeight>=oldSize) break;
+        const w = h.type==="ct" ? 0.5 : 1.0;
+        totalWeight += Math.min(w, oldSize-totalWeight);
+        activeEventIds.add(h.eventId);
+      }
+      let changed = false;
+      const newHist = hist.map(h => {
+        if (h.retired || h.excludedFromWindow || activeEventIds.has(h.eventId)) return h;
+        changed = true;
+        return {...h, excludedFromWindow:true};
+      });
+      return changed ? {...u, usrHistory:newHist} : u;
+    }));
+    setUsrWindowSizeRaw(newSize);
+    logAudit("admin.usrWindowSize", `${me.nickname} changed the USR rolling-average window from ${oldSize} to ${newSize} events`, null, null);
+    toast2(`USR window set to ${newSize} — takes effect from each player's next completed event ✓`);
   };
   const deleteUser = (id) => {
     const u = users.find(u=>u.id===id);
@@ -4368,7 +4441,7 @@ export default function Matchkeeper() {
         const pes=xEntry?xEntry.outputPES:standardPes;
         const hist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes, type:"ci", retired:(ev.retiredIds||[]).includes(u.id)}];
         const seedUsr = u.seedUsr ?? u.usr;
-        const newUsr = calcWeightedUSR(hist, seedUsr);
+        const newUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
         return {...u, usr:newUsr, usrHistory:hist, seedUsr: u.seedUsr ?? u.usr};
       }));
     }
@@ -4434,7 +4507,7 @@ export default function Matchkeeper() {
         // Also add TES to usrHistory with weight 0.5 → affects USR
         const seedUsr = u.seedUsr ?? u.usr;
         const usrHist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes:tes, type:"ct", retired:(ev.retiredIds||[]).includes(u.id)}];
-        const newUsr = calcWeightedUSR(usrHist, seedUsr);
+        const newUsr = calcWeightedUSR(usrHist, seedUsr, usrWindowSize);
 
         const otherHistory=prevHistory.filter(h=>h.comboKey!==comboKey);
         return {...u, usr:newUsr, usrHistory:usrHist, seedUsr, teamsHistory:[...otherHistory,...comboHist]};
@@ -5177,8 +5250,8 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
-        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)}/>;})()}
-        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)}/>}
+        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize}/>;})()}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -5202,12 +5275,12 @@ export default function Matchkeeper() {
             setUsers(us=>us.map(u=>u.id===id?{...u,...rest,seedUsr:newSeed}:u));toast2("Updated ✓");return true;
           }}
           onRecalcUsr={id=>{
-            setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr)}:u));
+            setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr,usrWindowSize)}:u));
             toast2("USR recalculated from seed ✓");
           }}
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -5846,9 +5919,9 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       const outstanding = outstandingChargesFor(memberEntries);
       return <Card key={u.id} style={{marginBottom:6,padding:"8px 12px"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <Av u={u} size={32}/>
+          <div onClick={e=>{e.stopPropagation();onViewProfile&&onViewProfile(u.id);}} style={{cursor:onViewProfile?"pointer":"default"}}><Av u={u} size={32}/></div>
           <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>setOpenStatementUid(o=>o===u.id?null:u.id)}>
-            <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}} onClick={e=>{e.stopPropagation();onViewProfile&&onViewProfile(u.id);}}>{u.nickname}</div>
+            <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div>
             <div style={{fontSize:11,color:liability<=0?"#34D399":"#F59E0B"}}>{liability<=0?`${Math.abs(liability).toLocaleString()} EGP credit`:`${liability.toLocaleString()} EGP owed`}</div>
           </div>
           {liability>0&&(payingId===u.id
@@ -8710,7 +8783,7 @@ function ComboCard({combo, lv, eventsDesc, teamName, onRename}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5}){
   const isPlatformAdmin = me?.id===1;
   const showContact = !viewedByAdmin || isPlatformAdmin;
   // Full activity (USR History / Teams / Reports) is only for the owner, the real platform
@@ -8855,13 +8928,13 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         const histChron = [...usrHist].reverse();
         const idx = histChron.findIndex((x,xi)=>xi===histChron.length-1-i);
         const histUpToNow = histChron.slice(0, histChron.length-1-i);
-        const prevUsr = calcWeightedUSR(histUpToNow, seedUsr);
-        const newUsr = calcWeightedUSR([...histUpToNow,h], seedUsr);
+        const prevUsr = calcWeightedUSR(histUpToNow, seedUsr, usrWindowSize);
+        const newUsr = calcWeightedUSR([...histUpToNow,h], seedUsr, usrWindowSize);
         const delta = newUsr - prevUsr;
         const deltaColor = delta>0?"#34D399":delta<0?"#EF4444":"var(--po-dim)";
         const deltaArrow = delta>0?"↑":delta<0?"↓":"—";
         const isCTEvent = h.type==="ct";
-        const hostComm = isMeTab ? comms.find(c=>c.events.some(e=>e.id===h.eventId)) : null;
+        const hostComm = comms.find(c=>c.events.some(e=>e.id===h.eventId));
         const hostEvent = hostComm?.events.find(e=>e.id===h.eventId);
         const isExpanded = expandedHist===h.eventId;
         let extraStats = null;
@@ -9069,7 +9142,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -9088,6 +9161,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [newCatName,setNewCatName]=useState("");
   const [editingCat,setEditingCat]=useState(null); // category name currently being renamed
   const [editCatInput,setEditCatInput]=useState("");
+  const [usrWindowInput,setUsrWindowInput]=useState(String(usrWindowSize));
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
@@ -9108,7 +9182,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <Tabs tabs={[["users",`Users (${users.length})`],["audit","🕵️ Audit Trail"],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <TwoRowTabs tabs={[["users",`Users (${users.length})`],["audit","🕵️ Audit Trail"],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="cats"&&(()=>{
     const renameCat=(oldName,newName)=>{
@@ -9146,6 +9220,22 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       </div>
     </>;
   })()}
+
+  {tab==="usr"&&<>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>How many events (weighted — a Closed Teams event counts as 0.5, Closed Individuals as 1.0) go into each player's rolling USR average. Changing this does NOT recompute anyone's current USR and does NOT pull back-in any event that's already outside their active window — it only changes how many <i>new</i> events it takes to reach the new size, starting from each player's next completed event.</div>
+    <Card style={{marginBottom:12,textAlign:"center"}}>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Current window</div>
+      <div style={{fontSize:32,fontWeight:700,color:"var(--po-text)"}}>{usrWindowSize} events</div>
+    </Card>
+    <Inp label="New window size (events)" value={usrWindowInput} onChange={setUsrWindowInput} type="number"/>
+    <Btn label="Apply" primary onClick={()=>{
+      const n=parseInt(usrWindowInput);
+      if(isNaN(n)||n<1||n>20)return;
+      if(n===usrWindowSize)return;
+      if(window.confirm(`Change the USR window from ${usrWindowSize} to ${n} events?\n\nThis freezes every event that's currently outside each player's active window — they'll never be pulled back in, even later. The new size only fills up from events completed from now on.`))
+        onSetUsrWindowSize&&onSetUsrWindowSize(n);
+    }} style={{width:"100%"}}/>
+  </>}
 
   {tab==="audit"&&(()=>{
     const aq=auditSearch.trim().toLowerCase();

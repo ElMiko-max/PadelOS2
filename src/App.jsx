@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.41";
+const APP_VERSION = "V0.09.42";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -8858,7 +8858,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       <div style={{fontSize:13,color:"var(--po-dim)"}}>{user.name}</div>
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {user.area} · {user.gov}</div>
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>✉️ {user.email || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>}
-      {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>📱 {user.phone || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>}
+      {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
     {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
@@ -9183,6 +9183,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [editingCat,setEditingCat]=useState(null); // category name currently being renamed
   const [editCatInput,setEditCatInput]=useState("");
   const [usrWindowInput,setUsrWindowInput]=useState(String(usrWindowSize));
+  const [openUserMenu,setOpenUserMenu]=useState(null);
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
@@ -9363,9 +9364,12 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       </div>
     </Card>}
     {filteredUsers.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No players match "{userSearch}"</div></Card>}
-    {filteredUsers.map(u=><Card key={u.id} style={{marginBottom:8}}>
+    {filteredUsers.map(u=>{
+      const isLinked = linkedUserIds.has(u.id);
+      const hasHistory = u.usrHistory?.length>0;
+      return <Card key={u.id} style={{marginBottom:8}}>
       <div style={{display:"flex",alignItems:"center",gap:10}}>
-        <Av u={u} size={36}/>
+        <div onClick={()=>onViewProfile(u.id)} style={{cursor:"pointer"}}><Av u={u} size={36}/></div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
             <span style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</span>
@@ -9373,31 +9377,35 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             {SEEDED_USER_IDS.has(u.id)&&<SeedBadge/>}
             {u.isGuest&&<Bdg label="Guest" color="#F59E0B"/>}
             {u.suspended&&<Bdg label="🚫 Suspended" color="#EF4444"/>}
+            <Bdg label={isLinked?"🔗 Linked":"◌ Unlinked"} color={isLinked?"#34D399":"#94A3B8"}/>
           </div>
           <div style={{fontSize:11,color:"var(--po-dim)"}}>{u.name||"—"} · USR {u.usr} · seed {u.seedUsr??u.usr}</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{u.area} · {u.gov}</div>
         </div>
-        <div style={{display:"flex",gap:4}}>
-          <SmBtn label="👁" onClick={()=>onViewProfile(u.id)} color="#6366F1"/>
-          {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399"/>}
-          {onUnlinkUser&&Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔓 Unlink" onClick={()=>{if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444"/>}
-          <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B"/>
-          {/* A player who has actually played (usrHistory.length>0) can never be fully
-              deleted — their history line is permanent. Suspend is the only option for
-              them: reversible, blocks the account from being used, touches nothing else.
-              A user with no play history (never got past joining/registering) can still be
-              deleted outright — nothing of substance would be lost. */}
-          {(u.usrHistory?.length>0)
-            ? (u.id!==1&&<SmBtn label={u.suspended?"▶ Unsuspend":"⏸ Suspend"} onClick={()=>{
-                const msg = u.suspended
-                  ? `Unsuspend ${u.nickname}?\n\nThey'll be able to sign in and use the app again.`
-                  : `Suspend ${u.nickname}?\n\nThey won't be able to sign in or use the app until unsuspended. All their match history, stats, and team/event records stay exactly as they are — nothing is deleted or hidden from other players' views. This player has real match history, so they can't be permanently deleted — suspend is the only way to disable their account.`;
-                if(window.confirm(msg))onSuspendUser(u.id);
-              }} color={u.suspended?"#34D399":"#F59E0B"}/>)
-            : (!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>)}
+        <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+          <div onClick={()=>setOpenUserMenu(o=>o===u.id?null:u.id)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+          {openUserMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:160,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+            {onCreateInvite&&!isLinked&&<SmBtn label="🔗 Invite" onClick={()=>{setOpenUserMenu(null);const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399" style={{width:"100%"}}/>}
+            {onUnlinkUser&&isLinked&&<SmBtn label="🔓 Unlink" onClick={()=>{setOpenUserMenu(null);if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
+            <SmBtn label="✏️ Edit" onClick={()=>{setOpenUserMenu(null);setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B" style={{width:"100%"}}/>
+            {/* A player who has actually played (usrHistory.length>0) can never be fully
+                deleted — their history line is permanent. Suspend is the only option for
+                them: reversible, blocks the account from being used, touches nothing else.
+                A user with no play history (never got past joining/registering) can still be
+                deleted outright — nothing of substance would be lost. */}
+            {hasHistory
+              ? (u.id!==1&&<SmBtn label={u.suspended?"▶ Unsuspend":"⏸ Suspend"} onClick={()=>{
+                  setOpenUserMenu(null);
+                  const msg = u.suspended
+                    ? `Unsuspend ${u.nickname}?\n\nThey'll be able to sign in and use the app again.`
+                    : `Suspend ${u.nickname}?\n\nThey won't be able to sign in or use the app until unsuspended. All their match history, stats, and team/event records stay exactly as they are — nothing is deleted or hidden from other players' views. This player has real match history, so they can't be permanently deleted — suspend is the only way to disable their account.`;
+                  if(window.confirm(msg))onSuspendUser(u.id);
+                }} color={u.suspended?"#34D399":"#F59E0B"} style={{width:"100%"}}/>)
+              : (!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑 Delete" onClick={()=>{setOpenUserMenu(null);if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444" style={{width:"100%"}}/>)}
+          </div>}
         </div>
       </div>
-    </Card>)}
+    </Card>;})}
     {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
   </>}
 

@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.32";
+const APP_VERSION = "V0.09.33";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3808,6 +3808,7 @@ export default function Matchkeeper() {
       targetType: targetType ?? null,
       targetId: targetId ?? null,
       appVersion: APP_VERSION,
+      platform: Capacitor.isNativePlatform() ? "Android" : "Web",
     }).catch(e => console.log("Firestore write error (audit)", e));
   };
   // Manual refresh — onSnapshot already keeps auditLog live, but a one-off server read (bypassing
@@ -8776,6 +8777,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [auditSearch,setAuditSearch]=useState("");
   const [auditActionFilter,setAuditActionFilter]=useState("");
   const [auditVersionFilter,setAuditVersionFilter]=useState("");
+  const [auditActorFilter,setAuditActorFilter]=useState("");
   const [auditSort,setAuditSort]=useState({key:"ts",dir:"desc"});
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const [newGovName,setNewGovName]=useState("");
@@ -8805,10 +8807,12 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     const aq=auditSearch.trim().toLowerCase();
     const actionOpts=[...new Set(auditLog.map(e=>e.action).filter(Boolean))].sort();
     const versionOpts=[...new Set(auditLog.map(e=>e.appVersion).filter(Boolean))].sort().reverse();
+    const actorOpts=[...new Set(auditLog.map(e=>e.actorName).filter(Boolean))].sort();
     let filtered=auditLog
       .filter(e=>!aq||e.actorName?.toLowerCase().includes(aq)||e.summary?.toLowerCase().includes(aq)||e.action?.toLowerCase().includes(aq))
       .filter(e=>!auditActionFilter||e.action===auditActionFilter)
-      .filter(e=>!auditVersionFilter||e.appVersion===auditVersionFilter);
+      .filter(e=>!auditVersionFilter||e.appVersion===auditVersionFilter)
+      .filter(e=>!auditActorFilter||e.actorName===auditActorFilter);
     const {key:sortKey,dir:sortDir}=auditSort;
     filtered=[...filtered].sort((a,b)=>{
       const av=a[sortKey]??"", bv=b[sortKey]??"";
@@ -8825,6 +8829,10 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <div onClick={()=>!auditRefreshing&&onRefreshAudit&&onRefreshAudit()} title="Refresh" style={{width:38,height:38,flexShrink:0,borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",cursor:auditRefreshing?"default":"pointer",fontSize:16,opacity:auditRefreshing?0.4:1}}>🔄</div>
       </div>
       <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+        <select value={auditActorFilter} onChange={e=>setAuditActorFilter(e.target.value)} className="po-inp" style={{flex:"1 1 120px",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 8px",color:"var(--po-text)",fontSize:12}}>
+          <option value="">All users</option>
+          {actorOpts.map(a=><option key={a} value={a}>{a}</option>)}
+        </select>
         <select value={auditActionFilter} onChange={e=>setAuditActionFilter(e.target.value)} className="po-inp" style={{flex:"1 1 130px",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 8px",color:"var(--po-text)",fontSize:12}}>
           <option value="">All actions</option>
           {actionOpts.map(a=><option key={a} value={a}>{a}</option>)}
@@ -8833,17 +8841,18 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           <option value="">All versions</option>
           {versionOpts.map(v=><option key={v} value={v}>{v}</option>)}
         </select>
-        {(auditActionFilter||auditVersionFilter)&&<div onClick={()=>{setAuditActionFilter("");setAuditVersionFilter("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer",display:"flex",alignItems:"center",padding:"0 6px"}}>Clear ✕</div>}
+        {(auditActionFilter||auditVersionFilter||auditActorFilter)&&<div onClick={()=>{setAuditActionFilter("");setAuditVersionFilter("");setAuditActorFilter("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer",display:"flex",alignItems:"center",padding:"0 6px"}}>Clear ✕</div>}
       </div>
       {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":"No matches"}</div></Card>}
       {filtered.length>0&&<div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",border:"0.5px solid var(--po-bdr)",borderRadius:8}}>
-        <table style={{borderCollapse:"collapse",width:"100%",minWidth:640}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:760}}>
           <thead><tr>
             <SortTh k="ts" label="Time"/>
             <SortTh k="actorName" label="Actor"/>
             <SortTh k="action" label="Action"/>
             <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,fontWeight:700,color:"var(--po-dim)",borderBottom:"0.5px solid var(--po-bdr)"}}>Summary</th>
             <SortTh k="appVersion" label="Version"/>
+            <SortTh k="platform" label="Platform"/>
           </tr></thead>
           <tbody>
             {filtered.map(e=>
@@ -8853,6 +8862,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
                 <td style={{padding:"8px 10px"}}><span style={{fontSize:9,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"1px 4px",whiteSpace:"nowrap"}}>{e.action}</span></td>
                 <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",minWidth:220}}>{e.summary}</td>
                 <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{e.appVersion||"—"}</td>
+                <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{e.platform?(e.platform==="Android"?"🤖 Android":"🌐 Web"):"—"}</td>
               </tr>
             )}
           </tbody>

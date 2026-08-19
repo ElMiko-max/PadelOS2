@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Matchkeeper V0.09.32</string>
-    <string name="title_activity_main">Matchkeeper V0.09.32</string>
+    <string name="app_name">Matchkeeper V0.09.33</string>
+    <string name="title_activity_main">Matchkeeper V0.09.33</string>
     <string name="package_name">com.trimachine.padelos</string>
     <string name="custom_url_scheme">com.trimachine.padelos</string>
 </resources>

@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.36";
+const APP_VERSION = "V0.09.37";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4088,7 +4088,10 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),entries:[...((c.bookkeeping||{}).entries||[]),...entriesArr.map((entry,i)=>({id:`${Date.now()}-${i}-${Math.random().toString(36).slice(2,6)}`,recordedBy:me.id,date:new Date().toISOString(),...entry}))]}}));
   };
   const deleteLedgerEntry=(cid,entryId)=>{updC(cid,c=>({...c,bookkeeping:{...c.bookkeeping,entries:(c.bookkeeping?.entries||[]).filter(e=>e.id!==entryId)}}));toast2("Removed");};
-  const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
+  const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");
+    const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
+    logAudit("member.join", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${c?.name||cid}"`, "community", cid);
+  };
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
   const requestJoin=(cid)=>{updC(cid,c=>c.joinRequests.some(r=>r.userId===me.id)?c:({...c,joinRequests:[...c.joinRequests,{userId:me.id,requestedAt:today}]}));toast2("Request sent ✓");};
   const promoteM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,role:"admin"}:m)}));toast2("Promoted ✓");
@@ -4118,12 +4121,22 @@ export default function Matchkeeper() {
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.statusChange", `${me.nickname} set ${u?.nickname||uid} to ${newStatus} in ${c?.name||cid}`, "community", cid);
   };
-  const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2(`${u?.nickname} added ✓`);};
+  const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2(`${u?.nickname} added ✓`);
+    const c=comms.find(c=>c.id===cid);
+    logAudit("member.join", `${me.nickname} added ${u?.nickname||uid} to "${c?.name||cid}"`, "community", cid);
+  };
   // A community invite targeted at a specific person joins them immediately, no approval
   // queue — same reasoning as claimViaInvite: the admin picking exactly this person to send
   // the link to already is the approval. An un-targeted community link (shared publicly)
   // still goes through the normal requestJoin/approve flow, see Effect B.
-  const joinCommunityViaInvite=(cid,uid)=>{updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));};
+  const joinCommunityViaInvite=(cid,uid)=>{
+    const alreadyMember = comms.find(c=>c.id===cid)?.members.some(m=>m.userId===uid);
+    updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));
+    if (!alreadyMember) {
+      const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
+      logAudit("member.join", `${u?.nickname||uid} joined "${c?.name||cid}" via invite link`, "community", cid);
+    }
+  };
 
   // Venue
   // pricePerHour/extraFee (and their football counterparts) come in as strings from the form's
@@ -9193,7 +9206,19 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399"/>}
           {onUnlinkUser&&Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔓 Unlink" onClick={()=>{if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444"/>}
           <SmBtn label="✏️" onClick={()=>{setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B"/>
-          {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{if(window.confirm(`Delete ${u.nickname}?\nThis cannot be undone.`))onDeleteUser(u.id);}} color="#EF4444"/>}
+          {!SEEDED_USER_IDS.has(u.id)&&<SmBtn label="🗑" onClick={()=>{
+            // Deleting only removes this player going forward (memberships, event
+            // registrations, their account link) — it does NOT rewrite already-completed
+            // events' match/team data, which still references their old id. Most views
+            // null-guard that lookup, so nothing crashes, but their name silently disappears
+            // from any historical roster/standings they were part of. Worth surfacing at
+            // delete-time, not just discovering it after the fact.
+            const hasHistory = (u.usrHistory?.length>0) || comms.some(c=>c.members.some(m=>m.userId===u.id)||c.events.some(ev=>ev.registrations.some(r=>r.userId===u.id)));
+            const msg = hasHistory
+              ? `Delete ${u.nickname}?\n\nThis player has recorded history — community membership, event registrations, or match results. Deleting removes them going forward, but any ALREADY-COMPLETED events they appeared in still reference their old id: those historical rosters/standings will just show one fewer name, not get rewritten.\n\nIf you only want to free up their email/Google login without losing their history, use "🔓 Unlink" instead.\n\nThis cannot be undone.`
+              : `Delete ${u.nickname}?\nThis cannot be undone.`;
+            if(window.confirm(msg))onDeleteUser(u.id);
+          }} color="#EF4444"/>}
         </div>
       </div>
     </Card>)}

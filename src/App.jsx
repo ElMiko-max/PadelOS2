@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.27";
+const APP_VERSION = "V0.09.28";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -6701,7 +6701,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
 function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,initialTab,onTabChange}){
-  const [tab,setTab]       = useState(initialTab||"info");
+  const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
   const suggestedRoundDur = ev.rotationMin||20;
@@ -7408,7 +7408,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     }finally{ setSharing(false); }
   }
 
-  const tabs=["info","players",
+  const tabs=["players",
     ...(isCI?(plan?["breaks","rounds","standings"]:(isAdmin?["rounds"]:[])):[]),
     ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
     "manage","photos"
@@ -7614,16 +7614,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
     </Card>
 
-    <VenueMapCard venue={venue}/>
-
-    <Tabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>
-
-    {/* INFO */}
-    {tab==="info"&&<Card><div style={{display:"flex",flexDirection:"column",gap:8}}>{[["Venue",venue?`${venue.name}, ${venue.area}`:"TBD"],
+    <CollapsibleSection label="ℹ️ Event Info" defaultOpen={false}>
+      <Card><div style={{display:"flex",flexDirection:"column",gap:8}}>{[["Venue",venue?`${venue.name}, ${venue.area}`:"TBD"],
         ["Type",ev.type?tl[ev.type]:"Pending Poll"],
         ["Date & Time",`${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}`],
         ["Duration",durationLabel(ev.time, ev.timeTo)],
-        ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation","Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":"League + Promo/Relego"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`Court ${tc}=1pt ... Court 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:"Group A first · Wins → Score Diff"],["Match Duration",`${plan?.matchDuration||20} min`]]:[]),["Priority Reg.","Regular Members: 24h early access"]].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>}
+        ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation","Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":"League + Promo/Relego"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`Court ${tc}=1pt ... Court 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:"Group A first · Wins → Score Diff"],["Match Duration",`${plan?.matchDuration||20} min`]]:[]),["Priority Reg.","Regular Members: 24h early access"]].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>
+    </CollapsibleSection>
+
+    <VenueMapCard venue={venue}/>
+
+    <Tabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>
 
     {/* PLAYERS */}
     {tab==="players"&&<>
@@ -7682,17 +7683,24 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const uMem=comm.members?.find(m=>m.userId===u.id);
         const uIsCommAdmin=uMem?.role==="owner"||uMem?.role==="admin";
         const uIsEventAdmin=(effEv.eventAdmins||[]).includes(u.id);
+        // Guest-ness used to be checked three different ways (u.isGuest, r.isGuest, mStatus)
+        // that could disagree for the same person — e.g. someone added via "+Add Guest" has
+        // u.isGuest=true forever, but a later registration for them via an approved join
+        // request sets r.isGuest=false on that specific registration, so both a "GUEST" badge
+        // AND a non-guest "by approved" badge rendered side by side. One combined signal now.
+        const isGuestPerson = u.isGuest || r.isGuest || mStatus==="guest";
+        const addedByLabel = r.addedBy==="admin"?"Added by Admin":r.addedBy==="invite"?"via Invite":r.addedBy==="approved"?"Approved":r.addedBy?`by ${r.addedBy}`:null;
         return <Card key={r.userId} style={{opacity:isRetired?0.6:1}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <Av u={u} size={34}/>
             <div style={{flex:1}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
-                {mStatus&&sBdg(mStatus)}
-                {u.isGuest&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
+                {mStatus&&mStatus!=="guest"&&sBdg(mStatus)}
                 {isRetired&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
                 {uIsEventAdmin&&<span style={{marginLeft:4,fontSize:10,color:"#A78BFA",fontWeight:700}}>🛡️ EVENT ADMIN</span>}
               </div>
+              {isAdmin&&isGuestPerson&&u.phone&&<a href={`tel:${u.phone}`} onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:4,fontSize:10.5,color:"var(--po-dim)",marginTop:1,textDecoration:"none"}}>📱 {u.phone}</a>}
               {/* Football events show/edit footballSkill instead of padel USR — the padel USR
                   override machinery (guest USR, event-only USR) has no meaning for football. */}
               {effEv.sport==="Football"
@@ -7713,7 +7721,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                       onKeyDown={e=>{if(e.key==="Enter"){const v=parseInt(e.target.value);if(!isNaN(v)){act.editGuestUsr(u.id,v);e.target.blur();}}}}
                       className="po-inp"
                       style={{width:52,padding:"2px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12,fontWeight:600}}/>
-                    <span style={{fontSize:10,color:"var(--po-dim)"}}>/100 · tap Enter to save</span>
+                    <span style={{fontSize:10,color:"var(--po-dim)"}}>/100</span>
                   </div>
                 : (u.isGuest||r.isGuest)
                   ? <div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div>
@@ -7745,9 +7753,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               )}
             </div>
             <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
-              {r.addedBy&&r.addedBy!=="admin"&&!r.isGuest&&<Bdg label={`by ${r.addedBy}`} color="#6366F1"/>}
-              {r.addedBy==="admin"&&!r.isGuest&&<Bdg label="Added by Admin" color="#6366F1"/>}
-              {(r.isGuest||u.isGuest)&&<Bdg label={r.addedBy?`Guest · by ${r.addedBy}`:"Guest"} color="#F59E0B"/>}
+              {isGuestPerson
+                ? <Bdg label={addedByLabel?`Guest · ${addedByLabel}`:"Guest"} color="#F59E0B"/>
+                : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
               {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>

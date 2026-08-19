@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.28";
+const APP_VERSION = "V0.09.29";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4975,7 +4975,7 @@ export default function Matchkeeper() {
         select.po-inp option{background:var(--po-card);color:var(--po-text);}
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
       `}</style>
-      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>signOut(fbAuth)}
+      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={()=>{logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
         comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
         onMarkNotifRead={markNotifRead} onMarkAllNotifRead={markAllNotifRead}

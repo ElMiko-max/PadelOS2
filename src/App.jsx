@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.46";
+const APP_VERSION = "V0.09.47";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -8083,6 +8083,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         // request sets r.isGuest=false on that specific registration, so both a "GUEST" badge
         // AND a non-guest "by approved" badge rendered side by side. One combined signal now.
         const isGuestPerson = u.isGuest || r.isGuest || mStatus==="guest";
+        // A real app user with zero community membership record at all (not even guest-tier)
+        // who found this specific event and got let in directly — distinct from the padel/
+        // football "Guest" concept (someone with no account of their own, or a guest-tier
+        // community member). Surfaced separately so it's clear at a glance they aren't a
+        // community member in any capacity, not just relabeled as a generic "Guest".
+        const isEventOnlyGuest = !isGuestPerson && !mStatus;
         const addedByLabel = r.addedBy==="admin"?"Added by Admin":r.addedBy==="invite"?"via Invite":r.addedBy==="approved"?"Approved":r.addedBy?`by ${r.addedBy}`:null;
         return <Card key={r.userId} style={{opacity:isRetired?0.6:1}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -8149,7 +8155,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
               {isGuestPerson
                 ? <Bdg label={addedByLabel?`Guest · ${addedByLabel}`:"Guest"} color="#F59E0B"/>
-                : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
+                : isEventOnlyGuest
+                  ? <Bdg label={addedByLabel?`🎫 Event Guest · ${addedByLabel}`:"🎫 Event Guest"} color="#8B5CF6"/>
+                  : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
               {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>

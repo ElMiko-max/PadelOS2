@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.30";
+const APP_VERSION = "V0.09.31";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4403,10 +4403,12 @@ export default function Matchkeeper() {
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     const comm = comms.find(c=>c.id===cid);
+    const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})}));
-    toast2(`${users.find(u=>u.id===uid)?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
+    toast2(`${u?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
+    logAudit("event.register", `${me.nickname} added ${u?.nickname||uid} to "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
   };
   // An invite link is deliberate access granted by an admin — it skips the regular-member
   // priority window entirely (that gate exists to stop random public sign-ups from queue-
@@ -4417,11 +4419,13 @@ export default function Matchkeeper() {
   const registerViaInvite=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     const comm = comms.find(c=>c.id===cid);
+    const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
     updC(cid,c=>({...c,
       members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
+    logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
   };
   // Event-level join requests — same shape as community joinRequests, but scoped to one
   // event: anyone who finds the event (not just invited, not just regular members) can ask
@@ -4436,6 +4440,7 @@ export default function Matchkeeper() {
   const approveEventJoin=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     const comm = comms.find(c=>c.id===cid);
+    const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
     const updateOne=e=>{
       if(e.id!==eid) return e;
@@ -4447,6 +4452,7 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(updateOne)}));
     toast2(waitlisted?"Approved — waitlisted (event full)":"Approved ✓");
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
+    logAudit("event.register", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
   };
   const rejectEventJoin=(cid,eid,uid)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)})}));
@@ -4462,6 +4468,7 @@ export default function Matchkeeper() {
       members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
     toast2(`${g.n} added ✓`);
+    logAudit("event.register", `${me.nickname} added guest ${g.n} to "${getEv(cid,eid)?.name||eid}"`, "event", eid);
     return true;
   };
   // Promotes a community guest to a full (casual) member — same person, same history,

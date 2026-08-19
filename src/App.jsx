@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.40";
+const APP_VERSION = "V0.09.41";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -5901,11 +5901,32 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
   const totalExpenses = entries.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
 
   return <>
-    <Card style={{marginBottom:12,textAlign:"center"}}>
-      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Cash Balance</div>
-      <div style={{fontSize:32,fontWeight:700,color:cashBalance>=0?"#34D399":"#EF4444"}}>{cashBalance.toLocaleString()} EGP</div>
-      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Monthly due: {bk.monthlyDue} EGP/member <span onClick={()=>{const v=prompt("New monthly due (EGP):",String(bk.monthlyDue));if(v&&!isNaN(parseFloat(v)))onSetBookkeeping({monthlyDue:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>
-      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Opening balance: {bk.openingBalance||0} EGP <span onClick={()=>{const v=prompt("Opening cash balance (EGP) — whatever was already in the box before you started tracking here:",String(bk.openingBalance||0));if(v!==null&&!isNaN(parseFloat(v)))onSetBookkeeping({openingBalance:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>
+    <Card style={{marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:14}}>
+        <div style={{display:"flex",flexDirection:"column",gap:12,flexShrink:0}}>
+          <div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>Monthly due</div>
+            <div style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{bk.monthlyDue} EGP</div>
+            {bk.monthlyDueSince&&<div style={{fontSize:9,color:"var(--po-dim)"}}>since {fmtD(bk.monthlyDueSince)}</div>}
+            <span onClick={()=>{
+              const va=prompt("New monthly due (EGP):",String(bk.monthlyDue));
+              if(va===null||isNaN(parseFloat(va)))return;
+              const vd=prompt("Effective from (YYYY-MM-DD):", bk.monthlyDueSince||todayStr);
+              if(vd===null)return;
+              onSetBookkeeping({monthlyDue:parseFloat(va), monthlyDueSince:vd});
+            }} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
+          </div>
+          <div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>Opening balance</div>
+            <div style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{bk.openingBalance||0} EGP</div>
+            <span onClick={()=>{const v=prompt("Opening cash balance (EGP) — whatever was already in the box before you started tracking here:",String(bk.openingBalance||0));if(v!==null&&!isNaN(parseFloat(v)))onSetBookkeeping({openingBalance:parseFloat(v)});}} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
+          </div>
+        </div>
+        <div style={{flex:1,textAlign:"center"}}>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Cash Balance</div>
+          <div style={{fontSize:32,fontWeight:700,color:cashBalance>=0?"#34D399":"#EF4444"}}>{cashBalance.toLocaleString()} EGP</div>
+        </div>
+      </div>
     </Card>
 
     <ST>Player Liabilities</ST>

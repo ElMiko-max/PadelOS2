@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.33";
+const APP_VERSION = "V0.09.34";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -8845,7 +8845,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       </div>
       {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":"No matches"}</div></Card>}
       {filtered.length>0&&<div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",border:"0.5px solid var(--po-bdr)",borderRadius:8}}>
-        <table style={{borderCollapse:"collapse",width:"100%",minWidth:760}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:560,tableLayout:"fixed"}}>
+          <colgroup><col style={{width:70}}/><col style={{width:90}}/><col style={{width:110}}/><col style={{width:160}}/><col style={{width:64}}/><col style={{width:66}}/></colgroup>
           <thead><tr>
             <SortTh k="ts" label="Time"/>
             <SortTh k="actorName" label="Actor"/>
@@ -8858,9 +8859,9 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             {filtered.map(e=>
               <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
                 <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}} title={e.ts}>{timeAgo(e.ts)}</td>
-                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"nowrap"}}>{e.actorName}</td>
+                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.actorName}</td>
                 <td style={{padding:"8px 10px"}}><span style={{fontSize:9,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"1px 4px",whiteSpace:"nowrap"}}>{e.action}</span></td>
-                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",minWidth:220}}>{e.summary}</td>
+                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}}>{e.summary}</td>
                 <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{e.appVersion||"—"}</td>
                 <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{e.platform?(e.platform==="Android"?"🤖 Android":"🌐 Web"):"—"}</td>
               </tr>

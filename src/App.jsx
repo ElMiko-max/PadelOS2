@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.35";
+const APP_VERSION = "V0.09.36";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3604,6 +3604,18 @@ export default function Matchkeeper() {
     const u=users.find(u=>u.id===userId);
     logAudit("user.unlink", `${me.nickname} unlinked ${u?.nickname||userId}'s account`, "user", userId);
   };
+  // Sweeps padelos_links entries whose target user no longer exists — the residue left behind
+  // by the old deleteUser path (fixed above) that never cleaned up the link when a user was
+  // deleted. Without this, a deleted test account's email/Google login stays permanently
+  // "claimed" by nothing, with no user row left in the Users list to click "🔓 Unlink" on.
+  const cleanOrphanedLinks = () => {
+    const orphaned = Object.entries(uidLinks).filter(([,uid])=>!users.find(u=>u.id===uid));
+    if (!orphaned.length) { toast2("No orphaned links found ✓"); return; }
+    orphaned.forEach(([firebaseUid])=>{ deleteDoc(doc(db,"padelos_links",firebaseUid)).catch(e=>console.log("Firestore delete error (uidLinks)", e)); });
+    setUidLinks(links => { const n={...links}; orphaned.forEach(([fbUid])=>delete n[fbUid]); return n; });
+    toast2(`Cleaned ${orphaned.length} orphaned link${orphaned.length>1?"s":""} ✓`);
+    logAudit("admin.cleanOrphanedLinks", `${me.nickname} cleaned ${orphaned.length} orphaned account link(s)`, null, null);
+  };
 
   // invites — admin-generated shareable links (Enhancement #1). Same one-blob-doc pattern as
   // notifications; codes are short random tokens resolved client-side.
@@ -3779,9 +3791,11 @@ export default function Matchkeeper() {
     if (phoneTaken(data.phone, id)) { toast2(`Phone ${data.phone} is already used by another player`, "err"); return false; }
     setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref} : u));
     toast2("Player updated ✓");
+    if (id!==me.id) { const u=users.find(u=>u.id===id); logAudit("user.edit", `${me.nickname} edited ${u?.nickname||id}'s profile`, "user", id); }
     return true;
   };
   const deleteUser = (id) => {
+    const u = users.find(u=>u.id===id);
     setUsers(us => us.filter(u => u.id!==id));
     // Clean up stale references across all communities/events so counts stay accurate
     setComms(cs => cs.map(c => ({
@@ -3793,7 +3807,18 @@ export default function Matchkeeper() {
         checkedIn: (ev.checkedIn||[]).filter(uid => uid !== id),
       })),
     })));
+    // Also release any identity link to this user so their email/Google account is free to
+    // sign in fresh again, instead of staying permanently claimed by a deleted profile — this
+    // was previously left dangling (the exact "the system still remembers a deleted test user"
+    // symptom), since the delete path used to only touch the `users` array.
+    const entry = Object.entries(uidLinks).find(([,uid])=>uid===id);
+    if (entry) {
+      const [firebaseUid] = entry;
+      deleteDoc(doc(db,"padelos_links",firebaseUid)).catch(e=>console.log("Firestore delete error (uidLinks)", e));
+      setUidLinks(links => { const n={...links}; delete n[firebaseUid]; return n; });
+    }
     toast2("Player removed");
+    logAudit("user.delete", `${me.nickname} deleted user ${u?.nickname||id}`, "user", id);
   };
 
   const exportData = () => {
@@ -5144,9 +5169,9 @@ export default function Matchkeeper() {
             setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr)}:u));
             toast2("USR recalculated from seed ✓");
           }}
-          onDeleteUser={uid=>{const u=users.find(u=>u.id===uid);setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");logAudit("user.delete", `${me.nickname} deleted user ${u?.nickname||uid}`, "user", uid);}}
+          onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -5651,16 +5676,21 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
   const [monthlyDueInput,setMonthlyDueInput] = useState(String(bk.monthlyDue||100));
   const [payingId,setPayingId] = useState(null);
   const [payAmount,setPayAmount] = useState("");
+  const todayStr = new Date().toISOString().slice(0,10);
   const [showExpense,setShowExpense] = useState(false);
   const [expDesc,setExpDesc] = useState("");
   const [expAmount,setExpAmount] = useState("");
   const [expCategory,setExpCategory] = useState("");
+  const [expDate,setExpDate] = useState(todayStr);
   const [showIncome,setShowIncome] = useState(false);
   const [incDesc,setIncDesc] = useState("");
   const [incAmount,setIncAmount] = useState("");
+  const [incDate,setIncDate] = useState(todayStr);
   const [showHistory,setShowHistory] = useState(false);
   const [openStatementUid,setOpenStatementUid] = useState(null);
   const curMonth = new Date().toISOString().slice(0,7);
+  // Noon avoids the display-side .slice(0,10) landing on the wrong day from a UTC rollover.
+  const dateInputToISO = d => new Date((d||todayStr)+"T12:00:00").toISOString();
   const payingMembers = regs.filter(m=>m.status!=="guest");
 
   // Auto-accrue the monthly due for every active member (#7) — admin-only, fires whenever a
@@ -5690,16 +5720,19 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
     </Card>;
   }
 
-  const cashBalance = entries.reduce((s,e)=>s+(e.type==="due"||e.type==="income_misc"?e.amount:e.type==="expense"?-e.amount:0),0);
-  const liabilityOf = uid => entries.filter(e=>e.memberId===uid).reduce((s,e)=>s+(e.type==="charge"?e.amount:e.type==="due"?-e.amount:0),0);
+  const cashBalance = (bk.openingBalance||0) + entries.reduce((s,e)=>s+(e.type==="due"||e.type==="income_misc"?e.amount:e.type==="expense"?-e.amount:0),0);
+  // "opening" = a one-time starting liability/credit per player, set once to represent a
+  // balance that existed before this ledger started tracking them (can be negative = credit).
+  const liabilityOf = uid => entries.filter(e=>e.memberId===uid).reduce((s,e)=>s+(e.type==="charge"||e.type==="opening"?e.amount:e.type==="due"?-e.amount:0),0);
   const sortedEntries = [...entries].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const personalEntryTypes = new Set(["charge","due","opening"]);
 
   // ── Member (non-admin) view: fund balance + their own statement only — no other member's
   // numbers, no expense line items (#9's "limited scope") ──
   if (!isAdmin) {
     const myMember = payingMembers.find(m=>m.userId===me.id);
     const myLiability = myMember ? liabilityOf(me.id) : null;
-    const myEntries = sortedEntries.filter(e=>e.memberId===me.id&&(e.type==="charge"||e.type==="due"));
+    const myEntries = sortedEntries.filter(e=>e.memberId===me.id&&personalEntryTypes.has(e.type));
     return <>
       <Card style={{marginBottom:12,textAlign:"center"}}>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Fund Balance</div>
@@ -5718,7 +5751,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
                 <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{e.description}</div>
                 <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(e.date.slice(0,10))}</div>
               </div>
-              <div style={{fontSize:14,fontWeight:700,color:e.type==="due"?"#34D399":"var(--po-dim)"}}>{e.type==="due"?"+":"owed "}{e.amount}</div>
+              <div style={{fontSize:14,fontWeight:700,color:e.type==="due"?"#34D399":e.type==="opening"?(e.amount<0?"#34D399":"#F59E0B"):"var(--po-dim)"}}>{e.type==="due"?`+${e.amount}`:e.type==="opening"?(e.amount<0?`+${Math.abs(e.amount)} credit`:`owed ${e.amount}`):`owed ${e.amount}`}</div>
             </div>
           </Card>
         )}
@@ -5738,6 +5771,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Cash Balance</div>
       <div style={{fontSize:32,fontWeight:700,color:cashBalance>=0?"#34D399":"#EF4444"}}>{cashBalance.toLocaleString()} EGP</div>
       <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Monthly due: {bk.monthlyDue} EGP/member <span onClick={()=>{const v=prompt("New monthly due (EGP):",String(bk.monthlyDue));if(v&&!isNaN(parseFloat(v)))onSetBookkeeping({monthlyDue:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Opening balance: {bk.openingBalance||0} EGP <span onClick={()=>{const v=prompt("Opening cash balance (EGP) — whatever was already in the box before you started tracking here:",String(bk.openingBalance||0));if(v!==null&&!isNaN(parseFloat(v)))onSetBookkeeping({openingBalance:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>
     </Card>
 
     <ST>Player Liabilities</ST>
@@ -5745,7 +5779,8 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       const u=users.find(x=>x.id===m.userId); if(!u) return null;
       const liability = liabilityOf(u.id);
       const isOpen = openStatementUid===u.id;
-      const myEntries = sortedEntries.filter(e=>e.memberId===u.id&&(e.type==="charge"||e.type==="due"));
+      const myEntries = sortedEntries.filter(e=>e.memberId===u.id&&personalEntryTypes.has(e.type));
+      const openingEntry = entries.find(e=>e.memberId===u.id&&e.type==="opening");
       return <Card key={u.id} style={{marginBottom:6,padding:"8px 12px"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <Av u={u} size={32}/>
@@ -5761,13 +5796,21 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
               </div>
             : <div onClick={e=>e.stopPropagation()}><SmBtn label="Record Payment" onClick={()=>{setPayingId(u.id);setPayAmount(String(liability));}} color="#6366F1"/></div>)}
         </div>
-        {isOpen&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}}>
+        {isOpen&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}} onClick={e=>e.stopPropagation()}>
           {myEntries.length===0?<div style={{fontSize:11,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>No activity yet.</div>:myEntries.map(e=>
             <div key={e.id} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
               <span style={{color:"var(--po-dim)"}}>{fmtD(e.date.slice(0,10))} · {e.description}</span>
-              <span style={{fontWeight:700,color:e.type==="due"?"#34D399":"var(--po-dim)"}}>{e.type==="due"?"+":"−"}{e.amount}</span>
+              <span style={{fontWeight:700,color:e.type==="due"?"#34D399":e.type==="opening"&&e.amount<0?"#34D399":"var(--po-dim)"}}>{e.type==="due"?"+":e.type==="opening"?(e.amount<0?"credit ":"owed "):"−"}{Math.abs(e.amount)}</span>
             </div>
           )}
+          <div style={{fontSize:10,color:"#6366F1",cursor:"pointer",textAlign:"center",padding:"6px 0 0"}} onClick={()=>{
+            const v=prompt(`Opening balance for ${u.nickname} (EGP) — a starting balance from before this ledger existed.\nPositive = they already owed money. Negative = they already had credit.`, String(openingEntry?.amount||0));
+            if(v===null) return;
+            const amt=parseFloat(v);
+            if(isNaN(amt)) return;
+            if(openingEntry) onDeleteLedgerEntry(openingEntry.id);
+            if(amt!==0) onAddLedgerEntry({type:"opening",memberId:u.id,amount:amt,description:"Opening balance"});
+          }}>{openingEntry?`✏️ Edit opening balance (${openingEntry.amount})`:"+ Set opening balance"}</div>
         </div>}
       </Card>;
     })}
@@ -5779,24 +5822,26 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
     {showExpense&&<Card style={{marginTop:8}}>
       <Inp label="Description" value={expDesc} onChange={setExpDesc} placeholder="e.g. Court staff tip, balls, ice"/>
       <Inp label="Amount (EGP)" value={expAmount} onChange={setExpAmount} type="number"/>
+      <Inp label="Date" value={expDate} onChange={setExpDate} type="date"/>
       <Drp label="Category" value={expCategory} onChange={setExpCategory} options={(expenseCategories||[]).map(c=>({v:c,l:c}))}/>
       <div style={{display:"flex",gap:6}}>
-        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc,category:expCategory||"Misc"});setExpDesc("");setExpAmount("");setExpCategory("");setShowExpense(false);}}} style={{flex:1}}/>
-        <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");setExpCategory("");}} color="#94A3B8" style={{flex:1}}/>
+        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc,category:expCategory||"Misc",date:dateInputToISO(expDate)});setExpDesc("");setExpAmount("");setExpCategory("");setExpDate(todayStr);setShowExpense(false);}}} style={{flex:1}}/>
+        <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");setExpCategory("");setExpDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
       </div>
     </Card>}
     {showIncome&&<Card style={{marginTop:8}}>
       <Inp label="Description" value={incDesc} onChange={setIncDesc} placeholder="e.g. Sponsor contribution, event surplus"/>
       <Inp label="Amount (EGP)" value={incAmount} onChange={setIncAmount} type="number"/>
+      <Inp label="Date" value={incDate} onChange={setIncDate} type="date"/>
       <div style={{display:"flex",gap:6}}>
-        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(incAmount);if(incDesc&&amt>0){onAddLedgerEntry({type:"income_misc",amount:amt,description:incDesc});setIncDesc("");setIncAmount("");setShowIncome(false);}}} style={{flex:1}}/>
-        <SmBtn label="Cancel" onClick={()=>{setShowIncome(false);setIncDesc("");setIncAmount("");}} color="#94A3B8" style={{flex:1}}/>
+        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(incAmount);if(incDesc&&amt>0){onAddLedgerEntry({type:"income_misc",amount:amt,description:incDesc,date:dateInputToISO(incDate)});setIncDesc("");setIncAmount("");setIncDate(todayStr);setShowIncome(false);}}} style={{flex:1}}/>
+        <SmBtn label="Cancel" onClick={()=>{setShowIncome(false);setIncDesc("");setIncAmount("");setIncDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
       </div>
     </Card>}
 
     <CollapsibleSection label="📊 Cash Statement" defaultOpen={false}>
       <Card>
-        {[["Player dues (income)",totalDues,"#34D399"],["Misc income",totalMiscIncome,"#34D399"],["Expenses",totalExpenses,"#EF4444"],["Net Cash Balance",cashBalance,cashBalance>=0?"#34D399":"#EF4444"]].map(([k,v,color])=>
+        {[["Opening balance",bk.openingBalance||0,"var(--po-text)"],["Player dues (income)",totalDues,"#34D399"],["Misc income",totalMiscIncome,"#34D399"],["Expenses",totalExpenses,"#EF4444"],["Net Cash Balance",cashBalance,cashBalance>=0?"#34D399":"#EF4444"]].map(([k,v,color])=>
           <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
             <span style={{fontSize:12,color:"var(--po-dim)"}}>{k}</span>
             <span style={{fontSize:13,fontWeight:700,color}}>{v.toLocaleString()} EGP</span>
@@ -5820,8 +5865,9 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
     <SmBtn label={showHistory?"▲ Hide Full Ledger":`▼ Show Full Ledger (${entries.length} entries)`} onClick={()=>setShowHistory(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:12,marginBottom:showHistory?8:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>
     {showHistory&&(sortedEntries.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No entries yet.</div></Card>:sortedEntries.map(e=>{
       const memberName = e.memberId ? (users.find(u=>u.id===e.memberId)?.nickname||"—") : null;
-      const sign = e.type==="due"||e.type==="income_misc" ? "+" : e.type==="expense" ? "−" : "owed ";
-      const color = e.type==="due"||e.type==="income_misc" ? "#34D399" : e.type==="expense" ? "#EF4444" : "var(--po-dim)";
+      const isOpeningCredit = e.type==="opening"&&e.amount<0;
+      const sign = e.type==="due"||e.type==="income_misc" ? "+" : e.type==="expense" ? "−" : e.type==="opening" ? (isOpeningCredit?"credit ":"owed ") : "owed ";
+      const color = e.type==="due"||e.type==="income_misc"||isOpeningCredit ? "#34D399" : e.type==="expense" ? "#EF4444" : "var(--po-dim)";
       return <Card key={e.id} style={{marginBottom:6,padding:"8px 12px"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <div style={{flex:1,minWidth:0}}>
@@ -5832,7 +5878,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
               {e.eventName&&<span onClick={()=>onOpenEvent&&onOpenEvent(e.eventId)} style={{color:onOpenEvent?"#6366F1":"inherit",cursor:onOpenEvent?"pointer":"default"}}>· {e.eventName}</span>}
             </div>
           </div>
-          <div style={{fontSize:14,fontWeight:700,color}}>{sign}{e.amount}</div>
+          <div style={{fontSize:14,fontWeight:700,color}}>{sign}{Math.abs(e.amount)}</div>
           <SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this ledger entry?"))onDeleteLedgerEntry(e.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>
         </div>
       </Card>;
@@ -8644,9 +8690,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>📱 {user.phone || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
-    {isMe&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
+    {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
   </div>
-  {isMe&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
+  {(isMe||isPlatformAdmin)&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
       <Av u={user} size={48}/>
       <label style={{cursor:photoUploading?"default":"pointer"}}>
@@ -8946,7 +8992,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -8969,6 +9015,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
   const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
+  const orphanedLinksCount=Object.entries(uidLinks||{}).filter(([,uid])=>!users.find(u=>u.id===uid)).length;
   const q=userSearch.trim().toLowerCase();
   const filteredUsers=users
     .filter(u=>!q||u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q))
@@ -9255,6 +9302,11 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <div onClick={()=>{if(window.confirm("Backfill guest memberships?\n\nThis scans every event for guests added before this feature existed, and adds any missing ones to their community's member list. Safe to run anytime — never removes or duplicates anything."))onBackfillGuests();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
         <span style={{fontSize:18}}>🧑‍🤝‍🧑</span>
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Backfill Guest Memberships</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
+      <div onClick={()=>{if(window.confirm(`Clean orphaned account links?\n\nFound ${orphanedLinksCount} email/Google login(s) still "claimed" by a deleted user — this releases them so that person can sign in fresh again. Safe to run anytime.`))onCleanOrphanedLinks();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:orphanedLinksCount>0?"pointer":"default",borderBottom:"0.5px solid var(--po-bdr)",opacity:orphanedLinksCount>0?1:0.5}}>
+        <span style={{fontSize:18}}>🧹</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Clean Orphaned Account Links{orphanedLinksCount>0?` (${orphanedLinksCount})`:""}</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
       <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>

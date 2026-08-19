@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.34";
+const APP_VERSION = "V0.09.35";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -186,6 +186,9 @@ const SPORTS = ["Padel Tennis", "Football"];
 const DEFAULT_SPORT = "Padel Tennis";
 const SPORT_EMOJI = {"Padel Tennis":"🎾", "Football":"⚽"};
 const sportLabel = s => `${SPORT_EMOJI[s]||"🏅"} ${s}`;
+// Community-ledger expense categories — platform-admin-maintainable list (padelos/expenseCategories),
+// same singleton-doc pattern as egypt. "Misc" always stays as the catch-all (#3/#4).
+const INIT_EXPENSE_CATEGORIES = ["Court Rental","Equipment & Balls","Staff & Tips","Refreshments","Misc"];
 // Football pitches and padel courts at the same venue can cost different hourly rates — falls
 // back to the general (padel) price if a venue added Football without setting its own price yet.
 const getVenuePricing = (venue, sport) => {
@@ -3245,6 +3248,7 @@ export default function Matchkeeper() {
   const [users,  setUsers]  = useState(INIT_USERS);
   const [venues, setVenues] = useState(INIT_VENUES);
   const [egypt, setEgypt] = useState(INIT_EGYPT);
+  const [expenseCategories, setExpenseCategories] = useState(INIT_EXPENSE_CATEGORIES);
   const [comms,  setComms]  = useState(INIT_COMMS);
   const [notifications, setNotifications] = useState([]);
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
@@ -3396,12 +3400,12 @@ export default function Matchkeeper() {
   // syncedRef tracks, per key, the JSON of whatever we last received FROM Firestore or
   // sent TO it — this is what stops the listen-effect and write-effect from echoing
   // back and forth into an infinite loop.
-  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, egypt:null});
+  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null});
   // Tracks whether each collection has EVER returned real data this session. Firestore's
   // onSnapshot can occasionally misfire "not found" on a transient network blip even when
   // the document genuinely exists — this flag is what stops that from being mistaken for
   // "first-time setup" and destructively overwriting live data with empty seed defaults.
-  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false});
+  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
   const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt"].every(k => loadedKeys.includes(k));
@@ -3521,6 +3525,28 @@ export default function Matchkeeper() {
     syncedRef.current.egypt = json;
     setDoc(doc(db,"padelos","egypt"), {value:JSON.stringify(egypt)}).catch(e=>console.log("Firestore write error (egypt)", e));
   }, [egypt, dataLoaded]);
+
+  // expenseCategories (community-ledger expense categories, platform-admin-maintainable)
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = onSnapshot(doc(db,"padelos","expenseCategories"), snap => {
+      if (snap.exists()) {
+        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        const json = JSON.stringify(remote);
+        if (json !== syncedRef.current.expenseCategories) { syncedRef.current.expenseCategories = json; setExpenseCategories(remote); }
+        everRealRef.current.expenseCategories = true;
+      } else if (!everRealRef.current.expenseCategories) { syncedRef.current.expenseCategories = JSON.stringify(INIT_EXPENSE_CATEGORIES); setExpenseCategories(INIT_EXPENSE_CATEGORIES); }
+      markLoaded("expenseCategories");
+    }, e => { console.log("Firestore expenseCategories error", e); markLoaded("expenseCategories"); });
+    return unsub;
+  }, [authUser]);
+  useEffect(() => {
+    if (!everRealRef.current.expenseCategories) { console.log("Blocked write: haven't confirmed real expenseCategories data this session yet"); return; }
+    const json = JSON.stringify(expenseCategories);
+    if (json === syncedRef.current.expenseCategories) return;
+    syncedRef.current.expenseCategories = json;
+    setDoc(doc(db,"padelos","expenseCategories"), {value:JSON.stringify(expenseCategories)}).catch(e=>console.log("Firestore write error (expenseCategories)", e));
+  }, [expenseCategories]);
 
   // notifications
   useEffect(() => {
@@ -4015,16 +4041,26 @@ export default function Matchkeeper() {
   // dated entries is the whole model: type:"due" entries are member-linked payments (partial
   // payments are just their own line item — "how much has X paid this month" is a sum, not a
   // flag, so partial payments fall out for free without a separate paid/unpaid boolean),
-  // type:"expense" entries are free-text admin-recorded spending. Running balance is just the
-  // sum of every entry (due=income, expense=outflow) since the ledger began.
-  const setBookkeeping=(cid,fields)=>{updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),...fields}}));toast2("Saved ✓");};
+  // type:"expense" entries are free-text admin-recorded spending (with a category, from the
+  // platform-admin-maintained expenseCategories list), type:"charge" is a non-cash liability
+  // assessed to a member (the monthly due itself, auto-accrued every month — see LedgerTab's
+  // backfill effect), type:"income_misc" is cash income NOT from a member's monthly due (e.g.
+  // sponsorship, event surplus). Cash Balance = due + income_misc - expense (charge has no cash
+  // effect). A member's Liability = their charges - their dues (negative = credit/overpaid).
+  const setBookkeeping=(cid,fields)=>{updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),...fields,...(fields.enabled&&!c.bookkeeping?.enabled?{enabledAt:new Date().toISOString()}:{})}}));toast2("Saved ✓");};
   const addLedgerEntry=(cid,entry)=>{
     // Timestamp+random rather than a global counter — entries live nested inside each
     // community's own blob, so a counter would need scanning every community's entries on
     // load just to stay collision-free; this doesn't.
     const id=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
     updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),entries:[...((c.bookkeeping||{}).entries||[]),{id,recordedBy:me.id,date:new Date().toISOString(),...entry}]}}));
-    toast2(entry.type==="due"?"Payment recorded ✓":"Expense added ✓");
+    toast2(entry.type==="due"?"Payment recorded ✓":entry.type==="income_misc"?"Income added ✓":entry.type==="charge"?"Charge added ✓":"Expense added ✓");
+  };
+  // Bulk variant for the monthly-charge backfill (LedgerTab) — one Firestore write for
+  // potentially dozens of missing charge entries instead of one round-trip per entry.
+  const addLedgerEntries=(cid,entriesArr)=>{
+    if(!entriesArr||!entriesArr.length) return;
+    updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),entries:[...((c.bookkeeping||{}).entries||[]),...entriesArr.map((entry,i)=>({id:`${Date.now()}-${i}-${Math.random().toString(36).slice(2,6)}`,recordedBy:me.id,date:new Date().toISOString(),...entry}))]}}));
   };
   const deleteLedgerEntry=(cid,entryId)=>{updC(cid,c=>({...c,bookkeeping:{...c.bookkeeping,entries:(c.bookkeeping?.entries||[]).filter(e=>e.id!==entryId)}}));toast2("Removed");};
   const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");};
@@ -5013,7 +5049,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5039,6 +5075,8 @@ export default function Matchkeeper() {
             onRetirePlayer={uid=>retirePlayer(comm.id,event.id,uid)}
             onToggleEventAdmin={uid=>toggleEventAdmin(comm.id,event.id,uid)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
+            onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)}
+            expenseCategories={expenseCategories}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
             onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
@@ -5084,7 +5122,7 @@ export default function Matchkeeper() {
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
-        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt}
+        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -5456,7 +5494,7 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry,onSetFootballSkill}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -5586,26 +5624,61 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </>}
     </>}
     {tab==="stats"&&(canViewPrivate?<><CommOverview comm={comm} venues={venues}/><CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/></>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
-    {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onDeleteLedgerEntry={onDeleteLedgerEntry}/>}
+    {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onOpenEvent={onOpenEv} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onAddLedgerEntries={onAddLedgerEntries} onDeleteLedgerEntry={onDeleteLedgerEntry} expenseCategories={expenseCategories}/>}
     {tab==="requests"&&isAdmin&&(comm.joinRequests.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No pending requests</div></Card>:comm.joinRequests.map(req=>{const u=users.find(u=>u.id===req.userId);if(!u)return null;return(<Card key={req.userId}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><Av u={u} size={38}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr} · {u.area}</div></div></div>{req.message&&<div style={{fontSize:12,color:"var(--po-sub)",background:"var(--po-inp)",borderRadius:6,padding:"7px 10px",marginBottom:10}}>{req.message}</div>}<div style={{display:"flex",gap:6}}><Btn label="Approve" primary onClick={()=>onApprove(req.userId)} style={{flex:1}}/><Btn label="Reject" danger onClick={()=>onReject(req.userId)} style={{flex:1}}/></div></Card>);}))}</>;
 }
 
 // ── Centralized Bookkeeping (opt-in, per-community ledger) ───────────
-// One flat list of dated entries is the whole model — type:"due" (member payment, partial
-// payments are just their own line item, summed rather than a paid/unpaid flag) and
-// type:"expense" (free-text admin spending). Runs alongside per-event cost-splitting, doesn't
+// Four entry types share one flat list: "charge" (non-cash liability assessed to a member —
+// the monthly due itself, auto-accrued every month by the backfill effect below), "due" (a
+// member's cash payment reducing their liability — partial payments are their own line item,
+// summed rather than a paid/unpaid flag), "expense" (categorized cash outflow), "income_misc"
+// (cash inflow NOT from a member's due, e.g. sponsorship). Cash Balance = due + income_misc -
+// expense (a charge has no cash effect by itself). A member's Liability = their charges minus
+// their dues — negative means credit/overpaid. Entries may optionally carry eventId/eventName
+// (recorded from an event's Financial tab). Runs alongside per-event cost-splitting, doesn't
 // replace it.
-function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onSetBookkeeping,onAddLedgerEntry,onDeleteLedgerEntry}){
+function monthsFromInclusive(startISO, throughMonth) {
+  const start = new Date(startISO); let y = start.getFullYear(), m = start.getMonth();
+  const [ey, em] = throughMonth.split("-").map(Number);
+  const out = [];
+  while (y < ey || (y === ey && m + 1 <= em)) { out.push(`${y}-${String(m + 1).padStart(2, "0")}`); m++; if (m > 11) { m = 0; y++; } }
+  return out;
+}
+function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,expenseCategories}){
   const bk = comm.bookkeeping||{enabled:false,monthlyDue:100,entries:[]};
   const entries = bk.entries||[];
   const [monthlyDueInput,setMonthlyDueInput] = useState(String(bk.monthlyDue||100));
-  const [selMonth,setSelMonth] = useState(new Date().toISOString().slice(0,7)); // "2026-08"
   const [payingId,setPayingId] = useState(null);
   const [payAmount,setPayAmount] = useState("");
   const [showExpense,setShowExpense] = useState(false);
   const [expDesc,setExpDesc] = useState("");
   const [expAmount,setExpAmount] = useState("");
+  const [expCategory,setExpCategory] = useState("");
+  const [showIncome,setShowIncome] = useState(false);
+  const [incDesc,setIncDesc] = useState("");
+  const [incAmount,setIncAmount] = useState("");
   const [showHistory,setShowHistory] = useState(false);
+  const [openStatementUid,setOpenStatementUid] = useState(null);
+  const curMonth = new Date().toISOString().slice(0,7);
+  const payingMembers = regs.filter(m=>m.status!=="guest");
+
+  // Auto-accrue the monthly due for every active member (#7) — admin-only, fires whenever a
+  // month is missing a charge for someone; one bulk write covers however many are missing.
+  useEffect(()=>{
+    if (!isAdmin || !bk.enabled) return;
+    const startISO = bk.enabledAt || entries[0]?.date || new Date().toISOString();
+    const existing = new Set(entries.filter(e=>e.type==="charge").map(e=>`${e.memberId}:${e.month}`));
+    const toAdd = [];
+    payingMembers.forEach(m=>{
+      const memberStart = m.since && new Date(m.since) > new Date(startISO) ? m.since : startISO;
+      monthsFromInclusive(memberStart, curMonth).forEach(month=>{
+        const key = `${m.userId}:${month}`;
+        if (!existing.has(key)) { toAdd.push({type:"charge",memberId:m.userId,amount:bk.monthlyDue,month,description:`Monthly due — ${month}`}); existing.add(key); }
+      });
+    });
+    if (toAdd.length) onAddLedgerEntries&&onAddLedgerEntries(toAdd);
+  }, [isAdmin, bk.enabled, bk.monthlyDue, bk.enabledAt, entries.length, comm.members?.length]);
 
   if (!bk.enabled) {
     if (!isAdmin) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No shared ledger for this community yet.</div></Card>;
@@ -5617,72 +5690,150 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onSetBookkeeping,on
     </Card>;
   }
 
-  const balance = entries.reduce((s,e)=>s+(e.type==="due"?e.amount:-e.amount),0);
-  const paidInMonth = (uid,month) => entries.filter(e=>e.type==="due"&&e.memberId===uid&&e.month===month).reduce((s,e)=>s+e.amount,0);
-  const monthLabel = new Date(selMonth+"-01").toLocaleDateString("en-GB",{month:"long",year:"numeric"});
-  const shiftMonth = delta => { const [y,m]=selMonth.split("-").map(Number); const d=new Date(y,m-1+delta,1); setSelMonth(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`); };
+  const cashBalance = entries.reduce((s,e)=>s+(e.type==="due"||e.type==="income_misc"?e.amount:e.type==="expense"?-e.amount:0),0);
+  const liabilityOf = uid => entries.filter(e=>e.memberId===uid).reduce((s,e)=>s+(e.type==="charge"?e.amount:e.type==="due"?-e.amount:0),0);
   const sortedEntries = [...entries].sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  // ── Member (non-admin) view: fund balance + their own statement only — no other member's
+  // numbers, no expense line items (#9's "limited scope") ──
+  if (!isAdmin) {
+    const myMember = payingMembers.find(m=>m.userId===me.id);
+    const myLiability = myMember ? liabilityOf(me.id) : null;
+    const myEntries = sortedEntries.filter(e=>e.memberId===me.id&&(e.type==="charge"||e.type==="due"));
+    return <>
+      <Card style={{marginBottom:12,textAlign:"center"}}>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Fund Balance</div>
+        <div style={{fontSize:32,fontWeight:700,color:cashBalance>=0?"#34D399":"#EF4444"}}>{cashBalance.toLocaleString()} EGP</div>
+      </Card>
+      {myMember&&<>
+        <Card style={{marginBottom:12,textAlign:"center"}}>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Your Balance</div>
+          <div style={{fontSize:24,fontWeight:700,color:myLiability<=0?"#34D399":"#F59E0B"}}>{myLiability<=0?`${Math.abs(myLiability).toLocaleString()} EGP credit`:`${myLiability.toLocaleString()} EGP owed`}</div>
+        </Card>
+        <ST>Your Statement</ST>
+        {myEntries.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No activity yet.</div></Card>:myEntries.map(e=>
+          <Card key={e.id} style={{marginBottom:6,padding:"8px 12px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{e.description}</div>
+                <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(e.date.slice(0,10))}</div>
+              </div>
+              <div style={{fontSize:14,fontWeight:700,color:e.type==="due"?"#34D399":"var(--po-dim)"}}>{e.type==="due"?"+":"owed "}{e.amount}</div>
+            </div>
+          </Card>
+        )}
+      </>}
+    </>;
+  }
+
+  // ── Admin view ──
+  const expenseTotals = {};
+  entries.filter(e=>e.type==="expense").forEach(e=>{ const c=e.category||"Misc"; expenseTotals[c]=(expenseTotals[c]||0)+e.amount; });
+  const totalDues = entries.filter(e=>e.type==="due").reduce((s,e)=>s+e.amount,0);
+  const totalMiscIncome = entries.filter(e=>e.type==="income_misc").reduce((s,e)=>s+e.amount,0);
+  const totalExpenses = entries.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
 
   return <>
     <Card style={{marginBottom:12,textAlign:"center"}}>
-      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Fund Balance</div>
-      <div style={{fontSize:32,fontWeight:700,color:balance>=0?"#34D399":"#EF4444"}}>{balance.toLocaleString()} EGP</div>
-      {isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Monthly due: {bk.monthlyDue} EGP/member <span onClick={()=>{const v=prompt("New monthly due (EGP):",String(bk.monthlyDue));if(v&&!isNaN(parseFloat(v)))onSetBookkeeping({monthlyDue:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>}
+      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Cash Balance</div>
+      <div style={{fontSize:32,fontWeight:700,color:cashBalance>=0?"#34D399":"#EF4444"}}>{cashBalance.toLocaleString()} EGP</div>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Monthly due: {bk.monthlyDue} EGP/member <span onClick={()=>{const v=prompt("New monthly due (EGP):",String(bk.monthlyDue));if(v&&!isNaN(parseFloat(v)))onSetBookkeeping({monthlyDue:parseFloat(v)});}} style={{color:"#6366F1",cursor:"pointer",marginLeft:4}}>✏️ edit</span></div>
     </Card>
 
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-      <SmBtn label="←" onClick={()=>shiftMonth(-1)} color="#6366F1"/>
-      <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>{monthLabel}</div>
-      <SmBtn label="→" onClick={()=>shiftMonth(1)} color="#6366F1"/>
-    </div>
-
-    {regs.filter(m=>m.status!=="guest").map(m=>{
+    <ST>Player Liabilities</ST>
+    {payingMembers.map(m=>{
       const u=users.find(x=>x.id===m.userId); if(!u) return null;
-      const paid=paidInMonth(u.id,selMonth);
-      const owed=Math.max(0,bk.monthlyDue-paid);
-      const status = owed===0?"paid":paid>0?"partial":"unpaid";
+      const liability = liabilityOf(u.id);
+      const isOpen = openStatementUid===u.id;
+      const myEntries = sortedEntries.filter(e=>e.memberId===u.id&&(e.type==="charge"||e.type==="due"));
       return <Card key={u.id} style={{marginBottom:6,padding:"8px 12px"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <Av u={u} size={32}/>
-          <div style={{flex:1,minWidth:0,cursor:onViewProfile?"pointer":"default"}} onClick={()=>onViewProfile&&onViewProfile(u.id)}>
-            <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div>
-            <div style={{fontSize:11,color:status==="paid"?"#34D399":status==="partial"?"#F59E0B":"var(--po-dim)"}}>{paid}/{bk.monthlyDue} EGP{status==="paid"?" ✓ paid":status==="partial"?" · partial":""}</div>
+          <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>setOpenStatementUid(o=>o===u.id?null:u.id)}>
+            <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}} onClick={e=>{e.stopPropagation();onViewProfile&&onViewProfile(u.id);}}>{u.nickname}</div>
+            <div style={{fontSize:11,color:liability<=0?"#34D399":"#F59E0B"}}>{liability<=0?`${Math.abs(liability).toLocaleString()} EGP credit`:`${liability.toLocaleString()} EGP owed`}</div>
           </div>
-          {isAdmin&&status!=="paid"&&(payingId===u.id
-            ? <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                <input type="number" autoFocus value={payAmount} onChange={e=>setPayAmount(e.target.value)} placeholder={String(owed)} className="po-inp" style={{width:60,padding:"5px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}}/>
-                <SmBtn label="✓" onClick={()=>{const amt=parseFloat(payAmount)||owed;if(amt>0){onAddLedgerEntry({type:"due",memberId:u.id,amount:amt,month:selMonth,description:`Monthly due — ${monthLabel}`});}setPayingId(null);setPayAmount("");}} color="#34D399"/>
+          {liability>0&&(payingId===u.id
+            ? <div style={{display:"flex",gap:4,alignItems:"center"}} onClick={e=>e.stopPropagation()}>
+                <input type="number" autoFocus value={payAmount} onChange={e=>setPayAmount(e.target.value)} placeholder={String(liability)} className="po-inp" style={{width:60,padding:"5px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}}/>
+                <SmBtn label="✓" onClick={()=>{const amt=parseFloat(payAmount)||liability;if(amt>0){onAddLedgerEntry({type:"due",memberId:u.id,amount:amt,month:curMonth,description:"Payment"});}setPayingId(null);setPayAmount("");}} color="#34D399"/>
                 <SmBtn label="✕" onClick={()=>{setPayingId(null);setPayAmount("");}} color="#94A3B8"/>
               </div>
-            : <SmBtn label="Record Payment" onClick={()=>{setPayingId(u.id);setPayAmount(String(owed));}} color="#6366F1"/>)}
+            : <div onClick={e=>e.stopPropagation()}><SmBtn label="Record Payment" onClick={()=>{setPayingId(u.id);setPayAmount(String(liability));}} color="#6366F1"/></div>)}
         </div>
+        {isOpen&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}}>
+          {myEntries.length===0?<div style={{fontSize:11,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>No activity yet.</div>:myEntries.map(e=>
+            <div key={e.id} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
+              <span style={{color:"var(--po-dim)"}}>{fmtD(e.date.slice(0,10))} · {e.description}</span>
+              <span style={{fontWeight:700,color:e.type==="due"?"#34D399":"var(--po-dim)"}}>{e.type==="due"?"+":"−"}{e.amount}</span>
+            </div>
+          )}
+        </div>}
       </Card>;
     })}
 
-    {isAdmin&&<div style={{marginTop:10}}>
-      {!showExpense
-        ? <SmBtn label="+ Add Expense" onClick={()=>setShowExpense(true)} color="#F59E0B" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/>
-        : <Card>
-            <Inp label="Description" value={expDesc} onChange={setExpDesc} placeholder="e.g. Court staff tip, balls, ice"/>
-            <Inp label="Amount (EGP)" value={expAmount} onChange={setExpAmount} type="number"/>
-            <div style={{display:"flex",gap:6}}>
-              <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc});setExpDesc("");setExpAmount("");setShowExpense(false);}}} style={{flex:1}}/>
-              <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");}} color="#94A3B8" style={{flex:1}}/>
+    <div style={{display:"flex",gap:6,marginTop:10}}>
+      {!showExpense&&<SmBtn label="+ Add Expense" onClick={()=>{setShowExpense(true);setShowIncome(false);}} color="#F59E0B" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+      {!showIncome&&<SmBtn label="+ Add Income" onClick={()=>{setShowIncome(true);setShowExpense(false);}} color="#34D399" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+    </div>
+    {showExpense&&<Card style={{marginTop:8}}>
+      <Inp label="Description" value={expDesc} onChange={setExpDesc} placeholder="e.g. Court staff tip, balls, ice"/>
+      <Inp label="Amount (EGP)" value={expAmount} onChange={setExpAmount} type="number"/>
+      <Drp label="Category" value={expCategory} onChange={setExpCategory} options={(expenseCategories||[]).map(c=>({v:c,l:c}))}/>
+      <div style={{display:"flex",gap:6}}>
+        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc,category:expCategory||"Misc"});setExpDesc("");setExpAmount("");setExpCategory("");setShowExpense(false);}}} style={{flex:1}}/>
+        <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");setExpCategory("");}} color="#94A3B8" style={{flex:1}}/>
+      </div>
+    </Card>}
+    {showIncome&&<Card style={{marginTop:8}}>
+      <Inp label="Description" value={incDesc} onChange={setIncDesc} placeholder="e.g. Sponsor contribution, event surplus"/>
+      <Inp label="Amount (EGP)" value={incAmount} onChange={setIncAmount} type="number"/>
+      <div style={{display:"flex",gap:6}}>
+        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(incAmount);if(incDesc&&amt>0){onAddLedgerEntry({type:"income_misc",amount:amt,description:incDesc});setIncDesc("");setIncAmount("");setShowIncome(false);}}} style={{flex:1}}/>
+        <SmBtn label="Cancel" onClick={()=>{setShowIncome(false);setIncDesc("");setIncAmount("");}} color="#94A3B8" style={{flex:1}}/>
+      </div>
+    </Card>}
+
+    <CollapsibleSection label="📊 Cash Statement" defaultOpen={false}>
+      <Card>
+        {[["Player dues (income)",totalDues,"#34D399"],["Misc income",totalMiscIncome,"#34D399"],["Expenses",totalExpenses,"#EF4444"],["Net Cash Balance",cashBalance,cashBalance>=0?"#34D399":"#EF4444"]].map(([k,v,color])=>
+          <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
+            <span style={{fontSize:12,color:"var(--po-dim)"}}>{k}</span>
+            <span style={{fontSize:13,fontWeight:700,color}}>{v.toLocaleString()} EGP</span>
+          </div>
+        )}
+      </Card>
+    </CollapsibleSection>
+
+    <CollapsibleSection label="📊 Expenses by Category" defaultOpen={false}>
+      <Card>
+        {Object.keys(expenseTotals).length===0?<div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"12px 0"}}>No expenses recorded yet.</div>:
+          Object.entries(expenseTotals).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>
+            <div key={cat} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
+              <span style={{fontSize:12,color:"var(--po-dim)"}}>{cat}</span>
+              <span style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{amt.toLocaleString()} EGP</span>
             </div>
-          </Card>}
-    </div>}
+          )}
+      </Card>
+    </CollapsibleSection>
 
     <SmBtn label={showHistory?"▲ Hide Full Ledger":`▼ Show Full Ledger (${entries.length} entries)`} onClick={()=>setShowHistory(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:12,marginBottom:showHistory?8:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>
     {showHistory&&(sortedEntries.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No entries yet.</div></Card>:sortedEntries.map(e=>{
       const memberName = e.memberId ? (users.find(u=>u.id===e.memberId)?.nickname||"—") : null;
+      const sign = e.type==="due"||e.type==="income_misc" ? "+" : e.type==="expense" ? "−" : "owed ";
+      const color = e.type==="due"||e.type==="income_misc" ? "#34D399" : e.type==="expense" ? "#EF4444" : "var(--po-dim)";
       return <Card key={e.id} style={{marginBottom:6,padding:"8px 12px"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{memberName?`${memberName} — ${e.description||"Monthly due"}`:e.description}</div>
-            <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(e.date.slice(0,10))}{e.month?` · ${e.month}`:""}</div>
+            <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",gap:6,flexWrap:"wrap"}}>
+              <span>{fmtD(e.date.slice(0,10))}</span>
+              {e.category&&<span>· {e.category}</span>}
+              {e.eventName&&<span onClick={()=>onOpenEvent&&onOpenEvent(e.eventId)} style={{color:onOpenEvent?"#6366F1":"inherit",cursor:onOpenEvent?"pointer":"default"}}>· {e.eventName}</span>}
+            </div>
           </div>
-          <div style={{fontSize:14,fontWeight:700,color:e.type==="due"?"#34D399":"#EF4444"}}>{e.type==="due"?"+":"−"}{e.amount}</div>
-          {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this ledger entry?"))onDeleteLedgerEntry(e.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
+          <div style={{fontSize:14,fontWeight:700,color}}>{sign}{e.amount}</div>
+          <SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this ledger entry?"))onDeleteLedgerEntry(e.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>
         </div>
       </Card>;
     }))}
@@ -6721,10 +6872,15 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
+  const [showLedgerForm,setShowLedgerForm] = useState(false);
+  const [ledgerType,setLedgerType] = useState("expense");
+  const [ledgerDesc,setLedgerDesc] = useState("");
+  const [ledgerAmount,setLedgerAmount] = useState("");
+  const [ledgerCategory,setLedgerCategory] = useState("");
   const suggestedRoundDur = ev.rotationMin||20;
   const eventBookingMins = (()=>{
     if(!ev.time||!ev.timeTo) return 120;
@@ -7937,6 +8093,30 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </Card>;
         })}
       </>}
+      {comm?.bookkeeping?.enabled&&<>
+        <ST>💰 Community Ledger</ST>
+        {!showLedgerForm
+          ? <SmBtn label="+ Record income/expense to community fund" onClick={()=>{setShowLedgerForm(true);setLedgerType("expense");setLedgerDesc("");setLedgerAmount("");setLedgerCategory("");}} color="#6366F1" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/>
+          : <Card>
+              <div style={{display:"flex",gap:6,marginBottom:10}}>
+                <SmBtn label="Expense" onClick={()=>setLedgerType("expense")} active={ledgerType==="expense"} color="#EF4444" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>
+                <SmBtn label="Income" onClick={()=>setLedgerType("income_misc")} active={ledgerType==="income_misc"} color="#34D399" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>
+              </div>
+              <Inp label="Description" value={ledgerDesc} onChange={setLedgerDesc} placeholder={ledgerType==="expense"?"e.g. Extra court time":"e.g. Sponsor contribution"}/>
+              <Inp label="Amount (EGP)" value={ledgerAmount} onChange={setLedgerAmount} type="number"/>
+              {ledgerType==="expense"&&<Drp label="Category" value={ledgerCategory} onChange={setLedgerCategory} options={(expenseCategories||[]).map(c=>({v:c,l:c}))}/>}
+              <div style={{display:"flex",gap:6}}>
+                <Btn label="Add" primary onClick={()=>{
+                  const amt=parseFloat(ledgerAmount);
+                  if(!ledgerDesc||!(amt>0))return;
+                  onAddLedgerEntry&&onAddLedgerEntry({type:ledgerType,amount:amt,description:ledgerDesc,...(ledgerType==="expense"?{category:ledgerCategory||"Misc"}:{}),eventId:ev.id,eventName:ev.name});
+                  setShowLedgerForm(false);setLedgerDesc("");setLedgerAmount("");setLedgerCategory("");
+                }} style={{flex:1}}/>
+                <SmBtn label="Cancel" onClick={()=>setShowLedgerForm(false)} color="#94A3B8" style={{flex:1}}/>
+              </div>
+            </Card>}
+        <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>Recorded against this event, into the community's central fund (visible in the community's Ledger tab).</div>
+      </>}
     </>}
 
     {/* PHOTOS */}
@@ -8766,7 +8946,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -8782,6 +8962,9 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const [newGovName,setNewGovName]=useState("");
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
+  const [newCatName,setNewCatName]=useState("");
+  const [editingCat,setEditingCat]=useState(null); // category name currently being renamed
+  const [editCatInput,setEditCatInput]=useState("");
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
@@ -8801,7 +8984,44 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <Tabs tabs={[["users",`Users (${users.length})`],["audit","🕵️ Audit Trail"],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <Tabs tabs={[["users",`Users (${users.length})`],["audit","🕵️ Audit Trail"],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+
+  {tab==="cats"&&(()=>{
+    const renameCat=(oldName,newName)=>{
+      const trimmed=newName.trim();
+      if(!trimmed||trimmed===oldName||expenseCategories.includes(trimmed))return;
+      onSaveExpenseCategories&&onSaveExpenseCategories(expenseCategories.map(c=>c===oldName?trimmed:c));
+    };
+    const deleteCat=name=>{
+      if(expenseCategories.length<=1)return;
+      if(window.confirm(`Delete category "${name}"? Existing expenses already tagged with it keep the label — this only removes it from the dropdown going forward.`))
+        onSaveExpenseCategories&&onSaveExpenseCategories(expenseCategories.filter(c=>c!==name));
+    };
+    return <>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Expense categories offered in every community's Ledger tab. Renaming or removing one doesn't change the label already saved on past expense entries.</div>
+      {expenseCategories.map(c=>
+        <Card key={c} style={{marginBottom:6,padding:"8px 12px"}}>
+          {editingCat===c
+            ? <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <input autoFocus value={editCatInput} onChange={e=>setEditCatInput(e.target.value)} className="po-inp" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:13}}/>
+                <SmBtn label="✓" onClick={()=>{renameCat(c,editCatInput);setEditingCat(null);}} color="#34D399"/>
+                <SmBtn label="✕" onClick={()=>setEditingCat(null)} color="#94A3B8"/>
+              </div>
+            : <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <span style={{fontSize:13,color:"var(--po-text)"}}>{c}</span>
+                <div style={{display:"flex",gap:6}}>
+                  <SmBtn label="✏️" onClick={()=>{setEditingCat(c);setEditCatInput(c);}} color="#6366F1"/>
+                  <SmBtn label="🗑" onClick={()=>deleteCat(c)} color="#EF4444"/>
+                </div>
+              </div>}
+        </Card>
+      )}
+      <div style={{display:"flex",gap:6,marginTop:10}}>
+        <input value={newCatName} onChange={e=>setNewCatName(e.target.value)} placeholder="New category name..." className="po-inp" style={{flex:1,padding:"9px 12px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13}}/>
+        <Btn label="+ Add" primary onClick={()=>{const t=newCatName.trim();if(t&&!expenseCategories.includes(t)){onSaveExpenseCategories&&onSaveExpenseCategories([...expenseCategories,t]);setNewCatName("");}}}/>
+      </div>
+    </>;
+  })()}
 
   {tab==="audit"&&(()=>{
     const aq=auditSearch.trim().toLowerCase();

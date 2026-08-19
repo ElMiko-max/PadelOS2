@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.43";
+const APP_VERSION = "V0.09.44";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -8919,8 +8919,8 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   </div>
   {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>{isMeTab?<>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></>:"Not in any community yet."}</div></Card>
     :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;
-      return <Card key={c.id} style={{cursor:"pointer",padding:"10px 14px",marginBottom:6}} onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+      return <Card key={c.id} style={{padding:"10px 14px",marginBottom:6}}>
+        <div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:onOpenCommunity?"pointer":"default"}}>
           <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{c.name}</span>
           {rBdg(myRole)}
         </div>

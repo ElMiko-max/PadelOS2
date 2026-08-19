@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.31";
+const APP_VERSION = "V0.09.32";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -3807,7 +3807,20 @@ export default function Matchkeeper() {
       action, summary,
       targetType: targetType ?? null,
       targetId: targetId ?? null,
+      appVersion: APP_VERSION,
     }).catch(e => console.log("Firestore write error (audit)", e));
+  };
+  // Manual refresh — onSnapshot already keeps auditLog live, but a one-off server read (bypassing
+  // any stale local cache) gives the console a visible "did something happen" affordance on tap.
+  const [auditRefreshing, setAuditRefreshing] = useState(false);
+  const refreshAudit = async () => {
+    setAuditRefreshing(true);
+    try {
+      const q = query(collection(db,"padelos_audit"), orderBy("ts","desc"), limit(200));
+      const snap = await getDocs(q);
+      setAuditLog(snap.docs.map(d => ({id:d.id, ...d.data()})));
+    } catch(e) { console.log("Firestore audit refresh error", e); }
+    finally { setAuditRefreshing(false); }
   };
   // Sign-in logging deliberately watches `linkedMe` becoming set, not the raw
   // onAuthStateChanged callback — that callback's closure is created on first mount, before
@@ -5094,7 +5107,7 @@ export default function Matchkeeper() {
           }}
           onDeleteUser={uid=>{const u=users.find(u=>u.id===uid);setUsers(us=>us.filter(u=>u.id!==uid));toast2("Removed ✓");logAudit("user.delete", `${me.nickname} deleted user ${u?.nickname||uid}`, "user", uid);}}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} auditLog={auditLog}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -8752,7 +8765,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[]}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -8761,6 +8774,9 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [showAdd,setShowAdd]=useState(false);
   const [userSearch,setUserSearch]=useState("");
   const [auditSearch,setAuditSearch]=useState("");
+  const [auditActionFilter,setAuditActionFilter]=useState("");
+  const [auditVersionFilter,setAuditVersionFilter]=useState("");
+  const [auditSort,setAuditSort]=useState({key:"ts",dir:"desc"});
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const [newGovName,setNewGovName]=useState("");
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
@@ -8787,20 +8803,61 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
 
   {tab==="audit"&&(()=>{
     const aq=auditSearch.trim().toLowerCase();
-    const filtered=auditLog.filter(e=>!aq||e.actorName?.toLowerCase().includes(aq)||e.summary?.toLowerCase().includes(aq)||e.action?.toLowerCase().includes(aq));
+    const actionOpts=[...new Set(auditLog.map(e=>e.action).filter(Boolean))].sort();
+    const versionOpts=[...new Set(auditLog.map(e=>e.appVersion).filter(Boolean))].sort().reverse();
+    let filtered=auditLog
+      .filter(e=>!aq||e.actorName?.toLowerCase().includes(aq)||e.summary?.toLowerCase().includes(aq)||e.action?.toLowerCase().includes(aq))
+      .filter(e=>!auditActionFilter||e.action===auditActionFilter)
+      .filter(e=>!auditVersionFilter||e.appVersion===auditVersionFilter);
+    const {key:sortKey,dir:sortDir}=auditSort;
+    filtered=[...filtered].sort((a,b)=>{
+      const av=a[sortKey]??"", bv=b[sortKey]??"";
+      if(av<bv) return sortDir==="asc"?-1:1;
+      if(av>bv) return sortDir==="asc"?1:-1;
+      return 0;
+    });
+    const toggleSort=k=>setAuditSort(s=>s.key===k?{key:k,dir:s.dir==="asc"?"desc":"asc"}:{key:k,dir:k==="ts"?"desc":"asc"});
+    const SortTh=({k,label})=><th onClick={()=>toggleSort(k)} style={{cursor:"pointer",padding:"8px 10px",textAlign:"left",fontSize:11,fontWeight:700,color:"var(--po-dim)",borderBottom:"0.5px solid var(--po-bdr)",whiteSpace:"nowrap",userSelect:"none"}}>{label}{sortKey===k?(sortDir==="asc"?" ▲":" ▼"):""}</th>;
     return <>
       <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Oversight log of admin-level and sensitive actions — who did what, and when. Shows the most recent {auditLog.length} entries (up to 200). Routine browsing isn't logged, only writes that change or affect someone else's data.</div>
-      <input value={auditSearch} onChange={e=>setAuditSearch(e.target.value)} placeholder="🔍 Search by person or action..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
-      {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":`No matches for "${auditSearch}"`}</div></Card>}
-      {filtered.map(e=>
-        <Card key={e.id} style={{marginBottom:6,padding:"10px 12px"}}>
-          <div style={{fontSize:12,color:"var(--po-text)",lineHeight:1.4}}>{e.summary}</div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
-            <span style={{fontSize:9,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"0 4px"}}>{e.action}</span>
-            <span style={{fontSize:10,color:"var(--po-dim)"}}>{timeAgo(e.ts)}</span>
-          </div>
-        </Card>
-      )}
+      <div style={{display:"flex",gap:6,marginBottom:8}}>
+        <input value={auditSearch} onChange={e=>setAuditSearch(e.target.value)} placeholder="🔍 Search by person or action..." className="po-inp" style={{flex:1,minWidth:0,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+        <div onClick={()=>!auditRefreshing&&onRefreshAudit&&onRefreshAudit()} title="Refresh" style={{width:38,height:38,flexShrink:0,borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",cursor:auditRefreshing?"default":"pointer",fontSize:16,opacity:auditRefreshing?0.4:1}}>🔄</div>
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+        <select value={auditActionFilter} onChange={e=>setAuditActionFilter(e.target.value)} className="po-inp" style={{flex:"1 1 130px",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 8px",color:"var(--po-text)",fontSize:12}}>
+          <option value="">All actions</option>
+          {actionOpts.map(a=><option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={auditVersionFilter} onChange={e=>setAuditVersionFilter(e.target.value)} className="po-inp" style={{flex:"1 1 100px",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 8px",color:"var(--po-text)",fontSize:12}}>
+          <option value="">All versions</option>
+          {versionOpts.map(v=><option key={v} value={v}>{v}</option>)}
+        </select>
+        {(auditActionFilter||auditVersionFilter)&&<div onClick={()=>{setAuditActionFilter("");setAuditVersionFilter("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer",display:"flex",alignItems:"center",padding:"0 6px"}}>Clear ✕</div>}
+      </div>
+      {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":"No matches"}</div></Card>}
+      {filtered.length>0&&<div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",border:"0.5px solid var(--po-bdr)",borderRadius:8}}>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:640}}>
+          <thead><tr>
+            <SortTh k="ts" label="Time"/>
+            <SortTh k="actorName" label="Actor"/>
+            <SortTh k="action" label="Action"/>
+            <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,fontWeight:700,color:"var(--po-dim)",borderBottom:"0.5px solid var(--po-bdr)"}}>Summary</th>
+            <SortTh k="appVersion" label="Version"/>
+          </tr></thead>
+          <tbody>
+            {filtered.map(e=>
+              <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
+                <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}} title={e.ts}>{timeAgo(e.ts)}</td>
+                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"nowrap"}}>{e.actorName}</td>
+                <td style={{padding:"8px 10px"}}><span style={{fontSize:9,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"1px 4px",whiteSpace:"nowrap"}}>{e.action}</span></td>
+                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",minWidth:220}}>{e.summary}</td>
+                <td style={{padding:"8px 10px",fontSize:11,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{e.appVersion||"—"}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>}
     </>;
   })()}
 

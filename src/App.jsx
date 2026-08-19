@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.47";
+const APP_VERSION = "V0.09.48";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4223,6 +4223,41 @@ export default function Matchkeeper() {
       logAudit("member.join", `${u?.nickname||uid} joined "${c?.name||cid}" via invite link`, "community", cid);
     }
   };
+  // Community-wide broadcast (Enhancement #18, part 1) — a persistent, scrollable list per
+  // community (not just a fire-and-forget push), so it can stand in for a WhatsApp group's
+  // message history. Every member gets a push + inbox notification when one is posted.
+  const postAnnouncement = (cid, message) => {
+    const trimmed = (message||"").trim();
+    if (!trimmed) return;
+    const c = comms.find(c=>c.id===cid);
+    const entry = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
+    updC(cid, c=>({...c, announcements:[...(c.announcements||[]), entry]}));
+    toast2("Announcement posted ✓");
+    const recipientIds = (c?.members||[]).map(m=>m.userId).filter(uid=>uid!==me.id);
+    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, `📢 ${c?.name||"Community"}`, trimmed);
+    logAudit("community.announce", `${me.nickname} posted an announcement in "${c?.name||cid}"`, "community", cid);
+  };
+  const deleteAnnouncement = (cid, aid) => {
+    updC(cid, c=>({...c, announcements:(c.announcements||[]).filter(a=>a.id!==aid)}));
+    toast2("Removed");
+  };
+  // Event-scoped broadcast — same idea, but only reaches that event's registered players
+  // (whoever can admin the event, including an event-scoped admin, not just community admins).
+  const postEventAnnouncement = (cid, eid, message) => {
+    const trimmed = (message||"").trim();
+    if (!trimmed) return;
+    const ev = getEv(cid,eid);
+    const entry = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
+    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:[...(e.announcements||[]), entry]})}));
+    toast2("Announcement posted ✓");
+    const recipientIds = (ev?.registrations||[]).map(r=>r.userId).filter(uid=>uid!==me.id);
+    if (recipientIds.length) notify(recipientIds, "eventAnnouncement", ev, `📢 ${ev?.name||"Event"}`, trimmed);
+    logAudit("event.announce", `${me.nickname} posted an announcement in "${ev?.name||eid}"`, "event", eid);
+  };
+  const deleteEventAnnouncement = (cid, eid, aid) => {
+    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).filter(a=>a.id!==aid)})}));
+    toast2("Removed");
+  };
 
   // Venue
   // pricePerHour/extraFee (and their football counterparts) come in as strings from the form's
@@ -5183,7 +5218,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5211,6 +5246,8 @@ export default function Matchkeeper() {
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)}
             expenseCategories={expenseCategories}
+            onPostEventAnnouncement={message=>postEventAnnouncement(comm.id,event.id,message)}
+            onDeleteEventAnnouncement={aid=>deleteEventAnnouncement(comm.id,event.id,aid)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
             onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
@@ -5628,13 +5665,14 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
   const [inviteUrl,setInviteUrl]=useState(null);
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const [memberSearch,setMemberSearch]=useState("");
+  const [announcementText,setAnnouncementText]=useState("");
   const myMember=comm.members.find(m=>m.userId===me.id);
   const myRole=myMember?.role;
   const isAdmin=myRole==="owner"||myRole==="admin";
@@ -5651,7 +5689,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const casualCount=regs.filter(m=>m.status==="casual").length;
   const guestCount=regs.filter(m=>m.status==="guest").length;
   const avgU=regs.length?Math.round(regs.reduce((s,m)=>s+(users.find(u=>u.id===m.userId)?.usr||0),0)/regs.length):0;
-  const tdefs=[["members","Members"],["events","Events"],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
+  const tdefs=[["members","Members"],["events","Events"],["announcements",`📢 Announcements${(comm.announcements?.length||0)>0?` (${comm.announcements.length})`:""}`],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
   const sortedMembersAll=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
   const memberQ=memberSearch.trim().toLowerCase();
@@ -5756,6 +5794,25 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         })()}
       </>; })()}
       </>}
+    </>}
+    {tab==="announcements"&&<>
+      {isAdmin&&<Card style={{marginBottom:12}}>
+        <Inp label="Post an announcement" value={announcementText} onChange={setAnnouncementText} placeholder="e.g. Court change this week, new pricing, event reminder..." multiline/>
+        <Btn label="📢 Post to everyone" primary onClick={()=>{if(announcementText.trim()){onPostAnnouncement&&onPostAnnouncement(announcementText);setAnnouncementText("");}}} style={{width:"100%"}}/>
+      </Card>}
+      {(comm.announcements?.length||0)===0
+        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No announcements yet.</div></Card>
+        : [...comm.announcements].reverse().map(a=>
+            <Card key={a.id} style={{marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
+                </div>
+                {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteAnnouncement&&onDeleteAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
+              </div>
+            </Card>
+          )}
     </>}
     {tab==="stats"&&(canViewPrivate?<><CommOverview comm={comm} venues={venues}/><CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/></>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
     {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onOpenEvent={onOpenEv} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onAddLedgerEntries={onAddLedgerEntries} onDeleteLedgerEntry={onDeleteLedgerEntry} expenseCategories={expenseCategories}/>}
@@ -7089,7 +7146,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -7098,6 +7155,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [ledgerDesc,setLedgerDesc] = useState("");
   const [ledgerAmount,setLedgerAmount] = useState("");
   const [ledgerCategory,setLedgerCategory] = useState("");
+  const [eventAnnouncementText,setEventAnnouncementText] = useState("");
   const suggestedRoundDur = ev.rotationMin||20;
   const eventBookingMins = (()=>{
     if(!ev.time||!ev.timeTo) return 120;
@@ -8014,6 +8072,26 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         ["Date & Time",`${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}`],
         ["Duration",durationLabel(ev.time, ev.timeTo)],
         ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation","Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":"League + Promo/Relego"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`Court ${tc}=1pt ... Court 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:"Group A first · Wins → Score Diff"],["Match Duration",`${plan?.matchDuration||20} min`]]:[]),["Priority Reg.","Regular Members: 24h early access"]].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>
+    </CollapsibleSection>
+
+    <CollapsibleSection label={`📢 Announcements${(effEv.announcements?.length||0)>0?` (${effEv.announcements.length})`:""}`} defaultOpen={(effEv.announcements?.length||0)>0}>
+      {isAdmin&&<Card style={{marginBottom:8}}>
+        <Inp label="Post to everyone registered" value={eventAnnouncementText} onChange={setEventAnnouncementText} placeholder="e.g. Court moved to Court 2, bring extra balls..." multiline/>
+        <Btn label="📢 Post" primary onClick={()=>{if(eventAnnouncementText.trim()){onPostEventAnnouncement&&onPostEventAnnouncement(eventAnnouncementText);setEventAnnouncementText("");}}} style={{width:"100%"}}/>
+      </Card>}
+      {(effEv.announcements?.length||0)===0
+        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>No announcements yet.</div></Card>
+        : [...effEv.announcements].reverse().map(a=>
+            <Card key={a.id} style={{marginBottom:6}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
+                </div>
+                {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteEventAnnouncement&&onDeleteEventAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
+              </div>
+            </Card>
+          )}
     </CollapsibleSection>
 
     <VenueMapCard venue={venue}/>
@@ -9666,7 +9744,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
 function NotificationsSc({notifications,me,onBack,onMarkAllRead,onOpen}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰"};
+  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗"};
   return <><BBtn onBack={onBack} label="Back"/>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>

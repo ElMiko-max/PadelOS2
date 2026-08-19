@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.38";
+const APP_VERSION = "V0.09.39";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -5706,6 +5706,23 @@ function monthsFromInclusive(startISO, throughMonth) {
   while (y < ey || (y === ey && m + 1 <= em)) { out.push(`${y}-${String(m + 1).padStart(2, "0")}`); m++; if (m > 11) { m = 0; y++; } }
   return out;
 }
+const monthLabel = m => new Date(m+"-01").toLocaleDateString("en-GB",{month:"short",year:"numeric"});
+// Which specific charges (monthly dues + a positive opening balance) are still unpaid, oldest
+// first — payments apply FIFO across them so "2 unpaid months" shows as 2 distinct lines
+// instead of one lumped total.
+function outstandingChargesFor(memberEntries) {
+  const charges = memberEntries
+    .filter(e=>e.type==="charge"||(e.type==="opening"&&e.amount>0))
+    .sort((a,b)=> a.type==="opening"?-1 : b.type==="opening"?1 : (a.month||"").localeCompare(b.month||""));
+  let pool = memberEntries.filter(e=>e.type==="due").reduce((s,e)=>s+e.amount,0);
+  const out = [];
+  for (const c of charges) {
+    if (pool >= c.amount) { pool -= c.amount; continue; }
+    out.push({...c, remaining: c.amount-pool, paidSoFar: pool});
+    pool = 0;
+  }
+  return out;
+}
 function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,expenseCategories}){
   const bk = comm.bookkeeping||{enabled:false,monthlyDue:100,entries:[]};
   const entries = bk.entries||[];
@@ -5713,6 +5730,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
   const [payingId,setPayingId] = useState(null);
   const [payAmount,setPayAmount] = useState("");
   const todayStr = new Date().toISOString().slice(0,10);
+  const [payDate,setPayDate] = useState(todayStr);
   const [showExpense,setShowExpense] = useState(false);
   const [expDesc,setExpDesc] = useState("");
   const [expAmount,setExpAmount] = useState("");
@@ -5769,6 +5787,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
     const myMember = payingMembers.find(m=>m.userId===me.id);
     const myLiability = myMember ? liabilityOf(me.id) : null;
     const myEntries = sortedEntries.filter(e=>e.memberId===me.id&&personalEntryTypes.has(e.type));
+    const myOutstanding = myMember ? outstandingChargesFor(entries.filter(e=>e.memberId===me.id)) : [];
     return <>
       <Card style={{marginBottom:12,textAlign:"center"}}>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Fund Balance</div>
@@ -5778,6 +5797,12 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
         <Card style={{marginBottom:12,textAlign:"center"}}>
           <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>Your Balance</div>
           <div style={{fontSize:24,fontWeight:700,color:myLiability<=0?"#34D399":"#F59E0B"}}>{myLiability<=0?`${Math.abs(myLiability).toLocaleString()} EGP credit`:`${myLiability.toLocaleString()} EGP owed`}</div>
+          {myOutstanding.length>0&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",textAlign:"left"}}>
+            {myOutstanding.map(o=><div key={o.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"3px 0"}}>
+              <span style={{color:"var(--po-dim)"}}>{o.type==="opening"?"Opening Balance":monthLabel(o.month)}</span>
+              <span style={{fontWeight:600,color:"#F59E0B"}}>{o.remaining.toLocaleString()} EGP{o.paidSoFar>0?` (${o.paidSoFar} paid)`:""}</span>
+            </div>)}
+          </div>}
         </Card>
         <ST>Your Statement</ST>
         {myEntries.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No activity yet.</div></Card>:myEntries.map(e=>
@@ -5813,10 +5838,12 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
     <ST>Player Liabilities</ST>
     {payingMembers.map(m=>{
       const u=users.find(x=>x.id===m.userId); if(!u) return null;
+      const memberEntries = entries.filter(e=>e.memberId===u.id);
       const liability = liabilityOf(u.id);
       const isOpen = openStatementUid===u.id;
       const myEntries = sortedEntries.filter(e=>e.memberId===u.id&&personalEntryTypes.has(e.type));
-      const openingEntry = entries.find(e=>e.memberId===u.id&&e.type==="opening");
+      const openingEntry = memberEntries.find(e=>e.type==="opening");
+      const outstanding = outstandingChargesFor(memberEntries);
       return <Card key={u.id} style={{marginBottom:6,padding:"8px 12px"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <Av u={u} size={32}/>
@@ -5825,13 +5852,35 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
             <div style={{fontSize:11,color:liability<=0?"#34D399":"#F59E0B"}}>{liability<=0?`${Math.abs(liability).toLocaleString()} EGP credit`:`${liability.toLocaleString()} EGP owed`}</div>
           </div>
           {liability>0&&(payingId===u.id
-            ? <div style={{display:"flex",gap:4,alignItems:"center"}} onClick={e=>e.stopPropagation()}>
-                <input type="number" autoFocus value={payAmount} onChange={e=>setPayAmount(e.target.value)} placeholder={String(liability)} className="po-inp" style={{width:60,padding:"5px 6px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}}/>
-                <SmBtn label="✓" onClick={()=>{const amt=parseFloat(payAmount)||liability;if(amt>0){onAddLedgerEntry({type:"due",memberId:u.id,amount:amt,month:curMonth,description:"Payment"});}setPayingId(null);setPayAmount("");}} color="#34D399"/>
-                <SmBtn label="✕" onClick={()=>{setPayingId(null);setPayAmount("");}} color="#94A3B8"/>
-              </div>
-            : <div onClick={e=>e.stopPropagation()}><SmBtn label="Record Payment" onClick={()=>{setPayingId(u.id);setPayAmount(String(liability));}} color="#6366F1"/></div>)}
+            ? null
+            : <div onClick={e=>e.stopPropagation()}><SmBtn label="Record Payment" onClick={()=>{setPayingId(u.id);setPayAmount(String(liability));setPayDate(todayStr);}} color="#6366F1"/></div>)}
         </div>
+        {/* Each unpaid month (or the opening balance) gets its own named line — "2 late
+            months" reads as 2 rows, not one lumped total (payments still apply FIFO). */}
+        {outstanding.length>0&&<div style={{marginTop:6,paddingTop:6,borderTop:"0.5px dashed var(--po-bdr)"}}>
+          {outstanding.map(o=><div key={o.id} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"2px 0"}}>
+            <span style={{color:"var(--po-dim)"}}>{o.type==="opening"?"Opening Balance":monthLabel(o.month)}</span>
+            <span style={{fontWeight:600,color:"#F59E0B"}}>{o.remaining.toLocaleString()} EGP{o.paidSoFar>0?` (${o.paidSoFar} paid)`:""}</span>
+          </div>)}
+        </div>}
+        {payingId===u.id&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}} onClick={e=>e.stopPropagation()}>
+          <Inp label="Amount (EGP)" value={payAmount} onChange={setPayAmount} type="number"/>
+          <Inp label="Date" value={payDate} onChange={setPayDate} type="date"/>
+          <div style={{display:"flex",gap:6}}>
+            <Btn label="Record Payment" primary onClick={()=>{const amt=parseFloat(payAmount)||liability;if(amt>0){onAddLedgerEntry({type:"due",memberId:u.id,amount:amt,month:curMonth,description:"Payment",date:dateInputToISO(payDate)});}setPayingId(null);setPayAmount("");setPayDate(todayStr);}} style={{flex:1}}/>
+            <SmBtn label="Cancel" onClick={()=>{setPayingId(null);setPayAmount("");setPayDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
+          </div>
+        </div>}
+        {/* Opening balance is always reachable here (not buried behind expand) — it's a
+            per-player, one-time setup action admins need to find easily. */}
+        <div style={{fontSize:10,color:"#6366F1",cursor:"pointer",marginTop:6}} onClick={e=>{e.stopPropagation();
+          const v=prompt(`Opening balance for ${u.nickname} (EGP) — a starting balance from before this ledger existed, specific to this player.\nPositive = they already owed money. Negative = they already had credit.`, String(openingEntry?.amount||0));
+          if(v===null) return;
+          const amt=parseFloat(v);
+          if(isNaN(amt)) return;
+          if(openingEntry) onDeleteLedgerEntry(openingEntry.id);
+          if(amt!==0) onAddLedgerEntry({type:"opening",memberId:u.id,amount:amt,description:"Opening balance"});
+        }}>{openingEntry?`✏️ Edit opening balance (${openingEntry.amount})`:"+ Set opening balance"}</div>
         {isOpen&&<div style={{marginTop:8,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}} onClick={e=>e.stopPropagation()}>
           {myEntries.length===0?<div style={{fontSize:11,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>No activity yet.</div>:myEntries.map(e=>
             <div key={e.id} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:11}}>
@@ -5839,14 +5888,6 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
               <span style={{fontWeight:700,color:e.type==="due"?"#34D399":e.type==="opening"&&e.amount<0?"#34D399":"var(--po-dim)"}}>{e.type==="due"?"+":e.type==="opening"?(e.amount<0?"credit ":"owed "):"−"}{Math.abs(e.amount)}</span>
             </div>
           )}
-          <div style={{fontSize:10,color:"#6366F1",cursor:"pointer",textAlign:"center",padding:"6px 0 0"}} onClick={()=>{
-            const v=prompt(`Opening balance for ${u.nickname} (EGP) — a starting balance from before this ledger existed.\nPositive = they already owed money. Negative = they already had credit.`, String(openingEntry?.amount||0));
-            if(v===null) return;
-            const amt=parseFloat(v);
-            if(isNaN(amt)) return;
-            if(openingEntry) onDeleteLedgerEntry(openingEntry.id);
-            if(amt!==0) onAddLedgerEntry({type:"opening",memberId:u.id,amount:amt,description:"Opening balance"});
-          }}>{openingEntry?`✏️ Edit opening balance (${openingEntry.amount})`:"+ Set opening balance"}</div>
         </div>}
       </Card>;
     })}
@@ -8715,7 +8756,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   {viewedByAdmin&&<div style={{marginBottom:12,padding:"8px 12px",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>{isPlatformAdmin?"🛡 Viewing as Platform Admin — visible only to you":`👀 Viewing ${user.nickname}'s profile`}</div>}
   <Card><div style={{display:"flex",gap:14,alignItems:"center",marginBottom:16}}>
     <Av u={user} size={isMeTab?68:56}/>
-    <div style={{flex:1}}>
+    <div style={{flex:1,minWidth:0}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
         <div style={{fontWeight:700,fontSize:18,color:"var(--po-text)"}}>{user.nickname}</div>
         <div style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-bdr)",borderRadius:4,padding:"2px 6px",fontFamily:"monospace"}}>#{user.id}</div>

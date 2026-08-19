@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.42";
+const APP_VERSION = "V0.09.43";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -8913,20 +8913,18 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   </div>
   </Card>
 
-  {isMeTab&&<>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
-      <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>My Communities</span>
-      <span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join / Create</span>
-    </div>
-    {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></div></Card>
-      :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;
-        return <Card key={c.id} style={{cursor:"pointer",padding:"10px 14px",marginBottom:6}} onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{c.name}</span>
-            {rBdg(myRole)}
-          </div>
-        </Card>;})}
-  </>}
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
+    <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{isMeTab?"My Communities":`${user.nickname}'s Communities`}</span>
+    {isMeTab&&<span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join / Create</span>}
+  </div>
+  {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>{isMeTab?<>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></>:"Not in any community yet."}</div></Card>
+    :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;
+      return <Card key={c.id} style={{cursor:"pointer",padding:"10px 14px",marginBottom:6}} onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{c.name}</span>
+          {rBdg(myRole)}
+        </div>
+      </Card>;})}
 
   {canSeeActivity ? <>
   <div style={{display:"flex",gap:6,margin:"16px 0 8px"}}>
@@ -9152,9 +9150,6 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   })()}
 
   </> : <Card><div style={{textAlign:"center",padding:"16px 0",color:"var(--po-dim)",fontSize:13}}>🔒 Match history is only visible to people who share a community with {user.nickname}.</div></Card>}
-
-  <ST>{viewedByAdmin?`${user.nickname}'s Communities`:"My Communities"}</ST>
-  {mine.map(c=>{const m=c.members.find(m=>m.userId===user.id);return <Card key={c.id} style={{cursor:onOpenCommunity?"pointer":"default"}}><div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontSize:20}}>👥</div><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{c.name}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{c.area}</div></div>{rBdg(m.role)}{sBdg(m.status)}</div></Card>;})}
   </>;
 }
 const SeedBadge = ()=><span title="Seeded data">🌱</span>;

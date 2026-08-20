@@ -39,7 +39,7 @@
 - **الأندرويد (native shell):** `android/`
   - كود الـ Match Mode Native (Kotlin/Java plugin, foreground service, alarm receivers): `android/app/src/main/java/com/trimachine/padelos/`
   - Build output web: `dist/` (الويب build اللي بيتنقل للأندرويد بعد `cap sync`)
-  - Build output APK: `android/app/build/outputs/apk/debug/app-debug.apk` (بعد `gradlew assembleDebug`)
+  - **⚠️ الأندرويد بقى فيه product flavors (prod/dev) بعد إضافة بيئة DEV** — `gradlew assembleDebug` لوحده دلوقتي بيبني الـ 2 flavor مع بعض. الأمر الصح للتسليم العادي (إنتاج) هو **`gradlew assembleProdDebug`** (ده اللي يعادل الأمر القديم `assembleDebug` قبل الـ flavors)، والـ APK بيطلع في `android/app/build/outputs/apk/prod/debug/app-prod-debug.apk`. لو محتاج نسخة DEV (بتتصل بـ `padelos-dev` مش الإنتاج الحقيقي، package مختلف `com.trimachine.padelos.dev` عشان تتثبت جنب النسخة الحقيقية على نفس الموبايل) استخدم `gradlew assembleDevDebug` → `android/app/build/outputs/apk/dev/debug/app-dev-debug.apk`.
   - Android SDK: `C:\Users\Yoga 260\AppData\Local\Android\Sdk` (متسجل في `android/local.properties`)
 - **سكريبتات جاهزة في الجذر (bat files):**
   - `_01 npm run build.bat` → بناء الويب
@@ -63,14 +63,14 @@
 3. أعمل build للويب (`npm run build`) و `cap sync` للأندرويد تلقائي من غير ما أستنى تعليمات.
 4. أعمل commit لـ GitHub تلقائي (نفس remote أعلاه) — من غير ما أستنى إذن كل مرة.
 5. **استثناءات لازم تأكيد صريح من الأدمن كل مرة قبل ما تحصل:**
-   - **بناء الـ APK نفسه** (`gradlew assembleDebug` أو أي build أندرويد فعلي).
+   - **بناء الـ APK نفسه** (`gradlew assembleProdDebug` — قاعدة #5 التسليم العادي — أو أي build أندرويد فعلي تاني، بما فيها `assembleDevDebug`).
    - **الـ push** لـ GitHub (`git push`).
    الباقي (كود، version، CHANGELOG، web build، cap sync، commit محلي) بيحصل أوتوماتيك من غير ما أستنى.
 6. أقول المسار بالظبط لأي ملف تجربة جاهز (الويب build أو الـ APK) — قاعدة #6.
 7. **تسليم الـ APK فعليًا:**
    - **أول حاجة:** أعمل rename للـ APK عشان يعكس اسم البرنامج ورقم النسخة، بالصيغة: `Matchkeeper-V0.0X.YY-debug.apk`.
    - **⚠️ ممنوع تمامًا حط أي ملف APK جوه `public/`.** `public/` هو مصدر الويب app نفسه — أي حاجة فيه بتتنقل لـ `dist/` وقت `npm run build`، **وبعدين `cap sync` بينقل `dist/` بالكامل جوه الأندرويد نفسه** (`android/app/src/main/assets/public/`). لو الـ APK كان قاعد في `public/` وقت الـ build الجاي، هيتحط جوه الـ APK الجديد نفسه — وده باج حقيقي حصل بالفعل في V0.06.02 (كل نسخة كانت بتحتوي كل النسخ اللي قبلها، وصل الحجم لـ 56 ميجا من 11 ميجا الأصلية، وGitHub حذّر إنه أكبر من الحد المسموح).
-   - **الترتيب الصحيح دايمًا:** (1) `npm run build` (2) `npx cap sync` (3) `gradlew assembleDebug` — في اللحظة دي `dist/` و`android/assets` نضيفين تمامًا من أي APK — **(4) بعد كده بس** انسخ الـ APK الجديد لـ `dist/releases/Matchkeeper-V0.0X.YY-debug.apk` مباشرة (من غير ما يعدي على `public/` خالص) **(5)** `firebase deploy --only hosting` فورًا من غير ما تعمل `npm run build` تاني بعد النسخ (لإن ده هيمسح الـ APK اللي حطيته في `dist/`).
+   - **الترتيب الصحيح دايمًا:** (1) `npm run build` (2) `npx cap sync` (3) `gradlew assembleProdDebug` (مش `assembleDebug` لوحدها — بعد الـ product flavors بقى فيه prod/dev، والأمر ده هو اللي بيبني نسخة الإنتاج بس؛ الـ APK بيطلع في `android/app/build/outputs/apk/prod/debug/app-prod-debug.apk`) — في اللحظة دي `dist/` و`android/assets` نضيفين تمامًا من أي APK — **(4) بعد كده بس** انسخ الـ APK الجديد لـ `dist/releases/Matchkeeper-V0.0X.YY-debug.apk` مباشرة (من غير ما يعدي على `public/` خالص) **(5)** `firebase deploy --only hosting` فورًا من غير ما تعمل `npm run build` تاني بعد النسخ (لإن ده هيمسح الـ APK اللي حطيته في `dist/`).
    - أديه لينك مباشر بالصيغة `https://padelos-6f999.web.app/releases/Matchkeeper-V0.0X.YY-debug.apk` — الأدمن بيفتحه من متصفح الموبايل في أي وقت، من غير ما يحتاج اللابتوب يكون شغال أو حتى مفتوح. **ملحوظة أمان:** اللينك ده عام (public) — أي حد معاه اللينك يقدر يحمّله، مفيش باسورد عليه.
    - **الطريقة الاحتياطية:** أبعته كمان جوه محادثة Claude (عن طريق أداة إرسال الملفات) كخيار إضافي — لكن جُرّب وطلع مش موثوق دايمًا (بيفضل "downloading..." من غير ما يخلص) خصوصًا للملفات الكبيرة زي الـ APK، فمتعتمدش عليه لوحده.
    - **مش متاح حاليًا:** إرسال بالإيميل أو تيليجرام — مفيش أداة عندي لأي منهم. لو الأدمن عايز ده مستقبلًا، محتاج setup منفصل (زي Telegram Bot API token) قبل ما يبقى ممكن.

@@ -31,15 +31,21 @@ import { getMessaging, getToken } from "firebase/messaging";
 
 // ── Firebase (Phase 1: auth. Phase 2: Firestore replaces localStorage as the
 // shared source of truth, so every device sees the same data in real time) ──
+// Config comes from Vite env files (.env.production / .env.development, both
+// gitignored) so `npm run build` (mode=production, unchanged) keeps targeting
+// the live padelos-6f999 project, while a dev build (`--mode development`)
+// targets the separate padelos-dev project. Hardcoded values below are just a
+// safety-net fallback to today's production config if an env var is missing.
 const firebaseConfig = {
-  apiKey: "AIzaSyAldFg5ofZgXfgn_JSORc_uqkWuq5sGnIY",
-  authDomain: "padelos-6f999.firebaseapp.com",
-  projectId: "padelos-6f999",
-  storageBucket: "padelos-6f999.firebasestorage.app",
-  messagingSenderId: "807847071392",
-  appId: "1:807847071392:web:b104417c7af0f5967f43c5",
-  measurementId: "G-H6DLLT7Q7C",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyAldFg5ofZgXfgn_JSORc_uqkWuq5sGnIY",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "padelos-6f999.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "padelos-6f999",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "padelos-6f999.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "807847071392",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:807847071392:web:b104417c7af0f5967f43c5",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-H6DLLT7Q7C",
 };
+const IS_DEV_ENV = import.meta.env.VITE_ENV_LABEL === "development";
 const firebaseApp = initializeApp(firebaseConfig);
 const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh56tnDOdSJfa5FrY7cMLirnHXyw";
 // iOS Safari has no push support at all in a plain browser tab — Notification/Push only
@@ -3216,7 +3222,7 @@ function LoginScreen(){
       <div style={{textAlign:"center",marginBottom:24}}>
         <img src="/logo-icon-192.png" width={56} height={56} style={{borderRadius:16,margin:"0 auto 12px",display:"block"}} alt="Matchkeeper"/>
         <div style={{fontSize:20,fontWeight:700,color:"#F1F5F9"}}>Matchkeeper</div>
-        <div style={{fontSize:11,color:"#475569",marginTop:1}}>{APP_VERSION}</div>
+        <div style={{fontSize:11,color:"#475569",marginTop:1}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":""}</div>
         <div style={{fontSize:13,color:"#64748B",marginTop:2}}>{mode==="signup"?"Create your account":"Sign in to continue"}</div>
       </div>
 
@@ -3265,7 +3271,7 @@ function LoginScreen(){
 // just gets a brand-new profile automatically (see the auto-fresh-profile effect below).
 
 export default function Matchkeeper() {
-  useEffect(() => { document.title = `Matchkeeper ${APP_VERSION}`; }, []);
+  useEffect(() => { document.title = `Matchkeeper ${APP_VERSION}${IS_DEV_ENV?" (DEV)":""}`; }, []);
   const [users,  setUsers]  = useState(INIT_USERS);
   const [venues, setVenues] = useState(INIT_VENUES);
   const [egypt, setEgypt] = useState(INIT_EGYPT);
@@ -5403,7 +5409,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
       <img src="/logo-icon-192.png" width={36} height={36} style={{borderRadius:9,flexShrink:0}} alt="Matchkeeper"/>
       <div style={{display:"flex",flexDirection:"column",lineHeight:1.05}}>
         <span style={{fontSize:11,fontWeight:600,color:dark?"#F1F5F9":"#FFFFFF"}}>Matchkeeper</span>
-        <span style={{fontSize:8,fontWeight:400,color:dark?"#F1F5F9":"#FFFFFF",opacity:0.6}}>{APP_VERSION}</span>
+        <span style={{fontSize:8,fontWeight:400,color:dark?"#F1F5F9":"#FFFFFF",opacity:0.6}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":""}</span>
       </div>
     </div>
     <div style={{display:"flex",gap:6,flex:1,justifyContent:"center",minWidth:0}}>{tabs.map(t=>{

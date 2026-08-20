@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "padelos-6f999"
+    "default": "padelos-6f999",
+    "prod": "padelos-6f999",
+    "dev": "padelos-dev"
   }
 }

@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.50";
+const APP_VERSION = "V0.09.51";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -211,6 +211,13 @@ const FOOTBALL_EVENT_TYPES = [
   { key:"open",         label:"Open / Pickup", desc:"Social · check-in · teams picked on the day" },
 ];
 const getEventTypesForSport = sport => sport==="Football" ? FOOTBALL_EVENT_TYPES : EVENT_TYPES;
+// Football has no computed USR-equivalent — team formation (Multi-Pool Snake) needs *some*
+// numeric rating to sort/balance players by, so footballSkill's A–E tier maps onto the same
+// 0–100 scale the algorithm already expects. Unrated players fall back to the midpoint (50)
+// rather than being silently underweighted as if they were footballSkill "E". Padel's per-event
+// USR override (r.eventUsr) has no football equivalent, so it's simply never consulted here.
+const FOOTBALL_SKILL_RATING = {A:90, B:70, C:50, D:30, E:10};
+const teamFormationRating = (u, ev) => ev?.sport==="Football" ? (FOOTBALL_SKILL_RATING[u.footballSkill] ?? 50) : u.usr;
 
 // ── AI Event Name Suggester (IDEA-022) ────────────────────────────
 // Client-side template + randomizer. No network call, no API cost — deliberately kept
@@ -5119,7 +5126,7 @@ export default function Matchkeeper() {
   const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
     const ev=getEv(cid,eid);if(!ev)return;
     const comm=comms.find(c=>c.id===cid);
-    let players=splitRegsByCapacity(ev,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+    let players=splitRegsByCapacity(ev,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,ev),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
     if(players.length%2!==0){
       // Odd count — last player in registrations array goes to waiting list
@@ -7445,7 +7452,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     renameCTTeam: (tid,newName) => onRenameTeam&&onRenameTeam(tid,newName),
     startCT: (c,f,dur,topPoolSizeOverride) => sim
       ? simMutate(e => {
-          const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId};}).filter(Boolean);
+          const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,e),userId:r.userId};}).filter(Boolean);
           return {...e, plan: generateCTPlan(players, c, f, e, dur, topPoolSizeOverride)};
         })
       : onStartCT(c,f,dur,topPoolSizeOverride),
@@ -8668,7 +8675,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
         {(()=>{
-          const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:teamFormationRating(u,effEv)}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
           const autoTop=autoPools[0]?.length, autoBottom=autoPools[1]?.length;
@@ -8685,7 +8692,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </Card>}
       {plan&&<>
         {isAdmin&&!ctR1Locked&&(()=>{
-          const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
+          const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:teamFormationRating(u,effEv)}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
           const autoTop=autoPools[0]?.length;

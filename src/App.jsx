@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.49";
+const APP_VERSION = "V0.09.50";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4184,6 +4184,13 @@ export default function Matchkeeper() {
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.promote", `${me.nickname} promoted ${u?.nickname||uid} to admin in ${c?.name||cid}`, "community", cid);
   };
+  // The missing counterpart to promoteM — an admin could be promoted to admin, but there was
+  // no way back to a regular member short of removing them from the community outright. Keeps
+  // their existing status (regular/casual/etc) untouched, same as promoteM never touches it.
+  const demoteM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,role:"member"}:m)}));toast2("Demoted to member ✓");
+    const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
+    logAudit("member.demote", `${me.nickname} demoted ${u?.nickname||uid} from admin in ${c?.name||cid}`, "community", cid);
+  };
   const kickM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.filter(m=>m.userId!==uid)}));toast2("Removed");
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.remove", `${me.nickname} removed ${u?.nickname||uid} from ${c?.name||cid}`, "community", cid);
@@ -5255,7 +5262,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5704,7 +5711,7 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -5795,6 +5802,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                   {m.status==="guest"&&<SmBtn label="✓ Make Member" onClick={()=>{onConvertGuest(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.role==="member"&&m.status!=="guest"&&<SmBtn label={m.status==="regular"?"↓ Casual":"↑ Regular"} onClick={()=>{onToggleStatus(u.id);setOpenMemberMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {m.role==="member"&&m.status!=="guest"&&<SmBtn label="↑ Admin" onClick={()=>{onPromote(u.id);setOpenMemberMenu(null);}} color="#6366F1" style={{width:"100%"}}/>}
+                  {m.role==="admin"&&onDemote&&<SmBtn label="↓ Demote to Member" onClick={()=>{if(window.confirm(`Demote ${u.nickname} to a regular member?\n\nThey'll lose admin access to this community, but keep their membership.`)){onDemote(u.id);setOpenMemberMenu(null);}}} color="#F59E0B" style={{width:"100%"}}/>}
                   {m.role==="admin"&&(myRole==="owner"||meIsPlatformAdmin)&&onTransferOwnership&&<SmBtn label="👑 Make Owner" onClick={()=>{if(window.confirm(`Make ${u.nickname} the new owner of ${comm.name}?\n\n${myRole==="owner"?"You'll":"The current owner will"} become a regular admin instead.`)){onTransferOwnership(u.id);setOpenMemberMenu(null);}}} color="#FBBF24" style={{width:"100%"}}/>}
                   <SmBtn label="Remove" onClick={()=>{if(window.confirm(`Remove ${u.nickname} from ${comm.name}?\n\nThey'll need to re-apply to join again. Their event history stays intact.`)){onKick(u.id);setOpenMemberMenu(null);}}} color="#EF4444" style={{width:"100%"}}/>
                 </div>}

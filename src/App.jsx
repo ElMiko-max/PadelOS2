@@ -146,7 +146,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.48";
+const APP_VERSION = "V0.09.49";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4241,6 +4241,26 @@ export default function Matchkeeper() {
     updC(cid, c=>({...c, announcements:(c.announcements||[]).filter(a=>a.id!==aid)}));
     toast2("Removed");
   };
+  // Open to anyone who can see the announcement, not just admins — closest to a real thread.
+  // Notifies whoever's already IN the thread (the original poster + everyone who's replied so
+  // far), never the replier themselves.
+  const postAnnouncementReply = (cid, aid, message) => {
+    const trimmed = (message||"").trim();
+    if (!trimmed) return;
+    const c = comms.find(c=>c.id===cid);
+    const ann = c?.announcements?.find(a=>a.id===aid);
+    if (!ann) return;
+    const reply = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
+    updC(cid, c=>({...c, announcements:(c.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:[...(a.replies||[]), reply]})}));
+    const threadIds = new Set([ann.authorId, ...(ann.replies||[]).map(r=>r.authorId)]);
+    threadIds.delete(me.id);
+    if (threadIds.size) notify([...threadIds], "announcementReply", {communityId:cid}, `💬 ${c?.name||"Community"}`, `${me.nickname}: ${trimmed}`);
+    logAudit("community.announce", `${me.nickname} replied to an announcement in "${c?.name||cid}"`, "community", cid);
+  };
+  const deleteAnnouncementReply = (cid, aid, rid) => {
+    updC(cid, c=>({...c, announcements:(c.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:(a.replies||[]).filter(r=>r.id!==rid)})}));
+    toast2("Removed");
+  };
   // Event-scoped broadcast — same idea, but only reaches that event's registered players
   // (whoever can admin the event, including an event-scoped admin, not just community admins).
   const postEventAnnouncement = (cid, eid, message) => {
@@ -4256,6 +4276,23 @@ export default function Matchkeeper() {
   };
   const deleteEventAnnouncement = (cid, eid, aid) => {
     updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).filter(a=>a.id!==aid)})}));
+    toast2("Removed");
+  };
+  const postEventAnnouncementReply = (cid, eid, aid, message) => {
+    const trimmed = (message||"").trim();
+    if (!trimmed) return;
+    const ev = getEv(cid,eid);
+    const ann = ev?.announcements?.find(a=>a.id===aid);
+    if (!ann) return;
+    const reply = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
+    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:[...(a.replies||[]), reply]})})}));
+    const threadIds = new Set([ann.authorId, ...(ann.replies||[]).map(r=>r.authorId)]);
+    threadIds.delete(me.id);
+    if (threadIds.size) notify([...threadIds], "eventAnnouncementReply", ev, `💬 ${ev?.name||"Event"}`, `${me.nickname}: ${trimmed}`);
+    logAudit("event.announce", `${me.nickname} replied to an announcement in "${ev?.name||eid}"`, "event", eid);
+  };
+  const deleteEventAnnouncementReply = (cid, eid, aid, rid) => {
+    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:(a.replies||[]).filter(r=>r.id!==rid)})})}));
     toast2("Removed");
   };
 
@@ -5218,7 +5255,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -5248,6 +5285,8 @@ export default function Matchkeeper() {
             expenseCategories={expenseCategories}
             onPostEventAnnouncement={message=>postEventAnnouncement(comm.id,event.id,message)}
             onDeleteEventAnnouncement={aid=>deleteEventAnnouncement(comm.id,event.id,aid)}
+            onReplyEventAnnouncement={(aid,message)=>postEventAnnouncementReply(comm.id,event.id,aid,message)}
+            onDeleteEventAnnouncementReply={(aid,rid)=>deleteEventAnnouncementReply(comm.id,event.id,aid,rid)}
             onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
             onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
             onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
@@ -5665,7 +5704,7 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -5673,6 +5712,8 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const [memberSearch,setMemberSearch]=useState("");
   const [announcementText,setAnnouncementText]=useState("");
+  const [replyingTo,setReplyingTo]=useState(null); // announcement id whose reply box is open
+  const [replyText,setReplyText]=useState("");
   const myMember=comm.members.find(m=>m.userId===me.id);
   const myRole=myMember?.role;
   const isAdmin=myRole==="owner"||myRole==="admin";
@@ -5810,6 +5851,26 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                   <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
                 </div>
                 {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteAnnouncement&&onDeleteAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
+              </div>
+              {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
+                {a.replies.map(r=>
+                  <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,paddingLeft:10}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{r.message}</div>
+                      <div style={{fontSize:9,color:"var(--po-dim)",marginTop:3}}>{r.authorName} · {timeAgo(r.createdAt)}</div>
+                    </div>
+                    {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this reply?"))onDeleteAnnouncementReply&&onDeleteAnnouncementReply(a.id,r.id);}} color="#EF4444" style={{padding:"3px 6px",fontSize:10,flexShrink:0}}/>}
+                  </div>
+                )}
+              </div>}
+              <div style={{marginTop:8,paddingTop:8,borderTop:(a.replies?.length||0)>0?"none":"0.5px solid var(--po-bdr)"}}>
+                {replyingTo===a.id
+                  ? <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <input autoFocus value={replyText} onChange={e=>setReplyText(e.target.value)} placeholder="Reply..." className="po-inp" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}} onKeyDown={e=>{if(e.key==="Enter"&&replyText.trim()){onReplyAnnouncement&&onReplyAnnouncement(a.id,replyText);setReplyText("");setReplyingTo(null);}}}/>
+                      <SmBtn label="Send" onClick={()=>{if(replyText.trim()){onReplyAnnouncement&&onReplyAnnouncement(a.id,replyText);setReplyText("");setReplyingTo(null);}}} color="#6366F1"/>
+                      <SmBtn label="✕" onClick={()=>{setReplyingTo(null);setReplyText("");}} color="#94A3B8"/>
+                    </div>
+                  : <div onClick={()=>{setReplyingTo(a.id);setReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
               </div>
             </Card>
           )}
@@ -7146,7 +7207,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -7156,6 +7217,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [ledgerAmount,setLedgerAmount] = useState("");
   const [ledgerCategory,setLedgerCategory] = useState("");
   const [eventAnnouncementText,setEventAnnouncementText] = useState("");
+  const [eventReplyingTo,setEventReplyingTo] = useState(null); // announcement id whose reply box is open
+  const [eventReplyText,setEventReplyText] = useState("");
   const suggestedRoundDur = ev.rotationMin||20;
   const eventBookingMins = (()=>{
     if(!ev.time||!ev.timeTo) return 120;
@@ -8089,6 +8152,26 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
                 </div>
                 {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteEventAnnouncement&&onDeleteEventAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
+              </div>
+              {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
+                {a.replies.map(r=>
+                  <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,paddingLeft:10}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{r.message}</div>
+                      <div style={{fontSize:9,color:"var(--po-dim)",marginTop:3}}>{r.authorName} · {timeAgo(r.createdAt)}</div>
+                    </div>
+                    {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this reply?"))onDeleteEventAnnouncementReply&&onDeleteEventAnnouncementReply(a.id,r.id);}} color="#EF4444" style={{padding:"3px 6px",fontSize:10,flexShrink:0}}/>}
+                  </div>
+                )}
+              </div>}
+              <div style={{marginTop:8,paddingTop:8,borderTop:(a.replies?.length||0)>0?"none":"0.5px solid var(--po-bdr)"}}>
+                {eventReplyingTo===a.id
+                  ? <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <input autoFocus value={eventReplyText} onChange={e=>setEventReplyText(e.target.value)} placeholder="Reply..." className="po-inp" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}} onKeyDown={e=>{if(e.key==="Enter"&&eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}}/>
+                      <SmBtn label="Send" onClick={()=>{if(eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}} color="#6366F1"/>
+                      <SmBtn label="✕" onClick={()=>{setEventReplyingTo(null);setEventReplyText("");}} color="#94A3B8"/>
+                    </div>
+                  : <div onClick={()=>{setEventReplyingTo(a.id);setEventReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
               </div>
             </Card>
           )}
@@ -9744,7 +9827,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
 function NotificationsSc({notifications,me,onBack,onMarkAllRead,onOpen}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗"};
+  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗"};
   return <><BBtn onBack={onBack} label="Back"/>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>

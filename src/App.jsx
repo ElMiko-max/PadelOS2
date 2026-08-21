@@ -5166,21 +5166,26 @@ export default function Matchkeeper() {
       if(!pA||!pB)return ev;
       const newTeamA={...teamA,players:teamA.players.map(p=>(p.userId||p.id)===userIdA?pB:p)};
       const newTeamB={...teamB,players:teamB.players.map(p=>(p.userId||p.id)===userIdB?pA:p)};
-      newTeamA.avgUsr=Math.round((newTeamA.players[0].usr+newTeamA.players[1].usr)/2);
-      newTeamB.avgUsr=Math.round((newTeamB.players[0].usr+newTeamB.players[1].usr)/2);
+      // Was hardcoded to players[0]/players[1] — averaged only the first 2 players and silently
+      // ignored the rest of a football team (found live on padelos-dev: avg went visibly wrong
+      // after a swap on a 5-player team). Averaging over every player works for both padel's
+      // fixed pairs and football's larger squads.
+      const teamAvg=t=>t.players.length?Math.round(t.players.reduce((s,p)=>s+p.usr,0)/t.players.length):0;
+      newTeamA.avgUsr=teamAvg(newTeamA);
+      newTeamB.avgUsr=teamAvg(newTeamB);
       // A swap changes who's actually on the team, so re-check for a recorded combo name —
       // snakeTeams only gets to do this at initial auto-formation, a manual swap needs the
       // same lookup or a pair reunited by swap silently keeps the generic "Team N" name.
+      // Combo names are a padel-doubles concept (one recorded name per exact 2-player pair) —
+      // meaningless for a football team of 5+, so only look this up for real 2-player teams.
       const comboLookup=(p1,p2)=>{
         const uid1=p1.userId||p1.id, uid2=p2.userId||p2.id;
         const u1=users.find(u=>u.id===uid1), u2=users.find(u=>u.id===uid2);
         const ck=[uid1,uid2].sort().join("_");
         return u1?.comboNames?.[ck] || u2?.comboNames?.[ck] || null;
       };
-      const nameA=comboLookup(newTeamA.players[0],newTeamA.players[1]);
-      const nameB=comboLookup(newTeamB.players[0],newTeamB.players[1]);
-      if(nameA) newTeamA.name=nameA;
-      if(nameB) newTeamB.name=nameB;
+      if(newTeamA.players.length===2){const nameA=comboLookup(newTeamA.players[0],newTeamA.players[1]);if(nameA)newTeamA.name=nameA;}
+      if(newTeamB.players.length===2){const nameB=comboLookup(newTeamB.players[0],newTeamB.players[1]);if(nameB)newTeamB.name=nameB;}
       const replaceTeam=t=>t?.id===teamIdA?newTeamA:t?.id===teamIdB?newTeamB:t;
       const newTeams=plan.teams.map(replaceTeam);
       const newRounds=plan.rounds.map(r=>({...r,
@@ -8494,7 +8499,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>}
 
     {/* MANAGE */}
-    {tab==="manage"&&!isAdmin&&<>
+    {tab==="manage"&&!isAdmin&&(comm?.bookkeeping?.enabled
+      ? <Card><div style={{fontSize:12,color:"var(--po-dim)"}}>💰 {comm.name} tracks finances centrally — check the Ledger tab in the community for your balance and statement.</div></Card>
+      : <>
       <ST>💰 Financial</ST>
       <Card>
         <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
@@ -8517,9 +8524,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {!isPayer&&!isEx&&<div onClick={()=>act.togglePaid(me.id)} style={{textAlign:"center",padding:"9px",borderRadius:8,background:isPaid?"#34D39922":"#6366F1",border:`0.5px solid ${isPaid?"#34D39966":"transparent"}`,color:isPaid?"#34D399":"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>{isPaid?"✓ Marked as Paid":"I Paid"}</div>}
         </Card>;
       })()}
-    </>}
+    </>)}
 
     {tab==="manage"&&isAdmin&&<>
+      {/* A community with the ledger switched on absorbs event costs centrally (via monthly
+          dues, tracked in the community's Ledger tab) — the old ad-hoc per-event cost-split/
+          settlement math is redundant and confusing alongside a real fund, so it's hidden in
+          favor of just recording this event's income/expense straight into that fund below. */}
+      {!comm?.bookkeeping?.enabled&&<>
       {isOpen&&activeRegCount<tc*4&&<Card style={{background:"#EF444411",border:"0.5px solid #EF444444",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#EF4444",marginBottom:4}}>⚠️ Insufficient Players</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>Need {tc*4} players. Currently {activeRegCount}.</div></Card>}
       {!isOpen&&<Card style={{background:"#6366F111",border:"0.5px solid #6366F144",marginBottom:10}}><div style={{fontSize:11,color:"var(--po-sub)"}}>ℹ️ {isCI?"Closed Individuals":"Closed Teams"} events have no check-in step — cost is split across all {attCnt} registered players (attendance is assumed).</div></Card>}
       {sim&&attCnt>0&&<Card style={{background:"#6366F111",border:"0.5px solid #6366F144",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#A5B4FC",marginBottom:10}}>💰 Live Cost Settlement</div>{[["Total",`${totC} EGP`],[isOpen?"Checked In":"Registered",attCnt],["Paying",payingCnt],["Per Player",`${cpp} EGP`]].map(([k,val])=><div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #6366F122"}}><span style={{fontSize:13,color:"var(--po-dim)"}}>{k}</span><span style={{fontSize:14,fontWeight:700,color:k==="Per Player"?"#A5B4FC":"var(--po-text)"}}>{val}</span></div>)}</Card>}
@@ -8613,6 +8625,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>
           </Card>;
         })}
+      </>}
       </>}
       {comm?.bookkeeping?.enabled&&<>
         <ST>💰 Community Ledger</ST>
@@ -8813,7 +8826,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur,ctTopPoolSize)} style={{width:"100%"}}/>
       </Card>}
       {plan&&<>
-        {isAdmin&&!ctR1Locked&&(()=>{
+        {!isFootballEv&&isAdmin&&!ctR1Locked&&(()=>{
           const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:teamFormationRating(u,effEv)}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;

@@ -1425,6 +1425,26 @@ function calcCTStandings(plan) {
   const allStats = Object.values(stats).filter(s=>s.team).sort((a,b)=>b.wins-a.wins||b.scoreDiff-a.scoreDiff||b.goalsFor-a.goalsFor);
   return allStats.map((s,i)=>({...s,group:plan.groupA.find(t=>t.id===s.team.id)?"A":"B",finalRank:i+1}));
 }
+// Football-only Top Scorers — sums m.scorers across every match in the plan. Player identity
+// (nickname/avatar) is resolved from whichever team roster the scorer's userId shows up on in
+// that match, since scorers aren't stored as full user objects, just {userId,goals}.
+function calcTopScorers(plan) {
+  if (!plan) return [];
+  const tally = {}; // userId -> {userId, goals, player}
+  plan.rounds.forEach(round => {
+    [...(round.matchesA||[]), ...(round.matchesB||[])].forEach(m => {
+      (m.scorers||[]).forEach(s => {
+        if (!s.goals) return;
+        if (!tally[s.userId]) {
+          const player = (m.teamA?.players||[]).find(p=>(p.userId||p.id)===s.userId) || (m.teamB?.players||[]).find(p=>(p.userId||p.id)===s.userId);
+          tally[s.userId] = { userId: s.userId, goals: 0, player };
+        }
+        tally[s.userId].goals += s.goals;
+      });
+    });
+  });
+  return Object.values(tally).filter(t=>t.goals>0).sort((a,b)=>b.goals-a.goals);
+}
 // Total real matches played in an event (winner actually set, i.e. not a pending/unplayed
 // fixture) — used by community-wide reports, not per-player standings.
 const countMatchesPlayed = ev => {
@@ -5255,6 +5275,10 @@ export default function Matchkeeper() {
   // on every other match involving that team, since it looks like the match matching
   // itself. Undo (w===null) leaves live untouched — it wasn't this action that set it.
   const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB,live:w?false:m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  // Football-only, optional — who scored, tallied per match. scorers: [{userId,goals}], only
+  // entries with goals>0 kept. Deliberately separate from setWinCT (its own explicit save) so
+  // tagging scorers never has to happen in the same tap as recording the winner.
+  const setCTScorers=(cid,eid,ri,mi,side,scorers)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,scorers});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
   // Toggles whether a League match shows on the Match Mode widget — display-only there
   // (no tap-to-record), so this doesn't touch winner/score at all, just the "live" flag.
   const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
@@ -5437,6 +5461,7 @@ export default function Matchkeeper() {
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
             onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
+            onSetCTScorers={(ri,mi,side,scorers)=>setCTScorers(comm.id,event.id,ri,mi,side,scorers)}
             onToggleCTLeagueLive={(ri,mi,side)=>toggleCTLeagueLive(comm.id,event.id,ri,mi,side)}
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
             onNextFootballRound={()=>nextFootballRound(comm.id,event.id)}
@@ -6842,6 +6867,50 @@ function CTTeamCard({team,group,sport,showBreakPref,isAdmin,onSetTeamBreakPref,c
   </div></Card>;
 }
 
+// Football-only, optional goal tally for a decided match — separate top-level component (not
+// nested inside MatchCard) so its local draft/editing state has a stable identity across
+// re-renders instead of getting reset every time the parent redraws.
+function ScorersGoals({m,ri,mi,side,isAdmin,onSetCTScorers}){
+  const [editing,setEditing] = useState(false);
+  const allPlayers = [...(m.teamA?.players||[]),...(m.teamB?.players||[])];
+  const draftFromSaved = () => { const map={}; (m.scorers||[]).forEach(s=>{map[s.userId]=s.goals;}); return map; };
+  const [draft,setDraft] = useState(draftFromSaved);
+  useEffect(()=>{ setDraft(draftFromSaved()); }, [m.scorers]);
+  const totalGoals = (m.scoreA||0)+(m.scoreB||0);
+  const taggedGoals = Object.values(draft).reduce((s,v)=>s+(v||0),0);
+  const bump = (uid,d) => setDraft(dr=>({...dr,[uid]:Math.max(0,(dr[uid]||0)+d)}));
+  const save = () => {
+    onSetCTScorers(ri,mi,side, Object.entries(draft).filter(([,g])=>g>0).map(([userId,goals])=>({userId:parseInt(userId),goals})));
+    setEditing(false);
+  };
+  const saved = m.scorers||[];
+  if(!editing){
+    if(saved.length===0) return isAdmin?<SmBtn label="⚽ Add Goal Scorers" onClick={()=>setEditing(true)} color="#6366F1" style={{marginTop:6}}/>:null;
+    return <div style={{marginTop:6,fontSize:11,color:"var(--po-dim)"}}>
+      ⚽ {saved.map(s=>{const p=allPlayers.find(pp=>(pp.userId||pp.id)===s.userId);return `${p?.nickname||"?"}${s.goals>1?` x${s.goals}`:""}`;}).join(", ")}
+      {isAdmin&&<span onClick={()=>setEditing(true)} style={{marginLeft:8,cursor:"pointer",color:"#6366F1"}}>✏️</span>}
+    </div>;
+  }
+  return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>
+    <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:6}}>⚽ Goal Scorers {taggedGoals!==totalGoals&&<span style={{color:"#F59E0B"}}>({taggedGoals}/{totalGoals} tagged — optional, doesn't need to match)</span>}</div>
+    {allPlayers.map(p=>{
+      const uid=p.userId||p.id;
+      return <div key={uid} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0"}}>
+        <span style={{fontSize:12,color:"var(--po-text)"}}>{p.nickname}</span>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button onClick={()=>bump(uid,-1)} style={{width:22,height:22,borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",cursor:"pointer"}}>−</button>
+          <span style={{fontSize:13,fontWeight:700,minWidth:14,textAlign:"center",color:"var(--po-text)"}}>{draft[uid]||0}</span>
+          <button onClick={()=>bump(uid,1)} style={{width:22,height:22,borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",cursor:"pointer"}}>+</button>
+        </div>
+      </div>;
+    })}
+    <div style={{display:"flex",gap:6,marginTop:8}}>
+      <Btn label="💾 Save" primary onClick={save} style={{flex:1}}/>
+      <SmBtn label="Cancel" onClick={()=>setEditing(false)} color="#94A3B8"/>
+    </div>
+  </div>;
+}
+
 // ══════════════════════════════════════════════════════
 //  CT MATCHES TAB
 // ══════════════════════════════════════════════════════
@@ -6941,7 +7010,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
 }
 
 
-function CTMatchesTab({plan,sport,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
+function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
   const isFootballEv = sport==="Football";
   const teamRatingLabel = v => isFootballEv ? footballGradeLabel(v) : v;
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
@@ -7016,6 +7085,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onToggleCTLeagueLive,onApplyP
       </div>
       <H2HRow/>
       <BalanceBadge/>
+      {isFootballEv&&<ScorersGoals m={m} ri={ri} mi={mi} side={side} isAdmin={isAdmin} onSetCTScorers={onSetCTScorers}/>}
       {isAdmin&&<div style={{display:"flex",justifyContent:"flex-end"}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>}
     </Card>;}
 
@@ -7340,7 +7410,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -7585,6 +7655,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           return {...e, plan:{...e.plan, rounds}};
         })
       : onSetWinCT(ri,mi,side,w,sA,sB),
+    setCTScorers: (ri,mi,side,scorers) => sim
+      ? simMutate(e => {
+          if(!e.plan) return e;
+          const rounds=e.plan.rounds.map((r,rr)=>{
+            if(rr!==ri) return r;
+            const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,scorers});
+            return {...r, matchesA:side==="A"?up(r.matchesA):r.matchesA, matchesB:side==="B"?up(r.matchesB):r.matchesB};
+          });
+          return {...e, plan:{...e.plan, rounds}};
+        })
+      : onSetCTScorers(ri,mi,side,scorers),
     toggleCTLeagueLive: (ri,mi,side) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -8870,7 +8951,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onSetCTScorers={act.setCTScorers} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>
@@ -8971,6 +9052,25 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable — view only. {isPlatformAdmin?`This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.`:"Only the Platform Admin can close an event using this instead of the standard scoring."}</div>
         <OutputPESTable rows={calcXCTLadderPreview(plan,users,comms,effEv).map(t=>({key:t.teamId,name:t.team?.name,subtitle:(t.team?.players||[]).map(p=>p.nickname).join(" & "),entryUsr:t.entryUsr,avgDelta:t.avgDelta,score:t.outputTES})).sort((a,b)=>b.score-a.score)}/>
       </>}
+
+      {isFootballEv&&plan&&(()=>{
+        const scorers=calcTopScorers(plan);
+        if(scorers.length===0) return null;
+        return <>
+          <ST>⚽ Top Scorers</ST>
+          {scorers.map((s,i)=><Card key={s.userId} style={{marginBottom:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div>
+              {s.player&&<Av u={s.player} size={30}/>}
+              <div style={{flex:1,fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.player?.nickname||"Unknown"}</div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:18,fontWeight:700,color:"#6366F1"}}>{s.goals}</div>
+                <div style={{fontSize:10,color:"var(--po-dim)"}}>{s.goals===1?"goal":"goals"}</div>
+              </div>
+            </div>
+          </Card>)}
+        </>;
+      })()}
     </>}
   </>;
 }

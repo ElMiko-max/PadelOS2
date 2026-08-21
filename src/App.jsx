@@ -165,7 +165,12 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.00";
+const APP_VERSION = "V0.10.01";
+// The version of the last APK actually built and uploaded to dist/releases/ — deliberately
+// separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
+// a new APK). Only update this the moment a real APK build lands at that download URL, or the
+// "Download Android App" link below points at a file that doesn't exist. See CLAUDE.md §5.
+const LATEST_APK_VERSION = "V0.10.00";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -10032,6 +10037,11 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const isNative = Capacitor.isNativePlatform();
+  // Only offer the APK download to someone who could actually use it: an Android *browser*
+  // visitor. Never inside the installed app itself (isNative — they already have it), and
+  // never on iOS/desktop (the Android APK is meaningless there).
+  const isAndroidWeb = !isNative && /Android/i.test(navigator.userAgent||"");
+  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${LATEST_APK_VERSION}-debug.apk`;
   useEffect(() => {
     if (isNative) {
       PushNotifications.checkPermissions().then(res => {
@@ -10073,6 +10083,13 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   };
   return <><BBtn onBack={onBack} label="Back"/>
     <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
+    {isAndroidWeb&&<Card style={{marginBottom:16,padding:0,overflow:"hidden"}}>
+      <div onClick={()=>window.open(apkUrl,"_blank")} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+        <span style={{fontSize:20}}>🤖</span>
+        <span style={{flex:1,fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Download Android App {LATEST_APK_VERSION}</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
+    </Card>}
     <ST>Notifications</ST>
     <Card style={{marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>

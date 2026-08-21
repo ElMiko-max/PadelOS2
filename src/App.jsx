@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.01";
+const APP_VERSION = "V0.10.02";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -5330,6 +5330,26 @@ export default function Matchkeeper() {
 
   const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
+  // "New version available" banner — dist/version.json is written fresh on every build (see
+  // vite.config.js) from the same APP_VERSION baked into that build, so polling it tells an
+  // already-open tab a newer deploy exists without needing any server-side broadcast. Native
+  // (installed APK) has no such auto-update path, so this only runs on web.
+  const [newVersion, setNewVersion] = useState(null);
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) return;
+    let cancelled = false;
+    const check = () => {
+      fetch(`/version.json?t=${Date.now()}`, { cache: "no-store" })
+        .then(r => r.json())
+        .then(d => { if (!cancelled && d.version && d.version !== APP_VERSION) setNewVersion(d.version); })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 5 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
 
   if (authLoading || (authUser && !dataLoaded)) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -5403,6 +5423,11 @@ export default function Matchkeeper() {
         onSeeAllNotifs={()=>{setNotifMenu(false);setNavHistory(h=>[...h,{nav,view}]);setNav("notifications");setView({screen:"list"});}}
       />
       <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
+        {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+          <span style={{fontSize:16}}>🆕</span>
+          <span style={{flex:1}}>New version {newVersion} is available — tap to refresh.</span>
+          <span style={{fontWeight:700}}>↻</span>
+        </div>}
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
         {showIosInstallBanner&&<div style={{fontSize:12,color:"#A5B4FC",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",gap:10,alignItems:"flex-start"}}>
           <span style={{fontSize:18,lineHeight:1}}>📲</span>

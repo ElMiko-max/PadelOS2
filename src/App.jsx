@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.02";
+const APP_VERSION = "V0.10.03";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -5556,6 +5556,10 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
   notifications=[],notifMenu,setNotifMenu,onMarkNotifRead,onMarkAllNotifRead,onOpenNotif,onSeeAllNotifs}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
+  // Only offer the APK download to someone who could actually use it: an Android *browser*
+  // visitor. Never inside the installed app itself (they already have it), never on iOS/desktop.
+  const isAndroidWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent||"");
+  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${LATEST_APK_VERSION}-debug.apk`;
   const tabs = [
     {k:"events", l:"Events", chip:"#F472B6", iconColor:"#7A1042", rot:4, icon:(
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -5630,7 +5634,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
             {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>}
-        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
+        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${LATEST_APK_VERSION}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
       </div>}
     </div>
   </div>;
@@ -10062,11 +10066,6 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const isNative = Capacitor.isNativePlatform();
-  // Only offer the APK download to someone who could actually use it: an Android *browser*
-  // visitor. Never inside the installed app itself (isNative — they already have it), and
-  // never on iOS/desktop (the Android APK is meaningless there).
-  const isAndroidWeb = !isNative && /Android/i.test(navigator.userAgent||"");
-  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${LATEST_APK_VERSION}-debug.apk`;
   useEffect(() => {
     if (isNative) {
       PushNotifications.checkPermissions().then(res => {
@@ -10108,13 +10107,6 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   };
   return <><BBtn onBack={onBack} label="Back"/>
     <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
-    {isAndroidWeb&&<Card style={{marginBottom:16,padding:0,overflow:"hidden"}}>
-      <div onClick={()=>window.open(apkUrl,"_blank")} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
-        <span style={{fontSize:20}}>🤖</span>
-        <span style={{flex:1,fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Download Android App {LATEST_APK_VERSION}</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-    </Card>}
     <ST>Notifications</ST>
     <Card style={{marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>

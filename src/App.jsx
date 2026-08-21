@@ -7038,6 +7038,14 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
 
   function getS(ri,mi,side){return scores[`${ri}_${mi}_${side}`]||{scoreA:0,scoreB:0,scorersA:[],scorersB:[]};}
   function setS(ri,mi,side,field,val){setScores(s=>({...s,[`${ri}_${mi}_${side}`]:{...getS(ri,mi,side),[field]:val}}));}
+  // Decided-match scorer editing draft — same local-then-commit-on-close pattern as getS/setS
+  // above, kept in its own key so it doesn't collide with a pending match's draft. Needed
+  // because reading m.scorersA/scorersB directly at commit time is subject to Firestore's
+  // round-trip latency: tag 2 goals quickly then hit close, and the close handler could still
+  // see only the first tap's write if it reads off m instead of this synchronous local draft
+  // (this exact race is what let a team's recorded score stay below its own tagged goal count).
+  function getDS(ri,mi,side,m){ return scores[`${ri}_${mi}_${side}_decided`] || {scorersA:m.scorersA||[], scorersB:m.scorersB||[]}; }
+  function setDS(ri,mi,side,m,field,val){ const cur=getDS(ri,mi,side,m); setScores(s=>({...s,[`${ri}_${mi}_${side}_decided`]:{...cur,[field]:val}})); }
   const gcA="#6366F1",gcB="#06B6D4";
   const isLeague=plan.format==="league";
   const tc=plan.courts;
@@ -7089,29 +7097,42 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>{isFootballEv?"Pitch":"Court"} {m.court}{isLeague&&!isFootballEv?` · Group ${side}`:""}</span>
         <Bdg label={`${m.winner==="A"?m.teamA?.name:m.teamB?.name} wins`} color="#34D399"/>
       </div>
-      <div style={{display:"flex",alignItems:"flex-start",gap:6,marginBottom:5}}>
-        <div style={{flex:1,textAlign:"center"}}>
-          <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}</div>
-          <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
-          <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
-          {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={m.scorersA}
-            onChangeScorers={v=>onSetCTScorers(ri,mi,side,v,m.scorersB||[])}
-            onClose={()=>{const sum=(m.scorersA||[]).reduce((s,x)=>s+x.goals,0);if(sum>(m.scoreA||0))onSetWinCT(ri,mi,side,m.winner,sum,m.scoreB);}}
-            teamGoals={m.scoreA} isAdmin={isAdmin} showSummaryText
-            expanded={!!expandedGoals[`${ri}_${mi}_${side}_dA`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dA`)}/>}
-        </div>
-        <div style={{fontSize:12,color:"#334155",fontWeight:700,marginTop:2}}>—</div>
-        <div style={{flex:1,textAlign:"center"}}>
-          <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}</div>
-          <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
-          <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
-          {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={m.scorersB}
-            onChangeScorers={v=>onSetCTScorers(ri,mi,side,m.scorersA||[],v)}
-            onClose={()=>{const sum=(m.scorersB||[]).reduce((s,x)=>s+x.goals,0);if(sum>(m.scoreB||0))onSetWinCT(ri,mi,side,m.winner,m.scoreA,sum);}}
-            teamGoals={m.scoreB} isAdmin={isAdmin} showSummaryText
-            expanded={!!expandedGoals[`${ri}_${mi}_${side}_dB`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dB`)}/>}
-        </div>
-      </div>
+      {(()=>{
+        const ds = isFootballEv ? getDS(ri,mi,side,m) : null;
+        // Shared by both teams' close buttons — either one commits both sides together, so
+        // it's correct regardless of which panel the admin actually closes. Reads only from
+        // the synchronous local draft (ds), never from m, so there's no dependency on a
+        // Firestore round-trip having completed yet.
+        const commitDecidedScorers = () => {
+          const sumA=(ds.scorersA||[]).reduce((s,x)=>s+x.goals,0), sumB=(ds.scorersB||[]).reduce((s,x)=>s+x.goals,0);
+          onSetCTScorers(ri,mi,side, ds.scorersA||[], ds.scorersB||[]);
+          const newScoreA=Math.max(m.scoreA||0,sumA), newScoreB=Math.max(m.scoreB||0,sumB);
+          if(newScoreA!==m.scoreA||newScoreB!==m.scoreB) onSetWinCT(ri,mi,side,m.winner,newScoreA,newScoreB);
+        };
+        return <div style={{display:"flex",alignItems:"flex-start",gap:6,marginBottom:5}}>
+          <div style={{flex:1,textAlign:"center"}}>
+            <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}</div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
+            <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
+            {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={ds.scorersA}
+              onChangeScorers={v=>setDS(ri,mi,side,m,"scorersA",v)}
+              onClose={commitDecidedScorers}
+              teamGoals={m.scoreA} isAdmin={isAdmin} showSummaryText
+              expanded={!!expandedGoals[`${ri}_${mi}_${side}_dA`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dA`)}/>}
+          </div>
+          <div style={{fontSize:12,color:"#334155",fontWeight:700,marginTop:2}}>—</div>
+          <div style={{flex:1,textAlign:"center"}}>
+            <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}</div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
+            <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
+            {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={ds.scorersB}
+              onChangeScorers={v=>setDS(ri,mi,side,m,"scorersB",v)}
+              onClose={commitDecidedScorers}
+              teamGoals={m.scoreB} isAdmin={isAdmin} showSummaryText
+              expanded={!!expandedGoals[`${ri}_${mi}_${side}_dB`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dB`)}/>}
+          </div>
+        </div>;
+      })()}
       <H2HRow/>
       <BalanceBadge/>
       {isAdmin&&<div style={{display:"flex",justifyContent:"flex-end"}}><SmBtn label="↩ Undo" onClick={()=>onSetWinCT(ri,mi,side,null,0,0)} color="#EF4444"/></div>}
@@ -7150,7 +7171,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
             {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={sc.scorersA}
               onChangeScorers={v=>setS(ri,mi,side,"scorersA",v)}
               onClose={()=>{const sum=(sc.scorersA||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreA)setS(ri,mi,side,"scoreA",sum);}}
-              teamGoals={sc.scoreA} isAdmin={isAdmin}
+              teamGoals={sc.scoreA} isAdmin={isAdmin} showSummaryText
               expanded={!!expandedGoals[`${ri}_${mi}_${side}_A`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_A`)}/>}
             <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
           </div>
@@ -7160,23 +7181,33 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
             {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB}
               onChangeScorers={v=>setS(ri,mi,side,"scorersB",v)}
               onClose={()=>{const sum=(sc.scorersB||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreB)setS(ri,mi,side,"scoreB",sum);}}
-              teamGoals={sc.scoreB} isAdmin={isAdmin}
+              teamGoals={sc.scoreB} isAdmin={isAdmin} showSummaryText
               expanded={!!expandedGoals[`${ri}_${mi}_${side}_B`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_B`)}/>}
           </div>
         </div>
-        {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
-        <div style={{display:"flex",gap:6}}>
-          <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",sc.scoreA,sc.scoreB);if(isFootballEv&&(sc.scorersA?.length||sc.scorersB?.length))onSetCTScorers(ri,mi,side,sc.scorersA||[],sc.scorersB||[]);}}
-            disabled={sc.scoreA<=sc.scoreB}
-            style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreA>sc.scoreB?"#6366F144":"var(--po-bdr)"}`,background:sc.scoreA>sc.scoreB?"#6366F122":"transparent",color:sc.scoreA>sc.scoreB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreA<=sc.scoreB?"default":"pointer",opacity:sc.scoreA<=sc.scoreB?0.4:1}}>
-            ← {m.teamA?.name}
-          </button>
-          <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",sc.scoreA,sc.scoreB);if(isFootballEv&&(sc.scorersA?.length||sc.scorersB?.length))onSetCTScorers(ri,mi,side,sc.scorersA||[],sc.scorersB||[]);}}
-            disabled={sc.scoreB<=sc.scoreA}
-            style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${sc.scoreB>sc.scoreA?"#06B6D444":"var(--po-bdr)"}`,background:sc.scoreB>sc.scoreA?"#06B6D422":"transparent",color:sc.scoreB>sc.scoreA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:sc.scoreB<=sc.scoreA?"default":"pointer",opacity:sc.scoreB<=sc.scoreA?0.4:1}}>
-            {m.teamB?.name} →
-          </button>
-        </div>
+        {(()=>{
+          // Floor-enforced at the actual commit point, not just when the goals panel is
+          // closed — tagging goals then tapping a win/lose button directly (without closing
+          // the panel first) is a completely normal flow, and skipping this here is exactly
+          // what let a team's saved score end up below its own tagged goal count.
+          const sumA=(sc.scorersA||[]).reduce((s,x)=>s+x.goals,0), sumB=(sc.scorersB||[]).reduce((s,x)=>s+x.goals,0);
+          const fA=Math.max(sc.scoreA,sumA), fB=Math.max(sc.scoreB,sumB);
+          return <>
+            {fA===fB&&fA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
+            <div style={{display:"flex",gap:6}}>
+              <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",fA,fB);if(isFootballEv&&(sc.scorersA?.length||sc.scorersB?.length))onSetCTScorers(ri,mi,side,sc.scorersA||[],sc.scorersB||[]);}}
+                disabled={fA<=fB}
+                style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${fA>fB?"#6366F144":"var(--po-bdr)"}`,background:fA>fB?"#6366F122":"transparent",color:fA>fB?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:fA<=fB?"default":"pointer",opacity:fA<=fB?0.4:1}}>
+                ← {m.teamA?.name}
+              </button>
+              <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"B",fA,fB);if(isFootballEv&&(sc.scorersA?.length||sc.scorersB?.length))onSetCTScorers(ri,mi,side,sc.scorersA||[],sc.scorersB||[]);}}
+                disabled={fB<=fA}
+                style={{flex:1,padding:"8px 0",borderRadius:8,border:`0.5px solid ${fB>fA?"#06B6D444":"var(--po-bdr)"}`,background:fB>fA?"#06B6D422":"transparent",color:fB>fA?"#67E8F9":"var(--po-dim)",fontSize:12,fontWeight:600,cursor:fB<=fA?"default":"pointer",opacity:fB<=fA?0.4:1}}>
+                {m.teamB?.name} →
+              </button>
+            </div>
+          </>;
+        })()}
       </>:<div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginTop:6}}>⏳ Waiting for result</div>}
     </Card>;
   }

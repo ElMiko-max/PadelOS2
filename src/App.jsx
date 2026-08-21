@@ -241,6 +241,11 @@ const getEventTypesForSport = sport => sport==="Football" ? FOOTBALL_EVENT_TYPES
 // USR override (r.eventUsr) has no football equivalent, so it's simply never consulted here.
 const FOOTBALL_SKILL_RATING = {A:90, B:70, C:50, D:30, E:10};
 const teamFormationRating = (u, ev) => ev?.sport==="Football" ? (FOOTBALL_SKILL_RATING[u.footballSkill] ?? 50) : u.usr;
+// Reverse of FOOTBALL_SKILL_RATING, for team AVERAGES (which land between the 5 raw letter
+// anchors once mixed-skill players are combined) — 15-grade scale (E- through A+) so a team's
+// blended rating still reads as a football skill, not a padel-looking USR number.
+const FOOTBALL_GRADE_LETTERS = ["E-","E","E+","D-","D","D+","C-","C","C+","B-","B","B+","A-","A","A+"];
+const footballGradeLabel = avg => FOOTBALL_GRADE_LETTERS[Math.min(14,Math.max(0,Math.round((Math.max(0,Math.min(100,avg))/100)*14)))];
 
 // ── AI Event Name Suggester (IDEA-022) ────────────────────────────
 // Client-side template + randomizer. No network call, no API cost — deliberately kept
@@ -1365,6 +1370,20 @@ function applyPromoRelegation(plan, retiredIds=[]) {
     leagueRound: leagueRound+1,
     rounds: [...rounds, {roundNum:base+1, type:"league", matchesA:allNewA, matchesB:allNewB, onBreak:[]}],
     lastPromo: { promoted, relegated } };
+}
+
+// Football League's "next round" — unlike padel, there's only ever one pool (groupB is always
+// empty), so promotion/relegation between groups doesn't apply. Just play the same full
+// round-robin again among the same complete team set. Using applyPromoRelegation here was the
+// actual bug (found live on padelos-dev): with groupB empty it still tried to relegate 2 teams
+// out of group A into it, silently corrupting the team split (1 team left in A, 2 in a B that
+// shouldn't exist).
+function nextFootballLeagueRound(plan) {
+  const { courts, rounds, leagueRound, teams } = plan;
+  const allMatches = rrSchedule(teams).map((m,i) => ({...m, court:(i%courts)+1}));
+  const base = rounds.length;
+  return { ...plan, leagueRound: leagueRound+1,
+    rounds: [...rounds, {roundNum:base+1, type:"league", matchesA:allMatches, matchesB:[], onBreak:[]}] };
 }
 
 // CT Standings — cumulative all rounds
@@ -5235,6 +5254,7 @@ export default function Matchkeeper() {
   // (no tap-to-record), so this doesn't touch winner/score at all, just the "live" flag.
   const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
   const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan,ev.retiredIds||[]));toast2("Groups reshuffled ✓");};
+  const nextFootballRound=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,nextFootballLeagueRound(ev.plan));toast2("Next round generated ✓");};
   const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan,ev.retiredIds||[]));toast2("Next match generated ✓");return true;};
   const swapCTLadder=(cid,eid,ri,tidA,tidB)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>{
@@ -5414,6 +5434,7 @@ export default function Matchkeeper() {
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
             onToggleCTLeagueLive={(ri,mi,side)=>toggleCTLeagueLive(comm.id,event.id,ri,mi,side)}
             onApplyPromo={()=>applyPromo(comm.id,event.id)}
+            onNextFootballRound={()=>nextFootballRound(comm.id,event.id)}
             onNextCTLadder={(silent)=>nextCTLadder(comm.id,event.id,silent)}
             onSwapCTLadder={(ri,a,b)=>swapCTLadder(comm.id,event.id,ri,a,b)}
             initialTab={view.tab}
@@ -6766,7 +6787,8 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewP
 // ══════════════════════════════════════════════════════
 //  CT TEAM CARD
 // ══════════════════════════════════════════════════════
-function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit,selectedUserId,onPlayerTap,onRenameTeam}){
+function CTTeamCard({team,group,sport,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit,selectedUserId,onPlayerTap,onRenameTeam}){
+  const isFootballEv = sport==="Football";
   const poolColors = ["#6366F1","#06B6D4","#F472B6","#34D399","#F59E0B"];
   const isPool = group && group.startsWith("P");
   const poolNum = isPool ? parseInt(group.slice(1))-1 : (group==="A"?0:1);
@@ -6789,14 +6811,14 @@ function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit
           ? <input autoFocus value={nameVal} onChange={e=>setNameVal(e.target.value)} onBlur={saveName} onKeyDown={e=>{if(e.key==="Enter")saveName();if(e.key==="Escape"){setNameVal(team.name);setEditingName(false);}}} className="po-inp" style={{fontSize:13,fontWeight:600,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",width:120}}/>
           : <span style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{team.name}</span>}
         {isAdmin&&onRenameTeam&&!editingName&&<span onClick={()=>{setNameVal(team.name);setEditingName(true);}} style={{fontSize:11,cursor:"pointer",color:"var(--po-dim)"}}>✏️</span>}
-        <span style={{fontSize:12,color:"var(--po-dim)"}}>({team.avgUsr})</span>
+        <span style={{fontSize:12,color:"var(--po-dim)"}}>({isFootballEv?footballGradeLabel(team.avgUsr):team.avgUsr})</span>
         <Bdg label={badgeLabel} color={gc}/>
       </div>
       <div style={{display:"flex",flexWrap:"wrap",gap:10}}>{team.players.map(p=>{
         const uid=p.userId||p.id, isSel=selectedUserId===uid;
         return <div key={uid} onClick={canEdit?()=>onPlayerTap(team.id,uid):undefined}
           style={{display:"flex",alignItems:"center",gap:4,cursor:canEdit?"pointer":"default",padding:isSel?"2px 6px":"2px 0",borderRadius:6,background:isSel?"#FBBF2422":"transparent",border:isSel?"0.5px solid #FBBF2466":"0.5px solid transparent"}}>
-          <Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:isSel?"#FBBF24":"var(--po-sub)",fontWeight:isSel?700:400}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{p.usr}</span>
+          <Av u={p} size={22}/><span className="po-sub" style={{fontSize:12,color:isSel?"#FBBF24":"var(--po-sub)",fontWeight:isSel?700:400}}>{p.nickname}</span><span style={{fontSize:10,color:"var(--po-dim)"}}>{isFootballEv?(p.footballSkill||"?"):p.usr}</span>
         </div>;
       })}</div>
       {showBreakPref&&(isAdmin
@@ -6914,7 +6936,9 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
 }
 
 
-function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
+function CTMatchesTab({plan,sport,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
+  const isFootballEv = sport==="Football";
+  const teamRatingLabel = v => isFootballEv ? footballGradeLabel(v) : v;
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
   const [scores,setScores]=useState({});
   const [collapsedRounds,setCollapsedRounds]=useState(new Set()); // manually toggled rounds (overrides the completed-round default)
@@ -6969,7 +6993,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
     if(m.winner){return <Card style={{marginBottom:6,padding:"10px 12px",border:"0.5px solid #34D39444",opacity:hasConflict?0.5:1}}>
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} live elsewhere right now</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-        <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}</span>
+        <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>{isFootballEv?"Pitch":"Court"} {m.court}{isLeague&&!isFootballEv?` · Group ${side}`:""}</span>
         <Bdg label={`${m.winner==="A"?m.teamA?.name:m.teamB?.name} wins`} color="#34D399"/>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
@@ -6993,7 +7017,7 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
     return <Card style={{marginBottom:6,padding:"10px 12px",opacity:hasConflict?0.5:1}}>
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} already live elsewhere — can't also flag this one</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>Court {m.court}{isLeague?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
+        <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>{isFootballEv?"Pitch":"Court"} {m.court}{isLeague&&!isFootballEv?` · Group ${side}`:""}{!isLeague&&<span style={{color:"#38BDF8",marginLeft:8,textTransform:"none",fontSize:11}}> win = {ctLadderCourtPts(m.court,tc)} pts</span>}</span>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <BalanceBadge/>
           {/* Whether this match shows on the admin's Match Mode widget — display-only there
@@ -7009,9 +7033,9 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
           const oppTeam=team===m.teamA?m.teamB:m.teamA;
           const myIds=(team?.players||[]).map(p=>p.userId), oppIds=(oppTeam?.players||[]).map(p=>p.userId);
           return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"3px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}>
-            <div style={{fontSize:12,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:1}}>{team?.name} <span style={{fontSize:10,color:"var(--po-dim)"}}>({team?.avgUsr})</span></div>
+            <div style={{fontSize:12,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:1}}>{team?.name} <span style={{fontSize:10,color:"var(--po-dim)"}}>({teamRatingLabel(team?.avgUsr)})</span></div>
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4}}>
-              {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname} ({p.usr}){badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
+              {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname} ({isFootballEv?(p.footballSkill||"?"):p.usr}){badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
             </div>
           </div>;}
         return <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"center"}}><TeamBox team={m.teamA} side2="A"/><span style={{fontSize:11,color:"#334155",fontWeight:700}}>VS</span><TeamBox team={m.teamB} side2="B"/></div>;
@@ -7045,8 +7069,8 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
 
   return <>
     <div style={{marginBottom:12,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
-      <span style={{fontSize:12,color:"var(--po-dim)"}}>{isLeague?`League Round ${plan.leagueRound}`:"Ladder"} · {tc} courts</span>
-      <div style={{display:"flex",gap:6}}>{isLeague&&<><Bdg label={`A: ${plan.groupA?.length} teams`} color={gcA}/><Bdg label={`B: ${plan.groupB?.length} teams`} color={gcB}/></>}</div>
+      <span style={{fontSize:12,color:"var(--po-dim)"}}>{isLeague?`League Round ${plan.leagueRound}`:"Ladder"} · {tc} {isFootballEv?"pitch"+(tc!==1?"es":""):"courts"}</span>
+      <div style={{display:"flex",gap:6}}>{isLeague&&(isFootballEv?<Bdg label={`${plan.teams?.length||0} teams`} color={gcA}/>:<><Bdg label={`A: ${plan.groupA?.length} teams`} color={gcA}/><Bdg label={`B: ${plan.groupB?.length} teams`} color={gcB}/></>)}</div>
     </div>
 
     {/* Ladder: break row + next match button on top */}
@@ -7062,19 +7086,21 @@ function CTMatchesTab({plan,comms,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,o
         {onBreak.length>0&&<div style={{background:"#F59E0B0D",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:12}}>
           <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{isAdmin&&onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{onBreak.map(t=>{const isSel=selT?.ri===lastRound.roundNum-1&&selT?.tid===t.id;return <div key={t.id} onClick={()=>{if(!isAdmin||!onSwapCTLadder)return;if(selT&&selT.ri===lastRound.roundNum-1&&selT.tid!==t.id){onSwapCTLadder(lastRound.roundNum-1,selT.tid,t.id);setSelT(null);}else setSelT({ri:lastRound.roundNum-1,tid:t.id});}} style={{padding:"6px 10px",background:isSel?"#FBBF2422":"#F59E0B11",border:`1.5px solid ${isSel?"#FBBF24":"#F59E0B44"}`,borderRadius:8,cursor:isAdmin&&onSwapCTLadder?"pointer":"default"}}>
-            <div style={{fontSize:12,color:isSel?"#FBBF24":"#F59E0B",fontWeight:600}}>{t.name} ({t.avgUsr})</div>
+            <div style={{fontSize:12,color:isSel?"#FBBF24":"#F59E0B",fontWeight:600}}>{t.name} ({teamRatingLabel(t.avgUsr)})</div>
             <div style={{fontSize:10,color:"var(--po-sub)"}}>{t.players?.map(p=>p.nickname).join(" & ")}</div>
           </div>;})}</div>
         </div>}
       </>;
     })()}
 
-    {/* League: promo button on top */}
+    {/* League: promo button on top (football: no groups, so just a plain next round, no promo/relegation) */}
     {isLeague&&lastRoundDone&&plan.leagueRound<(plan.maxRounds||99)&&<>
-      {plan.lastPromo&&<div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>
+      {!isFootballEv&&plan.lastPromo&&<div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>
         Last: <span style={{color:"#34D399"}}>{plan.lastPromo.promoted?.map?.(t=>t?.name).join(", ")||plan.lastPromo.promoted?.name}</span> promoted · <span style={{color:"#F59E0B"}}>{plan.lastPromo.relegated?.filter(Boolean).map(t=>t?.name).join(", ")}</span> relegated
       </div>}
-      {isAdmin&&<Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>}
+      {isAdmin&&(isFootballEv
+        ? <Btn label="▶ Generate Next Round" primary onClick={onNextFootballRound} style={{width:"100%",marginBottom:12}}/>
+        : <Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>)}
     </>}
     {isLeague&&lastRoundDone&&plan.leagueRound>=(plan.maxRounds||99)&&<div style={{padding:"12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:13,fontWeight:600,color:"#34D399",textAlign:"center",marginBottom:12}}>🏆 Event Complete — all rounds played! Check Standings.</div>}
     {isLeague&&lastRoundDone&&plan.leagueRound>=(plan.maxRounds||99)&&<div style={{padding:"6px 10px",background:"#6366F111",borderRadius:6,fontSize:11,color:"#6366F1",marginBottom:8}}>Final standings: all teams merged by total points</div>}
@@ -7309,7 +7335,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -7568,6 +7594,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     applyPromo: () => sim
       ? simMutate(e => e.plan ? {...e, plan: applyPromoRelegation(e.plan,e.retiredIds||[])} : e)
       : onApplyPromo(),
+    nextFootballRound: () => sim
+      ? simMutate(e => e.plan ? {...e, plan: nextFootballLeagueRound(e.plan)} : e)
+      : onNextFootballRound(),
     nextCTLadder: () => sim
       ? simMutate(e => e.plan ? {...e, plan: genNextCTLadder(e.plan,e.retiredIds||[])} : e)
       : onNextCTLadder(),
@@ -8755,7 +8784,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           ? <div style={{marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>ℹ️ {footballPitches} pitch{footballPitches!==1?"es":""} · {nTeams} teams (from event setup) — edit the event to change these.</div>
           : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Courts:</div><div style={{display:"flex",gap:8}}>{[ctCC?.min,ctCC?.max].filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=><button key={n} onClick={()=>setCtC(n)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${selCtC===n?"#6366F1":"var(--po-bdr)"}`,background:selCtC===n?"#6366F122":"var(--po-inp)",color:selCtC===n?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600}}>{n} {n===ctCC?.min?"(min)":"(max)"}</button>)}</div></div>}
         <div style={{marginBottom:16}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Format:</div>
-          {[{k:"league",l:"League + Promotion/Relegation",d:"Groups play full round robin · top promoted · bottom relegated",ok:true},
+          {[{k:"league",l:isFootballEv?"League":"League + Promotion/Relegation",d:isFootballEv?"Full round robin · every team plays every other team":"Groups play full round robin · top promoted · bottom relegated",ok:true},
             {k:"ladder",l:"Ladder",d:ladderOK?"Teams climb/descend · break schedule · court points":`❌ Invalid: ${breakTeams} break team(s) > ${selCtC} ${isFootballEv?"pitch(es)":"court(s)"}. Use League instead.`,ok:ladderOK}
           ].map(f=><div key={f.k} onClick={()=>f.ok&&setCtF(f.k)} style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:f.ok?"pointer":"not-allowed",border:`0.5px solid ${ctF===f.k?"#6366F1":f.ok?"var(--po-bdr)":"#EF444433"}`,background:ctF===f.k?"#6366F122":f.ok?"transparent":"#EF444408",opacity:f.ok?1:0.7}}>
             <div style={{fontWeight:600,fontSize:13,color:ctF===f.k?"#A5B4FC":f.ok?"var(--po-text)":"#EF4444",marginBottom:2}}>{f.l}</div>
@@ -8812,14 +8841,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               const poolTeams = (plan.teams||[]).filter(t=>t.poolIdx===pi);
               return <React.Fragment key={pi}>
                 {poolNums.length>1&&<ST>Pool {pi+1} — {poolTeams.length} teams</ST>}
-                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
+                {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} sport={effEv.sport} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
               </React.Fragment>;
             });
           })()}
         </>:<>
           <ST>Group A — {plan.groupA?.length||0} teams</ST>
-          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
-          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}</>}
+          {(plan.groupA||[]).map(t=><CTTeamCard key={t.id} team={t} group="A" sport={effEv.sport} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
+          {plan.groupB?.length>0&&<><ST>Group B — {plan.groupB.length} teams</ST>{plan.groupB.map(t=><CTTeamCard key={t.id} team={t} group="B" sport={effEv.sport} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}</>}
         </>}
       </>}
     </>}
@@ -8828,7 +8857,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} comms={comms} onSetWinCT={act.setWinCT} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>

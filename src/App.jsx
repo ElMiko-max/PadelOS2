@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.03";
+const APP_VERSION = "V0.10.04";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -10045,11 +10045,16 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
-      {!IS_DEV_ENV&&<div onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:cloningToDev?"default":"pointer",opacity:cloningToDev?0.5:1}}>
+      {!IS_DEV_ENV&&<div onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:cloningToDev?"default":"pointer",opacity:cloningToDev?0.5:1,borderBottom:"0.5px solid var(--po-bdr)"}}>
         <span style={{fontSize:18}}>☁️</span>
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{cloningToDev?"Cloning to DEV…":"Clone Data to DEV"}</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>}
+      <div onClick={()=>window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank")} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+        <span style={{fontSize:18}}>{IS_DEV_ENV?"🏭":"🧪"}</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{IS_DEV_ENV?"Open Production":"Open DEV Environment"}</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>
     </Card>
   </>}
   </>;

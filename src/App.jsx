@@ -225,8 +225,12 @@ const EVENT_TYPES = [
 // partner format — so Closed Individuals (built entirely around that rotation) doesn't apply.
 // Same underlying type keys/behavior as padel (nothing downstream changes), just sport-
 // appropriate labels, reordered with the team-based format first per the owner's call.
+// "League" vs "Ladder" is a Format choice made at team-formation time (plan.format — see
+// the Form Teams screen), not an Event Type — so the type itself is just "Teams" (fixed
+// squads for the session) vs "Open" (pickup), matching how football admins actually think
+// about it, not padel's League/Ladder-as-a-top-level-choice framing.
 const FOOTBALL_EVENT_TYPES = [
-  { key:"closed_teams", label:"League",       desc:"Fixed teams · compete throughout · standings" },
+  { key:"closed_teams", label:"Teams",         desc:"Fixed teams · compete throughout · standings" },
   { key:"open",         label:"Open / Pickup", desc:"Social · check-in · teams picked on the day" },
 ];
 const getEventTypesForSport = sport => sport==="Football" ? FOOTBALL_EVENT_TYPES : EVENT_TYPES;
@@ -1032,6 +1036,25 @@ function formCTTeams(players, topPoolSizeOverride) {
   return { teams, pools, numPools:pools.length };
 }
 
+// Football: fixed team count and size (set at event creation, ev.numTeams/ev.teamSize), one
+// pool for every player — no padel-style elite/lower tiering, since a 5-a-side/7-a-side squad
+// isn't a doubles pair the way segmentPools/snakeTeams assume. Balances teams via a standard
+// serpentine (snake) draft — highest-rated players spread one per team first, direction
+// reverses each row — instead of padel's pair-up-highest-with-lowest pattern, since that only
+// makes sense for 2-player teams.
+function formFootballTeams(players, numTeams, teamSize) {
+  const sorted = [...players].sort((a,b) => b.usr - a.usr);
+  const n = Math.max(1, numTeams||3);
+  const teams = Array.from({length:n}, (_,i) => ({ id:i+1, name:`Team ${i+1}`, players:[], poolIdx:0, breakPref:"none" }));
+  sorted.forEach((p,i) => {
+    const round = Math.floor(i/n), posInRound = i%n;
+    const t = round%2===0 ? posInRound : (n-1-posInRound);
+    teams[t].players.push(p);
+  });
+  teams.forEach(team => { team.avgUsr = team.players.length ? Math.round(team.players.reduce((s,p)=>s+p.usr,0)/team.players.length) : 0; });
+  return { teams, pools:[sorted], numPools:1 };
+}
+
 function rrSchedule(teams) {
   const matches = [];
   for (let i = 0; i < teams.length; i++)
@@ -1089,7 +1112,7 @@ function calcMaxRounds(ev, format, groupA, groupB, courts, matchDuration=20) {
 }
 
 function generateCTPlan(players, courts, format, ev=null, matchDuration=20, topPoolSizeOverride) {
-  const { teams, pools } = formCTTeams(players, topPoolSizeOverride);
+  const { teams, pools } = ev?.sport==="Football" ? formFootballTeams(players, ev.numTeams, ev.teamSize) : formCTTeams(players, topPoolSizeOverride);
   const groupA = teams.filter(t => t.poolIdx === 0);
   const groupB = teams.filter(t => t.poolIdx > 0);
   const courtsA = Math.max(1, Math.round(courts * groupA.length / teams.length));
@@ -5181,9 +5204,12 @@ export default function Matchkeeper() {
   const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
     const ev=getEv(cid,eid);if(!ev)return;
     const comm=comms.find(c=>c.id===cid);
+    const isFootballEv=ev.sport==="Football";
     let players=splitRegsByCapacity(ev,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,ev),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     let waitlisted=null;
-    if(players.length%2!==0){
+    // Football teams don't need to pair off 2-by-2 — team size comes from ev.teamSize/numTeams,
+    // set at event creation, not derived from player count parity the way padel's doubles are.
+    if(!isFootballEv && players.length%2!==0){
       // Odd count — last player in registrations array goes to waiting list
       const regs=splitRegsByCapacity(ev,comm).active;
       const lastReg=regs[regs.length-1];
@@ -5192,9 +5218,12 @@ export default function Matchkeeper() {
       players=players.filter(p=>(p.userId||p.id)!==(waitlisted.userId||waitlisted.id));
       toast2(`${waitlisted.nickname} moved to waiting list — need even number for team formation`,"err");
     }
-    const newPlan={...generateCTPlan(players,courts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
+    // Football's pitches are fixed at event creation (ev.pitchNames), not admin-selectable at
+    // formation time the way padel's court count is — ignore whatever `courts` the caller passed.
+    const effCourts=isFootballEv?Math.max(1,ev.pitchNames?.length||ev.courts||1):courts;
+    const newPlan={...generateCTPlan(players,effCourts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
     setPlan(cid,eid,newPlan);
-    toast2(`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
+    toast2(isFootballEv?`Teams formed ✓ — ${ev.numTeams||newPlan.teams.length} teams`:`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
   // Clears the League "live" flag the moment a winner gets recorded — otherwise a
   // completed match can go on carrying a stale live:true from before it was decided,
@@ -6330,7 +6359,7 @@ function EvCard({ev,me,users,venues,onClick}){
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",pollMode:false,eventType:"open",visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
+  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",pollMode:false,eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
   const venuePitches=v?.pitches||[];
@@ -6352,9 +6381,11 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     set("numTeams",String(suggested));
   },[isFootball,f.pitchNames.length,f.numTeamsTouched]);
   const togglePitch=name=>setF(p=>({...p,pitchNames:p.pitchNames.includes(name)?p.pitchNames.filter(n=>n!==name):[...p.pitchNames,name]}));
+  // Reset to the new sport's default type whenever Sport changes — not just when the current
+  // value becomes invalid, since e.g. "open" is a valid key for both sports but football's
+  // default should be "Teams" (closed_teams), not padel's "Open Day" default carrying over.
   useEffect(()=>{
-    const validKeys=getEventTypesForSport(f.sport).map(t=>t.key);
-    if(!validKeys.includes(f.eventType)) set("eventType",validKeys[0]);
+    set("eventType",getEventTypesForSport(f.sport)[0].key);
   },[f.sport]);
   const durHrs=(()=>{ if(!f.time||!f.timeTo) return 2; const [h1,m1]=f.time.split(":").map(Number); const [h2,m2]=f.timeTo.split(":").map(Number); if(isNaN(h2)) return 2; let mins=(h2*60+m2)-(h1*60+m1); if(mins<=0) mins+=24*60; return Math.max(0.5, mins/60); })();
   const vPricing=getVenuePricing(v,f.sport);
@@ -6761,7 +6792,7 @@ function CTTeamCard({team,group,showBreakPref,isAdmin,onSetTeamBreakPref,canEdit
         <span style={{fontSize:12,color:"var(--po-dim)"}}>({team.avgUsr})</span>
         <Bdg label={badgeLabel} color={gc}/>
       </div>
-      <div style={{display:"flex",gap:10}}>{team.players.map(p=>{
+      <div style={{display:"flex",flexWrap:"wrap",gap:10}}>{team.players.map(p=>{
         const uid=p.userId||p.id, isSel=selectedUserId===uid;
         return <div key={uid} onClick={canEdit?()=>onPlayerTap(team.id,uid):undefined}
           style={{display:"flex",alignItems:"center",gap:4,cursor:canEdit?"pointer":"default",padding:isSel?"2px 6px":"2px 0",borderRadius:6,background:isSel?"#FBBF2422":"transparent",border:isSel?"0.5px solid #FBBF2466":"0.5px solid transparent"}}>
@@ -7598,6 +7629,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const isOpen = effEv.type==="open";
   const isCI   = effEv.type==="closed_ind";
   const isCT   = effEv.type==="closed_teams";
+  const isFootballEv = effEv.sport==="Football";
   const tc     = effEv.courts;
   const bp     = breakPts(tc);
   const minReq = tc*4, maxCap=tc*5;
@@ -7862,9 +7894,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
   // CT calc — active (non-waitlisted) registrants only, matching what startCT will actually use
   const activeRegCount = splitRegsByCapacity(effEv,comm).active.length;
-  const ctCC   = isCT?calcCTCourts(activeRegCount,effEv.reservedCourts||effEv.courts||2):null;
-  const selCtC = ctC??ctCC?.min??tc;
-  const nTeams = Math.floor(activeRegCount/2);
+  // Football's pitches are fixed at event creation, not admin-selectable here like padel's
+  // courts — selCtC just reads them straight off the event instead of offering a min/max choice.
+  const footballPitches = Math.max(1, effEv.pitchNames?.length || effEv.courts || 1);
+  const ctCC   = isCT&&!isFootballEv?calcCTCourts(activeRegCount,effEv.reservedCourts||effEv.courts||2):null;
+  const selCtC = isFootballEv ? footballPitches : (ctC??ctCC?.min??tc);
+  const nTeams = isFootballEv ? (effEv.numTeams||3) : Math.floor(activeRegCount/2);
   const breakTeams = Math.max(0,nTeams-selCtC*2);
   const ladderOK   = (breakTeams*2)<=selCtC;
   // Round 1 is "locked" once any match in it has a winner recorded — after this, no more player changes
@@ -7999,7 +8034,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
     "manage","photos"
   ];
-  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:"🎾 Matches",photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`};
+  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:`${ev.sport==="Football"?"⚽":"🎾"} Matches`,photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
   function PChip({p,ri,matchBadge}){
@@ -8714,12 +8749,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="teams"&&isCT&&<>
       {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Form Teams & Start</div>
-        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{activeRegCount} players → {Math.floor(activeRegCount/6)} pools → {Math.floor(activeRegCount/2)} teams</div>
+        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{isFootballEv?`${activeRegCount} players → 1 pool → ${nTeams} teams`:`${activeRegCount} players → ${Math.floor(activeRegCount/6)} pools → ${Math.floor(activeRegCount/2)} teams`}</div>
         {ctCC?.warning&&<div style={{padding:"8px 12px",background:"#F59E0B11",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:12,color:"#F59E0B",marginBottom:12}}>⚠️ {ctCC.warning}</div>}
-        <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Courts:</div><div style={{display:"flex",gap:8}}>{[ctCC?.min,ctCC?.max].filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=><button key={n} onClick={()=>setCtC(n)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${selCtC===n?"#6366F1":"var(--po-bdr)"}`,background:selCtC===n?"#6366F122":"var(--po-inp)",color:selCtC===n?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600}}>{n} {n===ctCC?.min?"(min)":"(max)"}</button>)}</div></div>
+        {isFootballEv
+          ? <div style={{marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>ℹ️ {footballPitches} pitch{footballPitches!==1?"es":""} · {nTeams} teams (from event setup) — edit the event to change these.</div>
+          : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Courts:</div><div style={{display:"flex",gap:8}}>{[ctCC?.min,ctCC?.max].filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=><button key={n} onClick={()=>setCtC(n)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${selCtC===n?"#6366F1":"var(--po-bdr)"}`,background:selCtC===n?"#6366F122":"var(--po-inp)",color:selCtC===n?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600}}>{n} {n===ctCC?.min?"(min)":"(max)"}</button>)}</div></div>}
         <div style={{marginBottom:16}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Format:</div>
           {[{k:"league",l:"League + Promotion/Relegation",d:"Groups play full round robin · top promoted · bottom relegated",ok:true},
-            {k:"ladder",l:"Ladder",d:ladderOK?"Teams climb/descend · break schedule · court points":`❌ Invalid: ${breakTeams} break team(s) > ${selCtC} court(s). Use League instead.`,ok:ladderOK}
+            {k:"ladder",l:"Ladder",d:ladderOK?"Teams climb/descend · break schedule · court points":`❌ Invalid: ${breakTeams} break team(s) > ${selCtC} ${isFootballEv?"pitch(es)":"court(s)"}. Use League instead.`,ok:ladderOK}
           ].map(f=><div key={f.k} onClick={()=>f.ok&&setCtF(f.k)} style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:f.ok?"pointer":"not-allowed",border:`0.5px solid ${ctF===f.k?"#6366F1":f.ok?"var(--po-bdr)":"#EF444433"}`,background:ctF===f.k?"#6366F122":f.ok?"transparent":"#EF444408",opacity:f.ok?1:0.7}}>
             <div style={{fontWeight:600,fontSize:13,color:ctF===f.k?"#A5B4FC":f.ok?"var(--po-text)":"#EF4444",marginBottom:2}}>{f.l}</div>
             <div style={{fontSize:11,color:f.ok?"var(--po-dim)":"#EF4444"}}>{f.d}</div>
@@ -8730,7 +8767,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <div style={{display:"flex",gap:8}}>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
-        {(()=>{
+        {!isFootballEv&&(()=>{
           const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:teamFormationRating(u,effEv)}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
           if(!alt) return null;
@@ -8761,7 +8798,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </Card>;
         })()}
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-          <span>✓ {plan.teams?.length||0} teams · {plan.format==="ladder"?"Ladder":"League"} · {plan.courts} courts</span>
+          <span>✓ {plan.teams?.length||0} teams · {plan.format==="ladder"?"Ladder":"League"} · {plan.courts} {isFootballEv?"pitches":"courts"}</span>
           {isAdmin&&(plan.rounds.length===0||!plan.rounds[0]?.matchesA?.some(m=>m.winner)
             ? (!ctR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current team formation and start over?\n\nAll teams and the current Round 1 will be cleared. Registered players stay.\n\nThis cannot be undone."))act.startCT(plan.courts,plan.format,plan.matchDuration,ctTopPoolSize);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)
             : null)}
@@ -8774,7 +8811,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             return poolNums.map(pi => {
               const poolTeams = (plan.teams||[]).filter(t=>t.poolIdx===pi);
               return <React.Fragment key={pi}>
-                <ST>Pool {pi+1} — {poolTeams.length} teams</ST>
+                {poolNums.length>1&&<ST>Pool {pi+1} — {poolTeams.length} teams</ST>}
                 {poolTeams.map(t=><CTTeamCard key={t.id} team={t} group={`P${pi+1}`} showBreakPref={plan.format==="ladder"} isAdmin={isAdmin} onSetTeamBreakPref={act.setTeamBreakPref} canEdit={isAdmin&&!ctR1Locked} selectedUserId={ctSel?.userId} onPlayerTap={handleCTPlayerTap} onRenameTeam={act.renameCTTeam}/>)}
               </React.Fragment>;
             });

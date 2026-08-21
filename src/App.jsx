@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.04";
+const APP_VERSION = "V0.10.05";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -1797,6 +1797,15 @@ let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_invid=1;
 
 // ── Helpers ───────────────────────────────────────────
 const usrLv  = u => u>=80?{l:"A",c:"#C084FC"}:u>=65?{l:"B",c:"#38BDF8"}:u>=50?{l:"C",c:"#34D399"}:u>=35?{l:"D",c:"#FBBF24"}:{l:"E",c:"#F87171"};
+// "Level of the event" — average rating across active (non-waitlisted) registrants only,
+// since that's who's actually going to play. Uses teamFormationRating so football events
+// average football skill (mapped to the same 0-100 scale) instead of a meaningless padel USR.
+// null when nobody's registered yet — nothing to average.
+const calcEventAvgUsr = (ev, users, comm) => {
+  const active = splitRegsByCapacity(ev, comm).active;
+  const ratings = active.map(r => { const u = users.find(uu=>uu.id===r.userId); return u ? teamFormationRating(u, ev) : null; }).filter(v => v != null);
+  return ratings.length ? Math.round(ratings.reduce((s,v)=>s+v,0) / ratings.length) : null;
+};
 const ini2   = s => s.substring(0,2).toUpperCase();
 const fmtD   = d => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
 const fmtT   = t => { if(!t) return t; const [h,m]=t.split(":").map(Number); if(isNaN(h)) return t; const ap=h>=12?"PM":"AM"; const h12=h%12||12; return `${h12}:${String(m).padStart(2,"0")} ${ap}`; };
@@ -3092,6 +3101,19 @@ function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padd
 // Solid, not the soft `color22`-on-transparent pastel style every other badge on the card
 // uses — those all look alike at a glance, and LIVE needs to be the one thing that doesn't.
 function LiveBdg({label}){return <span style={{fontSize:11,fontWeight:800,padding:"3px 10px 3px 7px",borderRadius:20,background:"#EF4444",color:"#fff",whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:5,letterSpacing:0.3,boxShadow:"0 1px 4px #EF444466"}}><span style={{width:6,height:6,borderRadius:"50%",background:"#fff",animation:"liveDotPulse 1.4s ease-in-out infinite"}}/>{label}</span>;}
+// "Level of the event" badge — a glowing colored ring around the average rating (see
+// calcEventAvgUsr), reusing usrLv's own A-E bands/colors so it reads the same intensity scale
+// as everywhere else in the app. size="lg" for the event header, default (sm) for cards.
+function EventLevelBadge({avg,size="sm"}){
+  if(avg==null) return null;
+  const lv=usrLv(avg);
+  const big=size==="lg";
+  const d=big?68:44;
+  return <div title={`Event level — avg rating ${avg} (${lv.l})`} style={{width:d,height:d,borderRadius:"50%",flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:`radial-gradient(circle, ${lv.c}33 0%, ${lv.c}11 70%)`,border:`${big?2.5:2}px solid ${lv.c}`,boxShadow:`0 0 ${big?18:9}px ${lv.c}66`}}>
+    <div style={{fontSize:big?24:15,fontWeight:800,color:lv.c,lineHeight:1,fontVariantNumeric:"tabular-nums"}}>{avg}</div>
+    <div style={{fontSize:big?10:8,fontWeight:700,color:lv.c,opacity:0.8,letterSpacing:0.5,marginTop:1}}>{lv.l}</div>
+  </div>;
+}
 
 // top3: array of up to 3 {name, avatarUser, players, value, valueLabel, usrLine} in RANK order (1st, 2nd, 3rd).
 // avatarUser: single user (CI). players: array of users (CT, shows each member's avatar+name).
@@ -5843,8 +5865,8 @@ function CommStatsTab({comm, users, onViewProfile}){
       return <Card key={s.user.id} style={{marginBottom:6}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{fontSize:18,width:28,textAlign:"center",flexShrink:0}}>{medal}</div>
-          <Av u={s.user} size={34}/>
-          <div style={{flex:1,cursor:"pointer"}} onClick={()=>onViewProfile&&onViewProfile(s.user.id)}>
+          <div style={{cursor:onViewProfile?"pointer":"default"}} onClick={()=>onViewProfile&&onViewProfile(s.user.id)}><Av u={s.user} size={34}/></div>
+          <div style={{flex:1}}>
             <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{s.user.nickname}</div>
             <div style={{fontSize:11,color:"var(--po-dim)"}}>{views[view].sub(s)}</div>
           </div>
@@ -6151,7 +6173,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>💰 Enable Centralized Bookkeeping</div>
       <div style={{fontSize:12,color:"var(--po-sub)",marginBottom:14}}>Collect a recurring monthly due from members into a shared fund (court tips, balls, equipment...) — tracked separately from, and alongside, per-event cost-splitting.</div>
       <Inp label="Monthly due per member (EGP)" value={monthlyDueInput} onChange={setMonthlyDueInput} type="number"/>
-      <Btn label="Enable" primary onClick={()=>onSetBookkeeping({enabled:true,monthlyDue:parseFloat(monthlyDueInput)||100})} style={{width:"100%"}}/>
+      <Btn label="Enable" primary onClick={()=>{if(window.confirm(`Enable centralized bookkeeping for ${comm.name}?\n\nEvery active member will start accruing a ${parseFloat(monthlyDueInput)||100} EGP monthly due automatically. You can change the amount anytime, but the ledger itself can't be un-enabled once it's tracking real entries.`))onSetBookkeeping({enabled:true,monthlyDue:parseFloat(monthlyDueInput)||100});}} style={{width:"100%"}}/>
     </Card>;
   }
 
@@ -6417,7 +6439,8 @@ function EvCard({ev,me,users,venues,onClick}){
   const live=getLiveMatchInfo(ev,now);
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}><div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div><div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
+  const avgUsr=calcEventAvgUsr(ev,users||[]);
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
               // Compact version of the graduated Min/Max capacity indicator (V0.09.22, EvDetail)
               // — same status-pill + Min-tick language, scaled down for a list card (no marker
               // dot or Start/Max text labels, the fill edge itself shows position at this size).
@@ -8116,6 +8139,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
   // CT calc — active (non-waitlisted) registrants only, matching what startCT will actually use
   const activeRegCount = splitRegsByCapacity(effEv,comm).active.length;
+  const eventAvgUsr = calcEventAvgUsr(effEv,users,comm);
   // Football's pitches are fixed at event creation, not admin-selectable here like padel's
   // courts — selCtC just reads them straight off the event instead of offering a min/max choice.
   const footballPitches = Math.max(1, effEv.pitchNames?.length || effEv.courts || 1);
@@ -8317,13 +8341,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-        <div>
-          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
-          {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>👥 {comm.name}</div>}
-          {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
-          <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
-          {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{creator.nickname}</span></div>:null;})()}
-          {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
+        <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+          {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg"/>}
+          <div>
+            <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+            {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>👥 {comm.name}</div>}
+            {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
+            <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+            {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{creator.nickname}</span></div>:null;})()}
+            {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
+          </div>
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
@@ -8715,15 +8742,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>)}
 
     {tab==="manage"&&isAdmin&&<>
-      {/* A community with the ledger switched on absorbs event costs centrally (via monthly
-          dues, tracked in the community's Ledger tab) — the old ad-hoc per-event cost-split/
-          settlement math is redundant and confusing alongside a real fund, so it's hidden in
-          favor of just recording this event's income/expense straight into that fund below. */}
-      {!comm?.bookkeeping?.enabled&&<>
+      {/* A community with the ledger switched on absorbs most event costs centrally (via
+          monthly dues, tracked in the community's Ledger tab), so this per-event cost-split
+          tool is de-emphasized — collapsed by default — rather than gone entirely, since an
+          admin may still want to split a one-off cost that isn't going through the fund. */}
+      <CollapsibleSection label="🧮 Split This Event's Cost" defaultOpen={!comm?.bookkeeping?.enabled}>
       {isOpen&&activeRegCount<tc*4&&<Card style={{background:"#EF444411",border:"0.5px solid #EF444444",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#EF4444",marginBottom:4}}>⚠️ Insufficient Players</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>Need {tc*4} players. Currently {activeRegCount}.</div></Card>}
       {!isOpen&&<Card style={{background:"#6366F111",border:"0.5px solid #6366F144",marginBottom:10}}><div style={{fontSize:11,color:"var(--po-sub)"}}>ℹ️ {isCI?"Closed Individuals":"Closed Teams"} events have no check-in step — cost is split across all {attCnt} registered players (attendance is assumed).</div></Card>}
       {sim&&attCnt>0&&<Card style={{background:"#6366F111",border:"0.5px solid #6366F144",marginBottom:10}}><div style={{fontSize:13,fontWeight:600,color:"#A5B4FC",marginBottom:10}}>💰 Live Cost Settlement</div>{[["Total",`${totC} EGP`],[isOpen?"Checked In":"Registered",attCnt],["Paying",payingCnt],["Per Player",`${cpp} EGP`]].map(([k,val])=><div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"0.5px solid #6366F122"}}><span style={{fontSize:13,color:"var(--po-dim)"}}>{k}</span><span style={{fontSize:14,fontWeight:700,color:k==="Per Player"?"#A5B4FC":"var(--po-text)"}}>{val}</span></div>)}</Card>}
-      <ST>💰 Financial</ST>
       <Card>
         {/* Cost breakdown */}
         {[
@@ -8814,7 +8840,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </Card>;
         })}
       </>}
-      </>}
+      </CollapsibleSection>
       {comm?.bookkeeping?.enabled&&<>
         <ST>💰 Community Ledger</ST>
         {!showLedgerForm

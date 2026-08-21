@@ -8778,14 +8778,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="teams"&&isCT&&<>
       {isAdmin&&!plan&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Form Teams & Start</div>
-        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{isFootballEv?`${activeRegCount} players → 1 pool → ${nTeams} teams`:`${activeRegCount} players → ${Math.floor(activeRegCount/6)} pools → ${Math.floor(activeRegCount/2)} teams`}</div>
+        <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{isFootballEv?`${activeRegCount} players → ${footballPitches} pitch${footballPitches!==1?"es":""} → ${nTeams} teams`:`${activeRegCount} players → ${Math.floor(activeRegCount/6)} pools → ${Math.floor(activeRegCount/2)} teams`}</div>
         {ctCC?.warning&&<div style={{padding:"8px 12px",background:"#F59E0B11",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:12,color:"#F59E0B",marginBottom:12}}>⚠️ {ctCC.warning}</div>}
         {isFootballEv
           ? <div style={{marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>ℹ️ {footballPitches} pitch{footballPitches!==1?"es":""} · {nTeams} teams (from event setup) — edit the event to change these.</div>
           : <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Courts:</div><div style={{display:"flex",gap:8}}>{[ctCC?.min,ctCC?.max].filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=><button key={n} onClick={()=>setCtC(n)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${selCtC===n?"#6366F1":"var(--po-bdr)"}`,background:selCtC===n?"#6366F122":"var(--po-inp)",color:selCtC===n?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600}}>{n} {n===ctCC?.min?"(min)":"(max)"}</button>)}</div></div>}
         <div style={{marginBottom:16}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Format:</div>
           {[{k:"league",l:isFootballEv?"League":"League + Promotion/Relegation",d:isFootballEv?"Full round robin · every team plays every other team":"Groups play full round robin · top promoted · bottom relegated",ok:true},
-            {k:"ladder",l:"Ladder",d:ladderOK?"Teams climb/descend · break schedule · court points":`❌ Invalid: ${breakTeams} break team(s) > ${selCtC} ${isFootballEv?"pitch(es)":"court(s)"}. Use League instead.`,ok:ladderOK}
+            {k:"ladder",l:"Ladder",d:ladderOK?"Teams climb/descend · break schedule · court points":(isFootballEv?`❌ Invalid: Pitches > 1. Use League instead.`:`❌ Invalid: ${breakTeams} break team(s) > ${selCtC} court(s). Use League instead.`),ok:ladderOK}
           ].map(f=><div key={f.k} onClick={()=>f.ok&&setCtF(f.k)} style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:f.ok?"pointer":"not-allowed",border:`0.5px solid ${ctF===f.k?"#6366F1":f.ok?"var(--po-bdr)":"#EF444433"}`,background:ctF===f.k?"#6366F122":f.ok?"transparent":"#EF444408",opacity:f.ok?1:0.7}}>
             <div style={{fontWeight:600,fontSize:13,color:ctF===f.k?"#A5B4FC":f.ok?"var(--po-text)":"#EF4444",marginBottom:2}}>{f.l}</div>
             <div style={{fontSize:11,color:f.ok?"var(--po-dim)":"#EF4444"}}>{f.d}</div>

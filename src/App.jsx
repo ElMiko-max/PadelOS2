@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.55";
+const APP_VERSION = "V0.09.56";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -1739,6 +1739,7 @@ const timeAgo = (iso) => {
   if (s<86400) return `${Math.floor(s/3600)}h ago`;
   return `${Math.floor(s/86400)}d ago`;
 };
+const fmtBytes = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1048576).toFixed(1)} MB`;
 const addMinutesToTime = (t,mins) => {
   if (!t) return "";
   const [h,m] = t.split(":").map(Number);
@@ -9723,7 +9724,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             <span style={{fontSize:18}}>📦</span>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{timeAgo(b.createdAt)}</div>
-              <div style={{fontSize:11,color:"var(--po-dim)"}}>by {b.createdBy||"unknown"} · {b.version||"—"}</div>
+              <div style={{fontSize:11,color:"var(--po-dim)"}}>by {b.createdBy||"unknown"} · {b.version||"—"} · {fmtBytes(new Blob([b.value||""]).size)}</div>
             </div>
             <SmBtn label="Restore" onClick={()=>{if(window.confirm(`Restore this backup from ${timeAgo(b.createdAt)}?\n\nThis replaces ALL current players, communities and events with what was saved at that moment. Anything added or changed since then will be lost unless you back it up first.`))onRestoreBackup(b.id);}} color="#F59E0B"/>
             <SmBtn label="🗑" onClick={()=>{if(window.confirm("Delete this backup? This cannot be undone."))onDeleteBackup(b.id);}} color="#EF4444"/>

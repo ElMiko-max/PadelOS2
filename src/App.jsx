@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.07";
+const APP_VERSION = "V0.10.08";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -6265,6 +6265,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
   const totalDues = entries.filter(e=>e.type==="due").reduce((s,e)=>s+e.amount,0);
   const totalMiscIncome = entries.filter(e=>e.type==="income_misc").reduce((s,e)=>s+e.amount,0);
   const totalExpenses = entries.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+  const totalOwed = payingMembers.reduce((s,m)=>s+Math.max(0,liabilityOf(m.userId)),0);
 
   return <>
     <Card style={{marginBottom:12}}>
@@ -6295,7 +6296,31 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       </div>
     </Card>
 
-    <ST>Player Liabilities</ST>
+    <div style={{display:"flex",gap:6,marginBottom:showExpense||showIncome?8:12}}>
+      {!showExpense&&<SmBtn label="+ Add Expense" onClick={()=>{setShowExpense(true);setShowIncome(false);}} color="#F59E0B" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+      {!showIncome&&<SmBtn label="+ Add Income" onClick={()=>{setShowIncome(true);setShowExpense(false);}} color="#34D399" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+    </div>
+    {showExpense&&<Card style={{marginBottom:12}}>
+      <Inp label="Description" value={expDesc} onChange={setExpDesc} placeholder="e.g. Court staff tip, balls, ice"/>
+      <Inp label="Amount (EGP)" value={expAmount} onChange={setExpAmount} type="number"/>
+      <Inp label="Date" value={expDate} onChange={setExpDate} type="date"/>
+      <Drp label="Category" value={expCategory} onChange={setExpCategory} options={(expenseCategories||[]).map(c=>({v:c,l:c}))}/>
+      <div style={{display:"flex",gap:6}}>
+        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc,category:expCategory||"Misc",date:dateInputToISO(expDate)});setExpDesc("");setExpAmount("");setExpCategory("");setExpDate(todayStr);setShowExpense(false);}}} style={{flex:1}}/>
+        <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");setExpCategory("");setExpDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
+      </div>
+    </Card>}
+    {showIncome&&<Card style={{marginBottom:12}}>
+      <Inp label="Description" value={incDesc} onChange={setIncDesc} placeholder="e.g. Sponsor contribution, event surplus"/>
+      <Inp label="Amount (EGP)" value={incAmount} onChange={setIncAmount} type="number"/>
+      <Inp label="Date" value={incDate} onChange={setIncDate} type="date"/>
+      <div style={{display:"flex",gap:6}}>
+        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(incAmount);if(incDesc&&amt>0){onAddLedgerEntry({type:"income_misc",amount:amt,description:incDesc,date:dateInputToISO(incDate)});setIncDesc("");setIncAmount("");setIncDate(todayStr);setShowIncome(false);}}} style={{flex:1}}/>
+        <SmBtn label="Cancel" onClick={()=>{setShowIncome(false);setIncDesc("");setIncAmount("");setIncDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
+      </div>
+    </Card>}
+
+    <CollapsibleSection label={<>👥 Player Liabilities{totalOwed>0?<span style={{fontWeight:400,color:"#F59E0B"}}>&nbsp;— {totalOwed.toLocaleString()} EGP owed</span>:null}</>} defaultOpen={false}>
     {payingMembers.map(m=>{
       const u=users.find(x=>x.id===m.userId); if(!u) return null;
       const memberEntries = entries.filter(e=>e.memberId===u.id);
@@ -6351,30 +6376,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
         </div>}
       </Card>;
     })}
-
-    <div style={{display:"flex",gap:6,marginTop:10}}>
-      {!showExpense&&<SmBtn label="+ Add Expense" onClick={()=>{setShowExpense(true);setShowIncome(false);}} color="#F59E0B" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
-      {!showIncome&&<SmBtn label="+ Add Income" onClick={()=>{setShowIncome(true);setShowExpense(false);}} color="#34D399" style={{flex:1,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
-    </div>
-    {showExpense&&<Card style={{marginTop:8}}>
-      <Inp label="Description" value={expDesc} onChange={setExpDesc} placeholder="e.g. Court staff tip, balls, ice"/>
-      <Inp label="Amount (EGP)" value={expAmount} onChange={setExpAmount} type="number"/>
-      <Inp label="Date" value={expDate} onChange={setExpDate} type="date"/>
-      <Drp label="Category" value={expCategory} onChange={setExpCategory} options={(expenseCategories||[]).map(c=>({v:c,l:c}))}/>
-      <div style={{display:"flex",gap:6}}>
-        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(expAmount);if(expDesc&&amt>0){onAddLedgerEntry({type:"expense",amount:amt,description:expDesc,category:expCategory||"Misc",date:dateInputToISO(expDate)});setExpDesc("");setExpAmount("");setExpCategory("");setExpDate(todayStr);setShowExpense(false);}}} style={{flex:1}}/>
-        <SmBtn label="Cancel" onClick={()=>{setShowExpense(false);setExpDesc("");setExpAmount("");setExpCategory("");setExpDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
-      </div>
-    </Card>}
-    {showIncome&&<Card style={{marginTop:8}}>
-      <Inp label="Description" value={incDesc} onChange={setIncDesc} placeholder="e.g. Sponsor contribution, event surplus"/>
-      <Inp label="Amount (EGP)" value={incAmount} onChange={setIncAmount} type="number"/>
-      <Inp label="Date" value={incDate} onChange={setIncDate} type="date"/>
-      <div style={{display:"flex",gap:6}}>
-        <Btn label="Add" primary onClick={()=>{const amt=parseFloat(incAmount);if(incDesc&&amt>0){onAddLedgerEntry({type:"income_misc",amount:amt,description:incDesc,date:dateInputToISO(incDate)});setIncDesc("");setIncAmount("");setIncDate(todayStr);setShowIncome(false);}}} style={{flex:1}}/>
-        <SmBtn label="Cancel" onClick={()=>{setShowIncome(false);setIncDesc("");setIncAmount("");setIncDate(todayStr);}} color="#94A3B8" style={{flex:1}}/>
-      </div>
-    </Card>}
+    </CollapsibleSection>
 
     <CollapsibleSection label="📊 Cash Statement" defaultOpen={false}>
       <Card>

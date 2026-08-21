@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.06";
+const APP_VERSION = "V0.10.07";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -4782,6 +4782,11 @@ export default function Matchkeeper() {
   };
   const registerEv=(cid,eid)=>{
     const ev=getEv(cid,eid);
+    // The "I'm In" button already hides itself once an event is completed/cancelled, but that's
+    // UI-only — nothing at the write layer stopped a registration from landing on an already-
+    // closed event through any OTHER path (an invite link doesn't go through this button at
+    // all). Guard it here too, not just at every call site.
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — registration is no longer open","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const {waitlisted, pos:waitPos} = willLandWaitlisted(ev, me.id, comm, null);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
@@ -4804,6 +4809,7 @@ export default function Matchkeeper() {
   };
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — can't add players anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
@@ -4820,6 +4826,11 @@ export default function Matchkeeper() {
   // existing "Make Member" action, rather than a total stranger with zero community trace.
   const registerViaInvite=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
+    // Confirmed live: someone opened a stale invite link the day AFTER the event had already
+    // been closed (event #50) — this path had no status check at all, so it silently added a
+    // registration to a completed event with no round/match to ever put them in. The link
+    // itself has no way to know it's stale, so the check has to live here.
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event has already ended — the invite link is no longer valid","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
@@ -4841,6 +4852,7 @@ export default function Matchkeeper() {
   };
   const approveEventJoin=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — the request can't be approved anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
@@ -4861,6 +4873,8 @@ export default function Matchkeeper() {
     toast2("Rejected");
   };
   const addGuest=(cid,eid,g)=>{
+    const ev=getEv(cid,eid);
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — can't add guests anymore","err");return false;}
     if (nicknameTaken(g.n)) { toast2(`Nickname "${g.n}" is already used by another player`, "err"); return false; }
     if (phoneTaken(g.p)) { toast2(`Phone ${g.p} is already used by another player`, "err"); return false; }
     const id=_uid++;
@@ -4870,7 +4884,7 @@ export default function Matchkeeper() {
       members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
     toast2(`${g.n} added ✓`);
-    logAudit("event.register", `${me.nickname} added guest ${g.n} to "${getEv(cid,eid)?.name||eid}"`, "event", eid);
+    logAudit("event.register", `${me.nickname} added guest ${g.n} to "${ev.name}"`, "event", eid);
     return true;
   };
   // Promotes a community guest to a full (casual) member — same person, same history,
@@ -8611,6 +8625,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
         const ci2=effEv.checkedIn.includes(u.id);
         const isRetired=(effEv.retiredIds||[]).includes(u.id);
+        // Whether this player ever actually showed up in a generated round/match, regardless
+        // of Round-1-locked status — found live: a registration can exist for someone who was
+        // never included when the plan was formed (a stale invite link, or the silent-drop bug
+        // fixed alongside this), leaving nothing real to protect by keeping Remove hidden for
+        // them specifically. R1-locked still blocks removing anyone who genuinely played.
+        const wasEverInPlan = !effEv.plan ? false : isCI
+          ? (effEv.plan.rounds||[]).some(rr=>(rr.matches||[]).some(m=>[...(m.teamA||[]),...(m.teamB||[])].some(p=>(p.userId||p.id)===u.id))||(rr.onBreak||[]).some(p=>(p.userId||p.id)===u.id))
+          : isCT
+          ? (effEv.plan.teams||[]).some(t=>(t.players||[]).some(p=>(p.userId||p.id)===u.id))
+          : false;
         const mStatus=comm.members?.find(m=>m.userId===u.id)?.status;
         const uMem=comm.members?.find(m=>m.userId===u.id);
         const uIsCommAdmin=uMem?.role==="owner"||uMem?.role==="admin";
@@ -8704,7 +8728,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join ${effEv.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label});setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{width:"100%"}}/>}
                   {effEv.status!=="completed"&&effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{setOpenPlayerMenu(null);if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{width:"100%"}}/>}
-                  {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="✕ Remove" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(`Remove ${u.nickname} from this event?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
+                  {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked)||!wasEverInPlan)&&<SmBtn label="✕ Remove" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(wasEverInPlan?`Remove ${u.nickname} from this event?`:`Remove ${u.nickname} from this event?\n\nThey're registered but were never actually included in any round or match — this just cleans up the registration, no real match data is affected.`))act.removeFromEvent(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
                 </div>}
               </div>}
             </div>

@@ -6876,42 +6876,50 @@ function CTTeamCard({team,group,sport,showBreakPref,isAdmin,onSetTeamBreakPref,c
 // goals can only ever be checked against that same side's own score (mixing both teams into
 // one shared list was the actual bug: a team-2 player could show more goals tagged than team 2
 // even scored, with nothing to catch it since the old check summed both teams together).
-// Fully controlled (scorers/onChange, AND expanded/onToggle, all from the parent) — not just
-// for reuse across the live-draft/decided-match contexts, but because MatchCard is defined
-// *inside* CTMatchesTab's render body, so it gets a fresh function identity (and everything
-// under it remounts) on every CTMatchesTab re-render. Any state kept locally in here — like
-// whether the editor panel is open — got wiped on literally every +/- tap (which itself
-// triggers that re-render), collapsing the panel after each click. Lifting `expanded` up to
-// CTMatchesTab's own state (which does NOT remount) fixes that at the root.
-function TeamGoalsEditor({players,scorers,onChange,teamGoals,isAdmin,expanded,onToggleExpand}){
+// Fully controlled (scorers/expanded from the parent) — not just for reuse across the
+// live-draft/decided-match contexts, but because MatchCard is defined *inside* CTMatchesTab's
+// render body, so it gets a fresh function identity (and everything under it remounts) on
+// every CTMatchesTab re-render. Any state kept locally in here — like whether the editor panel
+// is open — got wiped on literally every +/- tap (which itself triggers that re-render),
+// collapsing the panel after each click. Lifting `expanded` up to CTMatchesTab's own state
+// (which does NOT remount) fixes that at the root.
+// onChangeScorers fires live on every +/- tap (so the per-player counters update instantly and
+// the tally is never lost) but deliberately does NOT touch the match score — that only happens
+// in onClose, fired once when ✕ is tapped, so the big score number doesn't visibly jump around
+// while goals are still being tagged. onClose is expected to raise the score up to the tagged
+// total if it's currently lower (the score is a floor on the scorers sum, never the reverse).
+function TeamGoalsEditor({players,scorers,onChangeScorers,onClose,teamGoals,isAdmin,expanded,onToggleExpand,showSummaryText}){
   const tagged = (scorers||[]).reduce((s,x)=>s+(x.goals||0),0);
   const bump = (uid,d) => {
     const cur = scorers||[];
     const newGoals = Math.max(0,(cur.find(x=>x.userId===uid)?.goals||0)+d);
     const next = cur.filter(x=>x.userId!==uid);
     if(newGoals>0) next.push({userId:uid,goals:newGoals});
-    onChange(next);
+    onChangeScorers(next);
   };
+  const close = () => { onClose&&onClose(); onToggleExpand(); };
   if(!isAdmin && (!scorers||scorers.length===0)) return null;
+  const hasScorers = scorers&&scorers.length>0;
   if(!expanded){
-    return (scorers&&scorers.length>0)
-      ? <div onClick={()=>isAdmin&&onToggleExpand()} title={scorers.map(s=>{const p=players.find(pp=>(pp.userId||pp.id)===s.userId);return `${p?.nickname||"?"}${s.goals>1?` x${s.goals}`:""}`;}).join(", ")} style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:13,cursor:isAdmin?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center"}}>⚽</div>
-      : <button onClick={onToggleExpand} title="Add goal scorers" style={{width:26,height:26,borderRadius:6,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>⚽</button>;
+    return <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+      <button onClick={()=>isAdmin&&onToggleExpand()} disabled={!isAdmin} style={{fontSize:11,fontWeight:600,padding:"5px 10px",borderRadius:7,border:"0.5px solid #6366F144",background:"#6366F111",color:"#A5B4FC",cursor:isAdmin?"pointer":"default",whiteSpace:"nowrap"}}>⚽ Scorers</button>
+      {hasScorers&&showSummaryText&&<div style={{fontSize:10,color:"var(--po-dim)",textAlign:"center",maxWidth:130}}>{scorers.map(s=>{const p=players.find(pp=>(pp.userId||pp.id)===s.userId);return `${p?.nickname||"?"}${s.goals>1?` x${s.goals}`:""}`;}).join(", ")}</div>}
+    </div>;
   }
-  return <div style={{marginTop:6,padding:"6px 8px",background:"var(--po-inp)",borderRadius:8,minWidth:150}}>
-    <div style={{fontSize:10,fontWeight:600,color:"var(--po-dim)",marginBottom:4,display:"flex",justifyContent:"space-between",gap:6}}>
-      <span>⚽ Goals{teamGoals!=null&&tagged!==teamGoals?<span style={{color:"#F59E0B"}}> ({tagged}/{teamGoals})</span>:""}</span>
-      <span onClick={onToggleExpand} style={{cursor:"pointer"}}>✕</span>
+  return <div style={{marginTop:6,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,minWidth:180}}>
+    <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:6,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+      <span>⚽ Scorers{teamGoals!=null&&tagged!==teamGoals?<span style={{color:"#F59E0B"}}> ({tagged}/{teamGoals})</span>:""}</span>
+      <button onClick={close} style={{width:28,height:28,borderRadius:7,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:15,fontWeight:700,cursor:"pointer",lineHeight:1,flexShrink:0}}>✕</button>
     </div>
     {players.map(p=>{
       const uid=p.userId||p.id;
       const g=(scorers||[]).find(x=>x.userId===uid)?.goals||0;
-      return <div key={uid} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"2px 0"}}>
-        <span style={{fontSize:11,color:"var(--po-text)"}}>{p.nickname}</span>
-        <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <button onClick={()=>bump(uid,-1)} style={{width:18,height:18,borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",fontSize:11,color:"var(--po-text)",cursor:"pointer",lineHeight:1}}>−</button>
-          <span style={{fontSize:11,fontWeight:700,minWidth:10,textAlign:"center",color:"var(--po-text)"}}>{g}</span>
-          <button onClick={()=>bump(uid,1)} style={{width:18,height:18,borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",fontSize:11,color:"var(--po-text)",cursor:"pointer",lineHeight:1}}>+</button>
+      return <div key={uid} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0"}}>
+        <span style={{fontSize:12,color:"var(--po-text)"}}>{p.nickname}</span>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button onClick={()=>bump(uid,-1)} style={{width:30,height:30,borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",fontSize:16,fontWeight:700,color:"var(--po-text)",cursor:"pointer",lineHeight:1}}>−</button>
+          <span style={{fontSize:14,fontWeight:700,minWidth:16,textAlign:"center",color:"var(--po-text)"}}>{g}</span>
+          <button onClick={()=>bump(uid,1)} style={{width:30,height:30,borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",fontSize:16,fontWeight:700,color:"var(--po-text)",cursor:"pointer",lineHeight:1}}>+</button>
         </div>
       </div>;
     })}
@@ -7086,14 +7094,22 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
           <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
           <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
-          {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={m.scorersA} onChange={v=>{onSetCTScorers(ri,mi,side,v,m.scorersB||[]);const sum=v.reduce((s,x)=>s+x.goals,0);if(sum>(m.scoreA||0))onSetWinCT(ri,mi,side,m.winner,sum,m.scoreB);}} teamGoals={m.scoreA} isAdmin={isAdmin} expanded={!!expandedGoals[`${ri}_${mi}_${side}_dA`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dA`)}/>}
+          {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={m.scorersA}
+            onChangeScorers={v=>onSetCTScorers(ri,mi,side,v,m.scorersB||[])}
+            onClose={()=>{const sum=(m.scorersA||[]).reduce((s,x)=>s+x.goals,0);if(sum>(m.scoreA||0))onSetWinCT(ri,mi,side,m.winner,sum,m.scoreB);}}
+            teamGoals={m.scoreA} isAdmin={isAdmin} showSummaryText
+            expanded={!!expandedGoals[`${ri}_${mi}_${side}_dA`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dA`)}/>}
         </div>
         <div style={{fontSize:12,color:"#334155",fontWeight:700,marginTop:2}}>—</div>
         <div style={{flex:1,textAlign:"center"}}>
           <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
           <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
-          {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={m.scorersB} onChange={v=>{onSetCTScorers(ri,mi,side,m.scorersA||[],v);const sum=v.reduce((s,x)=>s+x.goals,0);if(sum>(m.scoreB||0))onSetWinCT(ri,mi,side,m.winner,m.scoreA,sum);}} teamGoals={m.scoreB} isAdmin={isAdmin} expanded={!!expandedGoals[`${ri}_${mi}_${side}_dB`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dB`)}/>}
+          {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={m.scorersB}
+            onChangeScorers={v=>onSetCTScorers(ri,mi,side,m.scorersA||[],v)}
+            onClose={()=>{const sum=(m.scorersB||[]).reduce((s,x)=>s+x.goals,0);if(sum>(m.scoreB||0))onSetWinCT(ri,mi,side,m.winner,m.scoreA,sum);}}
+            teamGoals={m.scoreB} isAdmin={isAdmin} showSummaryText
+            expanded={!!expandedGoals[`${ri}_${mi}_${side}_dB`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_dB`)}/>}
         </div>
       </div>
       <H2HRow/>
@@ -7130,14 +7146,22 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
       <H2HRow/>
       {isAdmin?<>
         <div style={{display:"flex",justifyContent:"center",alignItems:"flex-start",gap:14,marginBottom:6,flexWrap:"wrap"}}>
-          <div style={{display:"flex",alignItems:"flex-end",gap:4}}>
-            {isFootballEv&&<div style={{marginBottom:2}}><TeamGoalsEditor players={m.teamA?.players||[]} scorers={sc.scorersA} onChange={v=>{setS(ri,mi,side,"scorersA",v);const sum=v.reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreA)setS(ri,mi,side,"scoreA",sum);}} teamGoals={sc.scoreA} isAdmin={isAdmin} expanded={!!expandedGoals[`${ri}_${mi}_${side}_A`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_A`)}/></div>}
+          <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
+            {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={sc.scorersA}
+              onChangeScorers={v=>setS(ri,mi,side,"scorersA",v)}
+              onClose={()=>{const sum=(sc.scorersA||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreA)setS(ri,mi,side,"scoreA",sum);}}
+              teamGoals={sc.scoreA} isAdmin={isAdmin}
+              expanded={!!expandedGoals[`${ri}_${mi}_${side}_A`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_A`)}/>}
             <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
           </div>
           <div style={{fontSize:14,color:"#334155",fontWeight:700,marginTop:14}}>—</div>
-          <div style={{display:"flex",alignItems:"flex-end",gap:4}}>
+          <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
             <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
-            {isFootballEv&&<div style={{marginBottom:2}}><TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB} onChange={v=>{setS(ri,mi,side,"scorersB",v);const sum=v.reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreB)setS(ri,mi,side,"scoreB",sum);}} teamGoals={sc.scoreB} isAdmin={isAdmin} expanded={!!expandedGoals[`${ri}_${mi}_${side}_B`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_B`)}/></div>}
+            {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB}
+              onChangeScorers={v=>setS(ri,mi,side,"scorersB",v)}
+              onClose={()=>{const sum=(sc.scorersB||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreB)setS(ri,mi,side,"scoreB",sum);}}
+              teamGoals={sc.scoreB} isAdmin={isAdmin}
+              expanded={!!expandedGoals[`${ri}_${mi}_${side}_B`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_B`)}/>}
           </div>
         </div>
         {sc.scoreA===sc.scoreB&&sc.scoreA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}

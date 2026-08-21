@@ -12,7 +12,7 @@ import { NativeSettings, AndroidSettings, IOSSettings } from "capacitor-native-s
 // notification: shows live courts/teams for the current round, lets the organizer tap a
 // winner per court, and Generate Next Round once every court is done. No-op on web/non-native.
 const MatchMode = registerPlugin("MatchMode");
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps } from "firebase/app";
 import {
   getAuth,
   onAuthStateChanged,
@@ -46,6 +46,19 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-H6DLLT7Q7C",
 };
 const IS_DEV_ENV = import.meta.env.VITE_ENV_LABEL === "development";
+// Only ever used by the "Clone Data to DEV" Platform Admin tool (production build
+// only — see IS_DEV_ENV gating at its call site) to open a second, independent
+// Firestore connection aimed at padelos-dev so real prod data already loaded in
+// this session can be pushed there for testing. Never used to read from — write
+// direction only, always prod (this app's own state) → dev (this constant).
+const DEV_CLONE_TARGET_CONFIG = {
+  apiKey: "AIzaSyDTgCGOAguu3X0pnWv_umaycSjqz3wbqHo",
+  authDomain: "padelos-dev.firebaseapp.com",
+  projectId: "padelos-dev",
+  storageBucket: "padelos-dev.firebasestorage.app",
+  messagingSenderId: "993368973916",
+  appId: "1:993368973916:web:a2696733d7de63748b7c99",
+};
 const firebaseApp = initializeApp(firebaseConfig);
 const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh56tnDOdSJfa5FrY7cMLirnHXyw";
 // iOS Safari has no push support at all in a plain browser tab — Notification/Push only
@@ -152,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.53";
+const APP_VERSION = "V0.09.54";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4079,6 +4092,32 @@ export default function Matchkeeper() {
     } catch(e) {}
     window.location.reload();
   };
+  // One-way push of the current session's already-loaded prod data into padelos-dev, via a
+  // second named Firebase app instance so this connection is fully independent from `db`
+  // (which stays pointed at whatever project this build actually targets). Production-build
+  // only — never rendered/callable from a dev build, see IS_DEV_ENV gating on the button.
+  const [cloningToDev, setCloningToDev] = useState(false);
+  const cloneToDev = async () => {
+    if (IS_DEV_ENV) return;
+    setCloningToDev(true);
+    try {
+      const devApp = getApps().find(a=>a.name==="devClone") || initializeApp(DEV_CLONE_TARGET_CONFIG, "devClone");
+      const devAuth = getAuth(devApp);
+      const devDb = getFirestore(devApp);
+      if (!devAuth.currentUser) await signInWithPopup(devAuth, new GoogleAuthProvider());
+      await Promise.all([
+        setDoc(doc(devDb,"padelos","comms"), {value:JSON.stringify(comms)}),
+        setDoc(doc(devDb,"padelos","users"), {value:JSON.stringify(users)}),
+        setDoc(doc(devDb,"padelos","venues"), {value:JSON.stringify(venues)}),
+        setDoc(doc(devDb,"padelos","egypt"), {value:JSON.stringify(egypt)}),
+        setDoc(doc(devDb,"padelos","expenseCategories"), {value:JSON.stringify(expenseCategories)}),
+        setDoc(doc(devDb,"padelos","usrWindowSize"), {value:JSON.stringify(usrWindowSize)}),
+      ]);
+      logAudit("admin.cloneToDev", `${me.nickname} cloned production data to the DEV environment`, null, null);
+      toast2(`Cloned to DEV ✓ (${users.length} users, ${comms.length} communities)`);
+    } catch(e) { console.log("Clone to DEV failed", e); toast2("Clone to DEV failed — see console", "err"); }
+    setCloningToDev(false);
+  };
   // ────────────────────────────────────────────────────
 
   const toast2 = (msg,t="ok") => { setToast({msg,t}); setTimeout(()=>setToast(null),2600); };
@@ -5386,6 +5425,7 @@ export default function Matchkeeper() {
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onCloneToDev={cloneToDev} cloningToDev={cloningToDev}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -9357,7 +9397,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev}){
   const [tab,setTab]=useState(initialTab||"users");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -9713,11 +9753,16 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Clean Orphaned Account Links{orphanedLinksCount>0?` (${orphanedLinksCount})`:""}</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
-      <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+      <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:!IS_DEV_ENV?"0.5px solid var(--po-bdr)":"none"}}>
         <span style={{fontSize:18}}>⚠️</span>
         <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
+      {!IS_DEV_ENV&&<div onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:cloningToDev?"default":"pointer",opacity:cloningToDev?0.5:1}}>
+        <span style={{fontSize:18}}>☁️</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{cloningToDev?"Cloning to DEV…":"Clone Data to DEV"}</span>
+        <span style={{color:"var(--po-dim)"}}>›</span>
+      </div>}
     </Card>
   </>}
   </>;

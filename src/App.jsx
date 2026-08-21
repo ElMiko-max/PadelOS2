@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.05";
+const APP_VERSION = "V0.10.06";
 // The version of the last APK actually built and uploaded to dist/releases/ — deliberately
 // separate from APP_VERSION, which bumps on every push (web-only pushes don't always come with
 // a new APK). Only update this the moment a real APK build lands at that download URL, or the
@@ -5036,7 +5036,19 @@ export default function Matchkeeper() {
   // CI
   const startCI=(cid,eid,n,dur)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    const players=splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+    const active=splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active;
+    const players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+    // A registered player whose user record couldn't be resolved used to just silently vanish
+    // from the plan (filter(Boolean) above swallowing it) — no toast, no error, nothing to tell
+    // the admin someone registered actually didn't make it into round 1 (found live: a player
+    // was in the Players list but never appeared in any round/match/standing). Most likely a
+    // stale-state race — team formation fired before a just-added registration's user lookup
+    // had caught up in this session's React state — so warn loudly instead of proceeding quiet.
+    if(players.length<active.length){
+      const missing=active.filter(r=>!players.some(p=>p.userId===r.userId)).map(r=>users.find(u=>u.id===r.userId)?.nickname||`user #${r.userId}`);
+      toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Start again`,"err");
+      return;
+    }
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
   const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan,ev.retiredIds||[]));toast2("Next round generated ✓");return true;};
@@ -5277,7 +5289,17 @@ export default function Matchkeeper() {
     const ev=getEv(cid,eid);if(!ev)return;
     const comm=comms.find(c=>c.id===cid);
     const isFootballEv=ev.sport==="Football";
-    let players=splitRegsByCapacity(ev,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,ev),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+    const active=splitRegsByCapacity(ev,comm).active;
+    let players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,ev),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+    // Same silent-drop risk as startCI — a registered player whose user record didn't resolve
+    // (most likely a stale-state race right after they registered) used to just vanish with no
+    // warning, and could even slip past the odd/even waitlist check below since it operates on
+    // the already-shrunk count. Catch it here, before that check, so it's never silent.
+    if(players.length<active.length){
+      const missing=active.filter(r=>!players.some(p=>(p.userId||p.id)===r.userId)).map(r=>users.find(u=>u.id===r.userId)?.nickname||`user #${r.userId}`);
+      toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Form Teams again`,"err");
+      return;
+    }
     let waitlisted=null;
     // Football teams don't need to pair off 2-by-2 — team size comes from ev.teamSize/numTeams,
     // set at event creation, not derived from player count parity the way padel's doubles are.

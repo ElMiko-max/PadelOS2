@@ -152,7 +152,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.09.52";
+const APP_VERSION = "V0.09.53";
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4066,10 +4066,16 @@ export default function Matchkeeper() {
       await logAudit("admin.factoryReset", `${me.nickname} performed a Factory Reset — all data wiped to seed defaults`, null, null);
       localStorage.removeItem('padelos_v10');
       localStorage.removeItem('padelos_v09');
-      setDoc(doc(db,"padelos","comms"), {value:JSON.stringify(INIT_COMMS)});
-      setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)});
-      setDoc(doc(db,"padelos","venues"), {value:JSON.stringify(INIT_VENUES)});
-      setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify([])});
+      // Must await these — window.location.reload() right after tears down the JS
+      // context, aborting any writes still in flight, so an un-awaited call here
+      // silently loses the reset (found via padelos-dev: reset "succeeded" but the
+      // seed docs were never actually written).
+      await Promise.all([
+        setDoc(doc(db,"padelos","comms"), {value:JSON.stringify(INIT_COMMS)}),
+        setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)}),
+        setDoc(doc(db,"padelos","venues"), {value:JSON.stringify(INIT_VENUES)}),
+        setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify([])}),
+      ]);
     } catch(e) {}
     window.location.reload();
   };

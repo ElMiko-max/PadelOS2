@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.17";
+const APP_VERSION = "V0.10.18";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3440,6 +3440,12 @@ export default function Matchkeeper() {
   const linkedUserId = authUser ? uidLinks[authUser.uid] : null;
   const linkedMe = linkedUserId!=null ? (users.find(u => u.id===linkedUserId) || null) : null;
   const me = linkedMe || users[0];
+  // Platform Admin's "God Mode" — full admin authority on whatever community/event screen
+  // they're currently looking at, regardless of their real membership/role there. Deliberately
+  // session-only (not persisted to localStorage) so it never silently carries over to a new
+  // session — has to be re-flagged on purpose every time. See godMode usage in CommDetail's and
+  // EvDetail's isAdmin, and the extra confirm gate in updC below.
+  const [godMode, setGodMode] = useState(false);
   const [eventCommFilter, setEventCommFilter] = useState("all");
   useEffect(() => { if (me?.id) { const saved = localStorage.getItem(`mk_ev_filter_${me.id}`); if (saved) setEventCommFilter(saved); } }, [me?.id]);
   useEffect(() => { if (me?.id) localStorage.setItem(`mk_ev_filter_${me.id}`, eventCommFilter); }, [eventCommFilter, me?.id]);
@@ -4279,7 +4285,18 @@ export default function Matchkeeper() {
     return () => { handler.then(h=>h.remove()); };
   }, []);
   // go() defined above with history tracking
-  const updC = (id,fn) => setComms(cs=>cs.map(c=>c.id===id?fn(c):c));
+  // Second (interactive) God Mode warning — the first is the persistent banner rendered
+  // whenever godMode is on. This one only fires for a write to a community/event the Platform
+  // Admin isn't actually a real owner/admin of — i.e. exactly the writes God Mode alone made
+  // possible. A real admin's own communities behave normally, no extra prompt.
+  const updC = (id,fn) => {
+    if (godMode && me.id===1) {
+      const c = comms.find(cc=>cc.id===id);
+      const realRole = c?.members.find(m=>m.userId===1)?.role;
+      if (realRole!=="owner" && realRole!=="admin" && !window.confirm(`⚡ God Mode — you're not actually a member/admin of "${c?.name||"this community"}".\n\nApply this change anyway?`)) return;
+    }
+    setComms(cs=>cs.map(c=>c.id===id?fn(c):c));
+  };
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
 
   // ── Notifications ──────────────────────────────────────
@@ -5548,7 +5565,19 @@ export default function Matchkeeper() {
         onOpenNotif={n=>{setNotifMenu(false);openNotif(n);}}
         onSeeAllNotifs={()=>{setNotifMenu(false);setNavHistory(h=>[...h,{nav,view}]);setNav("notifications");setView({screen:"list"});}}
       />
+      {/* God Mode — Platform Admin only. Fixed position so it floats over every screen
+          regardless of scroll/nav. Toggling on requires its own confirm (arming warning);
+          any actual write it enables triggers a second, separate confirm in updC. */}
+      {me.id===1&&<div onClick={()=>{
+        if(godMode){setGodMode(false);toast2("God Mode off");}
+        else if(window.confirm("⚡ Enable God Mode?\n\nYou'll get full admin authority on any community or event screen, regardless of your real membership there. Any actual change you make while flagged will ask for confirmation again first — use carefully."))
+          {setGodMode(true);toast2("⚡ God Mode ON — full authority everywhere until you turn it off");}
+      }} title={godMode?"God Mode ON — tap to turn off":"Tap to enable God Mode"} style={{position:"fixed",bottom:20,right:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:godMode?"#EF4444":"var(--po-card)",border:`2px solid ${godMode?"#EF4444":"var(--po-bdr)"}`,boxShadow:godMode?"0 0 16px #EF444488":"0 2px 8px #00000044",color:godMode?"#fff":"var(--po-dim)",transition:"all 0.2s"}}>⚡</div>}
       <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
+        {godMode&&<div style={{fontSize:12,fontWeight:700,color:"#fff",background:"#EF4444",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+          <span>⚡ GOD MODE ACTIVE — full admin authority here, not your real role</span>
+          <span onClick={()=>{setGodMode(false);toast2("God Mode off");}} style={{cursor:"pointer",textDecoration:"underline",flexShrink:0,whiteSpace:"nowrap"}}>Turn off</span>
+        </div>}
         {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
           <span style={{fontSize:16}}>🆕</span>
           <span style={{flex:1}}>New version {newVersion} is available — tap to refresh.</span>
@@ -5563,11 +5592,11 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} godMode={godMode}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
-          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
+          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} godMode={godMode} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
             onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
@@ -6030,7 +6059,7 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,godMode}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -6042,9 +6071,11 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [replyText,setReplyText]=useState("");
   const myMember=comm.members.find(m=>m.userId===me.id);
   const myRole=myMember?.role;
-  const isAdmin=myRole==="owner"||myRole==="admin";
-  const isMember=!!myRole;
   const meIsPlatformAdmin=me?.id===1;
+  // God Mode: Platform Admin gets full admin authority here regardless of real membership —
+  // see the App-level godMode state and the matching second-confirm gate in updC.
+  const isAdmin=myRole==="owner"||myRole==="admin"||(meIsPlatformAdmin&&godMode);
+  const isMember=!!myRole;
   // "Private" was previously cosmetic — a non-member could see the full roster, stats, and
   // events regardless. Platform Admin can always see through it for oversight. A guest-tier
   // member (e.g. auto-added via an event invite) is deliberately NOT a "real" member for this
@@ -7682,7 +7713,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -8002,14 +8033,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
   const venue  = venues.find(v=>v.id===effEv.venueId);
   const myMem  = comm.members.find(m=>m.userId===me.id);
+  const isPlatformAdmin = me?.id===1;
   // Real (community-level) admin — only this can grant/revoke event-scoped admin, so an
-  // event admin can never promote anyone themselves (no privilege escalation loophole).
-  const isRealAdmin = myMem?.role==="owner"||myMem?.role==="admin";
+  // event admin can never promote anyone themselves (no privilege escalation loophole). God
+  // Mode folds in here too (not just isAdmin below) so a flagged Platform Admin gets real-admin
+  // actions like promoting event admins, not just the read-heavy isAdmin surface.
+  const isRealAdmin = myMem?.role==="owner"||myMem?.role==="admin"||(isPlatformAdmin&&godMode);
   const isEventAdmin = (effEv.eventAdmins||[]).includes(me.id);
   // Event-scoped admin (promoted per-event, not community-wide) gets full admin treatment
   // everywhere in THIS screen only — nothing outside EvDetail ever reads eventAdmins.
   const isAdmin= isRealAdmin||isEventAdmin;
-  const isPlatformAdmin = me?.id===1;
   const isReg  = myMem?.status==="regular";
   const myReg  = effEv.registrations.find(r=>r.userId===me.id);
   const isCIn  = effEv.checkedIn.includes(me.id);

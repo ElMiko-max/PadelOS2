@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.20";
+const APP_VERSION = "V0.10.21";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6115,10 +6115,17 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   // confusable despite different content — this screen's whole shape (cover banner + watermark
   // + overlapping avatar + scrollable pill tabs) is intentionally unlike EvDetail's compact card.
   return <><BBtn onBack={onBack} label="Communities" sticky subLabel={tab==="members"?"Members":tab==="events"?"Events":"Requests"}/>
-    <div style={{height:110,borderRadius:"16px 16px 0 0",position:"relative",overflow:"hidden",display:"flex",alignItems:"flex-end",padding:"0 16px",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
-      <div style={{position:"absolute",fontSize:150,opacity:0.20,right:-28,top:-26,lineHeight:1,transform:"rotate(-12deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
-      <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:38}}>Community · {commSports.join(" + ")}</div>
-      <div style={{width:64,height:64,borderRadius:18,background:"var(--po-card)",border:"3px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,transform:"translateY(32px)",boxShadow:"0 6px 14px #00000044",flexShrink:0,position:"relative",zIndex:1,marginLeft:"auto"}}>👥</div>
+    {/* Avatar is a SIBLING of the clipped banner, not a child of it — it used to live inside
+        the overflow:hidden banner div with translateY(32) to overlap the card below, but that
+        meant the banner's own clip boundary sliced off the bottom half of the avatar (only the
+        top of the 👥 glyph survived, looked like two stray dots). Positioned absolutely against
+        this unclipped wrapper instead, so the full circle renders uncut across the seam. */}
+    <div style={{position:"relative"}}>
+      <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
+        <div style={{position:"absolute",fontSize:150,opacity:0.20,right:-28,top:-26,lineHeight:1,transform:"rotate(-12deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
+        <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
+      </div>
+      <div style={{width:64,height:64,borderRadius:18,background:"var(--po-card)",border:"3px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,boxShadow:"0 6px 14px #00000044",position:"absolute",right:16,top:110-32,zIndex:2}}>👥</div>
     </div>
     <Card style={{borderRadius:"0 0 16px 16px",marginTop:0,paddingTop:38}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:4}}>
@@ -6127,9 +6134,9 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </div>
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · Founded {fmtD(comm.founded)}</div>
       <div style={{fontSize:13,color:"var(--po-sub)",marginTop:10}}>{comm.description}</div>
-      {avatarStackUsers.length>0&&<div style={{display:"flex",marginTop:12}}>
-        {avatarStackUsers.map((u,i)=><span key={u.id} title={u.nickname} style={{width:26,height:26,borderRadius:"50%",background:"var(--po-inp)",border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10.5,fontWeight:700,color:"var(--po-text)",marginLeft:i>0?-8:0}}>{ini2(u.nickname)}</span>)}
-        {avatarStackRemaining>0&&<span style={{width:26,height:26,borderRadius:"50%",background:"#6366F1",border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,fontWeight:700,color:"#fff",marginLeft:-8}}>+{avatarStackRemaining}</span>}
+      {avatarStackUsers.length>0&&<div style={{display:"flex",marginTop:14,marginBottom:4}}>
+        {avatarStackUsers.map((u,i)=><span key={u.id} title={u.nickname} style={{width:26,height:26,borderRadius:"50%",background:"var(--po-inp)",border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10.5,fontWeight:700,color:"var(--po-text)",marginLeft:i>0?-7:0}}>{ini2(u.nickname)}</span>)}
+        {avatarStackRemaining>0&&<span style={{width:26,height:26,borderRadius:"50%",background:"#6366F1",border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,fontWeight:700,color:"#fff",marginLeft:-7}}>+{avatarStackRemaining}</span>}
       </div>}
       {!isMember&&<div style={{marginTop:14}}>
         {hasPendingJoin

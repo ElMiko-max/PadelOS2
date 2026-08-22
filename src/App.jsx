@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.15";
+const APP_VERSION = "V0.10.16";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -214,6 +214,11 @@ const sportLabel = s => `${SPORT_EMOJI[s]||"🏅"} ${s}`;
 // Same colors already used for these sports' pricing badges in Venues (padel courts / football
 // pitches) — reused here so the sport coin on EventLevelBadge stays consistent, not a new hue.
 const SPORT_COLOR = {"Padel Tennis":"#38BDF8", "Football":"#34D399"};
+// A community configured with an immediate promote threshold (0 consecutive attends needed to
+// go casual->regular) skips the casual waiting period entirely — new members land as regular
+// from day one instead of joining casual and waiting for the next event-close to catch up to a
+// threshold that's already met.
+const initialMemberStatus = c => c.promoteAfter===0 ? "regular" : "casual";
 // Community-ledger expense categories — platform-admin-maintainable list (padelos/expenseCategories),
 // same singleton-doc pattern as egypt. "Misc" always stays as the catch-all (#3/#4).
 const INIT_EXPENSE_CATEGORIES = ["Court Rental","Equipment & Balls","Staff & Tips","Refreshments","Misc"];
@@ -4362,7 +4367,7 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),entries:[...((c.bookkeeping||{}).entries||[]),...entriesArr.map((entry,i)=>({id:`${Date.now()}-${i}-${Math.random().toString(36).slice(2,6)}`,recordedBy:me.id,date:new Date().toISOString(),...entry}))]}}));
   };
   const deleteLedgerEntry=(cid,entryId)=>{updC(cid,c=>({...c,bookkeeping:{...c.bookkeeping,entries:(c.bookkeeping?.entries||[]).filter(e=>e.id!==entryId)}}));toast2("Removed");};
-  const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2("Approved ✓");
+  const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}]}));toast2("Approved ✓");
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.join", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${c?.name||cid}"`, "community", cid);
   };
@@ -4402,7 +4407,7 @@ export default function Matchkeeper() {
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.statusChange", `${me.nickname} set ${u?.nickname||uid} to ${newStatus} in ${c?.name||cid}`, "community", cid);
   };
-  const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));toast2(`${u?.nickname} added ✓`);
+  const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}]}));toast2(`${u?.nickname} added ✓`);
     const c=comms.find(c=>c.id===cid);
     logAudit("member.join", `${me.nickname} added ${u?.nickname||uid} to "${c?.name||cid}"`, "community", cid);
   };
@@ -4412,7 +4417,7 @@ export default function Matchkeeper() {
   // still goes through the normal requestJoin/approve flow, see Effect B.
   const joinCommunityViaInvite=(cid,uid)=>{
     const alreadyMember = comms.find(c=>c.id===cid)?.members.some(m=>m.userId===uid);
-    updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:"casual",since:today}]}));
+    updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}]}));
     if (!alreadyMember) {
       const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
       logAudit("member.join", `${u?.nickname||uid} joined "${c?.name||cid}" via invite link`, "community", cid);
@@ -4929,7 +4934,7 @@ export default function Matchkeeper() {
   // Promotes a community guest to a full (casual) member — same person, same history,
   // just no longer flagged as a guest anywhere in the app.
   const convertGuestToMember=(cid,uid)=>{
-    updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,status:"casual"}:m)}));
+    updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,status:initialMemberStatus(c)}:m)}));
     setUsers(us=>us.map(u=>u.id===uid?{...u,isGuest:false}:u));
     toast2("Converted to member ✓");
   };
@@ -5807,9 +5812,9 @@ function CommForm({comm,onBack,onSave,egypt}){
         <Inp label="Promote after (consecutive attends)" value={f.promoteAfter} onChange={v=>set("promoteAfter",v)} type="number"/>
         <Inp label="Demote after (consecutive misses)" value={f.demoteAfter} onChange={v=>set("demoteAfter",v)} type="number"/>
       </div>
-      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Applied automatically whenever an event is closed. Admins can also override any member's status manually from the Members tab.</div>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Applied automatically whenever an event is closed. Admins can also override any member's status manually from the Members tab. Set "Promote after" to <b>0</b> to skip the casual stage entirely — new members join straight in as Regular.</div>
     </div>
-    <Btn label={ie?"Save Changes":"Create Community"} primary onClick={()=>{if(f.name&&f.gov&&f.area&&f.sports.length)onSave({...f,promoteAfter:parseInt(f.promoteAfter)||3,demoteAfter:parseInt(f.demoteAfter)||4});}} style={{width:"100%"}}/></Card></>;
+    <Btn label={ie?"Save Changes":"Create Community"} primary onClick={()=>{if(f.name&&f.gov&&f.area&&f.sports.length){const pa=parseInt(f.promoteAfter),da=parseInt(f.demoteAfter);onSave({...f,promoteAfter:isNaN(pa)?3:Math.max(0,pa),demoteAfter:isNaN(da)?4:Math.max(0,da)});}}} style={{width:"100%"}}/></Card></>;
 }
 
 // Community-wide report — aggregate numbers (events/matches/venues/attendance), separate from
@@ -6258,7 +6263,11 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
   const curMonth = new Date().toISOString().slice(0,7);
   // Noon avoids the display-side .slice(0,10) landing on the wrong day from a UTC rollover.
   const dateInputToISO = d => new Date((d||todayStr)+"T12:00:00").toISOString();
-  const payingMembers = regs.filter(m=>m.status!=="guest");
+  // includeCasual defaults true (undefined = legacy communities from before this setting existed
+  // keep charging casuals, same as they always did) — only an explicit false excludes them.
+  const includeCasual = bk.includeCasual!==false;
+  const payingMembers = regs.filter(m=>m.status!=="guest"&&(includeCasual||m.status!=="casual"));
+  const [includeCasualInput,setIncludeCasualInput] = useState(includeCasual);
 
   // Auto-accrue the monthly due for every active member (#7) — admin-only, fires whenever a
   // month is missing a charge for someone; one bulk write covers however many are missing.
@@ -6275,7 +6284,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       });
     });
     if (toAdd.length) onAddLedgerEntries&&onAddLedgerEntries(toAdd);
-  }, [isAdmin, bk.enabled, bk.monthlyDue, bk.enabledAt, entries.length, comm.members?.length]);
+  }, [isAdmin, bk.enabled, bk.monthlyDue, bk.enabledAt, bk.includeCasual, entries.length, comm.members?.length]);
 
   if (!bk.enabled) {
     if (!isAdmin) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No shared ledger for this community yet.</div></Card>;
@@ -6283,7 +6292,11 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>💰 Enable Centralized Bookkeeping</div>
       <div style={{fontSize:12,color:"var(--po-sub)",marginBottom:14}}>Collect a recurring monthly due from members into a shared fund (court tips, balls, equipment...) — tracked separately from, and alongside, per-event cost-splitting.</div>
       <Inp label="Monthly due per member (EGP)" value={monthlyDueInput} onChange={setMonthlyDueInput} type="number"/>
-      <Btn label="Enable" primary onClick={()=>{if(window.confirm(`Enable centralized bookkeeping for ${comm.name}?\n\nEvery active member will start accruing a ${parseFloat(monthlyDueInput)||100} EGP monthly due automatically. You can change the amount anytime, but the ledger itself can't be un-enabled once it's tracking real entries.`))onSetBookkeeping({enabled:true,monthlyDue:parseFloat(monthlyDueInput)||100});}} style={{width:"100%"}}/>
+      <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,cursor:"pointer"}}>
+        <input type="checkbox" checked={includeCasualInput} onChange={e=>setIncludeCasualInput(e.target.checked)} style={{width:16,height:16,flexShrink:0}}/>
+        <span style={{fontSize:12,color:"var(--po-sub)"}}>Include casual members in the monthly due (unchecked = only Regular members are charged)</span>
+      </label>
+      <Btn label="Enable" primary onClick={()=>{if(window.confirm(`Enable centralized bookkeeping for ${comm.name}?\n\nEvery ${includeCasualInput?"active":"Regular"} member will start accruing a ${parseFloat(monthlyDueInput)||100} EGP monthly due automatically. You can change the amount anytime, but the ledger itself can't be un-enabled once it's tracking real entries.`))onSetBookkeeping({enabled:true,monthlyDue:parseFloat(monthlyDueInput)||100,includeCasual:includeCasualInput});}} style={{width:"100%"}}/>
     </Card>;
   }
 
@@ -6356,6 +6369,11 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
               if(vd===null)return;
               onSetBookkeeping({monthlyDue:parseFloat(va), monthlyDueSince:vd});
             }} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
+          </div>
+          <div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>Casual members charged</div>
+            <div style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{includeCasual?"Yes":"No"}</div>
+            <span onClick={()=>{if(window.confirm(includeCasual?"Stop charging casual members the monthly due?\n\nOnly Regular members will keep accruing new charges going forward — charges already recorded aren't removed.":"Start charging casual members the monthly due again?\n\nThey'll start accruing new charges going forward — no back-charges for the time they were excluded."))onSetBookkeeping({includeCasual:!includeCasual});}} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
           </div>
           <div>
             <div style={{fontSize:10,color:"var(--po-dim)"}}>Opening balance</div>

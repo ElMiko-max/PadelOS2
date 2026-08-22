@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.14";
+const APP_VERSION = "V0.10.15";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9833,7 +9833,7 @@ const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
 function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev}){
-  const [tab,setTab]=useState(initialTab||"users");
+  const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
   const [inviteUrl,setInviteUrl]=useState(null);
@@ -9845,6 +9845,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [auditVersionFilter,setAuditVersionFilter]=useState("");
   const [auditActorFilter,setAuditActorFilter]=useState("");
   const [auditSort,setAuditSort]=useState({key:"ts",dir:"desc"});
+  const [auditBucketsOpen,setAuditBucketsOpen]=useState({Today:true,Yesterday:false,"This week":false,"This month":false,"This year":false,Old:false});
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const [newGovName,setNewGovName]=useState("");
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
@@ -9873,7 +9874,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <TwoRowTabs tabs={[["users",`Users (${users.length})`],["audit","🕵️ Audit Trail"],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="cats"&&(()=>{
     const renameCat=(oldName,newName)=>{
@@ -9947,6 +9948,22 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     });
     const toggleSort=k=>setAuditSort(s=>s.key===k?{key:k,dir:s.dir==="asc"?"desc":"asc"}:{key:k,dir:k==="ts"?"desc":"asc"});
     const SortTh=({k,label})=><th onClick={()=>toggleSort(k)} style={{cursor:"pointer",padding:"8px 10px",textAlign:"left",fontSize:11,fontWeight:700,color:"var(--po-dim)",borderBottom:"0.5px solid var(--po-bdr)",whiteSpace:"nowrap",userSelect:"none"}}>{label}{sortKey===k?(sortDir==="asc"?" ▲":" ▼"):""}</th>;
+    // Today expanded by default, everything older starts collapsed — the list can run to 200
+    // rows, so this keeps the screen useful without hiding anything (just a tap away).
+    const BUCKET_ORDER=["Today","Yesterday","This week","This month","This year","Old"];
+    const bucketOf=(iso)=>{
+      const d=new Date(iso), now=new Date();
+      const startOfDay=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate());
+      const daysAgo=Math.round((startOfDay(now)-startOfDay(d))/86400000);
+      if(daysAgo<=0) return "Today";
+      if(daysAgo===1) return "Yesterday";
+      if(daysAgo<=7) return "This week";
+      if(d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()) return "This month";
+      if(d.getFullYear()===now.getFullYear()) return "This year";
+      return "Old";
+    };
+    const buckets={};
+    filtered.forEach(e=>{ const b=bucketOf(e.ts); (buckets[b]=buckets[b]||[]).push(e); });
     return <>
       <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Oversight log of admin-level and sensitive actions — who did what, and when. Shows the most recent {auditLog.length} entries (up to 200). Routine browsing isn't logged, only writes that change or affect someone else's data.</div>
       <div style={{display:"flex",gap:6,marginBottom:8}}>
@@ -9980,18 +9997,29 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             <SortTh k="appVersion" label="Ver · Platform"/>
           </tr></thead>
           <tbody>
-            {filtered.map(e=>
-              <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
-                <td style={{padding:"8px 6px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap"}} title={e.ts}>{timeAgo(e.ts)}</td>
-                <td style={{padding:"8px 6px",fontSize:11,color:"var(--po-text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.actorName}</td>
-                <td style={{padding:"8px 6px"}}><span style={{fontSize:8.5,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"1px 3px",display:"inline-block",whiteSpace:"normal",wordBreak:"break-word"}}>{e.action}</span></td>
-                <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}}>{e.summary}</td>
-                <td style={{padding:"8px 10px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap",lineHeight:1.4}}>
-                  <div>{e.appVersion||"—"}</div>
-                  <div>{e.platform?(e.platform==="Android"?"🤖 Android":"🌐 Web"):"—"}</div>
-                </td>
-              </tr>
-            )}
+            {BUCKET_ORDER.filter(b=>buckets[b]?.length).map(b=>{
+              const items=buckets[b], isOpen=auditBucketsOpen[b];
+              return <React.Fragment key={b}>
+                <tr onClick={()=>setAuditBucketsOpen(o=>({...o,[b]:!o[b]}))} style={{cursor:"pointer",background:"var(--po-inp)"}}>
+                  <td colSpan={5} style={{padding:"7px 10px",fontSize:11,fontWeight:700,color:"var(--po-sub)",userSelect:"none"}}>
+                    <span style={{display:"inline-block",transition:"transform 0.15s",transform:isOpen?"rotate(0deg)":"rotate(-90deg)",marginRight:6}}>⌄</span>
+                    {b} ({items.length})
+                  </td>
+                </tr>
+                {isOpen&&items.map(e=>
+                  <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
+                    <td style={{padding:"8px 6px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap"}} title={e.ts}>{timeAgo(e.ts)}</td>
+                    <td style={{padding:"8px 6px",fontSize:11,color:"var(--po-text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.actorName}</td>
+                    <td style={{padding:"8px 6px"}}><span style={{fontSize:8.5,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"1px 3px",display:"inline-block",whiteSpace:"normal",wordBreak:"break-word"}}>{e.action}</span></td>
+                    <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}}>{e.summary}</td>
+                    <td style={{padding:"8px 10px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap",lineHeight:1.4}}>
+                      <div>{e.appVersion||"—"}</div>
+                      <div>{e.platform?(e.platform==="Android"?"🤖 Android":"🌐 Web"):"—"}</div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>;
+            })}
           </tbody>
         </table>
       </div>}

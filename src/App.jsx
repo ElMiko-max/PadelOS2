@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.10";
+const APP_VERSION = "V0.10.11";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3474,6 +3474,25 @@ export default function Matchkeeper() {
     // spot both the untargeted-invite and fully organic sign-in paths funnel through.
     notify([1], "newPlatformUser", null, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
   };
+  // Same "yes that's me" safety pattern as claimViaInvite, but triggered by email match instead
+  // of a targeted invite — this is what stops a player who already exists (added manually by an
+  // admin, or from an earlier guest-add) from getting a second, empty duplicate profile the
+  // moment they actually sign in with the matching Google account. Only matches an UNLINKED
+  // existing profile — never offers to merge into someone whose account is already claimed.
+  const findEmailMatchUser = () => {
+    if (!authUser?.email) return null;
+    const claimed = new Set(Object.values(uidLinks));
+    return users.find(u => u.email && u.email.toLowerCase()===authUser.email.toLowerCase() && !claimed.has(u.id)) || null;
+  };
+  const claimViaEmailMatch = (userId) => {
+    linkUidToUser(authUser.uid, userId);
+    setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
+  };
+  const createFreshProfileOrMatch = () => {
+    const match = findEmailMatchUser();
+    if (match) { setPendingEmailMatchConfirm({target:match}); return; }
+    createFreshProfile();
+  };
   const go = (screen, extra={}) => {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
     setView({screen,...extra});
@@ -3819,8 +3838,9 @@ export default function Matchkeeper() {
   // profile, since there's no existing identity to misattribute.
   const autoInviteClaimRef = useRef(null);
   const [pendingInviteConfirm, setPendingInviteConfirm] = useState(null); // {inv, target} | null
+  const [pendingEmailMatchConfirm, setPendingEmailMatchConfirm] = useState(null); // {target} | null
   useEffect(() => {
-    if (!authUser || linkedMe || !dataLoaded) return;
+    if (!authUser || linkedMe || !dataLoaded || pendingEmailMatchConfirm) return;
     const code = readPendingInvite();
     if (!code || autoInviteClaimRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
@@ -3831,9 +3851,9 @@ export default function Matchkeeper() {
       if (target) setPendingInviteConfirm({inv, target});
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
-      createFreshProfile();
+      createFreshProfileOrMatch();
     }
-  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users]);
+  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users, pendingEmailMatchConfirm]);
   // No generic "which one is you?" self-service claim screen anymore (see BUGS.md #17) —
   // anyone signing in with no pending targeted invite just gets a brand-new profile, same as an
   // untargeted invite already did. One bootstrap exception: if the platform-owner seed profile
@@ -3842,7 +3862,7 @@ export default function Matchkeeper() {
   // could send #1 an invite link, so #1 can't rely on the normal targeted-invite path itself.
   const autoFreshProfileRef = useRef(false);
   useEffect(() => {
-    if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm) return;
+    if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm || pendingEmailMatchConfirm) return;
     if (readPendingInvite()) return; // the invite-claim effect above owns this case
     if (autoFreshProfileRef.current) return;
     autoFreshProfileRef.current = true;
@@ -3850,9 +3870,9 @@ export default function Matchkeeper() {
       linkUidToUser(authUser.uid, 1);
       setUsers(us => us.map(u => u.id===1 ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
     } else {
-      createFreshProfile();
+      createFreshProfileOrMatch();
     }
-  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, uidLinks]);
+  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, uidLinks]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
   // both a brand-new profile and a confirmed targeted claim of an existing one — join them to
   // the invited community/event. Deliberately re-checked on every render where these
@@ -5441,6 +5461,19 @@ export default function Matchkeeper() {
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>This invite link will connect your account to <b style={{color:"#F1F5F9"}}>{target.nickname}</b>'s profile{target.area&&target.area!=="—"?` (${target.area})`:""}. Only confirm if that's really you — if this link was forwarded to you by mistake, don't claim someone else's profile.</div>
           <button onClick={()=>{autoInviteClaimRef.current=inv.code;claimViaInvite(inv.targetUserId,inv);setPendingInviteConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
           <div onClick={()=>{clearPendingInvite();autoInviteClaimRef.current=inv.code;setPendingInviteConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
+          <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
+        </div>
+      </div>;
+    }
+    if (pendingEmailMatchConfirm) {
+      const {target} = pendingEmailMatchConfirm;
+      return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{maxWidth:360,textAlign:"center"}}>
+          <div style={{fontSize:32,marginBottom:12}}>🔗</div>
+          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
+          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>A profile already exists for this email — <b style={{color:"#F1F5F9"}}>{target.nickname}</b>{target.area&&target.area!=="—"?` (${target.area})`:""}. Confirm only if that's really you, so we don't create a duplicate profile.</div>
+          <button onClick={()=>{claimViaEmailMatch(target.id);setPendingEmailMatchConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
+          <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfile();}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
         </div>
       </div>;

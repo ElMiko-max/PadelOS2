@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.16";
+const APP_VERSION = "V0.10.17";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3482,11 +3482,17 @@ export default function Matchkeeper() {
     const who = authUser.displayName || authUser.email || "Someone";
     notify([inv?.createdBy].filter(Boolean), "inviteClaimed", {profileUserId:userId}, "🔗 Invite connected", `${who} just signed in and got linked as ${target?.nickname||"their profile"} — they're in.`);
   };
+  // Read by the loginLogged effect below (once `linkedMe`/`me` actually catches up to the new
+  // profile) to log a distinct "user.create" audit entry instead of the usual "auth.signin" —
+  // logAudit here directly would misattribute the actor, since `me` is still the pre-link
+  // fallback (users[0]) at the moment this function runs, one render before linkedMe updates.
+  const justCreatedRef = useRef(null);
   const createFreshProfile = () => {
     const newId = _uid++;
     const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
     setUsers(us => [...us, {id:newId, email:authUser.email, photoURL:authUser.photoURL||"", nickname:displayName, name:displayName, avatar:ini2(displayName), usr:50, joined:today, isGuest:false}]);
     linkUidToUser(authUser.uid, newId);
+    justCreatedRef.current = newId;
     // Platform Admin (#1) gets pinged for every genuinely brand-new signup — this is the one
     // spot both the untargeted-invite and fully organic sign-in paths funnel through.
     notify([1], "newPlatformUser", {profileUserId:newId}, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
@@ -4128,7 +4134,12 @@ export default function Matchkeeper() {
     if (!linkedMe) { loginLoggedRef.current = false; return; }
     if (loginLoggedRef.current) return;
     loginLoggedRef.current = true;
-    logAudit("auth.signin", `${linkedMe.nickname} signed in`, "user", linkedMe.id);
+    if (justCreatedRef.current===linkedMe.id) {
+      justCreatedRef.current = null;
+      logAudit("user.create", `${linkedMe.nickname} created a new account and signed in for the first time`, "user", linkedMe.id);
+    } else {
+      logAudit("auth.signin", `${linkedMe.nickname} signed in`, "user", linkedMe.id);
+    }
   }, [linkedMe]);
   // Manual backup — Platform Admin only. Writes a full snapshot to its own document
   // (padelos_backups/<timestamp>) so a bad edit or bug can be rolled back without

@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.21";
+const APP_VERSION = "V0.10.22";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6115,19 +6115,19 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   // confusable despite different content — this screen's whole shape (cover banner + watermark
   // + overlapping avatar + scrollable pill tabs) is intentionally unlike EvDetail's compact card.
   return <><BBtn onBack={onBack} label="Communities" sticky subLabel={tab==="members"?"Members":tab==="events"?"Events":"Requests"}/>
-    {/* Avatar is a SIBLING of the clipped banner, not a child of it — it used to live inside
-        the overflow:hidden banner div with translateY(32) to overlap the card below, but that
-        meant the banner's own clip boundary sliced off the bottom half of the avatar (only the
-        top of the 👥 glyph survived, looked like two stray dots). Positioned absolutely against
-        this unclipped wrapper instead, so the full circle renders uncut across the seam. */}
-    <div style={{position:"relative"}}>
-      <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
-        <div style={{position:"absolute",fontSize:150,opacity:0.20,right:-28,top:-26,lineHeight:1,transform:"rotate(-12deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
-        <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
-      </div>
-      <div style={{width:64,height:64,borderRadius:18,background:"var(--po-card)",border:"3px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,boxShadow:"0 6px 14px #00000044",position:"absolute",right:16,top:110-32,zIndex:2}}>👥</div>
+    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
+      <div style={{position:"absolute",fontSize:150,opacity:0.20,right:-28,top:-26,lineHeight:1,transform:"rotate(-12deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
+      <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
     </div>
-    <Card style={{borderRadius:"0 0 16px 16px",marginTop:0,paddingTop:38}}>
+    <Card style={{borderRadius:"0 0 16px 16px",marginTop:0,paddingTop:0}}>
+      {/* Avatar is a normal-flow child of Card itself (pulled up with a negative margin), not a
+          separately-positioned overlay — it used to sit in its own absolutely-positioned wrapper
+          outside Card, and while the math looked right on paper, it rendered visibly off from
+          the "Public" badge below it. Being an actual sibling inside Card's own padding removes
+          any room for that drift: both rows now share literally the same padding-right. */}
+      <div style={{display:"flex",justifyContent:"flex-end",marginTop:-32,marginBottom:10}}>
+        <div style={{width:64,height:64,borderRadius:18,background:"var(--po-card)",border:"3px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,boxShadow:"0 6px 14px #00000044",flexShrink:0}}>👥</div>
+      </div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:4}}>
         <div style={{fontSize:22,fontWeight:800,lineHeight:1.1,letterSpacing:-0.4,color:"var(--po-text)"}}>{comm.name}{SEEDED_COMM_IDS.has(comm.id)&&<> <SeedBadge/></>}</div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><Bdg label={comm.type==="public"?"Public":"Private"} color={comm.type==="public"?"#34D399":"var(--po-sub)"}/>{myRole==="owner"&&<SmBtn label="✏️" onClick={onEdit} color="#6366F1"/>}</div>
@@ -6145,9 +6145,19 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </div>}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginTop:14}}>{[["Members",regs.length],["Events",comm.events.length],isFootballComm?["Avg FSR",footballGradeLabel(avgFsr)]:["Avg USR",avgU||"—"],["Requests",comm.joinRequests.length]].map(([l,v])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 0",textAlign:"center"}}><div style={{fontSize:16,fontWeight:700,color:"var(--po-text)"}}>{v}</div><div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>{l==="Members"&&<div style={{display:"flex",justifyContent:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>{[["#34D399",regularCount],["#FBBF24",casualCount],["#F59E0B",guestCount]].filter(([,n])=>n>0).map(([c,n])=><span key={c} style={{fontSize:9,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:c,display:"inline-block"}}/>{n}</span>)}</div>}</div>)}</div>
     </Card>
-    <div style={{display:"flex",gap:8,overflowX:"auto",WebkitOverflowScrolling:"touch",paddingBottom:4,marginBottom:14}}>
-      {tdefs.map(([k,l])=><div key={k} onClick={()=>setTab(k)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,fontSize:11.5,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer",background:tab===k?"var(--po-text)":"var(--po-inp)",color:tab===k?"var(--po-bg)":"var(--po-dim)",transition:"all 0.15s"}}>{l}</div>)}
-    </div>
+    {/* Own two-row layout (not the shared TwoRowTabs component) so it keeps this screen's pill
+        look — TwoRowTabs is the boxed/indigo style shared with EvDetail; reusing it here would
+        make Community and Event tabs identical again, undoing the whole point of this redesign.
+        Same overflow trigger though: more than 4 tabs wraps to a second row instead of forcing
+        everything into one cramped/scrolling line. */}
+    {(()=>{
+      const rows=tdefs.length>4?[tdefs.slice(0,Math.ceil(tdefs.length/2)),tdefs.slice(Math.ceil(tdefs.length/2))]:[tdefs];
+      return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:18}}>
+        {rows.map((row,ri)=><div key={ri} style={{display:"flex",gap:8,overflowX:"auto",WebkitOverflowScrolling:"touch",paddingBottom:2}}>
+          {row.map(([k,l])=><div key={k} onClick={()=>setTab(k)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,fontSize:11.5,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer",background:tab===k?"var(--po-text)":"var(--po-inp)",color:tab===k?"var(--po-bg)":"var(--po-dim)",transition:"all 0.15s"}}>{l}</div>)}
+        </div>)}
+      </div>;
+    })()}
 
     {tab==="members"&&<>
       {!canViewPrivate?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see the member list.</div></Card>:<>
@@ -6172,7 +6182,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
           {list.map(m=>{const u=users.find(u=>u.id===m.userId);if(!u)return null;const isMe=u.id===me.id;return(
             <Card key={m.userId} style={{cursor:"pointer"}}><div onClick={()=>onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
-              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div>
+              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}</div>
                 {/* USR is padel-specific — football communities show FSR (footballSkill) instead,
                     never both. Community admins can set FSR directly (not Platform-Admin-only,
                     unlike padel's USR) — it's manually-assigned player data the community's own
@@ -8742,7 +8752,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
     <VenueMapCard venue={venue}/>
 
-    <Tabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>
+    {/* Closed Teams Ladder events stack up to 7 tabs (players/teams/breaks/matches/standings/
+        manage/photos) — same >4 overflow rule as Community, using the same TwoRowTabs component
+        Platform Admin already uses (this screen already shared Tabs' boxed style, so switching
+        to its two-row sibling here doesn't change how it looks, just fixes the cramming). */}
+    {tabs.length>4
+      ? <TwoRowTabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>
+      : <Tabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>}
 
     {/* PLAYERS */}
     {tab==="players"&&<>

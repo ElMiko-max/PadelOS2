@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.12";
+const APP_VERSION = "V0.10.13";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -211,6 +211,9 @@ const SPORTS = ["Padel Tennis", "Football"];
 const DEFAULT_SPORT = "Padel Tennis";
 const SPORT_EMOJI = {"Padel Tennis":"🎾", "Football":"⚽"};
 const sportLabel = s => `${SPORT_EMOJI[s]||"🏅"} ${s}`;
+// Same colors already used for these sports' pricing badges in Venues (padel courts / football
+// pitches) — reused here so the sport coin on EventLevelBadge stays consistent, not a new hue.
+const SPORT_COLOR = {"Padel Tennis":"#38BDF8", "Football":"#34D399"};
 // Community-ledger expense categories — platform-admin-maintainable list (padelos/expenseCategories),
 // same singleton-doc pattern as egypt. "Misc" always stays as the catch-all (#3/#4).
 const INIT_EXPENSE_CATEGORIES = ["Court Rental","Equipment & Balls","Staff & Tips","Refreshments","Misc"];
@@ -3105,14 +3108,23 @@ function LiveBdg({label}){return <span style={{fontSize:11,fontWeight:800,paddin
 // "Level of the event" badge — a glowing colored ring around the average rating (see
 // calcEventAvgUsr), reusing usrLv's own A-E bands/colors so it reads the same intensity scale
 // as everywhere else in the app. size="lg" for the event header, default (sm) for cards.
-function EventLevelBadge({avg,size="sm"}){
+// Padel's rating (USR) is natively a 0-100 number, so the circle shows just the number.
+// Football's (FSR) is natively an A-E letter grade — showing a synthetic blended number next to
+// it read as a fake USR (see BUGS.md history), so the circle shows just the letter instead. The
+// small coin in the corner carries the sport itself, so neither reading needs a text label.
+function EventLevelBadge({avg,size="sm",sport}){
   if(avg==null) return null;
   const lv=usrLv(avg);
   const big=size==="lg";
   const d=big?68:44;
-  return <div title={`Event level — avg rating ${avg} (${lv.l})`} style={{width:d,height:d,borderRadius:"50%",flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:`radial-gradient(circle, ${lv.c}33 0%, ${lv.c}11 70%)`,border:`${big?2.5:2}px solid ${lv.c}`,boxShadow:`0 0 ${big?18:9}px ${lv.c}66`}}>
-    <div style={{fontSize:big?24:15,fontWeight:800,color:lv.c,lineHeight:1,fontVariantNumeric:"tabular-nums"}}>{avg}</div>
-    <div style={{fontSize:big?10:8,fontWeight:700,color:lv.c,opacity:0.8,letterSpacing:0.5,marginTop:1}}>{lv.l}</div>
+  const isFootball=sport==="Football";
+  const coinD=Math.round(d*0.42);
+  const sc=SPORT_COLOR[sport];
+  return <div title={`Event level — avg ${isFootball?"FSR":"USR"} ${isFootball?lv.l:avg}`} style={{position:"relative",width:d,height:d,flexShrink:0}}>
+    <div style={{width:d,height:d,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:`radial-gradient(circle, ${lv.c}33 0%, ${lv.c}11 70%)`,border:`${big?2.5:2}px solid ${lv.c}`,boxShadow:`0 0 ${big?18:9}px ${lv.c}66`}}>
+      <div style={{fontSize:isFootball?(big?28:19):(big?24:15),fontWeight:800,color:lv.c,lineHeight:1,fontVariantNumeric:"tabular-nums"}}>{isFootball?lv.l:avg}</div>
+    </div>
+    {sc&&<div style={{position:"absolute",bottom:-2,right:-2,width:coinD,height:coinD,borderRadius:"50%",background:sc,border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.round(coinD*0.55),lineHeight:1}}>{SPORT_EMOJI[sport]}</div>}
   </div>;
 }
 
@@ -6540,7 +6552,7 @@ function EvCard({ev,me,users,venues,onClick}){
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
   const avgUsr=calcEventAvgUsr(ev,users||[]);
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
+  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}<Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
               // Compact version of the graduated Min/Max capacity indicator (V0.09.22, EvDetail)
               // — same status-pill + Min-tick language, scaled down for a list card (no marker
               // dot or Start/Max text labels, the fill edge itself shows position at this size).
@@ -8442,7 +8454,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     <Card>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
         <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
-          {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg"/>}
+          {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
           <div>
             <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
             {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>👥 {comm.name}</div>}

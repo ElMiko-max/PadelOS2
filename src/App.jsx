@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.24";
+const APP_VERSION = "V0.10.25";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6127,7 +6127,12 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
       <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
     </div>
-    <Card style={{borderRadius:"0 0 16px 16px",marginTop:0,paddingTop:0}}>
+    {/* position:relative + zIndex here is a pure stacking-order fix, doesn't move anything —
+        without an explicit z-index, Card has none applied (z-index needs a non-static position
+        to take effect at all), so exactly where it lands in the paint order versus the banner's
+        watermark was up to chance. This guarantees the avatar (inside Card) always paints above
+        the ball, not the other way around. */}
+    <Card style={{borderRadius:"0 0 16px 16px",marginTop:0,paddingTop:0,position:"relative",zIndex:2}}>
       {/* Avatar is a normal-flow child of Card itself (pulled up with a negative margin), not a
           separately-positioned overlay — it used to sit in its own absolutely-positioned wrapper
           outside Card, and while the math looked right on paper, it rendered visibly off from

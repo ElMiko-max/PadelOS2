@@ -6263,9 +6263,10 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
   const curMonth = new Date().toISOString().slice(0,7);
   // Noon avoids the display-side .slice(0,10) landing on the wrong day from a UTC rollover.
   const dateInputToISO = d => new Date((d||todayStr)+"T12:00:00").toISOString();
-  // includeCasual defaults true (undefined = legacy communities from before this setting existed
-  // keep charging casuals, same as they always did) — only an explicit false excludes them.
-  const includeCasual = bk.includeCasual!==false;
+  // includeCasual defaults false — being Casual (whether set manually by an admin or landed on
+  // by missing events) means NOT liable for the monthly due unless an admin explicitly opts
+  // casuals back in. Only an explicit true includes them.
+  const includeCasual = bk.includeCasual===true;
   const payingMembers = regs.filter(m=>m.status!=="guest"&&(includeCasual||m.status!=="casual"));
   const [includeCasualInput,setIncludeCasualInput] = useState(includeCasual);
 

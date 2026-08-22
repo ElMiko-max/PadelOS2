@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.22";
+const APP_VERSION = "V0.10.23";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6096,7 +6096,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   // 0-100 scale team formation already uses, then read back as a letter via footballGradeLabel.
   const isFootballComm=comm.sports?.includes("Football");
   const avgFsr=regs.length?regs.reduce((s,m)=>{const u=users.find(u=>u.id===m.userId);return s+(u?(FOOTBALL_SKILL_RATING[u.footballSkill]??50):0);},0)/regs.length:0;
-  const tdefs=[["members","Members"],["events","Events"],["announcements",`📢 Announcements${(comm.announcements?.length||0)>0?` (${comm.announcements.length})`:""}`],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
+  const tdefs=[["members","Members"],["events","Events"],["announcements","📢"],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
   const sortedMembersAll=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
   const memberQ=memberSearch.trim().toLowerCase();
@@ -6106,8 +6106,6 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const commSports=comm.sports?.length?comm.sports:[DEFAULT_SPORT];
   const primarySport=commSports[0];
   const [gradFrom,gradTo]=SPORT_GRADIENT[primarySport]||SPORT_GRADIENT[DEFAULT_SPORT];
-  const avatarStackUsers=regs.slice(0,4).map(m=>users.find(u=>u.id===m.userId)).filter(Boolean);
-  const avatarStackRemaining=Math.max(0,regs.length-avatarStackUsers.length);
   // Deliberately its own inline pill row rather than the shared <Tabs> component — <Tabs> is
   // also EvDetail's tab bar (and My Communities/Events list's sub-toggles), so reusing it here
   // would just recreate the "looks the same as the event screen" problem this redesign exists
@@ -6115,7 +6113,11 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   // confusable despite different content — this screen's whole shape (cover banner + watermark
   // + overlapping avatar + scrollable pill tabs) is intentionally unlike EvDetail's compact card.
   return <><BBtn onBack={onBack} label="Communities" sticky subLabel={tab==="members"?"Members":tab==="events"?"Events":"Requests"}/>
-    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
+    {/* position:relative here is load-bearing: without it, the absolutely-positioned watermark
+        below has no containing block of its own, escapes all the way up to the viewport, and
+        renders as a giant emoji floating across the whole page (seen in the top bar and past
+        the card) instead of staying clipped inside this banner. */}
+    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
       <div style={{position:"absolute",fontSize:150,opacity:0.20,right:-28,top:-26,lineHeight:1,transform:"rotate(-12deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
       <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
     </div>
@@ -6134,10 +6136,6 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </div>
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · Founded {fmtD(comm.founded)}</div>
       <div style={{fontSize:13,color:"var(--po-sub)",marginTop:10}}>{comm.description}</div>
-      {avatarStackUsers.length>0&&<div style={{display:"flex",marginTop:14,marginBottom:4}}>
-        {avatarStackUsers.map((u,i)=><span key={u.id} title={u.nickname} style={{width:26,height:26,borderRadius:"50%",background:"var(--po-inp)",border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10.5,fontWeight:700,color:"var(--po-text)",marginLeft:i>0?-7:0}}>{ini2(u.nickname)}</span>)}
-        {avatarStackRemaining>0&&<span style={{width:26,height:26,borderRadius:"50%",background:"#6366F1",border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,fontWeight:700,color:"#fff",marginLeft:-7}}>+{avatarStackRemaining}</span>}
-      </div>}
       {!isMember&&<div style={{marginTop:14}}>
         {hasPendingJoin
           ? <div style={{textAlign:"center",fontSize:13,fontWeight:600,color:"var(--po-dim)",background:"var(--po-inp)",borderRadius:8,padding:"10px 0"}}>⏳ Request pending approval</div>
@@ -6151,7 +6149,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         Same overflow trigger though: more than 4 tabs wraps to a second row instead of forcing
         everything into one cramped/scrolling line. */}
     {(()=>{
-      const rows=tdefs.length>4?[tdefs.slice(0,Math.ceil(tdefs.length/2)),tdefs.slice(Math.ceil(tdefs.length/2))]:[tdefs];
+      const rows=tdefs.length>5?[tdefs.slice(0,Math.ceil(tdefs.length/2)),tdefs.slice(Math.ceil(tdefs.length/2))]:[tdefs];
       return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:18}}>
         {rows.map((row,ri)=><div key={ri} style={{display:"flex",gap:8,overflowX:"auto",WebkitOverflowScrolling:"touch",paddingBottom:2}}>
           {row.map(([k,l])=><div key={k} onClick={()=>setTab(k)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,fontSize:11.5,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer",background:tab===k?"var(--po-text)":"var(--po-inp)",color:tab===k?"var(--po-bg)":"var(--po-dim)",transition:"all 0.15s"}}>{l}</div>)}
@@ -8753,10 +8751,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     <VenueMapCard venue={venue}/>
 
     {/* Closed Teams Ladder events stack up to 7 tabs (players/teams/breaks/matches/standings/
-        manage/photos) — same >4 overflow rule as Community, using the same TwoRowTabs component
+        manage/photos) — same >5 overflow rule as Community, using the same TwoRowTabs component
         Platform Admin already uses (this screen already shared Tabs' boxed style, so switching
         to its two-row sibling here doesn't change how it looks, just fixes the cramming). */}
-    {tabs.length>4
+    {tabs.length>5
       ? <TwoRowTabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>
       : <Tabs tabs={tabs.map(t=>[t,tLabels[t]||t])} active={tab} onChange={setTab}/>}
 

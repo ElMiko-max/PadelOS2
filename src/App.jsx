@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.23";
+const APP_VERSION = "V0.10.24";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4403,7 +4403,12 @@ export default function Matchkeeper() {
     logAudit("member.join", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${c?.name||cid}"`, "community", cid);
   };
   const rejectReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid)}));toast2("Rejected");};
-  const requestJoin=(cid)=>{updC(cid,c=>c.joinRequests.some(r=>r.userId===me.id)?c:({...c,joinRequests:[...c.joinRequests,{userId:me.id,requestedAt:today}]}));toast2("Request sent ✓");};
+  const requestJoin=(cid)=>{
+    updC(cid,c=>c.joinRequests.some(r=>r.userId===me.id)?c:({...c,joinRequests:[...c.joinRequests,{userId:me.id,requestedAt:today}]}));
+    toast2("Request sent ✓");
+    const c=comms.find(c=>c.id===cid);
+    logAudit("member.requestJoin", `${me.nickname} requested to join "${c?.name||cid}"`, "community", cid);
+  };
   const promoteM=(cid,uid)=>{updC(cid,c=>({...c,members:c.members.map(m=>m.userId===uid?{...m,role:"admin"}:m)}));toast2("Promoted ✓");
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.promote", `${me.nickname} promoted ${u?.nickname||uid} to admin in ${c?.name||cid}`, "community", cid);
@@ -4924,6 +4929,7 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:(ev.joinRequests||[]).some(r=>r.userId===me.id)?ev:{...ev,joinRequests:[...(ev.joinRequests||[]),{userId:me.id,requestedAt:new Date().toISOString()}]})}));
     toast2("Request sent ✓");
     if (ev) notify([ev.createdBy].filter(Boolean), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
+    logAudit("event.requestJoin", `${me.nickname} requested to join "${ev?.name||eid}"`, "event", eid);
   };
   const approveEventJoin=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -6118,7 +6124,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         renders as a giant emoji floating across the whole page (seen in the top bar and past
         the card) instead of staying clipped inside this banner. */}
     <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
-      <div style={{position:"absolute",fontSize:150,opacity:0.20,right:-28,top:-26,lineHeight:1,transform:"rotate(-12deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
+      <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
       <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
     </div>
     <Card style={{borderRadius:"0 0 16px 16px",marginTop:0,paddingTop:0}}>
@@ -6143,19 +6149,17 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </div>}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginTop:14}}>{[["Members",regs.length],["Events",comm.events.length],isFootballComm?["Avg FSR",footballGradeLabel(avgFsr)]:["Avg USR",avgU||"—"],["Requests",comm.joinRequests.length]].map(([l,v])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 0",textAlign:"center"}}><div style={{fontSize:16,fontWeight:700,color:"var(--po-text)"}}>{v}</div><div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>{l==="Members"&&<div style={{display:"flex",justifyContent:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>{[["#34D399",regularCount],["#FBBF24",casualCount],["#F59E0B",guestCount]].filter(([,n])=>n>0).map(([c,n])=><span key={c} style={{fontSize:9,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:c,display:"inline-block"}}/>{n}</span>)}</div>}</div>)}</div>
     </Card>
-    {/* Own two-row layout (not the shared TwoRowTabs component) so it keeps this screen's pill
-        look — TwoRowTabs is the boxed/indigo style shared with EvDetail; reusing it here would
-        make Community and Event tabs identical again, undoing the whole point of this redesign.
-        Same overflow trigger though: more than 4 tabs wraps to a second row instead of forcing
-        everything into one cramped/scrolling line. */}
-    {(()=>{
-      const rows=tdefs.length>5?[tdefs.slice(0,Math.ceil(tdefs.length/2)),tdefs.slice(Math.ceil(tdefs.length/2))]:[tdefs];
-      return <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:18}}>
-        {rows.map((row,ri)=><div key={ri} style={{display:"flex",gap:8,overflowX:"auto",WebkitOverflowScrolling:"touch",paddingBottom:2}}>
-          {row.map(([k,l])=><div key={k} onClick={()=>setTab(k)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,fontSize:11.5,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer",background:tab===k?"var(--po-text)":"var(--po-inp)",color:tab===k?"var(--po-bg)":"var(--po-dim)",transition:"all 0.15s"}}>{l}</div>)}
-        </div>)}
-      </div>;
-    })()}
+    {/* Own layout (not the shared TwoRowTabs component) so it keeps this screen's pill look —
+        TwoRowTabs is the boxed/indigo style shared with EvDetail; reusing it here would make
+        Community and Event tabs identical again, undoing the whole point of this redesign.
+        Real CSS flex-wrap rather than a manual even split: row 1 fills with as many pills as
+        actually fit its width, only the overflow wraps to row 2 — an even split (ceil(n/2) each)
+        left row 1 with empty space while row 2 crowded, which looked wrong for pills whose
+        widths vary by label length (unlike TwoRowTabs' equal-stretch boxes, where an even split
+        is correct since every row always fills exactly). */}
+    <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:18}}>
+      {tdefs.map(([k,l])=><div key={k} onClick={()=>setTab(k)} style={{padding:"7px 14px",borderRadius:20,fontSize:11.5,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer",background:tab===k?"var(--po-text)":"var(--po-inp)",color:tab===k?"var(--po-bg)":"var(--po-dim)",transition:"all 0.15s"}}>{l}</div>)}
+    </div>
 
     {tab==="members"&&<>
       {!canViewPrivate?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see the member list.</div></Card>:<>

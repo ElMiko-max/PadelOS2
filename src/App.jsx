@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.18";
+const APP_VERSION = "V0.10.19";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5695,6 +5695,7 @@ export default function Matchkeeper() {
           }}
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
+          onOpenCommunity={goComm} onOpenEvent={goEvent}
           onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           onCloneToDev={cloneToDev} cloningToDev={cloningToDev}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
@@ -9895,7 +9896,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev}){
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -10027,6 +10028,34 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     };
     const buckets={};
     filtered.forEach(e=>{ const b=bucketOf(e.ts); (buckets[b]=buckets[b]||[]).push(e); });
+    // "Concerned object" — what the entry is actually about, resolved from the targetType/
+    // targetId already stored on every logAudit() call. Falls back to a plain, non-clickable
+    // label (not null) for a type this resolver doesn't know how to open yet, or a target that
+    // no longer exists (deleted user/community/event) — never a dead link.
+    const resolveAuditTarget = e => {
+      if (!e.targetType || e.targetId==null) return null;
+      if (e.targetType==="user") {
+        const u=users.find(u=>u.id===e.targetId);
+        return u ? {icon:"👤",label:u.nickname,onClick:()=>onViewProfile&&onViewProfile(u.id)} : {icon:"👤",label:"(deleted user)",onClick:null};
+      }
+      if (e.targetType==="community") {
+        const c=comms.find(c=>c.id===e.targetId);
+        return c ? {icon:"👥",label:c.name,onClick:()=>onOpenCommunity&&onOpenCommunity(c.id)} : {icon:"👥",label:"(deleted community)",onClick:null};
+      }
+      if (e.targetType==="event") {
+        for (const c of comms) {
+          const ev=c.events.find(ev=>ev.id===e.targetId);
+          if (ev) return {icon:"🎾",label:ev.name,onClick:()=>onOpenEvent&&onOpenEvent(c.id,ev.id)};
+        }
+        return {icon:"🎾",label:"(deleted event)",onClick:null};
+      }
+      if (e.targetType==="venue") {
+        const v=venues.find(v=>v.id===e.targetId);
+        return {icon:"🏟",label:v?v.name:"(deleted venue)",onClick:null};
+      }
+      if (e.targetType==="backup") return {icon:"💾",label:"Backup",onClick:()=>setTab("data")};
+      return {icon:"📄",label:`${e.targetType} #${e.targetId}`,onClick:null};
+    };
     return <>
       <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Oversight log of admin-level and sensitive actions — who did what, and when. Shows the most recent {auditLog.length} entries (up to 200). Routine browsing isn't logged, only writes that change or affect someone else's data.</div>
       <div style={{display:"flex",gap:6,marginBottom:8}}>
@@ -10050,13 +10079,14 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       </div>
       {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":"No matches"}</div></Card>}
       {filtered.length>0&&<div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",border:"0.5px solid var(--po-bdr)",borderRadius:8}}>
-        <table style={{borderCollapse:"collapse",width:"100%",minWidth:460,tableLayout:"fixed"}}>
-          <colgroup><col style={{width:52}}/><col style={{width:64}}/><col style={{width:80}}/><col style={{width:160}}/><col style={{width:88}}/></colgroup>
+        <table style={{borderCollapse:"collapse",width:"100%",minWidth:540,tableLayout:"fixed"}}>
+          <colgroup><col style={{width:52}}/><col style={{width:64}}/><col style={{width:80}}/><col style={{width:140}}/><col style={{width:90}}/><col style={{width:88}}/></colgroup>
           <thead><tr>
             <SortTh k="ts" label="Time"/>
             <SortTh k="actorName" label="Actor"/>
             <SortTh k="action" label="Action"/>
             <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,fontWeight:700,color:"var(--po-dim)",borderBottom:"0.5px solid var(--po-bdr)"}}>Summary</th>
+            <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,fontWeight:700,color:"var(--po-dim)",borderBottom:"0.5px solid var(--po-bdr)"}}>Object</th>
             <SortTh k="appVersion" label="Ver · Platform"/>
           </tr></thead>
           <tbody>
@@ -10064,23 +10094,29 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
               const items=buckets[b], isOpen=auditBucketsOpen[b];
               return <React.Fragment key={b}>
                 <tr onClick={()=>setAuditBucketsOpen(o=>({...o,[b]:!o[b]}))} style={{cursor:"pointer",background:"var(--po-inp)"}}>
-                  <td colSpan={5} style={{padding:"7px 10px",fontSize:11,fontWeight:700,color:"var(--po-sub)",userSelect:"none"}}>
+                  <td colSpan={6} style={{padding:"7px 10px",fontSize:11,fontWeight:700,color:"var(--po-sub)",userSelect:"none"}}>
                     <span style={{display:"inline-block",transition:"transform 0.15s",transform:isOpen?"rotate(0deg)":"rotate(-90deg)",marginRight:6}}>⌄</span>
                     {b} ({items.length})
                   </td>
                 </tr>
-                {isOpen&&items.map(e=>
-                  <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
+                {isOpen&&items.map(e=>{
+                  const target=resolveAuditTarget(e);
+                  return <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
                     <td style={{padding:"8px 6px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap"}} title={e.ts}>{timeAgo(e.ts)}</td>
                     <td style={{padding:"8px 6px",fontSize:11,color:"var(--po-text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.actorName}</td>
                     <td style={{padding:"8px 6px"}}><span style={{fontSize:8.5,color:"var(--po-dim)",fontFamily:"monospace",background:"var(--po-bdr)",borderRadius:3,padding:"1px 3px",display:"inline-block",whiteSpace:"normal",wordBreak:"break-word"}}>{e.action}</span></td>
                     <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}}>{e.summary}</td>
+                    <td style={{padding:"8px 6px",fontSize:11,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.3}}>
+                      {!target?<span style={{color:"var(--po-dim)"}}>—</span>
+                        :target.onClick?<span onClick={target.onClick} style={{color:"#6366F1",cursor:"pointer"}}>{target.icon} {target.label}</span>
+                        :<span style={{color:"var(--po-dim)"}}>{target.icon} {target.label}</span>}
+                    </td>
                     <td style={{padding:"8px 10px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap",lineHeight:1.4}}>
                       <div>{e.appVersion||"—"}</div>
                       <div>{e.platform?(e.platform==="Android"?"🤖 Android":"🌐 Web"):"—"}</div>
                     </td>
-                  </tr>
-                )}
+                  </tr>;
+                })}
               </React.Fragment>;
             })}
           </tbody>

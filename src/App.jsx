@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.09";
+const APP_VERSION = "V0.10.10";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3470,6 +3470,9 @@ export default function Matchkeeper() {
     const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
     setUsers(us => [...us, {id:newId, email:authUser.email, photoURL:authUser.photoURL||"", nickname:displayName, name:displayName, avatar:ini2(displayName), usr:50, joined:today, isGuest:false}]);
     linkUidToUser(authUser.uid, newId);
+    // Platform Admin (#1) gets pinged for every genuinely brand-new signup — this is the one
+    // spot both the untargeted-invite and fully organic sign-in paths funnel through.
+    notify([1], "newPlatformUser", null, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
   };
   const go = (screen, extra={}) => {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
@@ -5989,6 +5992,11 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const casualCount=regs.filter(m=>m.status==="casual").length;
   const guestCount=regs.filter(m=>m.status==="guest").length;
   const avgU=regs.length?Math.round(regs.reduce((s,m)=>s+(users.find(u=>u.id===m.userId)?.usr||0),0)/regs.length):0;
+  // Football communities have no meaningful USR (that's padel-specific) — Avg FSR (Football
+  // Skill Rating) is the equivalent, blended from footballSkill letter grades via the same
+  // 0-100 scale team formation already uses, then read back as a letter via footballGradeLabel.
+  const isFootballComm=comm.sports?.includes("Football");
+  const avgFsr=regs.length?regs.reduce((s,m)=>{const u=users.find(u=>u.id===m.userId);return s+(u?(FOOTBALL_SKILL_RATING[u.footballSkill]??50):0);},0)/regs.length:0;
   const tdefs=[["members","Members"],["events","Events"],["announcements",`📢 Announcements${(comm.announcements?.length||0)>0?` (${comm.announcements.length})`:""}`],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
   const sortedMembersAll=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
@@ -6009,7 +6017,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
           ? <div style={{textAlign:"center",fontSize:13,fontWeight:600,color:"var(--po-dim)",background:"var(--po-inp)",borderRadius:8,padding:"10px 0"}}>⏳ Request pending approval</div>
           : <Btn label="+ Request to Join" primary onClick={onRequestJoin} style={{width:"100%"}}/>}
       </div>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>{[["Members",regs.length],["Events",comm.events.length],["Avg USR",avgU||"—"],["Requests",comm.joinRequests.length]].map(([l,v])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 0",textAlign:"center"}}><div style={{fontSize:16,fontWeight:700,color:"var(--po-text)"}}>{v}</div><div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>{l==="Members"&&<div style={{display:"flex",justifyContent:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>{[["#34D399",regularCount],["#FBBF24",casualCount],["#F59E0B",guestCount]].filter(([,n])=>n>0).map(([c,n])=><span key={c} style={{fontSize:9,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:c,display:"inline-block"}}/>{n}</span>)}</div>}</div>)}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>{[["Members",regs.length],["Events",comm.events.length],isFootballComm?["Avg FSR",footballGradeLabel(avgFsr)]:["Avg USR",avgU||"—"],["Requests",comm.joinRequests.length]].map(([l,v])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 0",textAlign:"center"}}><div style={{fontSize:16,fontWeight:700,color:"var(--po-text)"}}>{v}</div><div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{l}</div>{l==="Members"&&<div style={{display:"flex",justifyContent:"center",gap:5,marginTop:3,flexWrap:"wrap"}}>{[["#34D399",regularCount],["#FBBF24",casualCount],["#F59E0B",guestCount]].filter(([,n])=>n>0).map(([c,n])=><span key={c} style={{fontSize:9,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:c,display:"inline-block"}}/>{n}</span>)}</div>}</div>)}</div>
     </Card>
     <Tabs tabs={tdefs} active={tab} onChange={setTab}/>
 
@@ -6024,7 +6032,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
         {showInvite&&nonMembers.length>0&&<Card style={{marginBottom:12}}>
           {nonMembers.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
-            <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>USR {u.usr} · {u.area}</span></div>
+            <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>{isFootballComm?`FSR ${u.footballSkill||"Not Rated"}`:`USR ${u.usr}`} · {u.area}</span></div>
             <SmBtn label="+ Add" onClick={()=>{onInvite(u.id);setShowInvite(false);}} color="#6366F1"/>
           </div>)}
         </Card>}
@@ -6036,17 +6044,23 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
           {list.map(m=>{const u=users.find(u=>u.id===m.userId);if(!u)return null;const isMe=u.id===me.id;return(
             <Card key={m.userId} style={{cursor:"pointer"}}><div onClick={()=>onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={38}/>
-              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>🎾 USR {u.usr} · {u.area}</div>{isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}
-                {/* Community admins can set this directly (not Platform-Admin-only, unlike
-                    padel's USR) — it's manually-assigned player data the community's own admin
-                    owns, not a computed rating needing the same protection. */}
-                {isAdmin&&comm.sports?.includes("Football")&&<div onClick={e=>e.stopPropagation()} style={{marginTop:4,display:"flex",alignItems:"center",gap:6}}>
-                  <span style={{fontSize:10,color:"var(--po-dim)"}}>⚽ Skill:</span>
-                  <select value={u.footballSkill||""} onChange={e=>onSetFootballSkill(u.id,e.target.value)} className="po-inp" style={{fontSize:11,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
-                    <option value="">Not Rated</option>
-                    {["A","B","C","D","E"].map(g=><option key={g} value={g}>{g}</option>)}
-                  </select>
-                </div>}</div>
+              <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</span>{sBdg(m.status)}{isMe&&<Bdg label="You" color="#6366F1"/>}{!isMe&&<span style={{fontSize:10,color:"var(--po-dim)"}}>👁 tap to view</span>}</div>
+                {/* USR is padel-specific — football communities show FSR (footballSkill) instead,
+                    never both. Community admins can set FSR directly (not Platform-Admin-only,
+                    unlike padel's USR) — it's manually-assigned player data the community's own
+                    admin owns, not a computed rating needing the same protection. */}
+                {isFootballComm
+                  ? (isAdmin
+                      ? <div onClick={e=>e.stopPropagation()} style={{marginTop:2,display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{fontSize:11,color:"var(--po-dim)"}}>⚽ FSR:</span>
+                          <select value={u.footballSkill||""} onChange={e=>onSetFootballSkill(u.id,e.target.value)} className="po-inp" style={{fontSize:11,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)"}}>
+                            <option value="">Not Rated</option>
+                            {["A","B","C","D","E"].map(g=><option key={g} value={g}>{g}</option>)}
+                          </select>
+                        </div>
+                      : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>⚽ FSR {u.footballSkill||"Not Rated"} · {u.area}</div>)
+                  : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>🎾 USR {u.usr} · {u.area}</div>}
+                {isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
               {(isAdmin||(meIsPlatformAdmin&&m.role==="admin"))&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -6137,7 +6151,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
     </>}
     {tab==="stats"&&(canViewPrivate?<><CommOverview comm={comm} venues={venues}/><CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/></>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
     {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onOpenEvent={onOpenEv} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onAddLedgerEntries={onAddLedgerEntries} onDeleteLedgerEntry={onDeleteLedgerEntry} expenseCategories={expenseCategories}/>}
-    {tab==="requests"&&isAdmin&&(comm.joinRequests.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No pending requests</div></Card>:comm.joinRequests.map(req=>{const u=users.find(u=>u.id===req.userId);if(!u)return null;return(<Card key={req.userId}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><Av u={u} size={38}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr} · {u.area}</div></div></div>{req.message&&<div style={{fontSize:12,color:"var(--po-sub)",background:"var(--po-inp)",borderRadius:6,padding:"7px 10px",marginBottom:10}}>{req.message}</div>}<div style={{display:"flex",gap:6}}><Btn label="Approve" primary onClick={()=>onApprove(req.userId)} style={{flex:1}}/><Btn label="Reject" danger onClick={()=>onReject(req.userId)} style={{flex:1}}/></div></Card>);}))}</>;
+    {tab==="requests"&&isAdmin&&(comm.joinRequests.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No pending requests</div></Card>:comm.joinRequests.map(req=>{const u=users.find(u=>u.id===req.userId);if(!u)return null;return(<Card key={req.userId}><div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><Av u={u} size={38}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>{isFootballComm?`FSR ${u.footballSkill||"Not Rated"}`:`USR ${u.usr}`} · {u.area}</div></div></div>{req.message&&<div style={{fontSize:12,color:"var(--po-sub)",background:"var(--po-inp)",borderRadius:6,padding:"7px 10px",marginBottom:10}}>{req.message}</div>}<div style={{display:"flex",gap:6}}><Btn label="Approve" primary onClick={()=>onApprove(req.userId)} style={{flex:1}}/><Btn label="Reject" danger onClick={()=>onReject(req.userId)} style={{flex:1}}/></div></Card>);}))}</>;
 }
 
 // ── Centralized Bookkeeping (opt-in, per-community ledger) ───────────

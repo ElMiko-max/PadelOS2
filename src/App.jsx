@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.11";
+const APP_VERSION = "V0.10.12";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3463,7 +3463,7 @@ export default function Matchkeeper() {
     setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
     const target = users.find(u => u.id===userId);
     const who = authUser.displayName || authUser.email || "Someone";
-    notify([inv?.createdBy].filter(Boolean), "inviteClaimed", null, "🔗 Invite connected", `${who} just signed in and got linked as ${target?.nickname||"their profile"} — they're in.`);
+    notify([inv?.createdBy].filter(Boolean), "inviteClaimed", {profileUserId:userId}, "🔗 Invite connected", `${who} just signed in and got linked as ${target?.nickname||"their profile"} — they're in.`);
   };
   const createFreshProfile = () => {
     const newId = _uid++;
@@ -3472,7 +3472,7 @@ export default function Matchkeeper() {
     linkUidToUser(authUser.uid, newId);
     // Platform Admin (#1) gets pinged for every genuinely brand-new signup — this is the one
     // spot both the untargeted-invite and fully organic sign-in paths funnel through.
-    notify([1], "newPlatformUser", null, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
+    notify([1], "newPlatformUser", {profileUserId:newId}, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
   };
   // Same "yes that's me" safety pattern as claimViaInvite, but triggered by email match instead
   // of a targeted invite — this is what stops a player who already exists (added manually by an
@@ -4262,7 +4262,7 @@ export default function Matchkeeper() {
     if (uniq.length===0) return;
     const now = new Date().toISOString();
     setNotifications(ns => [
-      ...uniq.map(uid => ({id:_nid++, userId:uid, type, eventId:ev?.id, communityId:ev?.communityId, eventName:ev?.name, title, body, createdAt:now, read:false})),
+      ...uniq.map(uid => ({id:_nid++, userId:uid, type, eventId:ev?.id, communityId:ev?.communityId, eventName:ev?.name, profileUserId:ev?.profileUserId, title, body, createdAt:now, read:false})),
       ...ns,
     ]);
   };
@@ -4271,9 +4271,12 @@ export default function Matchkeeper() {
   // Enhancement #19 — a tapped notification takes you to whatever it's actually about,
   // instead of leaving you wherever you happened to be. Covers every notify() call site:
   // event+community context (most types) already carries both ids; community-only context
-  // (new_community) carries just communityId.
+  // (new_community) carries just communityId; profileUserId (newPlatformUser, inviteClaimed)
+  // carries neither, so it's checked first — a bare {profileUserId} shim passed as the `ev`
+  // arg to notify() is what gets it onto the notification, same trick {communityId} already uses.
   const openNotif = (n) => {
     markNotifRead(n.id);
+    if (n.profileUserId) { setNavHistory(h=>[...h,{nav,view}]); setNav("profile"); setView({screen:"profile", uid:n.profileUserId}); return; }
     if (n.communityId && n.eventId) { goEvent(n.communityId, n.eventId); return; }
     if (n.communityId) { goComm(n.communityId); return; }
   };

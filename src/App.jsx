@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.44";
+const APP_VERSION = "V0.10.45";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3307,7 +3307,7 @@ function BBtn({onBack,label="Back",sticky=false,subLabel,eventLabel}){
   const bracket = eventLabel ? `${eventLabel}${subLabel?" → "+subLabel:""}` : subLabel;
   const content = <button onClick={onBack} className="po-dim" style={{display:"flex",alignItems:"center",gap:4,background:"none",border:"none",color:"var(--po-dim)",fontSize:14,fontWeight:500,cursor:"pointer",padding:"10px 0",minHeight:40}}>← {label}{bracket?<span style={{color:"var(--po-sub)"}}>&nbsp;({bracket})</span>:null}</button>;
   if(!sticky) return <div style={{marginBottom:8}}>{content}</div>;
-  return <div style={{position:"sticky",top:60,zIndex:40,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,marginBottom:8,borderBottom:"0.5px solid var(--po-bdr)"}}>{content}</div>;
+  return <div style={{position:"sticky",top:"calc(60px + var(--po-sticky-extra, 0px))",zIndex:40,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,marginBottom:8,borderBottom:"0.5px solid var(--po-bdr)"}}>{content}</div>;
 }
 function Inp({label,value,onChange,placeholder="",type="text",multiline}){const s={width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,resize:"vertical",boxSizing:"border-box"};return <div style={{marginBottom:12}}><div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>{label}</div>{multiline?<textarea className="po-inp" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={3} style={s}/>:<input className="po-inp" type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={s}/>}</div>;}
 function Drp({label,value,onChange,options}){return <div style={{marginBottom:12}}><div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>{label}</div><select className="po-inp" value={value} onChange={e=>onChange(e.target.value)} style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">اختر...</option>{options.map(o=><option key={o.v||o} value={o.v||o}>{o.l||o.v||o}</option>)}</select></div>;}
@@ -5746,6 +5746,23 @@ export default function Matchkeeper() {
     document.addEventListener("visibilitychange", onVisible);
     return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
+  // Every per-screen sticky "Back" header (BBtn, sticky=true) also pins at top:60, right under
+  // the TopBar — same slot this banner uses. Without this, when both are present the Back
+  // header (later in DOM) paints over the banner once both are stuck, making the banner look
+  // like it "disappeared" on scroll even though it's just hidden underneath. Measuring the
+  // banner's real height (it can wrap to 2 lines on narrow screens) and publishing it as a CSS
+  // var lets BBtn push itself down below the banner instead of colliding with it.
+  const newVerBannerRef = useRef(null);
+  useEffect(() => {
+    if (!newVersion) { document.documentElement.style.setProperty("--po-sticky-extra", "0px"); return; }
+    const el = newVerBannerRef.current;
+    if (!el) return;
+    const update = () => document.documentElement.style.setProperty("--po-sticky-extra", el.offsetHeight + "px");
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [newVersion]);
 
   if (authLoading || (authUser && !dataLoaded)) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -5895,7 +5912,7 @@ export default function Matchkeeper() {
             scrolling away with the rest of the content. An opaque background is load-bearing
             here: without it, whatever scrolls underneath would show through the translucent
             green while pinned. */}
-        {newVersion&&<div style={{position:"sticky",top:60,zIndex:40,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:12,marginBottom:0}}>
+        {newVersion&&<div ref={newVerBannerRef} style={{position:"sticky",top:60,zIndex:41,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:12,marginBottom:0}}>
           <div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D399DD",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
             <span style={{fontSize:16}}>🆕</span>
             <span style={{flex:1,color:"#0E1117",fontWeight:600}}>New version {newVersion} is available — tap to refresh.</span>
@@ -5985,7 +6002,7 @@ export default function Matchkeeper() {
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
-        {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
+        {nav==="platform"&&<PlatformAdminSc onToast={msg=>toast2(msg)} users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
           subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription} subscriptionTransactions={subscriptionTransactions} onConfirmPayment={confirmSubscriptionPayment}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
@@ -10393,7 +10410,8 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast}){
+  const toast2 = onToast || (()=>{});
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);

@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.34";
+const APP_VERSION = "V0.10.35";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6377,14 +6377,29 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [memberSearch,setMemberSearch]=useState("");
   const [announcementText,setAnnouncementText]=useState("");
   const [bannerUploading,setBannerUploading]=useState(false);
+  const [bannerError,setBannerError]=useState("");
   const [showBannerMenu,setShowBannerMenu]=useState(false);
+  // A misconfigured/unprovisioned Storage bucket (found live on padelos-dev — Storage was never
+  // set up there at all) can leave the underlying upload promise neither resolving nor rejecting
+  // for a long time instead of failing fast, which left the pencil stuck on ⏳ forever with no
+  // feedback. The 20s timeout guarantees this always resolves one way or the other, and the
+  // error message actually tells the admin something went wrong instead of just spinning.
   const handleBannerSelect = async (e) => {
     const file = e.target.files[0]; e.target.value="";
     if (!file) return;
     setShowBannerMenu(false);
     setBannerUploading(true);
-    try{ const url = await uploadCommunityBanner(comm.id, file); onSetBanner&&onSetBanner(url); }
-    catch(err){ console.log("Banner upload error", err); }
+    setBannerError("");
+    try{
+      const url = await Promise.race([
+        uploadCommunityBanner(comm.id, file),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error("timeout")), 20000)),
+      ]);
+      onSetBanner&&onSetBanner(url);
+    } catch(err){
+      console.log("Banner upload error", err);
+      setBannerError("Couldn't upload the banner — check your connection and try again.");
+    }
     setBannerUploading(false);
   };
   const [replyingTo,setReplyingTo]=useState(null); // announcement id whose reply box is open
@@ -6452,6 +6467,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         </div>}
       </div>}
     </div>
+    {bannerError&&<div style={{fontSize:11,color:"#EF4444",background:"#EF444411",borderRadius:8,padding:"7px 10px",marginTop:8}}>⚠️ {bannerError}</div>}
     {/* position:relative + zIndex here is a pure stacking-order fix, doesn't move anything —
         without an explicit z-index, Card has none applied (z-index needs a non-static position
         to take effect at all), so exactly where it lands in the paint order versus the banner's

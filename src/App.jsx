@@ -28,6 +28,7 @@ import {
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 // ── Firebase (Phase 1: auth. Phase 2: Firestore replaces localStorage as the
 // shared source of truth, so every device sees the same data in real time) ──
@@ -125,6 +126,12 @@ async function enablePushNotifications(userId){
 const fbAuth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 const storage = getStorage(firebaseApp);
+// Lazy on purpose — never call getFunctions() at module load. padelos-dev has no Cloud
+// Functions deployed at all (free Spark plan), and initializing this eagerly for every visitor
+// regardless of whether it's ever used is unnecessary risk for zero benefit; created only the
+// first time something on production actually needs it, inside a try/catch at the call site.
+let _functionsInstance = null;
+const getFunctionsLazy = () => _functionsInstance || (_functionsInstance = getFunctions(firebaseApp));
 // Uploads a profile photo file/blob and returns its public download URL
 async function uploadProfilePhoto(userId, file){
   const r = storageRef(storage, `profile-photos/${userId}`);
@@ -197,7 +204,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.28";
+const APP_VERSION = "V0.10.30";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3555,7 +3562,16 @@ export default function Matchkeeper() {
   // logAudit here directly would misattribute the actor, since `me` is still the pre-link
   // fallback (users[0]) at the moment this function runs, one render before linkedMe updates.
   const justCreatedRef = useRef(null);
-  const createFreshProfile = () => {
+  // Original client-side duplicate check (pre-V0.10.29) — kept as the permanent DEV path (no
+  // Cloud Functions exist on padelos-dev, free Spark plan) AND as the production fallback if
+  // the server call errors or is slow. Only matches an UNLINKED existing profile — never offers
+  // to merge into someone whose account is already claimed.
+  const findEmailMatchUserLocal = () => {
+    if (!authUser?.email) return null;
+    const claimed = new Set(Object.values(uidLinks));
+    return users.find(u => u.email && u.email.toLowerCase()===authUser.email.toLowerCase() && !claimed.has(u.id)) || null;
+  };
+  const createFreshProfileLocal = () => {
     const newId = _uid++;
     const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
     setUsers(us => [...us, {id:newId, email:authUser.email, photoURL:authUser.photoURL||"", nickname:displayName, name:displayName, avatar:ini2(displayName), usr:50, joined:today, isGuest:false}]);
@@ -3565,24 +3581,71 @@ export default function Matchkeeper() {
     // spot both the untargeted-invite and fully organic sign-in paths funnel through.
     notify([1], "newPlatformUser", {profileUserId:newId}, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
   };
-  // Same "yes that's me" safety pattern as claimViaInvite, but triggered by email match instead
-  // of a targeted invite — this is what stops a player who already exists (added manually by an
-  // admin, or from an earlier guest-add) from getting a second, empty duplicate profile the
-  // moment they actually sign in with the matching Google account. Only matches an UNLINKED
-  // existing profile — never offers to merge into someone whose account is already claimed.
-  const findEmailMatchUser = () => {
-    if (!authUser?.email) return null;
-    const claimed = new Set(Object.values(uidLinks));
-    return users.find(u => u.email && u.email.toLowerCase()===authUser.email.toLowerCase() && !claimed.has(u.id)) || null;
-  };
-  const claimViaEmailMatch = (userId) => {
+  const claimViaEmailMatchLocal = (userId) => {
     linkUidToUser(authUser.uid, userId);
     setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
   };
-  const createFreshProfileOrMatch = () => {
-    const match = findEmailMatchUser();
+  // Rejects after ms — races against the server call so a slow/unreachable Cloud Function can
+  // never leave sign-in stuck. This is the direct fix for the V0.10.29 incident: whatever the
+  // exact cause of the hang was, this guarantees the exact same behavior as before (the local
+  // fallback below) kicks in within 8s no matter what, instead of hanging indefinitely.
+  const withTimeout = (promise, ms) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
+  // Resolves "who am I" on sign-in. DEV (IS_DEV_ENV) always uses the local client-side check —
+  // padelos-dev has no Cloud Functions deployed at all, calling one there would just be a
+  // guaranteed failure. Production tries the server-side check first (closes the stale-client
+  // gap the local check can't — see functions/index.js), but ALWAYS falls back to the exact
+  // same local check on any error or timeout, so this can never regress to hanging forever
+  // again even if the server call breaks in some new way.
+  const createFreshProfileOrMatch = async (forceNew=false) => {
+    if (!IS_DEV_ENV) {
+      try {
+        const fn = httpsCallable(getFunctionsLazy(), "claimOrCreateProfile");
+        const res = await withTimeout(fn({forceNew}), 8000);
+        const {status, userId, nickname, avatar, area} = res.data || {};
+        if (status === "matched") { setPendingEmailMatchConfirm({target:{id:userId, nickname, avatar, area}}); return; }
+        if (status === "created") {
+          justCreatedRef.current = userId;
+          const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
+          notify([1], "newPlatformUser", {profileUserId:userId}, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
+        }
+        return; // "already-linked" or handled above — nothing left to do
+      } catch (e) {
+        console.log("claimOrCreateProfile unavailable, falling back to local check", e);
+      }
+    }
+    if (forceNew) { createFreshProfileLocal(); return; }
+    const match = findEmailMatchUserLocal();
     if (match) { setPendingEmailMatchConfirm({target:match}); return; }
-    createFreshProfile();
+    createFreshProfileLocal();
+  };
+  const claimViaEmailMatch = async (userId) => {
+    if (!IS_DEV_ENV) {
+      try {
+        const fn = httpsCallable(getFunctionsLazy(), "confirmEmailMatch");
+        await withTimeout(fn({userId}), 8000);
+        return;
+      } catch (e) {
+        console.log("confirmEmailMatch unavailable, falling back to local link", e);
+      }
+    }
+    claimViaEmailMatchLocal(userId);
+  };
+  // Manual merge for the duplicate-email audit tool (Platform Admin → Data & Backup) — a
+  // detective, after-the-fact backstop regardless of how a duplicate happened. Only offered
+  // when `loserId` has zero footprint anywhere (enforced by the caller, which hides the button
+  // otherwise) — moves the auth link if the loser had one, then removes the empty duplicate.
+  // Never touches keepId's own data.
+  const mergeDuplicateUser = (keepId, loserId) => {
+    const keep = users.find(u=>u.id===keepId), loser = users.find(u=>u.id===loserId);
+    if (!keep || !loser) return;
+    const linkEntry = Object.entries(uidLinks).find(([,uid])=>uid===loserId);
+    if (linkEntry) linkUidToUser(linkEntry[0], keepId);
+    setUsers(us => us.filter(u=>u.id!==loserId));
+    toast2(`Merged ${loser.nickname} into ${keep.nickname} ✓`);
+    logAudit("user.mergeDuplicate", `${me.nickname} merged duplicate account "${loser.nickname}" (#${loserId}) into "${keep.nickname}" (#${keepId}) — same email, ${loser.nickname} had no event/community history`, "user", keepId);
   };
   const go = (screen, extra={}) => {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
@@ -5675,7 +5738,7 @@ export default function Matchkeeper() {
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>A profile already exists for this email — <b style={{color:"#F1F5F9"}}>{target.nickname}</b>{target.area&&target.area!=="—"?` (${target.area})`:""}. Confirm only if that's really you, so we don't create a duplicate profile.</div>
           <button onClick={()=>{claimViaEmailMatch(target.id);setPendingEmailMatchConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
-          <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfile();}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
+          <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfileOrMatch(true);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
         </div>
       </div>;
@@ -5881,7 +5944,7 @@ export default function Matchkeeper() {
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           onOpenCommunity={goComm} onOpenEvent={goEvent}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onMergeDuplicateUser={mergeDuplicateUser} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           onCloneToDev={cloneToDev} cloningToDev={cloningToDev}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
@@ -10160,7 +10223,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -10182,6 +10245,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [editCatInput,setEditCatInput]=useState("");
   const [usrWindowInput,setUsrWindowInput]=useState(String(usrWindowSize));
   const [openUserMenu,setOpenUserMenu]=useState(null);
+  const [showDupEmails,setShowDupEmails]=useState(false);
   const [subsSearch,setSubsSearch]=useState("");
   const [editingSubFor,setEditingSubFor]=useState(null); // userId currently being set
   const [subExpiryInput,setSubExpiryInput]=useState("");
@@ -10197,6 +10261,14 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
   const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
   const orphanedLinksCount=Object.entries(uidLinks||{}).filter(([,uid])=>!users.find(u=>u.id===uid)).length;
+  // Duplicate-email audit (Platform Admin, detective tool) — catches a duplicate after the
+  // fact regardless of how it happened (stale client, a race, anything).
+  const dupEmailGroups = (()=>{
+    const byEmail={};
+    users.forEach(u=>{ const e=u.email?.toLowerCase().trim(); if(e) (byEmail[e]=byEmail[e]||[]).push(u); });
+    return Object.entries(byEmail).filter(([,us])=>us.length>1);
+  })();
+  const hasFootprint = uid => comms.some(c=>c.members.some(m=>m.userId===uid)||c.events.some(ev=>ev.registrations.some(r=>r.userId===uid)||(ev.checkedIn||[]).includes(uid)||(ev.eventAdmins||[]).includes(uid)||(ev.retiredIds||[]).includes(uid)||(ev.exempted||[]).includes(uid)));
   const q=userSearch.trim().toLowerCase();
   const filteredUsers=users
     .filter(u=>!q||u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q))
@@ -10720,6 +10792,11 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Clean Orphaned Account Links{orphanedLinksCount>0?` (${orphanedLinksCount})`:""}</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
+      <div onClick={()=>setShowDupEmails(o=>!o)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:dupEmailGroups.length>0?"pointer":"default",borderBottom:"0.5px solid var(--po-bdr)",opacity:dupEmailGroups.length>0?1:0.5}}>
+        <span style={{fontSize:18}}>📧</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Find Duplicate Emails{dupEmailGroups.length>0?` (${dupEmailGroups.length})`:""}</span>
+        <span style={{color:"var(--po-dim)"}}>{showDupEmails?"⌄":"›"}</span>
+      </div>
       <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:!IS_DEV_ENV?"0.5px solid var(--po-bdr)":"none"}}>
         <span style={{fontSize:18}}>⚠️</span>
         <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
@@ -10736,6 +10813,27 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
     </Card>
+    {showDupEmails&&<Card style={{marginBottom:16}}>
+      {dupEmailGroups.length===0&&<div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"10px 0"}}>No duplicate emails found ✓</div>}
+      {dupEmailGroups.map(([email,us],gi)=><div key={email} style={{marginBottom:gi<dupEmailGroups.length-1?14:0,paddingBottom:gi<dupEmailGroups.length-1?14:0,borderBottom:gi<dupEmailGroups.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8,wordBreak:"break-all"}}>{email}</div>
+        {us.map(u=>{
+          const linked=Object.values(uidLinks||{}).includes(u.id);
+          const footprint=hasFootprint(u.id);
+          return <div key={u.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+            <Av u={u} size={26}/>
+            <div style={{flex:1,minWidth:120}}>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>{u.nickname} <span style={{color:"var(--po-dim)",fontWeight:400}}>#{u.id}</span></div>
+              <div style={{fontSize:10,color:"var(--po-dim)"}}>{linked?"🔗 Linked":"— Unlinked"} · {u.isGuest?"Guest":"Member"} · {footprint?"has history":"no history"}</div>
+            </div>
+            {!footprint&&us.filter(o=>o.id!==u.id).map(other=>
+              <SmBtn key={other.id} label={`Merge into ${other.nickname}`} onClick={()=>{if(window.confirm(`Merge ${u.nickname} (#${u.id}) into ${other.nickname} (#${other.id})?\n\nThis moves ${u.nickname}'s login (if any) onto ${other.nickname}, then deletes the #${u.id} record. ${u.nickname} has no event/community history, so nothing else is lost.`))onMergeDuplicateUser&&onMergeDuplicateUser(other.id,u.id);}} color="#6366F1"/>
+            )}
+            {footprint&&<span style={{fontSize:10,color:"#F59E0B"}}>⚠️ has history — needs manual review, not auto-mergeable</span>}
+          </div>;
+        })}
+      </div>)}
+    </Card>}
   </>}
   </>;
 }

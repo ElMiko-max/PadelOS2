@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.43";
+const APP_VERSION = "V0.10.44";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4182,7 +4182,7 @@ export default function Matchkeeper() {
   const editUser = (id, data) => {
     if (nicknameTaken(data.nickname, id)) { toast2(`Nickname "${data.nickname}" is already used by another player`, "err"); return false; }
     if (phoneTaken(data.phone, id)) { toast2(`Phone ${data.phone} is already used by another player`, "err"); return false; }
-    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref} : u));
+    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref, instapayLink:data.instapayLink!==undefined?data.instapayLink:u.instapayLink} : u));
     toast2("Player updated ✓");
     if (id!==me.id) { const u=users.find(u=>u.id===id); logAudit("user.edit", `${me.nickname} edited ${u?.nickname||id}'s profile`, "user", id); }
     return true;
@@ -7020,7 +7020,7 @@ function VenueForm({editV,onBack,onSave,egypt}){
   const ie=!!editV;
   const emptyCourtNames=Array(Math.max(0,10-(editV?.courts.length||0))).fill("");
   const emptyPitchNames=Array(Math.max(0,10-(editV?.pitches?.length||0))).fill("");
-  const [f,setF]=useState({name:editV?.name||"",gov:editV?.gov||"",area:editV?.area||"",sports:editV?.sports?.length?editV.sports:[DEFAULT_SPORT],pricePerHour:editV?String(editV.pricePerHour):"",extraFee:editV?String(editV.extraFee):"",pricePerHourFootball:editV?.pricePerHourFootball!=null?String(editV.pricePerHourFootball):"",extraFeeFootball:editV?.extraFeeFootball!=null?String(editV.extraFeeFootball):"",mapsUrl:editV?.mapsUrl||"",lat:editV?.lat!=null?String(editV.lat):"",lng:editV?.lng!=null?String(editV.lng):"",courtNames:editV?[...editV.courts.map(c=>c.name),...emptyCourtNames]:["Court 1","Court 2","","","","","","","",""],pitchNames:editV?[...(editV.pitches||[]).map(p=>p.name),...emptyPitchNames]:["Pitch 1","Pitch 2","","","","","","","",""]});
+  const [f,setF]=useState({name:editV?.name||"",gov:editV?.gov||"",area:editV?.area||"",sports:editV?.sports?.length?editV.sports:[DEFAULT_SPORT],pricePerHour:editV?String(editV.pricePerHour):"",extraFee:editV?String(editV.extraFee):"",pricePerHourFootball:editV?.pricePerHourFootball!=null?String(editV.pricePerHourFootball):"",extraFeeFootball:editV?.extraFeeFootball!=null?String(editV.extraFeeFootball):"",mapsUrl:editV?.mapsUrl||"",lat:editV?.lat!=null?String(editV.lat):"",lng:editV?.lng!=null?String(editV.lng):"",instapayLink:editV?.instapayLink||"",courtNames:editV?[...editV.courts.map(c=>c.name),...emptyCourtNames]:["Court 1","Court 2","","","","","","","",""],pitchNames:editV?[...(editV.pitches||[]).map(p=>p.name),...emptyPitchNames]:["Pitch 1","Pitch 2","","","","","","","",""]});
   const set=(k,v)=>setF(p=>({...p,[k]:v})),setC=(i,v)=>setF(p=>{const n=[...p.courtNames];n[i]=v;return{...p,courtNames:n};}),setP=(i,v)=>setF(p=>{const n=[...p.pitchNames];n[i]=v;return{...p,pitchNames:n};});const areas=f.gov?(egypt||{})[f.gov]||[]:[];
   const multiSport=f.sports.length>1;
   return <><BBtn onBack={onBack} label="Venues"/><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:ie?4:16}}>{ie?"Edit Venue":"Add Venue"}</div>{ie&&<div style={{fontSize:12,color:"#F59E0B",marginBottom:14,padding:"8px 12px",background:"#F59E0B11",borderRadius:8}}>✏️ Changes apply immediately. Pending global review.</div>}
@@ -7030,6 +7030,8 @@ function VenueForm({editV,onBack,onSave,egypt}){
     <Inp label="Google Maps URL" value={f.mapsUrl} onChange={v=>set("mapsUrl",v)} placeholder="https://maps.google.com/..."/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>📍 For "How far is it?" and one-tap navigation to work reliably, add coordinates below — shortened share links (maps.app.goo.gl/…) don't contain them. In Google Maps: long-press the location on the map, then tap the coordinates shown at the bottom to copy them.</div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label="Latitude (optional)" value={f.lat} onChange={v=>set("lat",v)} type="number" placeholder="e.g. 30.0333"/><Inp label="Longitude (optional)" value={f.lng} onChange={v=>set("lng",v)} type="number" placeholder="e.g. 31.4913"/></div>
+    <Inp label="InstaPay Link (optional)" value={f.instapayLink} onChange={v=>set("instapayLink",v)} placeholder="https://ipn.eg/S/venuename/instapay/..."/>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>💳 Shown on this venue's info for whoever's settling up the court fees directly with the venue (usually the event's collector, not each player individually).</div>
     {f.sports.includes("Padel Tennis")&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Padel Court Names (up to 10)</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{f.courtNames.map((cn,i)=><input key={i} value={cn} onChange={e=>setC(i,e.target.value)} placeholder={`Court ${i+1}`} className="po-inp" style={{background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>)}</div></div>}
     {f.sports.includes("Football")&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Football Pitch Names (up to 10)</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{f.pitchNames.map((pn,i)=><input key={i} value={pn} onChange={e=>setP(i,e.target.value)} placeholder={`Pitch ${i+1}`} className="po-inp" style={{background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>)}</div></div>}
     <Btn label={ie?"Save & Submit for Review":"Add Venue & Submit for Review"} primary onClick={()=>{if(f.name&&f.area&&f.sports.length)onSave({...f,lat:f.lat?parseFloat(f.lat):null,lng:f.lng?parseFloat(f.lng):null},ie?editV.id:null);}} style={{width:"100%"}}/></Card></>;
@@ -8876,11 +8878,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));
         if(plan) cards.push(buildRoundResultsCard(effEv,venue,plan,comm.name));
       }
+      const payerU = users.find(u=>u.id===payerId);
       const shareText = [
         `🏆 ${effEv.name} — Results`,
         `📅 ${fmtD(effEv.date)}`,
         `📍 ${venue?.name||"—"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
         `👥 ${comm.name}`,
+        ...(totC>0&&payerU?.instapayLink?[`💳 Pay ${payerU.nickname} (${cpp} EGP): ${payerU.instapayLink}`]:[]),
       ].join("\n");
       const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results", shareText);
       if(result.status==="shared"){ onToast&&onToast(`Shared ✓ (${cards.length} image${cards.length>1?"s":""})`); }
@@ -9115,6 +9119,19 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
+      {/* Player-facing "who to pay" card — the admin-only Settlement card further down (isAdmin
+          gate) is invisible to regular players, so without this they'd have no way to see the
+          collector or an InstaPay link at all. Shown to any paying, non-exempt attendee who
+          isn't the collector themself, whenever a cost has actually been set. */}
+      {totC>0&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&me.id!==payerId&&(()=>{
+        const payerU=users.find(u=>u.id===payerId);
+        const iPaid=paidIds.has(me.id);
+        return <div style={{marginTop:8,padding:"9px 10px",background:iPaid?"#34D39922":"#6366F122",border:`0.5px solid ${iPaid?"#34D39944":"#6366F144"}`,borderRadius:8}}>
+          <div style={{fontSize:12,fontWeight:600,color:iPaid?"#34D399":"#A5B4FC"}}>{iPaid?`✓ You've paid your ${cpp} EGP share`:`💰 You owe ${cpp} EGP — pay ${payerU?.nickname||"the collector"}`}</div>
+          {!iPaid&&payerU?.instapayLink&&<SmBtn label={`💳 ${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")} color="#6366F1" style={{width:"100%",marginTop:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+          {!iPaid&&venue?.instapayLink&&<SmBtn label={`🏟 Pay ${venue.name} via InstaPay`} onClick={()=>window.open(venue.instapayLink,"_blank")} color="#94A3B8" style={{width:"100%",marginTop:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+        </div>;
+      })()}
     </Card>
 
     <CollapsibleSection label="ℹ️ Event Info" defaultOpen={false}>
@@ -9427,6 +9444,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <span style={{fontSize:12,color:"var(--po-dim)"}}>Collected so far</span>
             <span style={{fontSize:13,fontWeight:700,color:"#34D399"}}>{paidCnt}/{owingCnt} paid · {collectedSoFar}/{totC} EGP</span>
           </div>
+          {/* Collector's own InstaPay (set on their profile) — shown here so the admin can see
+              at a glance whether players even have a way to pay this person from the app. The
+              player-facing "pay the collector" card below is what actually surfaces it to them. */}
+          {(()=>{const payerU=users.find(u=>u.id===payerId);return payerU?.instapayLink&&<div style={{paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}}><SmBtn label={`💳 ${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")} color="#6366F1" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>;})()}
+          {/* Venue InstaPay — for whoever's actually settling the court fees with the venue
+              (usually the collector), not each player individually. */}
+          {venue?.instapayLink&&<div style={{paddingTop:8}}><SmBtn label={`🏟 Pay ${venue.name} via InstaPay`} onClick={()=>window.open(venue.instapayLink,"_blank")} color="#94A3B8" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>}
         </Card>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap "Exempt" for anyone who shouldn't pay — everyone else gets marked "Paid" once they settle up with the collector.</div>
         {attendeeIds.map(uid=>{
@@ -10070,7 +10094,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
-    {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});setEditing(true);}} color="#6366F1"/>}
+    {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none",instapayLink:user.instapayLink||""});setEditing(true);}} color="#6366F1"/>}
   </div>
   {(isMe||isPlatformAdmin)&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
@@ -10084,8 +10108,10 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     <Inp label="Phone" value={ef.phone} onChange={v=>setEf(p=>({...p,phone:v}))}/>
     <Drp label="Break Preference" value={ef.breakPref} onChange={v=>setEf(p=>({...p,breakPref:v}))} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Used as your default whenever you join an event — admins can override it per event.</div>
+    <Inp label="InstaPay Link (optional)" value={ef.instapayLink} onChange={v=>setEf(p=>({...p,instapayLink:v}))} placeholder="https://ipn.eg/S/yourname/instapay/..."/>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Shown when you're picked as an event's payment collector, so other players can pay you straight from the app.</div>
     <div style={{display:"flex",gap:8,marginTop:4}}>
-      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref})!==false)setEditing(false);}} style={{flex:1}}/>
+      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref,instapayLink:ef.instapayLink.trim()})!==false)setEditing(false);}} style={{flex:1}}/>
       <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
     </div>
   </div>}

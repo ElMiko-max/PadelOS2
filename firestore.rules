@@ -16,5 +16,12 @@ service cloud.firestore {
     match /padelos_audit/{document} {
       allow read, write: if request.auth != null;
     }
+    // Written ONLY by the claimOrCreateProfile/confirmEmailMatch Cloud Functions (Admin SDK
+    // bypasses these rules entirely) — the whole point is a uniqueness guarantee no client,
+    // stale or otherwise, can corrupt by writing here directly. Read-only for clients.
+    match /emailIndex/{document} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
   }
 }

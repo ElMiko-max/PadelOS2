@@ -28,6 +28,7 @@ import {
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 // ── Firebase (Phase 1: auth. Phase 2: Firestore replaces localStorage as the
 // shared source of truth, so every device sees the same data in real time) ──
@@ -125,6 +126,13 @@ async function enablePushNotifications(userId){
 const fbAuth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 const storage = getStorage(firebaseApp);
+const functions = getFunctions(firebaseApp);
+// Server-side email-uniqueness enforcement (see functions/index.js) — replaces the old
+// purely-client-side findEmailMatchUser check as the actual point of enforcement, so a stale
+// client (old cached tab, an old installed DEV APK) can no longer bypass it just by running
+// old code; every client ultimately resolves identity through this same always-current function.
+const claimOrCreateProfileFn = httpsCallable(functions, "claimOrCreateProfile");
+const confirmEmailMatchFn = httpsCallable(functions, "confirmEmailMatch");
 // Uploads a profile photo file/blob and returns its public download URL
 async function uploadProfilePhoto(userId, file){
   const r = storageRef(storage, `profile-photos/${userId}`);
@@ -197,7 +205,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.28";
+const APP_VERSION = "V0.10.29";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3555,34 +3563,61 @@ export default function Matchkeeper() {
   // logAudit here directly would misattribute the actor, since `me` is still the pre-link
   // fallback (users[0]) at the moment this function runs, one render before linkedMe updates.
   const justCreatedRef = useRef(null);
-  const createFreshProfile = () => {
-    const newId = _uid++;
-    const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
-    setUsers(us => [...us, {id:newId, email:authUser.email, photoURL:authUser.photoURL||"", nickname:displayName, name:displayName, avatar:ini2(displayName), usr:50, joined:today, isGuest:false}]);
-    linkUidToUser(authUser.uid, newId);
-    justCreatedRef.current = newId;
-    // Platform Admin (#1) gets pinged for every genuinely brand-new signup — this is the one
-    // spot both the untargeted-invite and fully organic sign-in paths funnel through.
-    notify([1], "newPlatformUser", {profileUserId:newId}, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
+  const [emailMatchError, setEmailMatchError] = useState("");
+  // Resolves "who am I" via the claimOrCreateProfile Cloud Function (functions/index.js) —
+  // moved server-side so a stale client (old cached tab, an old installed DEV APK) can't bypass
+  // the duplicate check just by running old code; every client resolves through this same
+  // always-current function. Returns "matched" (show the "Is this you?" prompt below), "created"
+  // (nothing further to do — the users listener picks up the new profile automatically), or
+  // "already-linked" (race with another tab/device, also nothing to do).
+  const createFreshProfileOrMatch = async (forceNew=false) => {
+    try {
+      const res = await claimOrCreateProfileFn({forceNew});
+      const {status, userId, nickname, avatar, area} = res.data || {};
+      if (status === "matched") {
+        setPendingEmailMatchConfirm({target:{id:userId, nickname, avatar, area}});
+      } else if (status === "created") {
+        justCreatedRef.current = userId;
+        const displayName = authUser.displayName || authUser.email?.split("@")[0] || "Player";
+        // Platform Admin (#1) gets pinged for every genuinely brand-new signup — this is the
+        // one spot both the untargeted-invite and fully organic sign-in paths funnel through.
+        notify([1], "newPlatformUser", {profileUserId:userId}, "🆕 New platform user", `${displayName} just joined Matchkeeper`);
+      }
+      return true;
+    } catch (e) {
+      console.log("claimOrCreateProfile failed", e);
+      setEmailMatchError("Couldn't set up your profile — check your connection and try again.");
+      return false;
+    }
   };
-  // Same "yes that's me" safety pattern as claimViaInvite, but triggered by email match instead
-  // of a targeted invite — this is what stops a player who already exists (added manually by an
-  // admin, or from an earlier guest-add) from getting a second, empty duplicate profile the
-  // moment they actually sign in with the matching Google account. Only matches an UNLINKED
-  // existing profile — never offers to merge into someone whose account is already claimed.
-  const findEmailMatchUser = () => {
-    if (!authUser?.email) return null;
-    const claimed = new Set(Object.values(uidLinks));
-    return users.find(u => u.email && u.email.toLowerCase()===authUser.email.toLowerCase() && !claimed.has(u.id)) || null;
+  // Same "yes that's me" safety pattern as claimViaInvite, but triggered by an email match
+  // instead of a targeted invite — this is what stops a player who already exists (added
+  // manually by an admin, or from an earlier guest-add) from getting a second, empty duplicate
+  // profile the moment they actually sign in with the matching Google account.
+  const claimViaEmailMatch = async (userId) => {
+    try {
+      await confirmEmailMatchFn({userId});
+      setPendingEmailMatchConfirm(null);
+    } catch (e) {
+      console.log("confirmEmailMatch failed", e);
+      setEmailMatchError("Couldn't link your account — check your connection and try again.");
+    }
   };
-  const claimViaEmailMatch = (userId) => {
-    linkUidToUser(authUser.uid, userId);
-    setUsers(us => us.map(u => u.id===userId ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
-  };
-  const createFreshProfileOrMatch = () => {
-    const match = findEmailMatchUser();
-    if (match) { setPendingEmailMatchConfirm({target:match}); return; }
-    createFreshProfile();
+  // Manual merge for the duplicate-email audit tool (Platform Admin → Data & Backup) — the
+  // client-side findEmailMatchUser check only runs at the moment of a fresh sign-in on
+  // whatever code that specific device happens to be running, so a stale client (old cached
+  // tab, an old installed DEV APK never rebuilt) can still slip a duplicate past it. This is
+  // the after-the-fact fix: only offered when `loserId` has zero footprint anywhere (enforced
+  // by the caller, which hides the button otherwise) — moves the auth link if the loser had
+  // one, then removes the empty duplicate. Never touches keepId's own data.
+  const mergeDuplicateUser = (keepId, loserId) => {
+    const keep = users.find(u=>u.id===keepId), loser = users.find(u=>u.id===loserId);
+    if (!keep || !loser) return;
+    const linkEntry = Object.entries(uidLinks).find(([,uid])=>uid===loserId);
+    if (linkEntry) linkUidToUser(linkEntry[0], keepId);
+    setUsers(us => us.filter(u=>u.id!==loserId));
+    toast2(`Merged ${loser.nickname} into ${keep.nickname} ✓`);
+    logAudit("user.mergeDuplicate", `${me.nickname} merged duplicate account "${loser.nickname}" (#${loserId}) into "${keep.nickname}" (#${keepId}) — same email, ${loser.nickname} had no event/community history`, "user", keepId);
   };
   const go = (screen, extra={}) => {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
@@ -5674,8 +5709,9 @@ export default function Matchkeeper() {
           <div style={{fontSize:32,marginBottom:12}}>🔗</div>
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>A profile already exists for this email — <b style={{color:"#F1F5F9"}}>{target.nickname}</b>{target.area&&target.area!=="—"?` (${target.area})`:""}. Confirm only if that's really you, so we don't create a duplicate profile.</div>
-          <button onClick={()=>{claimViaEmailMatch(target.id);setPendingEmailMatchConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
-          <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfile();}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
+          {emailMatchError&&<div style={{fontSize:12,color:"#F87171",marginBottom:14}}>{emailMatchError}</div>}
+          <button onClick={()=>{setEmailMatchError("");claimViaEmailMatch(target.id);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
+          <div onClick={async()=>{setEmailMatchError("");if(await createFreshProfileOrMatch(true))setPendingEmailMatchConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
         </div>
       </div>;
@@ -5881,7 +5917,7 @@ export default function Matchkeeper() {
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           onOpenCommunity={goComm} onOpenEvent={goEvent}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onMergeDuplicateUser={mergeDuplicateUser} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
           onCloneToDev={cloneToDev} cloningToDev={cloningToDev}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
@@ -10160,7 +10196,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -10182,6 +10218,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [editCatInput,setEditCatInput]=useState("");
   const [usrWindowInput,setUsrWindowInput]=useState(String(usrWindowSize));
   const [openUserMenu,setOpenUserMenu]=useState(null);
+  const [showDupEmails,setShowDupEmails]=useState(false);
   const [subsSearch,setSubsSearch]=useState("");
   const [editingSubFor,setEditingSubFor]=useState(null); // userId currently being set
   const [subExpiryInput,setSubExpiryInput]=useState("");
@@ -10197,6 +10234,16 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
   const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
   const orphanedLinksCount=Object.entries(uidLinks||{}).filter(([,uid])=>!users.find(u=>u.id===uid)).length;
+  // Duplicate-email audit (Platform Admin, detective tool) — the client-side email-match check
+  // at sign-in only ever sees whatever code that specific device is currently running, so a
+  // stale client can still slip a second, empty profile past it (see the App.jsx comment on
+  // mergeDuplicateUser). This catches it after the fact regardless of how it happened.
+  const dupEmailGroups = (()=>{
+    const byEmail={};
+    users.forEach(u=>{ const e=u.email?.toLowerCase().trim(); if(e) (byEmail[e]=byEmail[e]||[]).push(u); });
+    return Object.entries(byEmail).filter(([,us])=>us.length>1);
+  })();
+  const hasFootprint = uid => comms.some(c=>c.members.some(m=>m.userId===uid)||c.events.some(ev=>ev.registrations.some(r=>r.userId===uid)||(ev.checkedIn||[]).includes(uid)||(ev.eventAdmins||[]).includes(uid)||(ev.retiredIds||[]).includes(uid)||(ev.exempted||[]).includes(uid)));
   const q=userSearch.trim().toLowerCase();
   const filteredUsers=users
     .filter(u=>!q||u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q))
@@ -10720,6 +10767,11 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Clean Orphaned Account Links{orphanedLinksCount>0?` (${orphanedLinksCount})`:""}</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
+      <div onClick={()=>setShowDupEmails(o=>!o)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:dupEmailGroups.length>0?"pointer":"default",borderBottom:"0.5px solid var(--po-bdr)",opacity:dupEmailGroups.length>0?1:0.5}}>
+        <span style={{fontSize:18}}>📧</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Find Duplicate Emails{dupEmailGroups.length>0?` (${dupEmailGroups.length})`:""}</span>
+        <span style={{color:"var(--po-dim)"}}>{showDupEmails?"⌄":"›"}</span>
+      </div>
       <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:!IS_DEV_ENV?"0.5px solid var(--po-bdr)":"none"}}>
         <span style={{fontSize:18}}>⚠️</span>
         <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
@@ -10736,6 +10788,27 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
     </Card>
+    {showDupEmails&&<Card style={{marginBottom:16}}>
+      {dupEmailGroups.length===0&&<div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"10px 0"}}>No duplicate emails found ✓</div>}
+      {dupEmailGroups.map(([email,us],gi)=><div key={email} style={{marginBottom:gi<dupEmailGroups.length-1?14:0,paddingBottom:gi<dupEmailGroups.length-1?14:0,borderBottom:gi<dupEmailGroups.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8,wordBreak:"break-all"}}>{email}</div>
+        {us.map(u=>{
+          const linked=Object.values(uidLinks||{}).includes(u.id);
+          const footprint=hasFootprint(u.id);
+          return <div key={u.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+            <Av u={u} size={26}/>
+            <div style={{flex:1,minWidth:120}}>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>{u.nickname} <span style={{color:"var(--po-dim)",fontWeight:400}}>#{u.id}</span></div>
+              <div style={{fontSize:10,color:"var(--po-dim)"}}>{linked?"🔗 Linked":"— Unlinked"} · {u.isGuest?"Guest":"Member"} · {footprint?"has history":"no history"}</div>
+            </div>
+            {!footprint&&us.filter(o=>o.id!==u.id).map(other=>
+              <SmBtn key={other.id} label={`Merge into ${other.nickname}`} onClick={()=>{if(window.confirm(`Merge ${u.nickname} (#${u.id}) into ${other.nickname} (#${other.id})?\n\nThis moves ${u.nickname}'s login (if any) onto ${other.nickname}, then deletes the #${u.id} record. ${u.nickname} has no event/community history, so nothing else is lost.`))onMergeDuplicateUser&&onMergeDuplicateUser(other.id,u.id);}} color="#6366F1"/>
+            )}
+            {footprint&&<span style={{fontSize:10,color:"#F59E0B"}}>⚠️ has history — needs manual review, not auto-mergeable</span>}
+          </div>;
+        })}
+      </div>)}
+    </Card>}
   </>}
   </>;
 }

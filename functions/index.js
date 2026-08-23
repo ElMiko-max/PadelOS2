@@ -1,5 +1,6 @@
 const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {onCall, HttpsError} = require("firebase-functions/v2/https");
 const {initializeApp} = require("firebase-admin/app");
 const {getMessaging} = require("firebase-admin/messaging");
 const {getFirestore} = require("firebase-admin/firestore");
@@ -151,4 +152,112 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   await scheduleRef.set({value: JSON.stringify(updatedSchedule)});
 
   console.log(`[eventReminder] sent ${newNotifs.length} notification(s)`);
+});
+
+// ── Email-uniqueness enforcement (server-side) ─────────
+// The old client-side check (findEmailMatchUser in App.jsx) re-scans the in-memory `users`
+// array at the moment of sign-in using whatever JS bundle that specific device happens to be
+// running — a stale client (an old cached browser tab, an old installed DEV APK never
+// rebuilt) simply doesn't have the check at all and can create a duplicate profile no matter
+// how correct the check itself is. Moving enforcement here closes that gap: every client, new
+// or stale, ultimately calls this same always-current server function to resolve "who am I."
+//
+// emailIndex/{normalizedEmail} -> {userId} is the source of truth going forward. It starts
+// empty (no bulk migration needed) and self-heals: the first time ANY existing user's email is
+// looked up here and the index doesn't have it yet, this function falls back to scanning
+// padelos/users (the exact same scan the old client check did) and backfills the index with
+// whatever it finds — so coverage grows automatically as real people sign in, with no separate
+// migration step required, and it's never worse than the old behavior even on a cold index.
+//
+// Two calls, matching the existing "Is this you?" UX (never auto-merge into an existing
+// profile without the signed-in person explicitly confirming — see BUGS.md #17):
+//   claimOrCreateProfile() — call on every sign-in with no existing link. Returns either
+//     {status:"created", userId} (nothing more to do) or {status:"matched", userId, nickname,
+//     avatar} (client shows the "Is this you?" prompt) or {status:"already-linked", userId}.
+//   confirmEmailMatch({userId}) — call only after the user confirms "yes, that's me".
+const normEmail = e => (e || "").toLowerCase().trim();
+
+exports.claimOrCreateProfile = onCall(async (request) => {
+  const auth = request.auth;
+  if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+  const email = normEmail(auth.token.email);
+  if (!email) throw new HttpsError("failed-precondition", "This account has no email.");
+  const uid = auth.uid;
+  const displayName = auth.token.name || email.split("@")[0] || "Player";
+  const photoURL = auth.token.picture || "";
+  // Set only when the person already saw a match and explicitly said "that's not me" — skips
+  // matching entirely so it can't just re-offer the same match again. Deliberately leaves
+  // emailIndex untouched in that case (still pointing at whoever the real match was, if any),
+  // so a genuine future sign-in by that person still resolves correctly.
+  const forceNew = request.data?.forceNew === true;
+
+  const db = getFirestore();
+  const linkRef = db.collection("padelos_links").doc(uid);
+  const emailIndexRef = db.collection("emailIndex").doc(email);
+  const usersRef = db.collection("padelos").doc("users");
+
+  return db.runTransaction(async (tx) => {
+    const linkSnap = await tx.get(linkRef);
+    if (linkSnap.exists) return {status: "already-linked", userId: linkSnap.data().userId};
+
+    const usersSnap = await tx.get(usersRef);
+    const users = JSON.parse(usersSnap.data()?.value || "[]");
+
+    if (!forceNew) {
+      const emailIdxSnap = await tx.get(emailIndexRef);
+      let targetUserId = emailIdxSnap.exists ? emailIdxSnap.data().userId : null;
+      if (targetUserId == null) {
+        // Cold index for this email — fall back to a direct scan (self-healing backfill below).
+        const linksSnap = await tx.get(db.collection("padelos_links"));
+        const claimedIds = new Set(linksSnap.docs.map(d => d.data().userId));
+        const match = users.find(u => normEmail(u.email) === email && !claimedIds.has(u.id));
+        if (match) targetUserId = match.id;
+      }
+
+      if (targetUserId != null) {
+        const target = users.find(u => u.id === targetUserId);
+        if (target) {
+          tx.set(emailIndexRef, {userId: targetUserId}); // backfill, doesn't link yet
+          return {status: "matched", userId: targetUserId, nickname: target.nickname || null, avatar: target.avatar || null, area: target.area || null};
+        }
+      }
+    }
+
+    // Genuinely new identity (or forceNew) — allocate the next id and create atomically.
+    const newId = Math.max(0, ...users.map(u => u.id)) + 1;
+    const newUser = {id: newId, email, photoURL, nickname: displayName, name: displayName, avatar: (displayName.slice(0, 2) || "PL").toUpperCase(), usr: 50, joined: new Date().toISOString().slice(0, 10), isGuest: false};
+    tx.set(usersRef, {value: JSON.stringify([...users, newUser])});
+    if (!forceNew) tx.set(emailIndexRef, {userId: newId});
+    tx.set(linkRef, {userId: newId});
+    return {status: "created", userId: newId};
+  });
+});
+
+exports.confirmEmailMatch = onCall(async (request) => {
+  const auth = request.auth;
+  if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+  const userId = request.data?.userId;
+  if (userId == null) throw new HttpsError("invalid-argument", "userId is required.");
+  const uid = auth.uid;
+  const email = normEmail(auth.token.email);
+  const photoURL = auth.token.picture || "";
+
+  const db = getFirestore();
+  const linkRef = db.collection("padelos_links").doc(uid);
+  const usersRef = db.collection("padelos").doc("users");
+  const emailIndexRef = email ? db.collection("emailIndex").doc(email) : null;
+
+  return db.runTransaction(async (tx) => {
+    const linkSnap = await tx.get(linkRef);
+    if (linkSnap.exists) return {status: "already-linked", userId: linkSnap.data().userId};
+    const usersSnap = await tx.get(usersRef);
+    const users = JSON.parse(usersSnap.data()?.value || "[]");
+    const target = users.find(u => u.id === userId);
+    if (!target) throw new HttpsError("not-found", "Target profile no longer exists.");
+    const updated = users.map(u => u.id === userId ? {...u, email: email || u.email, photoURL: u.photoURL || photoURL} : u);
+    tx.set(usersRef, {value: JSON.stringify(updated)});
+    tx.set(linkRef, {userId});
+    if (emailIndexRef) tx.set(emailIndexRef, {userId});
+    return {status: "linked", userId};
+  });
 });

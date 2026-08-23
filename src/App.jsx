@@ -165,7 +165,7 @@ const INIT_EGYPT = {
 // without an active subscription (or comped status) starts seeing read-only enforcement, so
 // this stays false until real payment collection (manual transfers, then Paymob) is actually
 // ready. Per-user status lives on each user's own `subscription` field, not here.
-const INIT_SUBSCRIPTION_SETTINGS = { enabled:false, monthlyPriceEGP:100, annualPriceEGP:1000 };
+const INIT_SUBSCRIPTION_SETTINGS = { enabled:false, monthlyPriceEGP:100, annualPriceEGP:1000, enabledAt:null };
 // A user with no `subscription` field at all (the default for every existing/new account) is
 // simply not active — same as expired. Only "comped" (admin-granted, no expiry) and an
 // unexpired `expiresAt` count as active.
@@ -174,12 +174,30 @@ const isSubscriptionActive = u => {
   if (u.subscription.status==="comped") return true;
   return !!u.subscription.expiresAt && new Date(u.subscription.expiresAt) > new Date();
 };
+// Grace period (2026-08-23): expiry doesn't lock a user out immediately — they keep full access
+// for 1 day past expiresAt, only going read-only once that grace window also passes. A user who
+// never had a subscription at all (no expiresAt to grace from) locks immediately — grace is
+// specifically a buffer for a LAPSED subscription, not a trial for someone who never started one.
+const SUBSCRIPTION_GRACE_MS = 24*60*60*1000;
+const isSubscriptionLocked = (u, subscriptionSettings) => {
+  if (!subscriptionSettings?.enabled || !u || u.id===1) return false;
+  if (isSubscriptionActive(u)) return false;
+  const exp = u.subscription?.expiresAt;
+  if (!exp) return true;
+  return Date.now() > new Date(exp).getTime() + SUBSCRIPTION_GRACE_MS;
+};
+const isSubscriptionInGrace = (u, subscriptionSettings) => {
+  if (!subscriptionSettings?.enabled || !u || u.id===1) return false;
+  if (isSubscriptionActive(u)) return false;
+  const exp = u.subscription?.expiresAt;
+  return !!exp && Date.now() <= new Date(exp).getTime() + SUBSCRIPTION_GRACE_MS;
+};
 // ── App Version ──────────────────────────────────────
 // Format: MAJOR.SESSION.PATCH
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.26";
+const APP_VERSION = "V0.10.27";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -429,6 +447,28 @@ const splitRegsByCapacity = (ev, comm) => {
   return { active, waitlisted };
 };
 const isRegWaitlisted = (ev, uid, comm) => splitRegsByCapacity(ev, comm).waitlisted.some(r=>r.userId===uid);
+// Subscription suspension on top of the capacity split (Enhancement #17, item 2): a locked
+// user's EXISTING registration doesn't get deleted or mutated — it's demoted purely for this
+// computed view, same "no new state transition needed" philosophy as the capacity split itself.
+// If the event has no capacity cap there's no waitlist to demote into, so locked registrants
+// just keep their spot with a Suspended badge (badge-only, no reshuffle) — moving them to a
+// waitlist that doesn't structurally exist would need to invent one just for this.
+const applySubscriptionSuspension = (split, ev, users, subscriptionSettings) => {
+  const suspendedIds = new Set();
+  if (!subscriptionSettings?.enabled) return { ...split, suspendedIds };
+  const max = getMaxPlayers(ev);
+  const ordered = [...split.active, ...split.waitlisted];
+  const active=[], waitlisted=[];
+  ordered.forEach(r=>{
+    const u = users.find(u=>u.id===r.userId);
+    const locked = isSubscriptionLocked(u, subscriptionSettings);
+    if (locked) suspendedIds.add(r.userId);
+    if (locked && max) waitlisted.push(r);
+    else if (!max || active.length<max) active.push(r);
+    else waitlisted.push(r);
+  });
+  return { active, waitlisted, suspendedIds };
+};
 
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
@@ -3468,12 +3508,15 @@ export default function Matchkeeper() {
   useEffect(() => { if (me?.id) { const saved = localStorage.getItem(`mk_ev_filter_${me.id}`); if (saved) setEventCommFilter(saved); } }, [me?.id]);
   useEffect(() => { if (me?.id) localStorage.setItem(`mk_ev_filter_${me.id}`, eventCommFilter); }, [eventCommFilter, me?.id]);
   // iOS can never get push notifications from a plain browser tab (see isIosNonStandalone) —
-  // this nudges the user through the one manual step that unlocks it (Add to Home Screen),
-  // since there's no way to trigger that from code. Dismissed permanently once closed.
-  const [showIosInstallBanner, setShowIosInstallBanner] = useState(() => {
-    try { return isIosNonStandalone() && localStorage.getItem("mk_ios_install_dismissed")!=="1"; } catch(e) { return false; }
+  // this nudges the user through the one manual step that unlocks it (Add to Home Screen).
+  // Full-screen the first time (can't miss it), then collapses to a small floating 🍎 icon
+  // (same close-to-icon pattern as God Mode) instead of dismissing forever — the instructions
+  // stay one tap away for as long as they're still on a plain iOS Safari tab.
+  const [showIosOverlay, setShowIosOverlay] = useState(() => {
+    try { return isIosNonStandalone() && localStorage.getItem("mk_ios_overlay_collapsed")!=="1"; } catch(e) { return false; }
   });
-  const dismissIosInstallBanner = () => { try { localStorage.setItem("mk_ios_install_dismissed","1"); } catch(e) {} setShowIosInstallBanner(false); };
+  const collapseIosOverlay = () => { try { localStorage.setItem("mk_ios_overlay_collapsed","1"); } catch(e) {} setShowIosOverlay(false); };
+  const expandIosOverlay = () => setShowIosOverlay(true);
   const autoPushTriedRef = useRef(false);
   useEffect(() => {
     if (!linkedMe || autoPushTriedRef.current) return;
@@ -4341,13 +4384,16 @@ export default function Matchkeeper() {
   // whenever godMode is on. This one only fires for a write to a community/event the Platform
   // Admin isn't actually a real owner/admin of — i.e. exactly the writes God Mode alone made
   // possible. A real admin's own communities behave normally, no extra prompt.
-  const updC = (id,fn) => {
+  const updC = (id,fn,opts={}) => {
     // Read-only enforcement (Enhancement #17) — this single funnel already covers essentially
     // every community/event write in the app (members, events, ledger, announcements,
     // registrations...), same reason God Mode's second-confirm gate lives here too. Platform
     // Admin is exempt so they can always manage the system regardless of their own subscription.
-    if (subscriptionSettings.enabled && me.id!==1 && !isSubscriptionActive(me)) {
-      toast2("Your subscription has expired — you can still view everything, but renewing is needed to make changes.", "err");
+    // A 1-day grace period after expiry (isSubscriptionLocked) delays the actual lockout — see
+    // isSubscriptionLocked. opts.bypassSubscriptionLock is the one carve-out: a locked user can
+    // still unregister themselves from events (removeFromEvent passes it for self-cancel only).
+    if (!opts.bypassSubscriptionLock && isSubscriptionLocked(me, subscriptionSettings)) {
+      toast2("Your subscription has expired — you can still view everything and unregister from events, but renewing is needed for anything else.", "err");
       return;
     }
     if (godMode && me.id===1) {
@@ -5067,7 +5113,7 @@ export default function Matchkeeper() {
       const idx = ev.registrations.findIndex(r=>r.userId===uid);
       if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
     }
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}));
+    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}),{bypassSubscriptionLock:uid===me.id});
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
@@ -5639,13 +5685,45 @@ export default function Matchkeeper() {
         else if(window.confirm("⚡ Enable God Mode?\n\nYou'll get full admin authority on any community or event screen, regardless of your real membership there. Any actual change you make while flagged will ask for confirmation again first — use carefully."))
           {setGodMode(true);toast2("⚡ God Mode ON — full authority everywhere until you turn it off");}
       }} title={godMode?"God Mode ON — tap to turn off":"Tap to enable God Mode"} style={{position:"fixed",bottom:20,right:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:godMode?"#EF4444":"var(--po-card)",border:`2px solid ${godMode?"#EF4444":"var(--po-bdr)"}`,boxShadow:godMode?"0 0 16px #EF444488":"0 2px 8px #00000044",color:godMode?"#fff":"var(--po-dim)",transition:"all 0.2s"}}>⚡</div>}
+      {/* iOS "Add to Home Screen" walkthrough — full-screen the first time (can't be missed),
+          then collapses to a small floating icon on close instead of dismissing forever, same
+          interaction shape as the God Mode button above. Left corner so the two never collide. */}
+      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:20,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044",color:"#6366F1"}}>🍎</div>}
+      {isIosNonStandalone()&&showIosOverlay&&<div style={{position:"fixed",inset:0,zIndex:300,background:"linear-gradient(160deg,#1E1B4B 0%,#0E1117 60%)",overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
+        <div style={{minHeight:"100%",display:"flex",flexDirection:"column",alignItems:"center",padding:"28px 20px 40px",boxSizing:"border-box"}}>
+          <div onClick={collapseIosOverlay} title="Minimize" style={{position:"absolute",top:16,right:16,width:36,height:36,borderRadius:"50%",background:"#FFFFFF18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"#fff",cursor:"pointer"}}>✕</div>
+          <div style={{fontSize:56,marginTop:24,marginBottom:6}}>📲</div>
+          <div style={{fontSize:24,fontWeight:800,color:"#fff",textAlign:"center",marginBottom:6,letterSpacing:-0.4}}>Install Matchkeeper</div>
+          <div style={{fontSize:14,color:"#C7D2FE",textAlign:"center",marginBottom:30,maxWidth:340,lineHeight:1.55}}>Add it to your Home Screen for the full app — instant launch, no browser bar, and match/round alerts that only work once it's installed.</div>
+          {[
+            {n:1,icon:"⬆️",title:"Tap the Share icon",desc:"In Safari's toolbar — usually at the bottom of the screen."},
+            {n:2,icon:"➕",title:'Scroll and tap "Add to Home Screen"',desc:"You may need to scroll down the share sheet to find it."},
+            {n:3,icon:"✅",title:'Tap "Add" (top right)',desc:"Matchkeeper's icon will appear on your Home Screen."},
+            {n:4,icon:"🚀",title:"Open it from your Home Screen",desc:"Not Safari — the new icon. That's the real app from now on."},
+          ].map(s=><div key={s.n} style={{display:"flex",gap:14,alignItems:"flex-start",width:"100%",maxWidth:380,marginBottom:18}}>
+            <div style={{width:44,height:44,borderRadius:12,background:"#FFFFFF14",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>{s.icon}</div>
+            <div>
+              <div style={{fontSize:15,fontWeight:700,color:"#fff",marginBottom:2}}>{s.n}. {s.title}</div>
+              <div style={{fontSize:12.5,color:"#94A3B8",lineHeight:1.45}}>{s.desc}</div>
+            </div>
+          </div>)}
+          <div style={{marginTop:8,width:"100%",maxWidth:380,background:"#34D39918",border:"0.5px solid #34D39944",borderRadius:14,padding:"14px 16px",display:"flex",gap:12,alignItems:"flex-start",boxSizing:"border-box"}}>
+            <div style={{fontSize:22,flexShrink:0}}>🔔</div>
+            <div style={{fontSize:12.5,color:"#A7F3D0",lineHeight:1.5}}><b>One more thing</b> — once it's open from the Home Screen, it'll ask for notification permission. Tap <b>Allow</b>. That's how you get match reminders and round-end alerts.</div>
+          </div>
+          <div onClick={collapseIosOverlay} style={{marginTop:26,fontSize:13,fontWeight:600,color:"#818CF8",cursor:"pointer",textDecoration:"underline"}}>Got it, I'll do this later</div>
+        </div>
+      </div>}
       <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
         {godMode&&<div style={{fontSize:12,fontWeight:700,color:"#fff",background:"#EF4444",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
           <span>⚡ GOD MODE ACTIVE — full admin authority here, not your real role</span>
           <span onClick={()=>{setGodMode(false);toast2("God Mode off");}} style={{cursor:"pointer",textDecoration:"underline",flexShrink:0,whiteSpace:"nowrap"}}>Turn off</span>
         </div>}
-        {subscriptionSettings.enabled&&me.id!==1&&!isSubscriptionActive(me)&&<div style={{fontSize:12,fontWeight:600,color:"#F59E0B",background:"#F59E0B18",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
-          ⏳ Your subscription isn't active — you can still view everything, but creating events, registering, and admin actions are paused until it's renewed. Contact your community admin or the platform to renew.
+        {isSubscriptionInGrace(me,subscriptionSettings)&&<div style={{fontSize:12,fontWeight:600,color:"#F59E0B",background:"#F59E0B18",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+          ⏳ Your subscription expired — you have a 1-day grace period before the app goes read-only. Renew now to avoid any interruption.
+        </div>}
+        {isSubscriptionLocked(me,subscriptionSettings)&&<div style={{fontSize:12,fontWeight:600,color:"#F59E0B",background:"#F59E0B18",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+          🚫 Your subscription has expired — you're in read-only mode. You can still view your own events and unregister from them, but creating, registering, and admin actions are paused until it's renewed. Contact your community admin or the platform to renew.
         </div>}
         {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
           <span style={{fontSize:16}}>🆕</span>
@@ -5653,11 +5731,6 @@ export default function Matchkeeper() {
           <span style={{fontWeight:700}}>↻</span>
         </div>}
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
-        {showIosInstallBanner&&<div style={{fontSize:12,color:"#A5B4FC",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",gap:10,alignItems:"flex-start"}}>
-          <span style={{fontSize:18,lineHeight:1}}>📲</span>
-          <span style={{flex:1}}>Add Matchkeeper to your Home Screen to get notifications and the full app experience — tap <b>Share</b> in Safari's toolbar, then <b>"Add to Home Screen"</b>.</span>
-          <span onClick={dismissIosInstallBanner} style={{cursor:"pointer",color:"var(--po-dim)",fontSize:14,flexShrink:0}}>✕</span>
-        </div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
@@ -5665,7 +5738,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
-          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} godMode={godMode} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
+          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} godMode={godMode} subscriptionSettings={subscriptionSettings} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
             onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
@@ -5782,21 +5855,29 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
   notifications=[],notifMenu,setNotifMenu,onMarkNotifRead,onMarkAllNotifRead,onOpenNotif,onSeeAllNotifs}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  // Only offer the APK download to someone who could actually use it: an Android *browser*
-  // visitor. Never inside the installed app itself (they already have it), never on iOS/desktop.
+  // Android *browser* visitor — always offer the download, they may not have the app at all.
   const isAndroidWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent||"");
+  // Native (installed APK) — this app only ships for Android, so isNativePlatform() here always
+  // means "already-installed Android app". No auto-update path exists (unlike a PWA reload), so
+  // it needs its own in-app download link — only surfaced once a genuinely newer build exists.
+  const isNativeAndroid = Capacitor.isNativePlatform();
   // releases/latest.json is written fresh next to the APK itself at delivery time (never by
   // `npm run build`), so polling it — same pattern as the dist/version.json web-update check —
   // means this link can never point at a stale/missing file the way a hardcoded constant could.
   const [apkVersion, setApkVersion] = useState(LATEST_APK_VERSION_FALLBACK);
+  const [apkVersionFetched, setApkVersionFetched] = useState(false);
   useEffect(() => {
-    if (!isAndroidWeb) return;
+    if (!isAndroidWeb && !isNativeAndroid) return;
     fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
       .then(r => r.json())
-      .then(d => { if (d.version) setApkVersion(d.version); })
+      .then(d => { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); })
       .catch(() => {});
-  }, [isAndroidWeb]);
+  }, [isAndroidWeb, isNativeAndroid]);
   const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
+  // "Different from what's running" is the same simple signal the web new-version banner already
+  // uses (dist/version.json vs APP_VERSION) — latest.json only ever holds the single current
+  // release, so any mismatch (once the fetch has actually resolved) means this installed build is behind.
+  const nativeUpdateAvailable = isNativeAndroid && apkVersionFetched && apkVersion !== APP_VERSION;
   const tabs = [
     {k:"events", l:"Events", chip:"#F472B6", iconColor:"#7A1042", rot:4, icon:(
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -5855,11 +5936,12 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
       </div>}
     </div>
     <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
-      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:6,display:"flex"}}>
+      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:6,display:"flex",position:"relative"}}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7"/>
           <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82A1.65 1.65 0 003 13.09H3a2 2 0 010-4h0a1.65 1.65 0 001.51-1A1.65 1.65 0 004.18 6.2l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V2a2 2 0 014 0v0a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V8a1.65 1.65 0 001.51 1H21a2 2 0 010 4h0a1.65 1.65 0 00-1.6 1z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
+        {nativeUpdateAvailable&&<span style={{position:"absolute",top:4,right:4,width:9,height:9,borderRadius:"50%",background:"#EF4444",border:"1.5px solid "+(TH?.nav||"#0E1117")}}/>}
       </div>
       {menu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,minWidth:190,zIndex:100,boxShadow:"0 8px 32px #00000066"}}>
         <div style={{padding:"8px 10px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}><div className="po-text" style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{me.nickname}</div><div className="po-dim" style={{fontSize:11,color:"var(--po-dim)"}}>USR {me.usr} · {usrLv(me.usr).l}</div></div>
@@ -5871,7 +5953,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
             {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>}
-        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
+        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),...(nativeUpdateAvailable?[{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
       </div>}
     </div>
   </div>;
@@ -7824,7 +7906,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -8620,6 +8702,22 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </div>
     </>;}
 
+  // Subscription read-only lock (Enhancement #17, item 2): a locked, non-admin user who isn't
+  // registered in this event only ever sees its card in listings — no detail screen access at
+  // all. Checked after every hook above has already run (React rule), right before the real
+  // render, so it's a pure early-return on the JSX, not a skipped hook.
+  if (isSubscriptionLocked(me,subscriptionSettings) && !myReg && !isAdmin) {
+    return <>
+      <BBtn onBack={onBack} label="Back"/>
+      <Card>
+        <div style={{fontWeight:700,fontSize:16,color:"var(--po-text)",marginBottom:6}}>{ev.name}</div>
+        {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
+        <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:12}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+        <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",background:"#F59E0B18",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px"}}>🔒 Your subscription has expired — event details are only available for events you're registered in. Renew to see this event.</div>
+      </Card>
+    </>;
+  }
+
   return <>
     <BBtn onBack={onBack} label="Back" sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
     {isAdmin&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice Session</div><div style={{fontSize:11,color:"var(--po-dim)"}}>Try out registrations, matches & scores — nothing is saved</div></div><SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/></div>}
@@ -8754,9 +8852,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {!canReg&&!myReg&&(myEventJoinPending
           ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
           : <Btn label="🙋 Request to Join" onClick={act.requestEventJoin} style={{width:"100%",marginBottom:6}}/>)}
-        {myReg&&isRegWaitlisted(effEv,me.id,comm)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
-        {myReg&&!isRegWaitlisted(effEv,me.id,comm)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
-        {myReg&&!isRegWaitlisted(effEv,me.id,comm)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
+        {myReg&&isSubscriptionLocked(me,subscriptionSettings)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>🚫 Suspended — your subscription expired, so you've been moved to the waitlist. Renew to reclaim your spot.</div>}
+        {myReg&&!isSubscriptionLocked(me,subscriptionSettings)&&isRegWaitlisted(effEv,me.id,comm)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
+        {myReg&&!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
+        {myReg&&!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
         {/* Self-service unregister — was admin-only before (removeFromEvent's "✕" in Players),
             leaving a registered player with no way to back out themselves. Same safety gate as
             the admin's own remove button: locked once Round 1 is locked for CI/CT (would
@@ -8874,7 +8973,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </>}
       {(()=>{
         const ctOddWaitlistedIds=new Set((plan?.waitlisted||[]).map(w=>w.userId));
-        const {active:capActiveRegs,waitlisted:capWaitlistedRegs}=splitRegsByCapacity(effEv,comm);
+        // Suspension only applies to upcoming events — an already-completed event's attendance
+        // record shouldn't retroactively change because someone's subscription later lapsed.
+        const rawSplit = splitRegsByCapacity(effEv,comm);
+        const {active:capActiveRegs,waitlisted:capWaitlistedRegs,suspendedIds}=effEv.status!=="completed"&&effEv.status!=="cancelled"
+          ? applySubscriptionSuspension(rawSplit,effEv,users,subscriptionSettings)
+          : {...rawSplit,suspendedIds:new Set()};
         const activeRegs=capActiveRegs.filter(r=>!ctOddWaitlistedIds.has(r.userId));
         return <><ST>Registered ({activeRegs.length})</ST>
         {activeRegs.map(r=>{
@@ -8916,6 +9020,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
                 {mStatus&&mStatus!=="guest"&&sBdg(mStatus)}
                 {isRetired&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
+                {suspendedIds.has(u.id)&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 {uIsEventAdmin&&<span style={{marginLeft:4,fontSize:10,color:"#A78BFA",fontWeight:700}}>🛡️ EVENT ADMIN</span>}
               </div>
               {isAdmin&&isGuestPerson&&u.phone&&<a href={`tel:${u.phone}`} onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:4,fontSize:10.5,color:"var(--po-dim)",marginTop:1,textDecoration:"none"}}>📱 {u.phone}</a>}
@@ -9004,8 +9109,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   <span>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
                   {wMStatus&&sBdg(wMStatus)}
                   {u.isGuest&&<span style={{fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
+                  {suspendedIds.has(u.id)&&<span style={{fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 </div>
-                <div style={{fontSize:11,color:"#F59E0B"}}>#{wi+1} on the waitlist — joins automatically if a spot opens</div>
+                <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${wi+1} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
@@ -10137,9 +10243,10 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           <SmBtn label={subscriptionSettings.enabled?"Turn Off":"Turn On"} color={subscriptionSettings.enabled?"#EF4444":"#34D399"} onClick={()=>{
             const next=!subscriptionSettings.enabled;
             if(next&&!window.confirm(`⚠️ Enable subscription enforcement now?\n\nEvery user without an active or comped subscription will immediately drop to read-only (can view, can't create/register/admin) — everywhere in the app, right away. Make sure you've set up whoever needs to stay active first.`))return;
-            onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabled:next});
+            onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabled:next,enabledAt:next?new Date().toISOString():subscriptionSettings.enabledAt});
           }}/>
         </div>
+        {subscriptionSettings.enabled&&subscriptionSettings.enabledAt&&<div style={{fontSize:11,color:"var(--po-dim)"}}>📅 Started on {fmtD(subscriptionSettings.enabledAt)}</div>}
       </Card>
       <Card style={{marginBottom:12}}>
         <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:10}}>Pricing (EGP)</div>

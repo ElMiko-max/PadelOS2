@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.37";
+const APP_VERSION = "V0.10.38";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6377,6 +6377,17 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [memberSearch,setMemberSearch]=useState("");
   const [announcementText,setAnnouncementText]=useState("");
   const [bannerUploading,setBannerUploading]=useState(false);
+  // Measured client-side from the actual image (not stored anywhere) — so this works
+  // retroactively for banners already uploaded before this existed, no data migration needed.
+  // Resets whenever the photo itself changes so a re-upload gets re-measured, not stuck on the
+  // previous photo's aspect ratio.
+  const [bannerAspect,setBannerAspect]=useState(null);
+  useEffect(()=>{ setBannerAspect(null); }, [comm.bannerURL]);
+  // A square/portrait photo (most logos) letterboxed into the normal 110px landscape slot reads
+  // tiny — grow the slot toward a friendlier aspect ratio instead, capped at 3x height (per the
+  // owner's explicit call: "not more than triple") so an extreme portrait can't take over the
+  // whole screen. A wide/landscape photo close to the default slot's own ratio needs no help.
+  const bannerHeight = !comm.bannerURL || bannerAspect==null ? 110 : bannerAspect>=3 ? 110 : bannerAspect>=1.5 ? 220 : 330;
   const [bannerError,setBannerError]=useState("");
   const [showBannerMenu,setShowBannerMenu]=useState(false);
   // A misconfigured/unprovisioned Storage bucket (found live on padelos-dev — Storage was never
@@ -6448,18 +6459,19 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         below has no containing block of its own, escapes all the way up to the viewport, and
         renders as a giant emoji floating across the whole page (seen in the top bar and past
         the card) instead of staying clipped inside this banner. */}
-    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:comm.bannerURL?"#000":`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
+    <div style={{height:bannerHeight,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:comm.bannerURL?"#000":`linear-gradient(135deg, ${gradFrom}, ${gradTo})`,transition:"height 0.2s"}}>
       {/* Custom photo (admin-uploaded) replaces the sport gradient + watermark entirely. A square
           or portrait photo (a logo, most commonly) into this landscape slot used to get cropped
           via cover — chopping off logo text/edges. Same "letterbox" trick Instagram/Spotify use
           for a square-into-landscape mismatch instead: a blurred, darkened, oversized copy of
           the SAME photo fills the backdrop (never a flat/mismatched color), while the real photo
-          sits on top at its full, uncropped aspect ratio. Any shape photo just works, no crop
-          tool needed. No custom photo → unchanged default gradient + watermark. */}
+          sits on top at its full, uncropped aspect ratio — and the slot itself grows toward a
+          friendlier height (bannerHeight above) instead of just shrinking the photo down small.
+          No custom photo → unchanged default gradient + watermark. */}
       {comm.bannerURL
         ? <>
             <div style={{position:"absolute",inset:-14,backgroundImage:`url(${comm.bannerURL})`,backgroundSize:"cover",backgroundPosition:"center",filter:"blur(16px) brightness(0.55)",transform:"scale(1.15)"}}/>
-            <div style={{position:"absolute",inset:0,backgroundImage:`url(${comm.bannerURL})`,backgroundSize:"contain",backgroundPosition:"center",backgroundRepeat:"no-repeat"}}/>
+            <img src={comm.bannerURL} alt="" onLoad={e=>setBannerAspect(e.target.naturalWidth/e.target.naturalHeight)} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"contain"}}/>
             <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0.05) 40%,rgba(0,0,0,0.55) 100%)"}}/>
           </>
         : <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>}

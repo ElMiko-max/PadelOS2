@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.36";
+const APP_VERSION = "V0.10.37";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6448,12 +6448,20 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         below has no containing block of its own, escapes all the way up to the viewport, and
         renders as a giant emoji floating across the whole page (seen in the top bar and past
         the card) instead of staying clipped inside this banner. */}
-    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:comm.bannerURL?`url(${comm.bannerURL}) center/cover`:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
-      {/* Custom photo (admin-uploaded) replaces the sport gradient + watermark entirely — a dark
-          scrim keeps the title readable over any photo, same role the low-opacity watermark
-          played for the default look. No custom photo → unchanged default. */}
+    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:comm.bannerURL?"#000":`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
+      {/* Custom photo (admin-uploaded) replaces the sport gradient + watermark entirely. A square
+          or portrait photo (a logo, most commonly) into this landscape slot used to get cropped
+          via cover — chopping off logo text/edges. Same "letterbox" trick Instagram/Spotify use
+          for a square-into-landscape mismatch instead: a blurred, darkened, oversized copy of
+          the SAME photo fills the backdrop (never a flat/mismatched color), while the real photo
+          sits on top at its full, uncropped aspect ratio. Any shape photo just works, no crop
+          tool needed. No custom photo → unchanged default gradient + watermark. */}
       {comm.bannerURL
-        ? <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0.05) 40%,rgba(0,0,0,0.55) 100%)"}}/>
+        ? <>
+            <div style={{position:"absolute",inset:-14,backgroundImage:`url(${comm.bannerURL})`,backgroundSize:"cover",backgroundPosition:"center",filter:"blur(16px) brightness(0.55)",transform:"scale(1.15)"}}/>
+            <div style={{position:"absolute",inset:0,backgroundImage:`url(${comm.bannerURL})`,backgroundSize:"contain",backgroundPosition:"center",backgroundRepeat:"no-repeat"}}/>
+            <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0.05) 40%,rgba(0,0,0,0.55) 100%)"}}/>
+          </>
         : <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>}
       <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
       {/* Platform-Admin-only for now (Enhancement in progress) — deliberately narrower than

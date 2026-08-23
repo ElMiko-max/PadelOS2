@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.42";
+const APP_VERSION = "V0.10.43";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5890,10 +5890,17 @@ export default function Matchkeeper() {
         {isSubscriptionLocked(me,subscriptionSettings)&&<div style={{fontSize:12,fontWeight:600,color:"#F59E0B",background:"#F59E0B18",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
           🚫 Your subscription has expired — you're in read-only mode. You can still view your own events and unregister from them, but creating, registering, and admin actions are paused until it's renewed. Contact your community admin or the platform to renew.
         </div>}
-        {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-          <span style={{fontSize:16}}>🆕</span>
-          <span style={{flex:1}}>New version {newVersion} is available — tap to refresh.</span>
-          <span style={{fontWeight:700}}>↻</span>
+        {/* Sticky — same top:60/zIndex:40/negative-margin-bleed pattern BBtn's sticky mode
+            already uses, so it pins directly under the (also sticky) TopBar instead of
+            scrolling away with the rest of the content. An opaque background is load-bearing
+            here: without it, whatever scrolls underneath would show through the translucent
+            green while pinned. */}
+        {newVersion&&<div style={{position:"sticky",top:60,zIndex:40,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:12,marginBottom:0}}>
+          <div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D399DD",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+            <span style={{fontSize:16}}>🆕</span>
+            <span style={{flex:1,color:"#0E1117",fontWeight:600}}>New version {newVersion} is available — tap to refresh.</span>
+            <span style={{fontWeight:700,color:"#0E1117"}}>↻</span>
+          </div>
         </div>}
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}

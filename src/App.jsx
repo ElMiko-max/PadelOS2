@@ -204,7 +204,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.32";
+const APP_VERSION = "V0.10.33";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8782,9 +8782,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const tabs=["players",
     ...(isCI?(plan?["breaks","rounds","standings"]:(isAdmin?["rounds"]:[])):[]),
     ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
-    "manage","photos"
+    "manage","photos","ann"
   ];
-  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:`${ev.sport==="Football"?"⚽":"🎾"} Matches`,photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`};
+  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:`${ev.sport==="Football"?"⚽":"🎾"} Matches`,photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`,ann:"📢"};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
   function PChip({p,ri,matchBadge}){
@@ -9011,46 +9011,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         ["Date & Time",`${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}`],
         ["Duration",durationLabel(ev.time, ev.timeTo)],
         ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation",isFootballEv?"Snake Draft (Football Skill)":"Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":isFootballEv?"League":"League + Promotion/Relegation"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`${isFootballEv?"Pitch":"Court"} ${tc}=1pt ... ${isFootballEv?"Pitch":"Court"} 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:(isFootballEv?"Wins → Score Diff":"Group A first · Wins → Score Diff")],["Match Duration",`${plan?.matchDuration||20} min`]]:[]),["Priority Reg.","Regular Members: 24h early access"]].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>
-    </CollapsibleSection>
-
-    <CollapsibleSection label={`📢 Announcements${(effEv.announcements?.length||0)>0?` (${effEv.announcements.length})`:""}`} defaultOpen={(effEv.announcements?.length||0)>0}>
-      {isAdmin&&<Card style={{marginBottom:8}}>
-        <Inp label="Post to everyone registered" value={eventAnnouncementText} onChange={setEventAnnouncementText} placeholder="e.g. Court moved to Court 2, bring extra balls..." multiline/>
-        <Btn label="📢 Post" primary onClick={()=>{if(eventAnnouncementText.trim()){onPostEventAnnouncement&&onPostEventAnnouncement(eventAnnouncementText);setEventAnnouncementText("");}}} style={{width:"100%"}}/>
-      </Card>}
-      {(effEv.announcements?.length||0)===0
-        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>No announcements yet.</div></Card>
-        : [...effEv.announcements].reverse().map(a=>
-            <Card key={a.id} style={{marginBottom:6}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
-                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
-                </div>
-                {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteEventAnnouncement&&onDeleteEventAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
-              </div>
-              {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
-                {a.replies.map(r=>
-                  <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,paddingLeft:10}}>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:12,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{r.message}</div>
-                      <div style={{fontSize:9,color:"var(--po-dim)",marginTop:3}}>{r.authorName} · {timeAgo(r.createdAt)}</div>
-                    </div>
-                    {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this reply?"))onDeleteEventAnnouncementReply&&onDeleteEventAnnouncementReply(a.id,r.id);}} color="#EF4444" style={{padding:"3px 6px",fontSize:10,flexShrink:0}}/>}
-                  </div>
-                )}
-              </div>}
-              <div style={{marginTop:8,paddingTop:8,borderTop:(a.replies?.length||0)>0?"none":"0.5px solid var(--po-bdr)"}}>
-                {eventReplyingTo===a.id
-                  ? <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                      <input autoFocus value={eventReplyText} onChange={e=>setEventReplyText(e.target.value)} placeholder="Reply..." className="po-inp" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}} onKeyDown={e=>{if(e.key==="Enter"&&eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}}/>
-                      <SmBtn label="Send" onClick={()=>{if(eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}} color="#6366F1"/>
-                      <SmBtn label="✕" onClick={()=>{setEventReplyingTo(null);setEventReplyText("");}} color="#94A3B8"/>
-                    </div>
-                  : <div onClick={()=>{setEventReplyingTo(a.id);setEventReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
-              </div>
-            </Card>
-          )}
     </CollapsibleSection>
 
     <VenueMapCard venue={venue}/>
@@ -9433,6 +9393,47 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </div>
       {photoUploadError&&<div style={{marginTop:10,fontSize:11,color:"#EF4444",background:"#EF444411",borderRadius:6,padding:"8px 10px"}}>⚠️ {photoUploadError}</div>}
     </Card>}
+
+    {/* ANNOUNCEMENTS — own tab, matching how Community does it (not a collapsible section) */}
+    {tab==="ann"&&<>
+      {isAdmin&&<Card style={{marginBottom:8}}>
+        <Inp label="Post to everyone registered" value={eventAnnouncementText} onChange={setEventAnnouncementText} placeholder="e.g. Court moved to Court 2, bring extra balls..." multiline/>
+        <Btn label="📢 Post" primary onClick={()=>{if(eventAnnouncementText.trim()){onPostEventAnnouncement&&onPostEventAnnouncement(eventAnnouncementText);setEventAnnouncementText("");}}} style={{width:"100%"}}/>
+      </Card>}
+      {(effEv.announcements?.length||0)===0
+        ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>No announcements yet.</div></Card>
+        : [...effEv.announcements].reverse().map(a=>
+            <Card key={a.id} style={{marginBottom:6}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
+                </div>
+                {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteEventAnnouncement&&onDeleteEventAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
+              </div>
+              {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
+                {a.replies.map(r=>
+                  <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,paddingLeft:10}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{r.message}</div>
+                      <div style={{fontSize:9,color:"var(--po-dim)",marginTop:3}}>{r.authorName} · {timeAgo(r.createdAt)}</div>
+                    </div>
+                    {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this reply?"))onDeleteEventAnnouncementReply&&onDeleteEventAnnouncementReply(a.id,r.id);}} color="#EF4444" style={{padding:"3px 6px",fontSize:10,flexShrink:0}}/>}
+                  </div>
+                )}
+              </div>}
+              <div style={{marginTop:8,paddingTop:8,borderTop:(a.replies?.length||0)>0?"none":"0.5px solid var(--po-bdr)"}}>
+                {eventReplyingTo===a.id
+                  ? <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <input autoFocus value={eventReplyText} onChange={e=>setEventReplyText(e.target.value)} placeholder="Reply..." className="po-inp" style={{flex:1,padding:"6px 8px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:12}} onKeyDown={e=>{if(e.key==="Enter"&&eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}}/>
+                      <SmBtn label="Send" onClick={()=>{if(eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}} color="#6366F1"/>
+                      <SmBtn label="✕" onClick={()=>{setEventReplyingTo(null);setEventReplyText("");}} color="#94A3B8"/>
+                    </div>
+                  : <div onClick={()=>{setEventReplyingTo(a.id);setEventReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
+              </div>
+            </Card>
+          )}
+    </>}
 
     {/* CI BREAKS */}
     {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} isAdmin={isAdmin} onViewProfile={onViewProfile}/>}

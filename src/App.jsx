@@ -138,6 +138,13 @@ async function uploadProfilePhoto(userId, file){
   await uploadBytes(r, file);
   return await getDownloadURL(r);
 }
+// Uploads a custom community banner photo and returns its public download URL — same one-file-
+// per-community-id path shape as profile photos, so a re-upload just overwrites in place.
+async function uploadCommunityBanner(commId, file){
+  const r = storageRef(storage, `community-banners/${commId}`);
+  await uploadBytes(r, file);
+  return await getDownloadURL(r);
+}
 // Uploads an event photo and returns {id, url} — each photo gets its own storage path so multiple can coexist
 async function uploadEventPhoto(eventId, file){
   const id = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
@@ -204,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.33";
+const APP_VERSION = "V0.10.34";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4675,6 +4682,19 @@ export default function Matchkeeper() {
       logAudit("member.join", `${u?.nickname||uid} joined "${c?.name||cid}" via invite link`, "community", cid);
     }
   };
+  // Custom community banner photo — replaces the default sport-gradient watermark banner with
+  // an admin-uploaded photo. Just a single field on the community record; removing it (setting
+  // back to null) is what restores the default gradient look, no separate "reset" state needed.
+  const setCommunityBanner = (cid, url) => {
+    updC(cid, c=>({...c, bannerURL:url}));
+    toast2("Banner updated ✓");
+    logAudit("community.setBanner", `${me.nickname} set a custom banner photo for "${comms.find(c=>c.id===cid)?.name||cid}"`, "community", cid);
+  };
+  const removeCommunityBanner = (cid) => {
+    updC(cid, c=>({...c, bannerURL:null}));
+    toast2("Banner reset to default ✓");
+    logAudit("community.setBanner", `${me.nickname} removed the custom banner photo for "${comms.find(c=>c.id===cid)?.name||cid}" — back to default`, "community", cid);
+  };
   // Community-wide broadcast (Enhancement #18, part 1) — a persistent, scrollable list per
   // community (not just a fire-and-forget push), so it can stand in for a WhatsApp group's
   // message history. Every member gets a push + inbox notification when one is posted.
@@ -5858,7 +5878,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} godMode={godMode}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} onSetBanner={url=>setCommunityBanner(comm.id,url)} onRemoveBanner={()=>removeCommunityBanner(comm.id)} godMode={godMode}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -6348,7 +6368,7 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,godMode}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,onSetBanner,onRemoveBanner,godMode}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -6356,6 +6376,17 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const [memberSearch,setMemberSearch]=useState("");
   const [announcementText,setAnnouncementText]=useState("");
+  const [bannerUploading,setBannerUploading]=useState(false);
+  const [showBannerMenu,setShowBannerMenu]=useState(false);
+  const handleBannerSelect = async (e) => {
+    const file = e.target.files[0]; e.target.value="";
+    if (!file) return;
+    setShowBannerMenu(false);
+    setBannerUploading(true);
+    try{ const url = await uploadCommunityBanner(comm.id, file); onSetBanner&&onSetBanner(url); }
+    catch(err){ console.log("Banner upload error", err); }
+    setBannerUploading(false);
+  };
   const [replyingTo,setReplyingTo]=useState(null); // announcement id whose reply box is open
   const [replyText,setReplyText]=useState("");
   const myMember=comm.members.find(m=>m.userId===me.id);
@@ -6402,9 +6433,24 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         below has no containing block of its own, escapes all the way up to the viewport, and
         renders as a giant emoji floating across the whole page (seen in the top bar and past
         the card) instead of staying clipped inside this banner. */}
-    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
-      <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>
+    <div style={{height:110,borderRadius:"16px 16px 0 0",overflow:"hidden",position:"relative",padding:"0 16px",display:"flex",alignItems:"flex-end",background:comm.bannerURL?`url(${comm.bannerURL}) center/cover`:`linear-gradient(135deg, ${gradFrom}, ${gradTo})`}}>
+      {/* Custom photo (admin-uploaded) replaces the sport gradient + watermark entirely — a dark
+          scrim keeps the title readable over any photo, same role the low-opacity watermark
+          played for the default look. No custom photo → unchanged default. */}
+      {comm.bannerURL
+        ? <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0.05) 40%,rgba(0,0,0,0.55) 100%)"}}/>
+        : <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>}
       <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
+      {isAdmin&&<div style={{position:"absolute",top:10,right:10,zIndex:2}} onClick={e=>e.stopPropagation()}>
+        <div onClick={()=>!bannerUploading&&setShowBannerMenu(o=>!o)} title="Community Banner" style={{width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,0.45)",backdropFilter:"blur(4px)",border:"1px solid rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:bannerUploading?"default":"pointer",color:"#fff"}}>{bannerUploading?"⏳":"✏️"}</div>
+        {showBannerMenu&&<div style={{position:"absolute",top:38,right:0,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:190,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+          <label style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",borderRadius:7,cursor:"pointer",fontSize:13,color:"var(--po-sub)"}}>
+            <input type="file" accept="image/*" style={{display:"none"}} onChange={handleBannerSelect}/>
+            📷 {comm.bannerURL?"Change Photo":"Upload Photo"}
+          </label>
+          {comm.bannerURL&&<div onClick={()=>{setShowBannerMenu(false);if(window.confirm("Remove the custom banner and go back to the default sport gradient?"))onRemoveBanner&&onRemoveBanner();}} style={{padding:"9px 10px",borderRadius:7,cursor:"pointer",fontSize:13,color:"#EF4444"}}>↩️ Remove — use default</div>}
+        </div>}
+      </div>}
     </div>
     {/* position:relative + zIndex here is a pure stacking-order fix, doesn't move anything —
         without an explicit z-index, Card has none applied (z-index needs a non-static position
@@ -10787,6 +10833,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <ST style={{marginBottom:0}}>Recent Backups</ST>
       <SmBtn label={backupsLoading?"Loading…":"↻ Refresh"} onClick={onRefreshBackups} color="#6366F1"/>
     </div>
+    <CollapsibleSection label={`📦 ${backups.length} backup${backups.length===1?"":"s"}`} defaultOpen={false}>
     {backups.length===0
       ? <Card style={{marginBottom:16}}><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>{backupsLoading?"Loading…":"No backups yet — tap \"Backup Now\" to create the first one."}</div></Card>
       : backups.map(b=><Card key={b.id} style={{marginBottom:8}}>
@@ -10800,6 +10847,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             <SmBtn label="🗑" onClick={()=>{if(window.confirm("Delete this backup? This cannot be undone."))onDeleteBackup(b.id);}} color="#EF4444"/>
           </div>
         </Card>)}
+    </CollapsibleSection>
 
     <ST>Other Tools</ST>
     <Card style={{padding:0,overflow:"hidden",marginBottom:16}}>

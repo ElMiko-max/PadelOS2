@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.38";
+const APP_VERSION = "V0.10.39";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6476,10 +6476,9 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
           </>
         : <div style={{position:"absolute",fontSize:88,opacity:0.20,right:10,top:6,lineHeight:1,transform:"rotate(-10deg)",filter:"brightness(1.4)",pointerEvents:"none"}}>{SPORT_EMOJI[primarySport]||"🏅"}</div>}
       <div style={{position:"relative",zIndex:1,fontSize:10,fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",color:"#fff",opacity:0.85,marginBottom:14}}>Community · {commSports.join(" + ")}</div>
-      {/* Platform-Admin-only for now (Enhancement in progress) — deliberately narrower than
-          isAdmin (community owner/admin) until this has been confirmed working in production;
-          will widen to isAdmin once that's done. */}
-      {meIsPlatformAdmin&&<div style={{position:"absolute",top:10,right:10,zIndex:2}} onClick={e=>e.stopPropagation()}>
+      {/* Available to every community owner/admin — was Platform-Admin-only until confirmed
+          working in production (see CHANGELOG V0.10.36/38). */}
+      {isAdmin&&<div style={{position:"absolute",top:10,right:10,zIndex:2}} onClick={e=>e.stopPropagation()}>
         <div onClick={()=>!bannerUploading&&setShowBannerMenu(o=>!o)} title="Community Banner" style={{width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,0.45)",backdropFilter:"blur(4px)",border:"1px solid rgba(255,255,255,0.25)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:bannerUploading?"default":"pointer",color:"#fff"}}>{bannerUploading?"⏳":"✏️"}</div>
         {showBannerMenu&&<div style={{position:"absolute",top:38,right:0,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:190,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
           <label style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",borderRadius:7,cursor:"pointer",fontSize:13,color:"var(--po-sub)"}}>

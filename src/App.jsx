@@ -204,7 +204,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.31";
+const APP_VERSION = "V0.10.32";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5990,12 +5990,24 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
   // means this link can never point at a stale/missing file the way a hardcoded constant could.
   const [apkVersion, setApkVersion] = useState(LATEST_APK_VERSION_FALLBACK);
   const [apkVersionFetched, setApkVersionFetched] = useState(false);
+  // Re-checks periodically and whenever the app comes back to the foreground — not just once at
+  // cold launch (same pattern as the web new-version banner below). A native app can stay open
+  // in the background for days; checking only on mount meant a real update could sit deployed
+  // for a long time before the red dot ever appeared, since nothing ever re-fetched.
   useEffect(() => {
     if (!isAndroidWeb && !isNativeAndroid) return;
-    fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
-      .then(r => r.json())
-      .then(d => { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); })
-      .catch(() => {});
+    let cancelled = false;
+    const check = () => {
+      fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
+        .then(r => r.json())
+        .then(d => { if (!cancelled) { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); } })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 5 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, [isAndroidWeb, isNativeAndroid]);
   const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
   // "Different from what's running" is the same simple signal the web new-version banner already

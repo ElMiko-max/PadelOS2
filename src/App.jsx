@@ -160,12 +160,26 @@ const INIT_EGYPT = {
   "الإسكندرية": ["سموحة","لوران","المنتزه","سيدي جابر","محرم بك"],
   "القليوبية": ["شبرا الخيمة","بنها","قليوب","الخانكة"],
 };
+// ── Subscriptions (Enhancement #17 — profitable model) ──────────────
+// Platform-wide switch, off by default — flipping `enabled` is the one moment every user
+// without an active subscription (or comped status) starts seeing read-only enforcement, so
+// this stays false until real payment collection (manual transfers, then Paymob) is actually
+// ready. Per-user status lives on each user's own `subscription` field, not here.
+const INIT_SUBSCRIPTION_SETTINGS = { enabled:false, monthlyPriceEGP:100, annualPriceEGP:1000 };
+// A user with no `subscription` field at all (the default for every existing/new account) is
+// simply not active — same as expired. Only "comped" (admin-granted, no expiry) and an
+// unexpired `expiresAt` count as active.
+const isSubscriptionActive = u => {
+  if (!u?.subscription) return false;
+  if (u.subscription.status==="comped") return true;
+  return !!u.subscription.expiresAt && new Date(u.subscription.expiresAt) > new Date();
+};
 // ── App Version ──────────────────────────────────────
 // Format: MAJOR.SESSION.PATCH
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.25";
+const APP_VERSION = "V0.10.26";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3400,6 +3414,7 @@ export default function Matchkeeper() {
   const [users,  setUsers]  = useState(INIT_USERS);
   const [venues, setVenues] = useState(INIT_VENUES);
   const [egypt, setEgypt] = useState(INIT_EGYPT);
+  const [subscriptionSettings, setSubscriptionSettings] = useState(INIT_SUBSCRIPTION_SETTINGS);
   const [expenseCategories, setExpenseCategories] = useState(INIT_EXPENSE_CATEGORIES);
   const [usrWindowSize, setUsrWindowSizeRaw] = useState(5);
   const [comms,  setComms]  = useState(INIT_COMMS);
@@ -3595,7 +3610,7 @@ export default function Matchkeeper() {
   const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
-  const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt"].every(k => loadedKeys.includes(k));
+  const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings"].every(k => loadedKeys.includes(k));
   // Captures the real Firestore error (code + message) whenever a collection fails to load,
   // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
   const [loadDiag, setLoadDiag] = useState({});
@@ -3712,6 +3727,29 @@ export default function Matchkeeper() {
     syncedRef.current.egypt = json;
     setDoc(doc(db,"padelos","egypt"), {value:JSON.stringify(egypt)}).catch(e=>console.log("Firestore write error (egypt)", e));
   }, [egypt, dataLoaded]);
+
+  // subscriptionSettings (Enhancement #17 — platform-wide enable switch + pricing)
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = onSnapshot(doc(db,"padelos","subscriptionSettings"), snap => {
+      if (snap.exists()) {
+        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        const json = JSON.stringify(remote);
+        if (json !== syncedRef.current.subscriptionSettings) { syncedRef.current.subscriptionSettings = json; setSubscriptionSettings(remote); }
+        everRealRef.current.subscriptionSettings = true;
+      } else if (!everRealRef.current.subscriptionSettings) { syncedRef.current.subscriptionSettings = JSON.stringify(INIT_SUBSCRIPTION_SETTINGS); setSubscriptionSettings(INIT_SUBSCRIPTION_SETTINGS); }
+      markLoaded("subscriptionSettings");
+    }, e => { console.log("Firestore subscriptionSettings error", e); recordDiag("subscriptionSettings", `${e.code||"error"}: ${e.message||e}`); markLoaded("subscriptionSettings"); });
+    return unsub;
+  }, [authUser]);
+  useEffect(() => {
+    if (!dataLoaded) return;
+    if (!everRealRef.current.subscriptionSettings) { console.log("Blocked write: haven't confirmed real subscriptionSettings data this session yet"); return; }
+    const json = JSON.stringify(subscriptionSettings);
+    if (json === syncedRef.current.subscriptionSettings) return;
+    syncedRef.current.subscriptionSettings = json;
+    setDoc(doc(db,"padelos","subscriptionSettings"), {value:JSON.stringify(subscriptionSettings)}).catch(e=>console.log("Firestore write error (subscriptionSettings)", e));
+  }, [subscriptionSettings, dataLoaded]);
 
   // expenseCategories (community-ledger expense categories, platform-admin-maintainable)
   useEffect(() => {
@@ -4017,6 +4055,17 @@ export default function Matchkeeper() {
     toast2(next?"Suspended":"Unsuspended ✓");
     logAudit(next?"user.suspend":"user.unsuspend", `${me.nickname} ${next?"suspended":"unsuspended"} ${u?.nickname||id}`, "user", id);
   };
+  // Manual activation bridge (Enhancement #17, Phase 1) — until Paymob is live, this is how a
+  // real payment actually gets applied: someone sends an InstaPay/Vodafone Cash/bank transfer
+  // directly, the admin confirms it arrived, and sets their access here. `status:"comped"` never
+  // expires (for founding members/testers); `status:"active"` needs an expiresAt date.
+  const setUserSubscription = (id, {status, expiresAt}) => {
+    const u = users.find(u=>u.id===id);
+    setUsers(us => us.map(u => u.id===id ? {...u, subscription: status==="none" ? null : {status, expiresAt: status==="comped" ? null : expiresAt}} : u));
+    toast2("Subscription updated ✓");
+    const label = status==="none" ? "cleared" : status==="comped" ? "comped (no expiry)" : `active until ${expiresAt}`;
+    logAudit("user.subscriptionChange", `${me.nickname} set ${u?.nickname||id}'s subscription: ${label}`, "user", id);
+  };
   // Changing the USR rolling-average window (calcWeightedUSR's windowSize) must never
   // retroactively pull an already-dropped event back into anyone's average. Before applying the
   // new size, freeze every usrHistory entry that's currently OUTSIDE the *old* window (per user,
@@ -4293,6 +4342,14 @@ export default function Matchkeeper() {
   // Admin isn't actually a real owner/admin of — i.e. exactly the writes God Mode alone made
   // possible. A real admin's own communities behave normally, no extra prompt.
   const updC = (id,fn) => {
+    // Read-only enforcement (Enhancement #17) — this single funnel already covers essentially
+    // every community/event write in the app (members, events, ledger, announcements,
+    // registrations...), same reason God Mode's second-confirm gate lives here too. Platform
+    // Admin is exempt so they can always manage the system regardless of their own subscription.
+    if (subscriptionSettings.enabled && me.id!==1 && !isSubscriptionActive(me)) {
+      toast2("Your subscription has expired — you can still view everything, but renewing is needed to make changes.", "err");
+      return;
+    }
     if (godMode && me.id===1) {
       const c = comms.find(cc=>cc.id===id);
       const realRole = c?.members.find(m=>m.userId===1)?.role;
@@ -5587,6 +5644,9 @@ export default function Matchkeeper() {
           <span>⚡ GOD MODE ACTIVE — full admin authority here, not your real role</span>
           <span onClick={()=>{setGodMode(false);toast2("God Mode off");}} style={{cursor:"pointer",textDecoration:"underline",flexShrink:0,whiteSpace:"nowrap"}}>Turn off</span>
         </div>}
+        {subscriptionSettings.enabled&&me.id!==1&&!isSubscriptionActive(me)&&<div style={{fontSize:12,fontWeight:600,color:"#F59E0B",background:"#F59E0B18",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+          ⏳ Your subscription isn't active — you can still view everything, but creating events, registering, and admin actions are paused until it's renewed. Contact your community admin or the platform to renew.
+        </div>}
         {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
           <span style={{fontSize:16}}>🆕</span>
           <span style={{flex:1}}>New version {newVersion} is available — tap to refresh.</span>
@@ -5681,6 +5741,7 @@ export default function Matchkeeper() {
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
         {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
+          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -9951,7 +10012,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription}){
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -9973,6 +10034,11 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [editCatInput,setEditCatInput]=useState("");
   const [usrWindowInput,setUsrWindowInput]=useState(String(usrWindowSize));
   const [openUserMenu,setOpenUserMenu]=useState(null);
+  const [subsSearch,setSubsSearch]=useState("");
+  const [editingSubFor,setEditingSubFor]=useState(null); // userId currently being set
+  const [subExpiryInput,setSubExpiryInput]=useState("");
+  const [monthlyPriceInput,setMonthlyPriceInput]=useState(String(subscriptionSettings?.monthlyPriceEGP??100));
+  const [annualPriceInput,setAnnualPriceInput]=useState(String(subscriptionSettings?.annualPriceEGP??1000));
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
@@ -9993,7 +10059,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["subs","💳 Subscriptions"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="cats"&&(()=>{
     const renameCat=(oldName,newName)=>{
@@ -10047,6 +10113,73 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         onSetUsrWindowSize&&onSetUsrWindowSize(n);
     }} style={{width:"100%"}}/>
   </>}
+
+  {tab==="subs"&&(()=>{
+    const subQ=subsSearch.trim().toLowerCase();
+    const shownUsers=users.filter(u=>u.id!==1&&(!subQ||u.nickname?.toLowerCase().includes(subQ)));
+    const statusOf=u=>{
+      if(u.subscription?.status==="comped") return {label:"✓ Comped",color:"#34D399"};
+      if(u.subscription?.expiresAt){
+        const active=new Date(u.subscription.expiresAt)>new Date();
+        return active?{label:`✓ Active until ${fmtD(u.subscription.expiresAt)}`,color:"#34D399"}:{label:`✕ Expired ${fmtD(u.subscription.expiresAt)}`,color:"#EF4444"};
+      }
+      return {label:"— No subscription",color:"var(--po-dim)"};
+    };
+    const activeCount=users.filter(u=>u.id!==1&&isSubscriptionActive(u)).length;
+    return <>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Enhancement #17 — Phase 1. No payment gateway wired up yet: this is the manual bridge — someone sends an InstaPay/Vodafone Cash/bank transfer directly, you confirm it arrived, and set their access below. Stays off until you're ready — flipping it on is the moment every non-comped, non-expired-free user everywhere starts seeing read-only mode.</div>
+      <Card style={{marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:subscriptionSettings.enabled?10:0}}>
+          <div>
+            <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>{subscriptionSettings.enabled?"🟢 Enforcement is ON":"⚪ Enforcement is OFF"}</div>
+            <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{activeCount} of {users.length-1} users currently active</div>
+          </div>
+          <SmBtn label={subscriptionSettings.enabled?"Turn Off":"Turn On"} color={subscriptionSettings.enabled?"#EF4444":"#34D399"} onClick={()=>{
+            const next=!subscriptionSettings.enabled;
+            if(next&&!window.confirm(`⚠️ Enable subscription enforcement now?\n\nEvery user without an active or comped subscription will immediately drop to read-only (can view, can't create/register/admin) — everywhere in the app, right away. Make sure you've set up whoever needs to stay active first.`))return;
+            onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabled:next});
+          }}/>
+        </div>
+      </Card>
+      <Card style={{marginBottom:12}}>
+        <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:10}}>Pricing (EGP)</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <Inp label="Monthly" value={monthlyPriceInput} onChange={setMonthlyPriceInput} type="number"/>
+          <Inp label="Annual" value={annualPriceInput} onChange={setAnnualPriceInput} type="number"/>
+        </div>
+        <Btn label="Save Pricing" onClick={()=>{
+          const m=parseFloat(monthlyPriceInput),a=parseFloat(annualPriceInput);
+          if(isNaN(m)||isNaN(a))return;
+          onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,monthlyPriceEGP:m,annualPriceEGP:a});
+          toast2("Pricing saved ✓");
+        }} style={{width:"100%"}}/>
+      </Card>
+      <input value={subsSearch} onChange={e=>setSubsSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
+      {shownUsers.map(u=>{
+        const st=statusOf(u);
+        return <Card key={u.id} style={{marginBottom:6,padding:"10px 12px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <Av u={u} size={30}/>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{u.nickname}</div>
+              <div style={{fontSize:11,color:st.color,marginTop:1}}>{st.label}</div>
+            </div>
+            <SmBtn label={editingSubFor===u.id?"✕":"Set"} onClick={()=>{setEditingSubFor(o=>o===u.id?null:u.id);setSubExpiryInput("");}} color="#6366F1"/>
+          </div>
+          {editingSubFor===u.id&&<div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid var(--po-bdr)"}}>
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <input type="date" value={subExpiryInput} onChange={e=>setSubExpiryInput(e.target.value)} className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>
+              <SmBtn label="Set Active Until" onClick={()=>{if(!subExpiryInput)return;onSetUserSubscription&&onSetUserSubscription(u.id,{status:"active",expiresAt:new Date(subExpiryInput+"T23:59:59").toISOString()});setEditingSubFor(null);}} color="#34D399"/>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <SmBtn label="✓ Comp (no expiry)" onClick={()=>{onSetUserSubscription&&onSetUserSubscription(u.id,{status:"comped"});setEditingSubFor(null);}} color="#FBBF24" style={{flex:1}}/>
+              <SmBtn label="Clear" onClick={()=>{if(window.confirm(`Clear ${u.nickname}'s subscription status?`)){onSetUserSubscription&&onSetUserSubscription(u.id,{status:"none"});setEditingSubFor(null);}}} color="#EF4444" style={{flex:1}}/>
+            </div>
+          </div>}
+        </Card>;
+      })}
+    </>;
+  })()}
 
   {tab==="audit"&&(()=>{
     const aq=auditSearch.trim().toLowerCase();

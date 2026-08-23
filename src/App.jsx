@@ -25,7 +25,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit, startAfter } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -211,7 +211,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.41";
+const APP_VERSION = "V0.10.42";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4342,8 +4342,29 @@ export default function Matchkeeper() {
       const q = query(collection(db,"padelos_audit"), orderBy("ts","desc"), limit(200));
       const snap = await getDocs(q);
       setAuditLog(snap.docs.map(d => ({id:d.id, ...d.data()})));
+      setAuditOlder([]); setAuditHasMore(true); // refresh resets pagination too
     } catch(e) { console.log("Firestore audit refresh error", e); }
     finally { setAuditRefreshing(false); }
+  };
+  // Pagination beyond the live 200 — a one-off read per page (not live), fetched only on
+  // request, since the console shows the most recent 200 by default and older activity is
+  // viewed far less often than it'd cost to keep live-subscribed forever.
+  const [auditOlder, setAuditOlder] = useState([]);
+  const [auditHasMore, setAuditHasMore] = useState(true);
+  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  const loadMoreAudit = async () => {
+    setAuditLoadingMore(true);
+    try {
+      const combined = [...auditLog, ...auditOlder];
+      const cursorTs = combined.length ? combined[combined.length-1].ts : null;
+      if (!cursorTs) { setAuditHasMore(false); return; }
+      const q = query(collection(db,"padelos_audit"), orderBy("ts","desc"), startAfter(cursorTs), limit(200));
+      const snap = await getDocs(q);
+      const more = snap.docs.map(d => ({id:d.id, ...d.data()}));
+      setAuditOlder(prev => [...prev, ...more]);
+      setAuditHasMore(more.length === 200);
+    } catch(e) { console.log("Firestore audit load-more error", e); }
+    finally { setAuditLoadingMore(false); }
   };
   // Sign-in logging deliberately watches `linkedMe` becoming set, not the raw
   // onAuthStateChanged callback — that callback's closure is created on first mount, before
@@ -5983,7 +6004,7 @@ export default function Matchkeeper() {
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           onOpenCommunity={goComm} onOpenEvent={goEvent}
-          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onMergeDuplicateUser={mergeDuplicateUser} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={auditLog} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing}
+          onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onMergeDuplicateUser={mergeDuplicateUser} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={[...auditLog,...auditOlder]} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing} auditHasMore={auditHasMore} auditLoadingMore={auditLoadingMore} onLoadMoreAudit={loadMoreAudit}
           onCloneToDev={cloneToDev} cloningToDev={cloningToDev}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
@@ -10339,7 +10360,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -10715,6 +10736,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           </tbody>
         </table>
       </div>}
+      {auditHasMore&&filtered.length>0&&<SmBtn label={auditLoadingMore?"Loading…":"↓ Load older entries"} onClick={()=>!auditLoadingMore&&onLoadMoreAudit&&onLoadMoreAudit()} color="#6366F1" style={{width:"100%",marginTop:10,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
     </>;
   })()}
 

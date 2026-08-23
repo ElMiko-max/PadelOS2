@@ -197,7 +197,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.27";
+const APP_VERSION = "V0.10.28";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3455,6 +3455,7 @@ export default function Matchkeeper() {
   const [venues, setVenues] = useState(INIT_VENUES);
   const [egypt, setEgypt] = useState(INIT_EGYPT);
   const [subscriptionSettings, setSubscriptionSettings] = useState(INIT_SUBSCRIPTION_SETTINGS);
+  const [subscriptionTransactions, setSubscriptionTransactions] = useState([]);
   const [expenseCategories, setExpenseCategories] = useState(INIT_EXPENSE_CATEGORIES);
   const [usrWindowSize, setUsrWindowSizeRaw] = useState(5);
   const [comms,  setComms]  = useState(INIT_COMMS);
@@ -3653,7 +3654,7 @@ export default function Matchkeeper() {
   const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
-  const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings"].every(k => loadedKeys.includes(k));
+  const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings","subscriptionTransactions"].every(k => loadedKeys.includes(k));
   // Captures the real Firestore error (code + message) whenever a collection fails to load,
   // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
   const [loadDiag, setLoadDiag] = useState({});
@@ -3793,6 +3794,29 @@ export default function Matchkeeper() {
     syncedRef.current.subscriptionSettings = json;
     setDoc(doc(db,"padelos","subscriptionSettings"), {value:JSON.stringify(subscriptionSettings)}).catch(e=>console.log("Firestore write error (subscriptionSettings)", e));
   }, [subscriptionSettings, dataLoaded]);
+
+  // subscriptionTransactions (Enhancement #17 — confirmed manual-payment log, feeds the Statement view)
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = onSnapshot(doc(db,"padelos","subscriptionTransactions"), snap => {
+      if (snap.exists()) {
+        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        const json = JSON.stringify(remote);
+        if (json !== syncedRef.current.subscriptionTransactions) { syncedRef.current.subscriptionTransactions = json; setSubscriptionTransactions(remote); }
+        everRealRef.current.subscriptionTransactions = true;
+      } else if (!everRealRef.current.subscriptionTransactions) { syncedRef.current.subscriptionTransactions = JSON.stringify([]); setSubscriptionTransactions([]); }
+      markLoaded("subscriptionTransactions");
+    }, e => { console.log("Firestore subscriptionTransactions error", e); recordDiag("subscriptionTransactions", `${e.code||"error"}: ${e.message||e}`); markLoaded("subscriptionTransactions"); });
+    return unsub;
+  }, [authUser]);
+  useEffect(() => {
+    if (!dataLoaded) return;
+    if (!everRealRef.current.subscriptionTransactions) { console.log("Blocked write: haven't confirmed real subscriptionTransactions data this session yet"); return; }
+    const json = JSON.stringify(subscriptionTransactions);
+    if (json === syncedRef.current.subscriptionTransactions) return;
+    syncedRef.current.subscriptionTransactions = json;
+    setDoc(doc(db,"padelos","subscriptionTransactions"), {value:JSON.stringify(subscriptionTransactions)}).catch(e=>console.log("Firestore write error (subscriptionTransactions)", e));
+  }, [subscriptionTransactions, dataLoaded]);
 
   // expenseCategories (community-ledger expense categories, platform-admin-maintainable)
   useEffect(() => {
@@ -4108,6 +4132,24 @@ export default function Matchkeeper() {
     toast2("Subscription updated ✓");
     const label = status==="none" ? "cleared" : status==="comped" ? "comped (no expiry)" : `active until ${expiresAt}`;
     logAudit("user.subscriptionChange", `${me.nickname} set ${u?.nickname||id}'s subscription: ${label}`, "user", id);
+  };
+  // Confirms a manual InstaPay/Vodafone Cash/bank transfer and logs it as a transaction (feeds
+  // the Statement view's totals). Extends from the CURRENT expiry if the user is still active or
+  // in grace (so paying early never shortens what they already have), otherwise starts fresh
+  // from today. Amount is snapshotted from current pricing at confirmation time, so a later price
+  // change never rewrites past transaction history.
+  const confirmSubscriptionPayment = (id, {plan, amount, method}) => {
+    const u = users.find(u=>u.id===id);
+    const now = new Date();
+    const currentExp = u?.subscription?.expiresAt ? new Date(u.subscription.expiresAt) : null;
+    const stillGood = currentExp && currentExp.getTime()+SUBSCRIPTION_GRACE_MS > now.getTime();
+    const newExp = new Date(stillGood ? currentExp : now);
+    if (plan==="annual") newExp.setFullYear(newExp.getFullYear()+1); else newExp.setMonth(newExp.getMonth()+1);
+    setUsers(us => us.map(u => u.id===id ? {...u, subscription:{status:"active", expiresAt:newExp.toISOString()}} : u));
+    const txn = {id:`${Date.now()}_${id}`, userId:id, userNickname:u?.nickname, plan, amount, method, confirmedAt:new Date().toISOString(), confirmedBy:me.nickname};
+    setSubscriptionTransactions(ts => [...ts, txn]);
+    toast2(`Payment confirmed — ${u?.nickname||"user"} extended to ${fmtD(newExp.toISOString())} ✓`);
+    logAudit("user.subscriptionPayment", `${me.nickname} confirmed a ${plan} payment (${amount} EGP via ${method}) from ${u?.nickname||id} — extended to ${fmtD(newExp.toISOString())}`, "user", id);
   };
   // Changing the USR rolling-average window (calcWeightedUSR's windowSize) must never
   // retroactively pull an already-dropped event back into anyone's average. Before applying the
@@ -5814,7 +5856,7 @@ export default function Matchkeeper() {
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
         {nav==="platform"&&<PlatformAdminSc users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
-          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription}
+          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription} subscriptionTransactions={subscriptionTransactions} onConfirmPayment={confirmSubscriptionPayment}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -5953,7 +5995,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
             {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>}
-        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),...(nativeUpdateAvailable?[{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":"var(--po-sub)",fontSize:13,cursor:"pointer",textAlign:"left"}}>{x.i} {x.l}</button>)}
+        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),...(isNativeAndroid&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":x.muted?"var(--po-dim)":"var(--po-sub)",fontSize:13,cursor:x.muted?"default":"pointer",opacity:x.muted?0.7:1,textAlign:"left"}}>{x.i} {x.l}</button>)}
       </div>}
     </div>
   </div>;
@@ -10118,7 +10160,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment}){
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
@@ -10145,6 +10187,11 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [subExpiryInput,setSubExpiryInput]=useState("");
   const [monthlyPriceInput,setMonthlyPriceInput]=useState(String(subscriptionSettings?.monthlyPriceEGP??100));
   const [annualPriceInput,setAnnualPriceInput]=useState(String(subscriptionSettings?.annualPriceEGP??1000));
+  const [startDateInput,setStartDateInput]=useState(()=>(subscriptionSettings?.enabledAt||new Date().toISOString()).slice(0,10));
+  const [subsView,setSubsView]=useState("manage"); // manage | statement
+  const [payingFor,setPayingFor]=useState(null); // userId currently confirming a payment for
+  const [payPlan,setPayPlan]=useState("monthly");
+  const [payMethod,setPayMethod]=useState("InstaPay");
   const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
@@ -10223,19 +10270,33 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   {tab==="subs"&&(()=>{
     const subQ=subsSearch.trim().toLowerCase();
     const shownUsers=users.filter(u=>u.id!==1&&(!subQ||u.nickname?.toLowerCase().includes(subQ)));
+    // Four states, independent of the global enforcement switch (so an admin can see exactly
+    // where everyone stands before ever flipping enforcement on) — mirrors the same grace-period
+    // math as isSubscriptionLocked/isSubscriptionInGrace, just without the .enabled gate.
     const statusOf=u=>{
       if(u.subscription?.status==="comped") return {label:"✓ Comped",color:"#34D399"};
-      if(u.subscription?.expiresAt){
-        const active=new Date(u.subscription.expiresAt)>new Date();
-        return active?{label:`✓ Active until ${fmtD(u.subscription.expiresAt)}`,color:"#34D399"}:{label:`✕ Expired ${fmtD(u.subscription.expiresAt)}`,color:"#EF4444"};
-      }
-      return {label:"— No subscription",color:"var(--po-dim)"};
+      const exp=u.subscription?.expiresAt;
+      if(!exp) return {label:"— Free",color:"var(--po-dim)"};
+      const expMs=new Date(exp).getTime(), graceEndMs=expMs+SUBSCRIPTION_GRACE_MS, now=Date.now();
+      if(expMs>now) return {label:`✓ Subscribed — until ${fmtD(exp)}`,color:"#34D399"};
+      if(graceEndMs>now) return {label:`⏳ Grace — ends ${fmtD(new Date(graceEndMs).toISOString())}`,color:"#F59E0B"};
+      return {label:`🚫 Suspended — since ${fmtD(new Date(graceEndMs).toISOString())}`,color:"#EF4444"};
     };
     const activeCount=users.filter(u=>u.id!==1&&isSubscriptionActive(u)).length;
+    const startPayment=(u,plan)=>{
+      const price=plan==="annual"?subscriptionSettings.annualPriceEGP:subscriptionSettings.monthlyPriceEGP;
+      onConfirmPayment&&onConfirmPayment(u.id,{plan,amount:price,method:payMethod});
+      setPayingFor(null);
+    };
     return <>
       <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Enhancement #17 — Phase 1. No payment gateway wired up yet: this is the manual bridge — someone sends an InstaPay/Vodafone Cash/bank transfer directly, you confirm it arrived, and set their access below. Stays off until you're ready — flipping it on is the moment every non-comped, non-expired-free user everywhere starts seeing read-only mode.</div>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <SmBtn label="⚙️ Manage" onClick={()=>setSubsView("manage")} color={subsView==="manage"?"#6366F1":"var(--po-dim)"} style={{flex:1}}/>
+        <SmBtn label="📊 Statement" onClick={()=>setSubsView("statement")} color={subsView==="statement"?"#6366F1":"var(--po-dim)"} style={{flex:1}}/>
+      </div>
+      {subsView==="manage"&&<>
       <Card style={{marginBottom:12}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:subscriptionSettings.enabled?10:0}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
           <div>
             <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>{subscriptionSettings.enabled?"🟢 Enforcement is ON":"⚪ Enforcement is OFF"}</div>
             <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{activeCount} of {users.length-1} users currently active</div>
@@ -10243,10 +10304,16 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           <SmBtn label={subscriptionSettings.enabled?"Turn Off":"Turn On"} color={subscriptionSettings.enabled?"#EF4444":"#34D399"} onClick={()=>{
             const next=!subscriptionSettings.enabled;
             if(next&&!window.confirm(`⚠️ Enable subscription enforcement now?\n\nEvery user without an active or comped subscription will immediately drop to read-only (can view, can't create/register/admin) — everywhere in the app, right away. Make sure you've set up whoever needs to stay active first.`))return;
-            onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabled:next,enabledAt:next?new Date().toISOString():subscriptionSettings.enabledAt});
+            onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabled:next});
           }}/>
         </div>
-        {subscriptionSettings.enabled&&subscriptionSettings.enabledAt&&<div style={{fontSize:11,color:"var(--po-dim)"}}>📅 Started on {fmtD(subscriptionSettings.enabledAt)}</div>}
+        {/* Visible and editable regardless of on/off, so the admin can plan/document the start
+            date before ever flipping enforcement on — not just an auto-stamp after the fact. */}
+        <div style={{display:"flex",gap:6,alignItems:"center",paddingTop:10,borderTop:"0.5px solid var(--po-bdr)"}}>
+          <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>📅 Start date</span>
+          <input type="date" value={startDateInput} onChange={e=>setStartDateInput(e.target.value)} className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"6px 8px",color:"var(--po-text)",fontSize:12}}/>
+          <SmBtn label="Save" onClick={()=>{if(!startDateInput)return;onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabledAt:new Date(startDateInput+"T00:00:00").toISOString()});toast2("Start date saved ✓");}} color="#6366F1"/>
+        </div>
       </Card>
       <Card style={{marginBottom:12}}>
         <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:10}}>Pricing (EGP)</div>
@@ -10271,8 +10338,20 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
               <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{u.nickname}</div>
               <div style={{fontSize:11,color:st.color,marginTop:1}}>{st.label}</div>
             </div>
-            <SmBtn label={editingSubFor===u.id?"✕":"Set"} onClick={()=>{setEditingSubFor(o=>o===u.id?null:u.id);setSubExpiryInput("");}} color="#6366F1"/>
+            <SmBtn label="💰 Payment" onClick={()=>{setPayingFor(o=>o===u.id?null:u.id);setEditingSubFor(null);}} color="#34D399"/>
+            <SmBtn label={editingSubFor===u.id?"✕":"Set"} onClick={()=>{setEditingSubFor(o=>o===u.id?null:u.id);setSubExpiryInput("");setPayingFor(null);}} color="#6366F1"/>
           </div>
+          {payingFor===u.id&&<div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid var(--po-bdr)"}}>
+            <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Confirm a manual transfer received from {u.nickname} — extends from today, or from their current expiry if still active/in grace.</div>
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <SmBtn label={`Monthly · ${subscriptionSettings.monthlyPriceEGP} EGP`} onClick={()=>setPayPlan("monthly")} color={payPlan==="monthly"?"#34D399":"var(--po-dim)"} style={{flex:1}}/>
+              <SmBtn label={`Annual · ${subscriptionSettings.annualPriceEGP} EGP`} onClick={()=>setPayPlan("annual")} color={payPlan==="annual"?"#34D399":"var(--po-dim)"} style={{flex:1}}/>
+            </div>
+            <select value={payMethod} onChange={e=>setPayMethod(e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13,marginBottom:8,boxSizing:"border-box"}}>
+              <option>InstaPay</option><option>Vodafone Cash</option><option>Bank Transfer</option><option>Cash</option><option>Other</option>
+            </select>
+            <Btn label={`✓ Confirm ${payPlan==="annual"?"Annual":"Monthly"} Payment`} primary onClick={()=>startPayment(u,payPlan)} style={{width:"100%"}}/>
+          </div>}
           {editingSubFor===u.id&&<div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid var(--po-bdr)"}}>
             <div style={{display:"flex",gap:6,marginBottom:8}}>
               <input type="date" value={subExpiryInput} onChange={e=>setSubExpiryInput(e.target.value)} className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>
@@ -10285,6 +10364,37 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           </div>}
         </Card>;
       })}
+      </>}
+      {subsView==="statement"&&(()=>{
+        const txns=[...subscriptionTransactions].sort((a,b)=>new Date(b.confirmedAt)-new Date(a.confirmedAt));
+        const now=new Date();
+        const inMonth=t=>{const d=new Date(t.confirmedAt);return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();};
+        const inYear=t=>new Date(t.confirmedAt).getFullYear()===now.getFullYear();
+        const sum=arr=>arr.reduce((s,t)=>s+(t.amount||0),0);
+        const totals=[["All time",sum(txns)],["This year",sum(txns.filter(inYear))],["This month",sum(txns.filter(inMonth))],["Transactions",txns.length]];
+        return <>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            {totals.map(([l,v])=><Card key={l} style={{textAlign:"center",padding:"12px 8px"}}>
+              <div style={{fontSize:18,fontWeight:700,color:"var(--po-text)"}}>{l==="Transactions"?v:`${v.toLocaleString()} EGP`}</div>
+              <div style={{fontSize:10,color:"var(--po-dim)",marginTop:2}}>{l}</div>
+            </Card>)}
+          </div>
+          {txns.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No confirmed payments yet.</div></Card>}
+          {txns.map(t=>{
+            const u=users.find(u=>u.id===t.userId);
+            return <Card key={t.id} style={{marginBottom:6,padding:"10px 12px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{u?.nickname||t.userNickname||"(deleted user)"}</div>
+                  <div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>{t.plan==="annual"?"Annual":"Monthly"} · {t.method} · confirmed by {t.confirmedBy}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>{timeAgo(t.confirmedAt)}</div>
+                </div>
+                <div style={{fontSize:14,fontWeight:700,color:"#34D399",flexShrink:0}}>+{t.amount} EGP</div>
+              </div>
+            </Card>;
+          })}
+        </>;
+      })()}
     </>;
   })()}
 

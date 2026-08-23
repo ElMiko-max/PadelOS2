@@ -204,7 +204,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.30";
+const APP_VERSION = "V0.10.31";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4039,8 +4039,15 @@ export default function Matchkeeper() {
   const autoInviteClaimRef = useRef(null);
   const [pendingInviteConfirm, setPendingInviteConfirm] = useState(null); // {inv, target} | null
   const [pendingEmailMatchConfirm, setPendingEmailMatchConfirm] = useState(null); // {target} | null
+  // Firebase keeps a signed-in browser session alive until an explicit Sign Out, same as any
+  // web app — opening a link (invite or otherwise) never forces a fresh login on its own. That
+  // used to mean a stale/deleted account's session would silently mint a brand-new profile the
+  // instant any link was opened, with zero prompt — surprising if you'd deleted that identity
+  // and expected a truly fresh visit. Now both auto-create paths below stage this confirmation
+  // instead of creating anything immediately, so it's always an explicit choice.
+  const [pendingFreshProfileConfirm, setPendingFreshProfileConfirm] = useState(false);
   useEffect(() => {
-    if (!authUser || linkedMe || !dataLoaded || pendingEmailMatchConfirm) return;
+    if (!authUser || linkedMe || !dataLoaded || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
     const code = readPendingInvite();
     if (!code || autoInviteClaimRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
@@ -4051,18 +4058,19 @@ export default function Matchkeeper() {
       if (target) setPendingInviteConfirm({inv, target});
     } else if (inv.targetUserId==null) {
       autoInviteClaimRef.current = code;
-      createFreshProfileOrMatch();
+      setPendingFreshProfileConfirm(true);
     }
-  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users, pendingEmailMatchConfirm]);
+  }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
   // No generic "which one is you?" self-service claim screen anymore (see BUGS.md #17) —
-  // anyone signing in with no pending targeted invite just gets a brand-new profile, same as an
-  // untargeted invite already did. One bootstrap exception: if the platform-owner seed profile
-  // (#1) has no linked account at all yet (first-ever setup, or the owner's own device/session
-  // got wiped), link straight to it instead of creating a duplicate — there's nobody else who
-  // could send #1 an invite link, so #1 can't rely on the normal targeted-invite path itself.
+  // anyone signing in with no pending targeted invite just gets a brand-new profile (after the
+  // confirmation above), same as an untargeted invite already did. One bootstrap exception: if
+  // the platform-owner seed profile (#1) has no linked account at all yet (first-ever setup, or
+  // the owner's own device/session got wiped), link straight to it instead of creating a
+  // duplicate — there's nobody else who could send #1 an invite link, so #1 can't rely on the
+  // normal targeted-invite path itself. That one case stays silent/automatic on purpose.
   const autoFreshProfileRef = useRef(false);
   useEffect(() => {
-    if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm || pendingEmailMatchConfirm) return;
+    if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
     if (readPendingInvite()) return; // the invite-claim effect above owns this case
     if (autoFreshProfileRef.current) return;
     autoFreshProfileRef.current = true;
@@ -4070,9 +4078,9 @@ export default function Matchkeeper() {
       linkUidToUser(authUser.uid, 1);
       setUsers(us => us.map(u => u.id===1 ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
     } else {
-      createFreshProfileOrMatch();
+      setPendingFreshProfileConfirm(true);
     }
-  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, uidLinks]);
+  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm, uidLinks]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
   // both a brand-new profile and a confirmed targeted claim of an existing one — join them to
   // the invited community/event. Deliberately re-checked on every render where these
@@ -5740,6 +5748,17 @@ export default function Matchkeeper() {
           <button onClick={()=>{claimViaEmailMatch(target.id);setPendingEmailMatchConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
           <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfileOrMatch(true);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
+        </div>
+      </div>;
+    }
+    if (pendingFreshProfileConfirm) {
+      return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{maxWidth:360,textAlign:"center"}}>
+          <div style={{fontSize:32,marginBottom:12}}>👋</div>
+          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>New here?</div>
+          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You're signed in as <b style={{color:"#F1F5F9"}}>{authUser.displayName||authUser.email}</b>, but there's no Matchkeeper profile for this account (yet, or anymore). Continue to set one up, or sign out if this isn't the account you meant to use.</div>
+          <button onClick={()=>{createFreshProfileOrMatch();setPendingFreshProfileConfirm(false);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Continue — create my profile</button>
+          <div onClick={()=>{setPendingFreshProfileConfirm(false);signOut(fbAuth);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>Sign out</div>
         </div>
       </div>;
     }

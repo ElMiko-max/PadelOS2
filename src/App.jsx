@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.51";
+const APP_VERSION = "V0.10.52";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4954,6 +4954,7 @@ export default function Matchkeeper() {
   const deleteEvent=(cid,eid)=>{
     const ev=getEv(cid,eid);
     if(!ev){toast2("Event not found (id "+eid+")","err");return;}
+    if(!(ev.createdBy===me.id||(me.id===1&&godMode))){toast2("Only this event's creator (or the platform admin) can delete it","err");return;}
     if(ev.status==="completed"){toast2("Cannot delete a completed event — use Archive instead","err");return;}
     updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname})}));
     toast2("Event deleted (id "+eid+")");
@@ -4971,6 +4972,7 @@ export default function Matchkeeper() {
     const ev=getEv(cid,eid);
     console.log("[archiveEvent] found event:", ev);
     if(!ev){toast2("Event not found (id "+eid+")","err");return;}
+    if(!(ev.createdBy===me.id||(me.id===1&&godMode))){toast2("Only this event's creator (or the platform admin) can archive it","err");return;}
     updC(cid,c=>{
       const updated={...c,events:c.events.map(e=>e.id!==eid?e:{...e,archived:true,archivedAt:new Date().toISOString()})};
       console.log("[archiveEvent] updated events:", updated.events.find(e=>e.id===eid));
@@ -5004,6 +5006,7 @@ export default function Matchkeeper() {
   // NOTHING to the audit trail at all (a real incident: an event vanished with zero record of
   // who did it), unlike the single-event action which always has.
   const bulkDeleteEvents=(items)=>{ // items: [{cid,eid}] — completed events are skipped, same rule as single deleteEvent
+    if(me.id!==1){toast2("Only the platform admin can bulk-delete events","err");return;}
     const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
     let deletedCount=0, skippedCount=0; const deletedNames=[];
     setComms(cs=>cs.map(c=>{
@@ -8537,6 +8540,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // Event-scoped admin (promoted per-event, not community-wide) gets full admin treatment
   // everywhere in THIS screen only — nothing outside EvDetail ever reads eventAdmins.
   const isAdmin= isRealAdmin||isEventAdmin;
+  // Delete/Archive are a narrower, more destructive permission than the rest of the admin menu
+  // (Edit/Duplicate/Unarchive) — only the event's actual creator, or the platform owner with God
+  // Mode on, can do either. A community admin or an event-scoped admin who didn't create this
+  // specific event cannot, even though they can see/use the rest of the "⋮" menu.
+  const canDeleteOrArchive = ev.createdBy===me.id || (isPlatformAdmin&&godMode);
   const isReg  = myMem?.status==="regular";
   const myReg  = effEv.registrations.find(r=>r.userId===me.id);
   const isCIn  = effEv.checkedIn.includes(me.id);
@@ -9046,9 +9054,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               <SmBtn label="✏️ Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}} color="#6366F1" style={{width:"100%"}}/>
               <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
               {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
-              {(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
-              {!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
-              {isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+              {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
+              {canDeleteOrArchive&&!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+              {canDeleteOrArchive&&isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
             </div>}
           </div>}
           {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
@@ -9991,7 +9999,11 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
     <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{selected.size} selected</span>
     <div style={{display:"flex",gap:8}}>
       <SmBtn label="🗄 Archive" color="#F59E0B" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Archive ${selItems.length} event(s)?`)){onBulkArchive&&onBulkArchive(selItems);exitSelMode();}}}/>
-      <SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Delete ${selItems.length} event(s)?\n\nThis hides them from everyone in their communities immediately — treat it like a permanent action. Completed events will be skipped — use Archive for those instead.`)){onBulkDelete&&onBulkDelete(selItems);exitSelMode();}}}/>
+      {/* Bulk delete is Platform-Admin-only — unlike single-event delete (creator-only) or bulk
+          archive, this can wipe activity across communities the actor doesn't even own, and is
+          exactly the action a real incident traced back to (an event vanished, no audit trail).
+          Community admins doing routine cleanup still have bulk Archive and single-event Delete. */}
+      {me.id===1&&<SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Delete ${selItems.length} event(s)?\n\nThis hides them from everyone in their communities immediately — treat it like a permanent action. Completed events will be skipped — use Archive for those instead.`)){onBulkDelete&&onBulkDelete(selItems);exitSelMode();}}}/>}
     </div>
   </Card>}
     {showCommPicker&&<Card style={{marginBottom:12}}>

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.48";
+const APP_VERSION = "V0.10.49";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3429,7 +3429,7 @@ function LoginScreen(){
       <div style={{textAlign:"center",marginBottom:24}}>
         <img src="/logo-icon-192.png" width={56} height={56} style={{borderRadius:16,margin:"0 auto 12px",display:"block"}} alt="Matchkeeper"/>
         <div style={{fontSize:20,fontWeight:700,color:"#F1F5F9"}}>Matchkeeper</div>
-        <div style={{fontSize:11,color:"#475569",marginTop:1}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":""}</div>
+        <div style={{fontSize:11,color:"#475569",marginTop:1}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":!Capacitor.isNativePlatform()?" · Web":""}</div>
         <div style={{fontSize:13,color:"#64748B",marginTop:2}}>{mode==="signup"?"Create your account":"Sign in to continue"}</div>
       </div>
 
@@ -3872,7 +3872,7 @@ export default function Matchkeeper() {
         const json = JSON.stringify(remote);
         if (json !== syncedRef.current.subscriptionSettings) { syncedRef.current.subscriptionSettings = json; setSubscriptionSettings(remote); }
         everRealRef.current.subscriptionSettings = true;
-      } else if (!everRealRef.current.subscriptionSettings) { syncedRef.current.subscriptionSettings = JSON.stringify(INIT_SUBSCRIPTION_SETTINGS); setSubscriptionSettings(INIT_SUBSCRIPTION_SETTINGS); }
+      } else if (!everRealRef.current.subscriptionSettings) { syncedRef.current.subscriptionSettings = JSON.stringify(INIT_SUBSCRIPTION_SETTINGS); setSubscriptionSettings(INIT_SUBSCRIPTION_SETTINGS); everRealRef.current.subscriptionSettings = true; } // same "no seed data to protect" fix as invites/usrWindowSize — this default is a legitimate confirmed-real state, don't block writes forever
       markLoaded("subscriptionSettings");
     }, e => { console.log("Firestore subscriptionSettings error", e); recordDiag("subscriptionSettings", `${e.code||"error"}: ${e.message||e}`); markLoaded("subscriptionSettings"); });
     return unsub;
@@ -3918,7 +3918,7 @@ export default function Matchkeeper() {
         const json = JSON.stringify(remote);
         if (json !== syncedRef.current.expenseCategories) { syncedRef.current.expenseCategories = json; setExpenseCategories(remote); }
         everRealRef.current.expenseCategories = true;
-      } else if (!everRealRef.current.expenseCategories) { syncedRef.current.expenseCategories = JSON.stringify(INIT_EXPENSE_CATEGORIES); setExpenseCategories(INIT_EXPENSE_CATEGORIES); }
+      } else if (!everRealRef.current.expenseCategories) { syncedRef.current.expenseCategories = JSON.stringify(INIT_EXPENSE_CATEGORIES); setExpenseCategories(INIT_EXPENSE_CATEGORIES); everRealRef.current.expenseCategories = true; } // same "no seed data to protect" fix as invites/usrWindowSize/subscriptionSettings — these 5 defaults are a legitimate confirmed-real state, don't block writes forever
       markLoaded("expenseCategories");
     }, e => { console.log("Firestore expenseCategories error", e); markLoaded("expenseCategories"); });
     return unsub;
@@ -6024,7 +6024,7 @@ export default function Matchkeeper() {
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
         {nav==="platform"&&<PlatformAdminSc onToast={msg=>toast2(msg)} users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
-          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription} subscriptionTransactions={subscriptionTransactions} onConfirmPayment={confirmSubscriptionPayment}
+          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription} subscriptionTransactions={subscriptionTransactions} onConfirmPayment={confirmSubscriptionPayment} onLogAudit={logAudit}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -6115,7 +6115,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
       <img src="/logo-icon-192.png" width={36} height={36} style={{borderRadius:9,flexShrink:0}} alt="Matchkeeper"/>
       <div style={{display:"flex",flexDirection:"column",lineHeight:1.05}}>
         <span style={{fontSize:11,fontWeight:600,color:dark?"#F1F5F9":"#FFFFFF"}}>Matchkeeper</span>
-        <span style={{fontSize:8,fontWeight:400,color:dark?"#F1F5F9":"#FFFFFF",opacity:0.6}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":""}</span>
+        <span style={{fontSize:8,fontWeight:400,color:dark?"#F1F5F9":"#FFFFFF",opacity:0.6}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":!isNativeAndroid?" · Web":""}</span>
       </div>
     </div>
     <div style={{display:"flex",gap:6,flex:1,justifyContent:"center",minWidth:0}}>{tabs.map(t=>{
@@ -10433,7 +10433,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast,onLogAudit}){
   const toast2 = onToast || (()=>{});
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
@@ -10590,6 +10590,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             const next=!subscriptionSettings.enabled;
             if(next&&!window.confirm(`⚠️ Enable subscription enforcement now?\n\nEvery user without an active or comped subscription will immediately drop to read-only (can view, can't create/register/admin) — everywhere in the app, right away. Make sure you've set up whoever needs to stay active first.`))return;
             onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabled:next});
+            onLogAudit&&onLogAudit("admin.subscriptionEnforcement", `Subscription enforcement turned ${next?"ON":"OFF"}`, null, null);
           }}/>
         </div>
         {/* Visible and editable regardless of on/off, so the admin can plan/document the start
@@ -10597,7 +10598,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <div style={{display:"flex",gap:6,alignItems:"center",paddingTop:10,borderTop:"0.5px solid var(--po-bdr)"}}>
           <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>📅 Start date</span>
           <input type="date" value={startDateInput} onChange={e=>setStartDateInput(e.target.value)} className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"6px 8px",color:"var(--po-text)",fontSize:12}}/>
-          <SmBtn label="Save" onClick={()=>{if(!startDateInput)return;onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabledAt:new Date(startDateInput+"T00:00:00").toISOString()});toast2("Start date saved ✓");}} color="#6366F1"/>
+          <SmBtn label="Save" onClick={()=>{if(!startDateInput)return;onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,enabledAt:new Date(startDateInput+"T00:00:00").toISOString()});onLogAudit&&onLogAudit("admin.subscriptionStartDate", `Subscription start date set to ${startDateInput}`, null, null);toast2("Start date saved ✓");}} color="#6366F1"/>
         </div>
       </Card>
       <Card style={{marginBottom:12}}>
@@ -10610,6 +10611,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           const m=parseFloat(monthlyPriceInput),a=parseFloat(annualPriceInput);
           if(isNaN(m)||isNaN(a))return;
           onSaveSubscriptionSettings&&onSaveSubscriptionSettings({...subscriptionSettings,monthlyPriceEGP:m,annualPriceEGP:a});
+          onLogAudit&&onLogAudit("admin.subscriptionPricing", `Subscription pricing changed to ${m} EGP/month, ${a} EGP/year`, null, null);
           toast2("Pricing saved ✓");
         }} style={{width:"100%"}}/>
       </Card>

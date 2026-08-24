@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.47";
+const APP_VERSION = "V0.10.48";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3895,7 +3895,7 @@ export default function Matchkeeper() {
         const json = JSON.stringify(remote);
         if (json !== syncedRef.current.subscriptionTransactions) { syncedRef.current.subscriptionTransactions = json; setSubscriptionTransactions(remote); }
         everRealRef.current.subscriptionTransactions = true;
-      } else if (!everRealRef.current.subscriptionTransactions) { syncedRef.current.subscriptionTransactions = JSON.stringify([]); setSubscriptionTransactions([]); }
+      } else if (!everRealRef.current.subscriptionTransactions) { syncedRef.current.subscriptionTransactions = JSON.stringify([]); setSubscriptionTransactions([]); everRealRef.current.subscriptionTransactions = true; } // same "no seed data to protect" fix as invites/usrWindowSize — an empty array is a legitimate confirmed-real state, don't block writes forever
       markLoaded("subscriptionTransactions");
     }, e => { console.log("Firestore subscriptionTransactions error", e); recordDiag("subscriptionTransactions", `${e.code||"error"}: ${e.message||e}`); markLoaded("subscriptionTransactions"); });
     return unsub;
@@ -3940,7 +3940,7 @@ export default function Matchkeeper() {
         const json = JSON.stringify(remote);
         if (json !== syncedRef.current.usrWindowSize) { syncedRef.current.usrWindowSize = json; setUsrWindowSizeRaw(remote); }
         everRealRef.current.usrWindowSize = true;
-      } else if (!everRealRef.current.usrWindowSize) { syncedRef.current.usrWindowSize = JSON.stringify(5); setUsrWindowSizeRaw(5); }
+      } else if (!everRealRef.current.usrWindowSize) { syncedRef.current.usrWindowSize = JSON.stringify(5); setUsrWindowSizeRaw(5); everRealRef.current.usrWindowSize = true; } // unlike comms/users/venues, no seed data to protect — "document not found" IS the confirmed-real default state, so writes must not stay blocked forever (this is exactly what was silently stuck: every admin save appeared to succeed locally but the doc had never actually been created, so it reset to 5 on every fresh session)
       markLoaded("usrWindowSize");
     }, e => { console.log("Firestore usrWindowSize error", e); markLoaded("usrWindowSize"); });
     return unsub;

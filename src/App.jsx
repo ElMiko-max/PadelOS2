@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.52";
+const APP_VERSION = "V0.10.53";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5307,6 +5307,18 @@ export default function Matchkeeper() {
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
+    // Last-minute cancellation alert — the creator/event admins should hear about a dropout
+    // close to start time, not just find out when the roster comes up short. Fires regardless
+    // of who removed the player (self-cancel or admin-removed), excluding the leaving player
+    // and whoever just performed the removal from the recipient list.
+    if (ev) {
+      const startMs = new Date(`${ev.date}T${ev.time||"00:00"}`).getTime();
+      const hoursUntil = (startMs-Date.now())/3600000;
+      if (!isNaN(startMs) && hoursUntil>0 && hoursUntil<=3) {
+        const recipients = [...new Set([ev.createdBy, ...(ev.eventAdmins||[])])].filter(id=>id!==uid&&id!==me.id);
+        if (recipients.length) notify(recipients, "lastMinuteCancel", ev, `⚠️ Last-minute cancellation — ${ev.name}`, `${u?.nickname||"A player"} dropped out ${hoursUntil<1?"less than an hour":`~${Math.round(hoursUntil)}h`} before start.`);
+      }
+    }
     logAudit("event.unregister", `${me.nickname} ${uid===me.id?"unregistered themselves":`removed ${u?.nickname||uid}`} from "${ev?.name||eid}"`, "event", eid);
   };
   const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");
@@ -5763,6 +5775,26 @@ export default function Matchkeeper() {
 
   const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
+  // Persistent "notifications are off" banner — checks the REAL OS/browser permission state
+  // (not a one-time "seen it" flag), so it disappears on its own the moment the user actually
+  // enables notifications, from wherever they do it. Skipped when the Notification API doesn't
+  // exist at all (iOS Safari not installed as a PWA yet) — that case already has its own
+  // dedicated nag (the "Add to Home Screen" overlay below), no need to double up.
+  const [notifDisabled, setNotifDisabled] = useState(false);
+  useEffect(() => {
+    const check = () => {
+      if (Capacitor.isNativePlatform()) {
+        PushNotifications.checkPermissions().then(res => setNotifDisabled(res.receive !== "granted")).catch(()=>{});
+      } else if ("Notification" in window) {
+        setNotifDisabled(Notification.permission !== "granted");
+      }
+    };
+    check();
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const interval = setInterval(check, 5 * 60 * 1000);
+    return () => { document.removeEventListener("visibilitychange", onVisible); clearInterval(interval); };
+  }, []);
   // "New version available" banner — dist/version.json is written fresh on every build (see
   // vite.config.js) from the same APP_VERSION baked into that build, so polling it tells an
   // already-open tab a newer deploy exists without needing any server-side broadcast. Native
@@ -5784,22 +5816,23 @@ export default function Matchkeeper() {
     return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
   // Every per-screen sticky "Back" header (BBtn, sticky=true) also pins at top:60, right under
-  // the TopBar — same slot this banner uses. Without this, when both are present the Back
-  // header (later in DOM) paints over the banner once both are stuck, making the banner look
-  // like it "disappeared" on scroll even though it's just hidden underneath. Measuring the
-  // banner's real height (it can wrap to 2 lines on narrow screens) and publishing it as a CSS
-  // var lets BBtn push itself down below the banner instead of colliding with it.
-  const newVerBannerRef = useRef(null);
+  // the TopBar — same slot this banner stack uses. Without this, when both are present the Back
+  // header (later in DOM) paints over the banner(s) once both are stuck, making them look like
+  // they "disappeared" on scroll even though they're just hidden underneath. Measuring the real
+  // combined height of whichever top banners are actually showing (new-version, notifications-
+  // off — either, both, or neither) and publishing it as a CSS var lets BBtn push itself down
+  // below them instead of colliding.
+  const stickyBannerRef = useRef(null);
   useEffect(() => {
-    if (!newVersion) { document.documentElement.style.setProperty("--po-sticky-extra", "0px"); return; }
-    const el = newVerBannerRef.current;
+    if (!newVersion && !notifDisabled) { document.documentElement.style.setProperty("--po-sticky-extra", "0px"); return; }
+    const el = stickyBannerRef.current;
     if (!el) return;
     const update = () => document.documentElement.style.setProperty("--po-sticky-extra", el.offsetHeight + "px");
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [newVersion]);
+  }, [newVersion, notifDisabled]);
 
   if (authLoading || (authUser && !dataLoaded)) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -5949,12 +5982,20 @@ export default function Matchkeeper() {
             scrolling away with the rest of the content. An opaque background is load-bearing
             here: without it, whatever scrolls underneath would show through the translucent
             green while pinned. */}
-        {newVersion&&<div ref={newVerBannerRef} style={{position:"sticky",top:60,zIndex:41,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:12,marginBottom:0}}>
-          <div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D399DD",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+        {(newVersion||notifDisabled)&&<div ref={stickyBannerRef} style={{position:"sticky",top:60,zIndex:41,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:12,marginBottom:0}}>
+          {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D399DD",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
             <span style={{fontSize:16}}>🆕</span>
             <span style={{flex:1,color:"#0E1117",fontWeight:600}}>New version {newVersion} is available — tap to refresh.</span>
             <span style={{fontWeight:700,color:"#0E1117"}}>↻</span>
-          </div>
+          </div>}
+          {/* Persistent until the OS/browser permission is actually granted — see the
+              notifDisabled effect above. Tapping it goes straight to Settings, where the
+              existing Enable-notifications flow already lives. */}
+          {notifDisabled&&<div onClick={()=>{setNav("settings");setNotifMenu(false);}} style={{fontSize:12,color:"#78350F",background:"#FBBF24DD",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+            <span style={{fontSize:16}}>🔔</span>
+            <span style={{flex:1,fontWeight:600}}>Notifications are off — tap to enable them in Settings.</span>
+            <span style={{fontWeight:700}}>›</span>
+          </div>}
         </div>}
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}

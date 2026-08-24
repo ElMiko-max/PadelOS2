@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.55";
+const APP_VERSION = "V0.10.56";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2180,7 +2180,17 @@ async function shareImages(canvases, baseName, text){
         const result = await Filesystem.writeFile({path:f.name, data:base64, directory:Directory.Cache});
         savedUris.push(result.uri);
       }
-      await Share.share({title:baseName, text, files:savedUris});
+      if (savedUris.length > 1 && text) {
+        // WhatsApp (and most Android receivers of a multi-file ACTION_SEND_MULTIPLE intent)
+        // attaches the same caption text to EVERY image individually instead of sending it once
+        // — sharing the images on their own first, then the caption as its own follow-up share,
+        // lands as one normal caption message instead of N duplicated ones.
+        await Share.share({title:baseName, files:savedUris});
+        try { await Share.share({title:baseName, text}); }
+        catch(e2) { if (!(e2 && (e2.message||"").toLowerCase().includes("cancel"))) throw e2; }
+      } else {
+        await Share.share({title:baseName, text, files:savedUris});
+      }
       return {status:"shared", diag:["shared natively"]};
     } catch(e) {
       if (e && (e.message||"").toLowerCase().includes("cancel")) return {status:"shared", diag:["user cancelled"]};
@@ -2198,21 +2208,30 @@ async function shareImages(canvases, baseName, text){
     diag.push(`canShare(multi files): ${canMulti}`);
     if(canMulti){
       try{
-        await navigator.share({files, title:baseName, text});
+        // Same caption-duplication issue as the native path above — split into two shares
+        // when there's more than one image, so the receiving app doesn't attach the text to
+        // every single image.
+        if (files.length > 1 && text) {
+          await navigator.share({files, title:baseName});
+          try { await navigator.share({title:baseName, text}); }
+          catch(e2) { if (!(e2 && e2.name==="AbortError")) throw e2; }
+        } else {
+          await navigator.share({files, title:baseName, text});
+        }
         return {status:"shared", diag};
       }catch(e){
         if(e && e.name==="AbortError") return {status:"shared", diag:["user cancelled"]};
         diag.push(`share(multi) threw: ${e.name}: ${e.message}`);
       }
     }
-    // Try single files one at a time
+    // Try single files one at a time (no caption per image — text goes out once at the end)
     let anyShared=false;
     for(const f of files){
       let canOne=false;
       try{ canOne=navigator.canShare({files:[f]}); }catch(e){ diag.push(`canShare(1) threw: ${e.message}`); }
       if(canOne){
         try{
-          await navigator.share({files:[f], title:baseName, text});
+          await navigator.share({files:[f], title:baseName});
           anyShared=true;
         }catch(e){
           if(e && e.name==="AbortError"){ anyShared=true; continue; }
@@ -2222,7 +2241,10 @@ async function shareImages(canvases, baseName, text){
         diag.push(`canShare=false for ${f.name}`);
       }
     }
-    if(anyShared) return {status:"shared", diag};
+    if(anyShared){
+      if (text) { try { await navigator.share({title:baseName, text}); } catch(e2){} }
+      return {status:"shared", diag};
+    }
   } else {
     diag.push("Web Share API not available");
   }
@@ -8978,11 +9000,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));
         if(plan) cards.push(buildRoundResultsCard(effEv,venue,plan,comm.name));
       }
+      const payerU = users.find(u=>u.id===payerId);
       const shareText = [
         `🏆 ${effEv.name} — Results`,
         `📅 ${fmtD(effEv.date)}`,
         `📍 ${venue?.name||"—"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
         `👥 ${comm.name}`,
+        ...(totC>0&&payerU?.instapayLink?[`💳 Pay ${payerU.nickname} (${cpp} EGP): ${payerU.instapayLink}`]:[]),
       ].join("\n");
       const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results", shareText);
       if(result.status==="shared"){ onToast&&onToast(`Shared ✓ (${cards.length} image${cards.length>1?"s":""})`); }

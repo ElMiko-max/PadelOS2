@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.56";
+const APP_VERSION = "V0.10.57";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2208,30 +2208,27 @@ async function shareImages(canvases, baseName, text){
     diag.push(`canShare(multi files): ${canMulti}`);
     if(canMulti){
       try{
-        // Same caption-duplication issue as the native path above — split into two shares
-        // when there's more than one image, so the receiving app doesn't attach the text to
-        // every single image.
-        if (files.length > 1 && text) {
-          await navigator.share({files, title:baseName});
-          try { await navigator.share({title:baseName, text}); }
-          catch(e2) { if (!(e2 && e2.name==="AbortError")) throw e2; }
-        } else {
-          await navigator.share({files, title:baseName, text});
-        }
+        // A second navigator.share() after an earlier awaited one is rejected by the browser
+        // with NotAllowedError ("must be handling a user gesture") — the gesture context from
+        // the original click doesn't survive the intervening await, so unlike the native path
+        // above, web genuinely cannot split this into two shares. Drop the caption instead of
+        // crashing when there's more than one file — same reasoning as handleShareAfter passing
+        // "" directly: WhatsApp would've duplicated it under every image anyway.
+        await navigator.share(files.length>1 ? {files, title:baseName} : {files, title:baseName, text});
         return {status:"shared", diag};
       }catch(e){
         if(e && e.name==="AbortError") return {status:"shared", diag:["user cancelled"]};
         diag.push(`share(multi) threw: ${e.name}: ${e.message}`);
       }
     }
-    // Try single files one at a time (no caption per image — text goes out once at the end)
+    // Try single files one at a time — no caption per image here either, same reasoning.
     let anyShared=false;
     for(const f of files){
       let canOne=false;
       try{ canOne=navigator.canShare({files:[f]}); }catch(e){ diag.push(`canShare(1) threw: ${e.message}`); }
       if(canOne){
         try{
-          await navigator.share({files:[f], title:baseName});
+          await navigator.share(files.length>1 ? {files:[f], title:baseName} : {files:[f], title:baseName, text});
           anyShared=true;
         }catch(e){
           if(e && e.name==="AbortError"){ anyShared=true; continue; }
@@ -2241,10 +2238,7 @@ async function shareImages(canvases, baseName, text){
         diag.push(`canShare=false for ${f.name}`);
       }
     }
-    if(anyShared){
-      if (text) { try { await navigator.share({title:baseName, text}); } catch(e2){} }
-      return {status:"shared", diag};
-    }
+    if(anyShared) return {status:"shared", diag};
   } else {
     diag.push("Web Share API not available");
   }
@@ -9000,19 +8994,41 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));
         if(plan) cards.push(buildRoundResultsCard(effEv,venue,plan,comm.name));
       }
-      const payerU = users.find(u=>u.id===payerId);
-      const shareText = [
-        `🏆 ${effEv.name} — Results`,
-        `📅 ${fmtD(effEv.date)}`,
-        `📍 ${venue?.name||"—"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
-        `👥 ${comm.name}`,
-        ...(totC>0&&payerU?.instapayLink?[`💳 Pay ${payerU.nickname} (${cpp} EGP): ${payerU.instapayLink}`]:[]),
-      ].join("\n");
-      const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results", shareText);
+      // No caption text here on purpose — WhatsApp/Android duplicates whatever text is passed
+      // alongside multiple images under EVERY image (confirmed, not fixable by splitting into a
+      // second share() call either: browsers reject a second navigator.share() once the user-
+      // gesture context from the first await has expired). The cards themselves already carry
+      // the event name/date/venue in their own header, so an outer caption isn't needed. Payment
+      // info now has its own separate, single share button on the Financial tab instead —
+      // see sharePaymentInfo below.
+      const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results", "");
       if(result.status==="shared"){ onToast&&onToast(`Shared ✓ (${cards.length} image${cards.length>1?"s":""})`); }
       else { onToast&&onToast(`Native share unavailable — ${cards.length} image(s) downloaded`); setShareDiag(result.diag); }
     }catch(e){
       console.error("Share error:",e);
+      onToast&&onToast("Share failed: "+(e.message||"unknown error"),"err");
+    }finally{ setSharing(false); }
+  }
+  // Separate, standalone share (Financial tab) — deliberately its own single share() call
+  // triggered directly by its own button tap, not chained after another share, so it works on
+  // web too (see the NotAllowedError note in handleShareAfter above).
+  async function sharePaymentInfo(){
+    setSharing(true);
+    try{
+      const payerU = users.find(u=>u.id===payerId);
+      const shareText = [
+        `🏆 ${effEv.name} — Payment`,
+        `📅 ${fmtD(effEv.date)}`,
+        `📍 ${venue?.name||"—"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
+        `👥 ${comm.name}`,
+        `💰 ${cpp} EGP per person`,
+        ...(payerU?.instapayLink?[`💳 Pay ${payerU.nickname}: ${payerU.instapayLink}`]:[]),
+        ...(venue?.instapayLink?[`🏟 Or pay ${venue.name} directly: ${venue.instapayLink}`]:[]),
+      ].join("\n");
+      const result = await shareImages([], effEv.name.replace(/\s+/g,"_")+"_payment", shareText);
+      if(result.status!=="shared") onToast&&onToast("Native share unavailable","err");
+    }catch(e){
+      console.error("Share payment info error:",e);
       onToast&&onToast("Share failed: "+(e.message||"unknown error"),"err");
     }finally{ setSharing(false); }
   }
@@ -9578,6 +9594,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {/* Venue InstaPay — for whoever's actually settling the court fees with the venue
               (usually the collector), not each player individually. */}
           {venue?.instapayLink&&<div style={{paddingTop:8}}><SmBtn label={`🏟 Pay ${venue.name} via InstaPay`} onClick={()=>window.open(venue.instapayLink,"_blank")} color="#94A3B8" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>}
+          {/* Standalone share, kept deliberately separate from Share Results (see handleShareAfter) —
+              its own button tap means its own single share(), no caption-duplication risk. */}
+          <div style={{paddingTop:8}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>
         </Card>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap "Exempt" for anyone who shouldn't pay — everyone else gets marked "Paid" once they settle up with the collector.</div>
         {attendeeIds.map(uid=>{

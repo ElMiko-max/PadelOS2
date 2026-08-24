@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.46";
+const APP_VERSION = "V0.10.47";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6017,8 +6017,8 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
-        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize}/>;})()}
-        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize}/>}
+        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt}/>;})()}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -10075,7 +10075,7 @@ function ComboCard({combo, lv, eventsDesc, teamName, onRename}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5,egypt}){
   const isPlatformAdmin = me?.id===1;
   const showContact = !viewedByAdmin || isPlatformAdmin;
   // Full activity (USR History / Teams / Reports) is only for the owner, the real platform
@@ -10100,7 +10100,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   const [expandedRow,setExpandedRow]=useState(null); // `${kind}-${userId}` for the open Partners/Opponents row, or null
   const [expandedSection,setExpandedSection]=useState(null); // "partner"|"opponent" for the open "Insufficient data" section, or null
   const [editing,setEditing]=useState(false);
-  const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none"});
+  const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none",country:user.country||"مصر",gov:user.gov||"",area:user.area||""});
   const [photoUploading,setPhotoUploading]=useState(false);
   const isMe = me && user.id===me.id;
   const handlePhotoSelect = async (e) => {
@@ -10132,7 +10132,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
-    {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none",instapayLink:user.instapayLink||""});setEditing(true);}} color="#6366F1"/>}
+    {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none",instapayLink:user.instapayLink||"",country:user.country||"مصر",gov:user.gov||"",area:user.area||""});setEditing(true);}} color="#6366F1"/>}
   </div>
   {(isMe||isPlatformAdmin)&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
@@ -10144,12 +10144,14 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     </div>
     <Inp label="Nickname" value={ef.nickname} onChange={v=>setEf(p=>({...p,nickname:v}))}/>
     <Inp label="Phone" value={ef.phone} onChange={v=>setEf(p=>({...p,phone:v}))}/>
+    <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div>
+    <AreaSel country={ef.country} gov={ef.gov} area={ef.area} onChange={(k,v)=>setEf(p=>({...p,[k]:v}))} egypt={egypt}/>
     <Drp label="Break Preference" value={ef.breakPref} onChange={v=>setEf(p=>({...p,breakPref:v}))} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Used as your default whenever you join an event — admins can override it per event.</div>
     <Inp label="InstaPay Link (optional)" value={ef.instapayLink} onChange={v=>setEf(p=>({...p,instapayLink:v}))} placeholder="https://ipn.eg/S/yourname/instapay/..."/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Shown when you're picked as an event's payment collector, so other players can pay you straight from the app.</div>
     <div style={{display:"flex",gap:8,marginTop:4}}>
-      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref,instapayLink:ef.instapayLink.trim()})!==false)setEditing(false);}} style={{flex:1}}/>
+      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim()||!ef.gov||!ef.area)return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,country:ef.country,gov:ef.gov,area:ef.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref,instapayLink:ef.instapayLink.trim()})!==false)setEditing(false);}} style={{flex:1}}/>
       <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
     </div>
   </div>}

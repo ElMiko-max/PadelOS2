@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.57";
+const APP_VERSION = "V0.10.58";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2166,6 +2166,29 @@ async function shareImages(canvases, baseName, text){
   const diag=[];
   const files = canvases.map((c,i)=>canvasToFileSync(c,`${baseName}_${i+1}.png`));
   diag.push(`files ready: ${files.length}`);
+
+  // Text-only calls (sharePaymentInfo) don't need any of the file-sharing machinery below —
+  // navigator.canShare({files:[]}) is unreliable across browsers (some report false for an
+  // empty file list, which used to fall all the way through to the "nothing to download"
+  // fallback and a misleading "Native share unavailable" toast even though a plain text share
+  // would have worked fine). Handle it directly instead.
+  if (files.length === 0) {
+    if (Capacitor.isNativePlatform()) {
+      try { await Share.share({title:baseName, text}); return {status:"shared", diag:["shared natively (text)"]}; }
+      catch(e) { if (e && (e.message||"").toLowerCase().includes("cancel")) return {status:"shared", diag:["user cancelled"]}; diag.push(`native text share failed: ${e.message||e}`); }
+    }
+    if (navigator.share) {
+      try { await navigator.share({title:baseName, text}); return {status:"shared", diag:["text shared"]}; }
+      catch(e) { if (e && e.name==="AbortError") return {status:"shared", diag:["user cancelled"]}; diag.push(`share(text) threw: ${e.name}: ${e.message}`); }
+    } else {
+      diag.push("Web Share API not available");
+    }
+    if (navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(text); return {status:"copied", diag}; }
+      catch(e) { diag.push(`clipboard write failed: ${e.message||e}`); }
+    }
+    return {status:"failed", diag};
+  }
 
   if (Capacitor.isNativePlatform()) {
     try {
@@ -9026,7 +9049,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         ...(venue?.instapayLink?[`🏟 Or pay ${venue.name} directly: ${venue.instapayLink}`]:[]),
       ].join("\n");
       const result = await shareImages([], effEv.name.replace(/\s+/g,"_")+"_payment", shareText);
-      if(result.status!=="shared") onToast&&onToast("Native share unavailable","err");
+      if(result.status==="copied") onToast&&onToast("Sharing isn't available here — copied to clipboard instead ✓");
+      else if(result.status!=="shared") onToast&&onToast("Couldn't share or copy — try again","err");
     }catch(e){
       console.error("Share payment info error:",e);
       onToast&&onToast("Share failed: "+(e.message||"unknown error"),"err");

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.53";
+const APP_VERSION = "V0.10.54";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9336,7 +9336,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         // community member). Surfaced separately so it's clear at a glance they aren't a
         // community member in any capacity, not just relabeled as a generic "Guest".
         const isEventOnlyGuest = !isGuestPerson && !mStatus;
-        const addedByLabel = r.addedBy==="admin"?"Added by Admin":r.addedBy==="invite"?"via Invite":r.addedBy==="approved"?"Approved":r.addedBy?`by ${r.addedBy}`:null;
+        // Who added/approved a registration is admin-facing bookkeeping, not something other
+        // players need to see about each other — only the event's real admins (community/event-
+        // scoped) or its creator get it. Everyone still sees the plain Guest/Casual/Regular
+        // status badges below, just without the "who did it" detail attached.
+        const canSeeAddedBy = isAdmin || ev.createdBy===me.id;
+        const addedByLabel = canSeeAddedBy ? (r.addedBy==="admin"?"Added by Admin":r.addedBy==="invite"?"via Invite":r.addedBy==="approved"?"Approved":r.addedBy?`by ${r.addedBy}`:null) : null;
         return <Card key={r.userId} style={{opacity:isRetired?0.6:1}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <Av u={u} size={34}/>

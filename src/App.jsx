@@ -167,12 +167,15 @@ if (Capacitor.isNativePlatform()) {
 
 // Bug #10 — this used to be a hardcoded constant with no admin-facing way to maintain it
 // (add/remove governorates or areas required editing code directly). Now a Firestore-synced
-// seed, editable from Platform Admin → Areas.
+// seed, editable from Platform Admin → Areas. Shape is Country → Governorate → Area (added
+// later — see the migration in the "egypt" onSnapshot handler for the old flat-shape upgrade).
 const INIT_EGYPT = {
-  "القاهرة": ["المعادي","مدينة نصر","الزمالك","مصر الجديدة","التجمع الخامس","القاهرة الجديدة","مدينتي","المقطم","شبرا","عين شمس"],
-  "الجيزة":  ["الشيخ زايد","6 أكتوبر","المهندسين","العجوزة","الدقي","إمبابة"],
-  "الإسكندرية": ["سموحة","لوران","المنتزه","سيدي جابر","محرم بك"],
-  "القليوبية": ["شبرا الخيمة","بنها","قليوب","الخانكة"],
+  "مصر": {
+    "القاهرة": ["المعادي","مدينة نصر","الزمالك","مصر الجديدة","التجمع الخامس","القاهرة الجديدة","مدينتي","المقطم","شبرا","عين شمس"],
+    "الجيزة":  ["الشيخ زايد","6 أكتوبر","المهندسين","العجوزة","الدقي","إمبابة"],
+    "الإسكندرية": ["سموحة","لوران","المنتزه","سيدي جابر","محرم بك"],
+    "القليوبية": ["شبرا الخيمة","بنها","قليوب","الخانكة"],
+  },
 };
 // ── Subscriptions (Enhancement #17 — profitable model) ──────────────
 // Platform-wide switch, off by default — flipping `enabled` is the one moment every user
@@ -211,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.45";
+const APP_VERSION = "V0.10.46";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3325,7 +3328,18 @@ function TwoRowTabs({tabs,active,onChange}){
 }
 function rBdg(r){const m={owner:["#C084FC","Owner"],admin:["#38BDF8","Admin"],member:["#64748B","Member"]};const[c,l]=m[r]||["#64748B",r];return <Bdg label={l} color={c}/>;}
 function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"],guest:["#F59E0B","Guest"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
-function AreaSel({gov,area,onChange,egypt}){const govs=Object.keys(egypt||{}),areas=gov?(egypt||{})[gov]||[]:[];return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}><Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div>;}
+function AreaSel({country,gov,area,onChange,egypt}){
+  const countries=Object.keys(egypt||{});
+  const govs=country?Object.keys((egypt||{})[country]||{}):[];
+  const areas=(country&&gov)?((egypt||{})[country]||{})[gov]||[]:[];
+  return <div style={{marginBottom:12}}>
+    <Drp label="الدولة" value={country} onChange={v=>{onChange("country",v);onChange("gov","");onChange("area","");}} options={countries.map(c=>({v:c,l:c}))}/>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+      <Drp label="المحافظة" value={gov} onChange={v=>{onChange("gov",v);onChange("area","");}} options={govs.map(g=>({v:g,l:g}))}/>
+      <Drp label="المنطقة" value={area} onChange={v=>onChange("area",v)} options={areas.map(a=>({v:a,l:a}))}/>
+    </div>
+  </div>;
+}
 
 // Horizontal [−] value [+] stepper. flip=true (the right-hand stepper of a pair) mirrors the
 // button order to [+] value [−] — the two "+" buttons of a side-by-side pair sit facing each
@@ -3824,9 +3838,16 @@ export default function Matchkeeper() {
     if (!authUser) return;
     const unsub = onSnapshot(doc(db,"padelos","egypt"), snap => {
       if (snap.exists()) {
-        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        const raw = snap.data().value; let remote = typeof raw==="string" ? JSON.parse(raw) : raw;
+        // One-time migration: the old shape was flat {gov:[areas]}, no country level. Detect it
+        // by checking if any top-level value is an array (old) rather than an object (new), and
+        // wrap the whole thing under "مصر" — every existing gov/area everywhere was Egypt-only
+        // anyway. Deliberately skip updating syncedRef here so the write-back effect below
+        // notices the state changed and persists the migrated shape once.
+        const isOldShape = remote && Object.values(remote).some(v=>Array.isArray(v));
+        if (isOldShape) remote = { "مصر": remote };
         const json = JSON.stringify(remote);
-        if (json !== syncedRef.current.egypt) { syncedRef.current.egypt = json; setEgypt(remote); }
+        if (json !== syncedRef.current.egypt) { setEgypt(remote); if (!isOldShape) syncedRef.current.egypt = json; }
         everRealRef.current.egypt = true;
       } else if (!everRealRef.current.egypt) { syncedRef.current.egypt = JSON.stringify(INIT_EGYPT); setEgypt(INIT_EGYPT); } // local fallback only — never auto-write seed data to Firestore
       markLoaded("egypt");
@@ -4182,7 +4203,7 @@ export default function Matchkeeper() {
   const editUser = (id, data) => {
     if (nicknameTaken(data.nickname, id)) { toast2(`Nickname "${data.nickname}" is already used by another player`, "err"); return false; }
     if (phoneTaken(data.phone, id)) { toast2(`Phone ${data.phone} is already used by another player`, "err"); return false; }
-    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref, instapayLink:data.instapayLink!==undefined?data.instapayLink:u.instapayLink} : u));
+    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, country:data.country??u.country, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref, instapayLink:data.instapayLink!==undefined?data.instapayLink:u.instapayLink} : u));
     toast2("Player updated ✓");
     if (id!==me.id) { const u=users.find(u=>u.id===id); logAudit("user.edit", `${me.nickname} edited ${u?.nickname||id}'s profile`, "user", id); }
     return true;
@@ -5216,7 +5237,7 @@ export default function Matchkeeper() {
     if (nicknameTaken(g.n)) { toast2(`Nickname "${g.n}" is already used by another player`, "err"); return false; }
     if (phoneTaken(g.p)) { toast2(`Phone ${g.p} is already used by another player`, "err"); return false; }
     const id=_uid++;
-    const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
+    const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,country:"—",gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
     setUsers(us=>[...us,newUser]);
     updC(cid,c=>({...c,
       members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
@@ -6183,12 +6204,12 @@ function SportPicker({selected,onChange,multi=true}){
   </div>;
 }
 function CommForm({comm,onBack,onSave,egypt}){
-  const ie=!!comm;const [f,setF]=useState({name:comm?.name||"",description:comm?.description||"",country:"مصر",gov:comm?.gov||"",area:comm?.area||"",type:comm?.type||"public",sports:comm?.sports?.length?comm.sports:[DEFAULT_SPORT],promoteAfter:String(comm?.promoteAfter||3),demoteAfter:String(comm?.demoteAfter||4)});const set=(k,v)=>setF(p=>({...p,[k]:v}));
+  const ie=!!comm;const [f,setF]=useState({name:comm?.name||"",description:comm?.description||"",country:comm?.country||"مصر",gov:comm?.gov||"",area:comm?.area||"",type:comm?.type||"public",sports:comm?.sports?.length?comm.sports:[DEFAULT_SPORT],promoteAfter:String(comm?.promoteAfter||3),demoteAfter:String(comm?.demoteAfter||4)});const set=(k,v)=>setF(p=>({...p,[k]:v}));
   // Once a community has real events, its sport can't be changed — event-scoped data (which
   // event types were offered, footballSkill vs. usr, venue pricing per sport) is only coherent
   // for the sport the community had at the time, so switching later would strand that history.
   const sportLocked=ie&&(comm.events?.length>0);
-  return <><BBtn onBack={onBack} label={ie?comm.name:"Communities"}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>{ie?"Edit Community":"New Community"}</div><Card><Inp label="Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Maadi Padel Club"/><Inp label="Description" value={f.description} onChange={v=>set("description",v)} multiline/><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div><AreaSel gov={f.gov} area={f.area} onChange={set} egypt={egypt}/><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sport</div>
+  return <><BBtn onBack={onBack} label={ie?comm.name:"Communities"}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>{ie?"Edit Community":"New Community"}</div><Card><Inp label="Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Maadi Padel Club"/><Inp label="Description" value={f.description} onChange={v=>set("description",v)} multiline/><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div><AreaSel country={f.country} gov={f.gov} area={f.area} onChange={set} egypt={egypt}/><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sport</div>
       {sportLocked
         ? <>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{f.sports.map(s=><div key={s} className="po-inp" style={{padding:"8px 14px",borderRadius:20,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",fontSize:12,fontWeight:600}}>{sportLabel(s)}</div>)}</div>
@@ -6208,7 +6229,7 @@ function CommForm({comm,onBack,onSave,egypt}){
       </div>
       <div style={{fontSize:11,color:"var(--po-dim)",marginTop:4}}>Applied automatically whenever an event is closed. Admins can also override any member's status manually from the Members tab. Set "Promote after" to <b>0</b> to skip the casual stage entirely — new members join straight in as Regular.</div>
     </div>
-    <Btn label={ie?"Save Changes":"Create Community"} primary onClick={()=>{if(f.name&&f.gov&&f.area&&f.sports.length){const pa=parseInt(f.promoteAfter),da=parseInt(f.demoteAfter);onSave({...f,promoteAfter:isNaN(pa)?3:Math.max(0,pa),demoteAfter:isNaN(da)?4:Math.max(0,da)});}}} style={{width:"100%"}}/></Card></>;
+    <Btn label={ie?"Save Changes":"Create Community"} primary onClick={()=>{if(f.name&&f.country&&f.gov&&f.area&&f.sports.length){const pa=parseInt(f.promoteAfter),da=parseInt(f.demoteAfter);onSave({...f,promoteAfter:isNaN(pa)?3:Math.max(0,pa),demoteAfter:isNaN(da)?4:Math.max(0,da)});}}} style={{width:"100%"}}/></Card></>;
 }
 
 // Community-wide report — aggregate numbers (events/matches/venues/attendance), separate from
@@ -6553,7 +6574,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
         <div style={{fontSize:22,fontWeight:800,lineHeight:1.1,letterSpacing:-0.4,color:"var(--po-text)"}}>{comm.name}{SEEDED_COMM_IDS.has(comm.id)&&<> <SeedBadge/></>}</div>
         <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><Bdg label={comm.type==="public"?"Public":"Private"} color={comm.type==="public"?"#34D399":"var(--po-sub)"}/>{myRole==="owner"&&<SmBtn label="✏️" onClick={onEdit} color="#6366F1"/>}</div>
       </div>
-      <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · Founded {fmtD(comm.founded)}</div>
+      <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · {comm.country||"مصر"} · Founded {fmtD(comm.founded)}</div>
       <div style={{fontSize:13,color:"var(--po-sub)",marginTop:10}}>{comm.description}</div>
       {!isMember&&<div style={{marginTop:14}}>
         {hasPendingJoin
@@ -7037,11 +7058,11 @@ function VenueForm({editV,onBack,onSave,egypt}){
   const ie=!!editV;
   const emptyCourtNames=Array(Math.max(0,10-(editV?.courts.length||0))).fill("");
   const emptyPitchNames=Array(Math.max(0,10-(editV?.pitches?.length||0))).fill("");
-  const [f,setF]=useState({name:editV?.name||"",gov:editV?.gov||"",area:editV?.area||"",sports:editV?.sports?.length?editV.sports:[DEFAULT_SPORT],pricePerHour:editV?String(editV.pricePerHour):"",extraFee:editV?String(editV.extraFee):"",pricePerHourFootball:editV?.pricePerHourFootball!=null?String(editV.pricePerHourFootball):"",extraFeeFootball:editV?.extraFeeFootball!=null?String(editV.extraFeeFootball):"",mapsUrl:editV?.mapsUrl||"",lat:editV?.lat!=null?String(editV.lat):"",lng:editV?.lng!=null?String(editV.lng):"",instapayLink:editV?.instapayLink||"",courtNames:editV?[...editV.courts.map(c=>c.name),...emptyCourtNames]:["Court 1","Court 2","","","","","","","",""],pitchNames:editV?[...(editV.pitches||[]).map(p=>p.name),...emptyPitchNames]:["Pitch 1","Pitch 2","","","","","","","",""]});
-  const set=(k,v)=>setF(p=>({...p,[k]:v})),setC=(i,v)=>setF(p=>{const n=[...p.courtNames];n[i]=v;return{...p,courtNames:n};}),setP=(i,v)=>setF(p=>{const n=[...p.pitchNames];n[i]=v;return{...p,pitchNames:n};});const areas=f.gov?(egypt||{})[f.gov]||[]:[];
+  const [f,setF]=useState({name:editV?.name||"",country:editV?.country||"مصر",gov:editV?.gov||"",area:editV?.area||"",sports:editV?.sports?.length?editV.sports:[DEFAULT_SPORT],pricePerHour:editV?String(editV.pricePerHour):"",extraFee:editV?String(editV.extraFee):"",pricePerHourFootball:editV?.pricePerHourFootball!=null?String(editV.pricePerHourFootball):"",extraFeeFootball:editV?.extraFeeFootball!=null?String(editV.extraFeeFootball):"",mapsUrl:editV?.mapsUrl||"",lat:editV?.lat!=null?String(editV.lat):"",lng:editV?.lng!=null?String(editV.lng):"",instapayLink:editV?.instapayLink||"",courtNames:editV?[...editV.courts.map(c=>c.name),...emptyCourtNames]:["Court 1","Court 2","","","","","","","",""],pitchNames:editV?[...(editV.pitches||[]).map(p=>p.name),...emptyPitchNames]:["Pitch 1","Pitch 2","","","","","","","",""]});
+  const set=(k,v)=>setF(p=>({...p,[k]:v})),setC=(i,v)=>setF(p=>{const n=[...p.courtNames];n[i]=v;return{...p,courtNames:n};}),setP=(i,v)=>setF(p=>{const n=[...p.pitchNames];n[i]=v;return{...p,pitchNames:n};});
   const multiSport=f.sports.length>1;
   return <><BBtn onBack={onBack} label="Venues"/><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:ie?4:16}}>{ie?"Edit Venue":"Add Venue"}</div>{ie&&<div style={{fontSize:12,color:"#F59E0B",marginBottom:14,padding:"8px 12px",background:"#F59E0B11",borderRadius:8}}>✏️ Changes apply immediately. Pending global review.</div>}
-    <Card><Inp label="Venue Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Wadi Degla Club"/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:0}}><Drp label="المحافظة" value={f.gov} onChange={v=>{set("gov",v);set("area","");}} options={Object.keys(egypt||{}).map(g=>({v:g,l:g}))}/><Drp label="المنطقة" value={f.area} onChange={v=>set("area",v)} options={areas.map(a=>({v:a,l:a}))}/></div><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sports (select all that apply)</div><SportPicker selected={f.sports} onChange={v=>set("sports",v)}/></div>
+    <Card><Inp label="Venue Name" value={f.name} onChange={v=>set("name",v)} placeholder="e.g. Wadi Degla Club"/><AreaSel country={f.country} gov={f.gov} area={f.area} onChange={set} egypt={egypt}/><div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Sports (select all that apply)</div><SportPicker selected={f.sports} onChange={v=>set("sports",v)}/></div>
     {f.sports.includes("Padel Tennis")&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label={multiSport?"Padel Price/hr (EGP)":"Price/hr (EGP)"} value={f.pricePerHour} onChange={v=>set("pricePerHour",v)} type="number"/><Inp label={multiSport?"Padel Extra Booking (EGP)":"Extra Booking (EGP)"} value={f.extraFee} onChange={v=>set("extraFee",v)} type="number"/></div>}
     {f.sports.includes("Football")&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}><Inp label={multiSport?"Football Price/hr (EGP)":"Price/hr (EGP)"} value={f.pricePerHourFootball} onChange={v=>set("pricePerHourFootball",v)} type="number" placeholder={multiSport?"blank = same as padel":""}/><Inp label={multiSport?"Football Extra Booking (EGP)":"Extra Booking (EGP)"} value={f.extraFeeFootball} onChange={v=>set("extraFeeFootball",v)} type="number" placeholder={multiSport?"blank = same as padel":""}/></div>}
     <Inp label="Google Maps URL" value={f.mapsUrl} onChange={v=>set("mapsUrl",v)} placeholder="https://maps.google.com/..."/>
@@ -7051,7 +7072,7 @@ function VenueForm({editV,onBack,onSave,egypt}){
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>💳 Shown on this venue's info for whoever's settling up the court fees directly with the venue (usually the event's collector, not each player individually).</div>
     {f.sports.includes("Padel Tennis")&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Padel Court Names (up to 10)</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{f.courtNames.map((cn,i)=><input key={i} value={cn} onChange={e=>setC(i,e.target.value)} placeholder={`Court ${i+1}`} className="po-inp" style={{background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>)}</div></div>}
     {f.sports.includes("Football")&&<div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Football Pitch Names (up to 10)</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{f.pitchNames.map((pn,i)=><input key={i} value={pn} onChange={e=>setP(i,e.target.value)} placeholder={`Pitch ${i+1}`} className="po-inp" style={{background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"7px 10px",color:"var(--po-text)",fontSize:13}}/>)}</div></div>}
-    <Btn label={ie?"Save & Submit for Review":"Add Venue & Submit for Review"} primary onClick={()=>{if(f.name&&f.area&&f.sports.length)onSave({...f,lat:f.lat?parseFloat(f.lat):null,lng:f.lng?parseFloat(f.lng):null},ie?editV.id:null);}} style={{width:"100%"}}/></Card></>;
+    <Btn label={ie?"Save & Submit for Review":"Add Venue & Submit for Review"} primary onClick={()=>{if(f.name&&f.country&&f.area&&f.sports.length)onSave({...f,lat:f.lat?parseFloat(f.lat):null,lng:f.lng?parseFloat(f.lng):null},ie?editV.id:null);}} style={{width:"100%"}}/></Card></>;
 }
 
 // ── Event Card ────────────────────────────────────────
@@ -10086,7 +10107,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const file = e.target.files[0]; e.target.value="";
     if (!file) return;
     setPhotoUploading(true);
-    try{ const url = await uploadProfilePhoto(user.id, file); onEditUser(user.id,{nickname:user.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:url}); }
+    try{ const url = await uploadProfilePhoto(user.id, file); onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:url}); }
     catch(err){ console.log("Photo upload error", err); }
     setPhotoUploading(false);
   };
@@ -10106,7 +10127,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         <div style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-bdr)",borderRadius:4,padding:"2px 6px",fontFamily:"monospace"}}>#{user.id}</div>
       </div>
       <div style={{fontSize:13,color:"var(--po-dim)"}}>{user.name}</div>
-      <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {user.area} · {user.gov}</div>
+      <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {user.area} · {user.gov} · {user.country||"مصر"}</div>
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>✉️ {user.email || <span style={{color:"var(--po-bdr)"}}>—</span>}</div>}
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
@@ -10128,7 +10149,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     <Inp label="InstaPay Link (optional)" value={ef.instapayLink} onChange={v=>setEf(p=>({...p,instapayLink:v}))} placeholder="https://ipn.eg/S/yourname/instapay/..."/>
     <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Shown when you're picked as an event's payment collector, so other players can pay you straight from the app.</div>
     <div style={{display:"flex",gap:8,marginTop:4}}>
-      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref,instapayLink:ef.instapayLink.trim()})!==false)setEditing(false);}} style={{flex:1}}/>
+      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim())return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref,instapayLink:ef.instapayLink.trim()})!==false)setEditing(false);}} style={{flex:1}}/>
       <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
     </div>
   </div>}
@@ -10416,7 +10437,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [editing,setEditing]=useState(null);
   const [inviteUrl,setInviteUrl]=useState(null);
-  const [nf,setNf]=useState({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
+  const [nf,setNf]=useState({nickname:"",name:"",country:"مصر",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
   const [showAdd,setShowAdd]=useState(false);
   const [userSearch,setUserSearch]=useState("");
   const [auditSearch,setAuditSearch]=useState("");
@@ -10428,6 +10449,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
   const [newGovName,setNewGovName]=useState("");
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
+  const [newCountryName,setNewCountryName]=useState("");
+  const [selectedCountry,setSelectedCountry]=useState(null); // resolved with a fallback once egypt is known, right before the Areas tab renders
   const [newCatName,setNewCatName]=useState("");
   const [editingCat,setEditingCat]=useState(null); // category name currently being renamed
   const [editCatInput,setEditCatInput]=useState("");
@@ -10472,7 +10495,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["subs","💳 Subscriptions"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length} countr${Object.keys(egypt||{}).length===1?"y":"ies"})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["subs","💳 Subscriptions"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="cats"&&(()=>{
     const renameCat=(oldName,newName)=>{
@@ -10797,13 +10820,13 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <div onClick={()=>setLinkFilter(f=>f==="unlinked"?null:"unlinked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="unlinked"?0.4:1}}><Bdg label={`◌ ${users.length-linkedCount} unlinked${linkFilter==="unlinked"?" ✕":""}`} color="#F59E0B"/></div>
     </div>
     <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
-    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none",footballSkill:""});}} style={{width:"100%",marginBottom:12}}/>
+    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",country:"مصر",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none",footballSkill:""});}} style={{width:"100%",marginBottom:12}}/>
     {showAdd&&<Card style={{marginBottom:12}}>
       <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>{editing?"Edit User":"New User"}</div>
       {[["Nickname","nickname"],["Full Name","name"]].map(([l,k])=>
         <Inp key={k} label={l} value={nf[k]||""} onChange={v=>set(k,v)}/>
       )}
-      <AreaSel gov={nf.gov} area={nf.area} onChange={set} egypt={egypt}/>
+      <AreaSel country={nf.country} gov={nf.gov} area={nf.area} onChange={set} egypt={egypt}/>
       <Inp label="Phone" value={nf.phone||""} onChange={v=>set("phone",v)}/>
       <Inp label="Seed USR (0–100) — Padel" value={nf.usr} onChange={v=>set("usr",v)}/>
       {editing&&<div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>The baseline used in USR calculations — changing it won't move their current USR until you confirm a recalculation.</div>}
@@ -10843,14 +10866,14 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
             <Bdg label={isLinked?"🔗 Linked":"◌ Unlinked"} color={isLinked?"#34D399":"#94A3B8"}/>
           </div>
           <div style={{fontSize:11,color:"var(--po-dim)"}}>{u.name||"—"} · USR {u.usr} · seed {u.seedUsr??u.usr}</div>
-          <div style={{fontSize:10,color:"var(--po-dim)"}}>{u.area} · {u.gov}</div>
+          <div style={{fontSize:10,color:"var(--po-dim)"}}>{u.area} · {u.gov} · {u.country||"مصر"}</div>
         </div>
         <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
           <div onClick={()=>setOpenUserMenu(o=>o===u.id?null:u.id)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
           {openUserMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:160,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
             {onCreateInvite&&!isLinked&&<SmBtn label="🔗 Invite" onClick={()=>{setOpenUserMenu(null);const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399" style={{width:"100%"}}/>}
             {onUnlinkUser&&isLinked&&<SmBtn label="🔓 Unlink" onClick={()=>{setOpenUserMenu(null);if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
-            <SmBtn label="✏️ Edit" onClick={()=>{setOpenUserMenu(null);setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B" style={{width:"100%"}}/>
+            <SmBtn label="✏️ Edit" onClick={()=>{setOpenUserMenu(null);setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",country:u.country||"مصر",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B" style={{width:"100%"}}/>
             {/* A player who has actually played (usrHistory.length>0) can never be fully
                 deleted — their history line is permanent. Suspend is the only option for
                 them: reversible, blocks the account from being used, touches nothing else.
@@ -10881,55 +10904,88 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <div style={{fontSize:11,color:"var(--po-dim)"}}>{fmtD(ev.date)} · {ev.type}</div>
       </Card>)}
   </>}
-  {tab==="areas"&&<>
-    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Governorates and areas used in location pickers everywhere (players, communities, venues). Changes apply immediately across the app.</div>
+  {tab==="areas"&&(()=>{
+    const countries=Object.keys(egypt||{});
+    const country=selectedCountry&&countries.includes(selectedCountry)?selectedCountry:countries[0];
+    const govs=country?(egypt||{})[country]||{}:{};
+    return <>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Countries, governorates and areas used in location pickers everywhere (players, communities, venues). Changes apply immediately across the app.</div>
     <Card style={{marginBottom:12}}>
-      <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Add Governorate</div>
+      <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Add Country</div>
       <div style={{display:"flex",gap:8}}>
-        <input value={newGovName} onChange={e=>setNewGovName(e.target.value)} placeholder="e.g. أسوان" className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+        <input value={newCountryName} onChange={e=>setNewCountryName(e.target.value)} placeholder="e.g. الإمارات" className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
         <Btn label="+ Add" primary onClick={()=>{
-          const name=newGovName.trim();
+          const name=newCountryName.trim();
           if(!name||(egypt||{})[name])return;
-          onSaveEgypt({...(egypt||{}),[name]:[]});
-          setNewGovName("");
+          onSaveEgypt({...(egypt||{}),[name]:{}});
+          setNewCountryName("");
+          setSelectedCountry(name);
         }}/>
       </div>
     </Card>
-    {Object.keys(egypt||{}).map(gov=>{
-      const areas=egypt[gov]||[];
-      const inputVal=areaInputs[gov]||"";
-      return <Card key={gov} style={{marginBottom:10}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-          <div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{gov}</div>
-          <SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{
-            if(window.confirm(`Delete governorate "${gov}" and its ${areas.length} area(s)?\n\nAny existing communities/venues/players already set to this governorate keep their saved value — it just won't be selectable for new ones.`)){
-              const n={...egypt};delete n[gov];onSaveEgypt(n);
-            }
-          }}/>
-        </div>
-        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
-          {areas.length===0&&<div style={{fontSize:12,color:"var(--po-dim)"}}>No areas yet.</div>}
-          {areas.map(a=><div key={a} style={{display:"flex",alignItems:"center",gap:4,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:16,padding:"5px 6px 5px 12px",fontSize:12,color:"var(--po-text)"}}>
-            {a}
-            <span onClick={()=>{
-              if(window.confirm(`Remove area "${a}" from ${gov}?`)){
-                onSaveEgypt({...egypt,[gov]:areas.filter(x=>x!==a)});
-              }
-            }} style={{cursor:"pointer",color:"#EF4444",fontWeight:700,padding:"0 4px"}}>×</span>
-          </div>)}
-        </div>
+    <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
+      {countries.map(c=><div key={c} onClick={()=>setSelectedCountry(c)} style={{display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderRadius:20,cursor:"pointer",border:`1.5px solid ${c===country?"#6366F1":"var(--po-bdr)"}`,background:c===country?"#6366F122":"var(--po-inp)",fontSize:12,fontWeight:600,color:c===country?"#A5B4FC":"var(--po-dim)"}}>
+        {c}
+        <span onClick={e=>{e.stopPropagation();
+          const govCount=Object.keys((egypt||{})[c]||{}).length;
+          if(countries.length<=1){window.alert("Can't delete the last remaining country.");return;}
+          if(window.confirm(`Delete country "${c}" and its ${govCount} governorate(s)?\n\nAny existing communities/venues/players already set to this country keep their saved value — it just won't be selectable for new ones.`)){
+            const n={...egypt};delete n[c];onSaveEgypt(n);
+            if(c===country)setSelectedCountry(Object.keys(n)[0]||null);
+          }
+        }} style={{cursor:"pointer",color:"#EF4444",fontWeight:700}}>×</span>
+      </div>)}
+    </div>
+    {country&&<>
+      <Card style={{marginBottom:12}}>
+        <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Add Governorate in {country}</div>
         <div style={{display:"flex",gap:8}}>
-          <input value={inputVal} onChange={e=>setAreaInputs(p=>({...p,[gov]:e.target.value}))} placeholder="New area name" className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-          <SmBtn label="+ Add" color="#6366F1" onClick={()=>{
-            const name=inputVal.trim();
-            if(!name||areas.includes(name))return;
-            onSaveEgypt({...egypt,[gov]:[...areas,name]});
-            setAreaInputs(p=>({...p,[gov]:""}));
+          <input value={newGovName} onChange={e=>setNewGovName(e.target.value)} placeholder="e.g. أسوان" className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+          <Btn label="+ Add" primary onClick={()=>{
+            const name=newGovName.trim();
+            if(!name||govs[name])return;
+            onSaveEgypt({...egypt,[country]:{...govs,[name]:[]}});
+            setNewGovName("");
           }}/>
         </div>
-      </Card>;
-    })}
-  </>}
+      </Card>
+      {Object.keys(govs).map(gov=>{
+        const areas=govs[gov]||[];
+        const inputVal=areaInputs[gov]||"";
+        return <Card key={gov} style={{marginBottom:10}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+            <div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{gov}</div>
+            <SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{
+              if(window.confirm(`Delete governorate "${gov}" and its ${areas.length} area(s)?\n\nAny existing communities/venues/players already set to this governorate keep their saved value — it just won't be selectable for new ones.`)){
+                const n={...govs};delete n[gov];onSaveEgypt({...egypt,[country]:n});
+              }
+            }}/>
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+            {areas.length===0&&<div style={{fontSize:12,color:"var(--po-dim)"}}>No areas yet.</div>}
+            {areas.map(a=><div key={a} style={{display:"flex",alignItems:"center",gap:4,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:16,padding:"5px 6px 5px 12px",fontSize:12,color:"var(--po-text)"}}>
+              {a}
+              <span onClick={()=>{
+                if(window.confirm(`Remove area "${a}" from ${gov}?`)){
+                  onSaveEgypt({...egypt,[country]:{...govs,[gov]:areas.filter(x=>x!==a)}});
+                }
+              }} style={{cursor:"pointer",color:"#EF4444",fontWeight:700,padding:"0 4px"}}>×</span>
+            </div>)}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input value={inputVal} onChange={e=>setAreaInputs(p=>({...p,[gov]:e.target.value}))} placeholder="New area name" className="po-inp" style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+            <SmBtn label="+ Add" color="#6366F1" onClick={()=>{
+              const name=inputVal.trim();
+              if(!name||areas.includes(name))return;
+              onSaveEgypt({...egypt,[country]:{...govs,[gov]:[...areas,name]}});
+              setAreaInputs(p=>({...p,[gov]:""}));
+            }}/>
+          </div>
+        </Card>;
+      })}
+    </>}
+  </>;
+  })()}
 
   {tab==="data"&&<>
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>These tools affect every player and event in the community. Only Platform Admins can see this tab.</div>

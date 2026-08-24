@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.49";
+const APP_VERSION = "V0.10.50";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -10465,6 +10465,13 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [monthlyPriceInput,setMonthlyPriceInput]=useState(String(subscriptionSettings?.monthlyPriceEGP??100));
   const [annualPriceInput,setAnnualPriceInput]=useState(String(subscriptionSettings?.annualPriceEGP??1000));
   const [startDateInput,setStartDateInput]=useState(()=>(subscriptionSettings?.enabledAt||new Date().toISOString()).slice(0,10));
+  // These three only ever initialized once at mount, so a save made from a DIFFERENT device/tab
+  // (which does land in Firestore and does update `subscriptionSettings` live) never showed up
+  // here without a full page reload — looking exactly like the save silently failed, even though
+  // it actually persisted correctly. Keep them in sync with the real synced value.
+  useEffect(()=>{ setMonthlyPriceInput(String(subscriptionSettings?.monthlyPriceEGP??100)); }, [subscriptionSettings?.monthlyPriceEGP]);
+  useEffect(()=>{ setAnnualPriceInput(String(subscriptionSettings?.annualPriceEGP??1000)); }, [subscriptionSettings?.annualPriceEGP]);
+  useEffect(()=>{ setStartDateInput((subscriptionSettings?.enabledAt||new Date().toISOString()).slice(0,10)); }, [subscriptionSettings?.enabledAt]);
   const [subsView,setSubsView]=useState("manage"); // manage | statement
   const [payingFor,setPayingFor]=useState(null); // userId currently confirming a payment for
   const [payPlan,setPayPlan]=useState("monthly");

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.54";
+const APP_VERSION = "V0.10.55";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8978,13 +8978,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         if(plan) cards.push(buildResultsTableCard(effEv,venue,plan,ciStands,tc,comm.name));
         if(plan) cards.push(buildRoundResultsCard(effEv,venue,plan,comm.name));
       }
-      const payerU = users.find(u=>u.id===payerId);
       const shareText = [
         `🏆 ${effEv.name} — Results`,
         `📅 ${fmtD(effEv.date)}`,
         `📍 ${venue?.name||"—"}${venue?.mapsUrl?`\n🗺️ ${venue.mapsUrl}`:""}`,
         `👥 ${comm.name}`,
-        ...(totC>0&&payerU?.instapayLink?[`💳 Pay ${payerU.nickname} (${cpp} EGP): ${payerU.instapayLink}`]:[]),
       ].join("\n");
       const result = await shareImages(cards, effEv.name.replace(/\s+/g,"_")+"_results", shareText);
       if(result.status==="shared"){ onToast&&onToast(`Shared ✓ (${cards.length} image${cards.length>1?"s":""})`); }

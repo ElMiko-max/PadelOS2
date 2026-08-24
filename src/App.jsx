@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.50";
+const APP_VERSION = "V0.10.51";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4945,21 +4945,26 @@ export default function Matchkeeper() {
     }
     go("event",{cid,eid:id});
   };
+  // Soft-delete only (BUGS.md incident: an event vanished with zero audit trail, no way to tell
+  // who did it or recover it). "Deleted" now means: stays in the database forever, invisible to
+  // everyone except Platform Admin (Platform Admin -> Deleted Events), and every deletion is
+  // always audit-logged with who did it. This is deliberately NOT the same thing as Archive —
+  // archived events are still visible to the community (Archived section); deleted ones are not,
+  // for anyone but the platform owner.
   const deleteEvent=(cid,eid)=>{
-    console.log("[deleteEvent] called with", {cid, eid});
     const ev=getEv(cid,eid);
-    console.log("[deleteEvent] found event:", ev);
     if(!ev){toast2("Event not found (id "+eid+")","err");return;}
     if(ev.status==="completed"){toast2("Cannot delete a completed event — use Archive instead","err");return;}
-    updC(cid,c=>{
-      const before=c.events.length;
-      const after={...c,events:c.events.filter(e=>e.id!==eid)};
-      console.log("[deleteEvent] events before:", before, "after:", after.events.length);
-      return after;
-    });
+    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname})}));
     toast2("Event deleted (id "+eid+")");
     logAudit("event.delete", `${me.nickname} deleted event "${ev.name}"`, "event", eid);
     goBack();
+  };
+  const restoreDeletedEvent=(cid,eid)=>{
+    const ev=getEv(cid,eid);
+    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,deleted:false,deletedAt:null,deletedBy:null,deletedByName:null})}));
+    toast2("Event restored ✓");
+    logAudit("event.restore", `${me.nickname} restored deleted event "${ev?.name||eid}"`, "event", eid);
   };
   const archiveEvent=(cid,eid)=>{
     console.log("[archiveEvent] called with", {cid, eid});
@@ -4987,24 +4992,31 @@ export default function Matchkeeper() {
   // on the list) and can span multiple communities in one selection.
   const bulkArchiveEvents=(items)=>{ // items: [{cid,eid}]
     const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
+    const names=items.map(({cid,eid})=>getEv(cid,eid)?.name).filter(Boolean);
     setComms(cs=>cs.map(c=>{
       const eids=byCid[c.id]; if(!eids) return c;
       return {...c,events:c.events.map(e=>eids.has(e.id)?{...e,archived:true,archivedAt:new Date().toISOString()}:e)};
     }));
     toast2(`${items.length} event(s) archived ✓`);
+    logAudit("event.bulkArchive", `${me.nickname} archived ${items.length} event(s): ${names.slice(0,5).join(", ")}${names.length>5?` and ${names.length-5} more`:""}`, null, null);
   };
+  // Soft-delete only — same reasoning as deleteEvent above. Bulk actions previously logged
+  // NOTHING to the audit trail at all (a real incident: an event vanished with zero record of
+  // who did it), unlike the single-event action which always has.
   const bulkDeleteEvents=(items)=>{ // items: [{cid,eid}] — completed events are skipped, same rule as single deleteEvent
     const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
-    let deletedCount=0, skippedCount=0;
+    let deletedCount=0, skippedCount=0; const deletedNames=[];
     setComms(cs=>cs.map(c=>{
       const eids=byCid[c.id]; if(!eids) return c;
-      return {...c,events:c.events.filter(e=>{
-        if(!eids.has(e.id)) return true;
-        if(e.status==="completed"){ skippedCount++; return true; }
-        deletedCount++; return false;
+      return {...c,events:c.events.map(e=>{
+        if(!eids.has(e.id)) return e;
+        if(e.status==="completed"){ skippedCount++; return e; }
+        deletedCount++; deletedNames.push(e.name);
+        return {...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname};
       })};
     }));
     toast2(skippedCount>0?`${deletedCount} event(s) deleted · ${skippedCount} completed event(s) skipped (use Archive instead)`:`${deletedCount} event(s) deleted ✓`);
+    if(deletedCount>0) logAudit("event.bulkDelete", `${me.nickname} deleted ${deletedCount} event(s): ${deletedNames.slice(0,5).join(", ")}${deletedNames.length>5?` and ${deletedNames.length-5} more`:""}`, null, null);
   };
   const closeEvent=(cid,eid,scoringMethod="standard")=>{
     const ev=getEv(cid,eid);
@@ -5739,10 +5751,11 @@ export default function Matchkeeper() {
   };
 
   const comm=view.cid?comms.find(c=>c.id===view.cid):null;
-  const event=comm&&view.eid?comm.events.find(e=>e.id===view.eid):null;
+  // Deleted events are invisible to everyone except the platform owner (id 1) — see deleteEvent.
+  const event=comm&&view.eid?comm.events.find(e=>e.id===view.eid&&(!e.deleted||me.id===1)):null;
   const allEvents=comms.flatMap(c=>{
     const amAdmin=c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin"));
-    return c.events.filter(ev=>ev.visibility!=="private"||amAdmin||ev.registrations.some(r=>r.userId===me.id)).map(ev=>({...ev,commName:c.name,communityId:c.id}));
+    return c.events.filter(ev=>!ev.deleted&&(ev.visibility!=="private"||amAdmin||ev.registrations.some(r=>r.userId===me.id))).map(ev=>({...ev,commName:c.name,communityId:c.id}));
   });
 
   const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
@@ -6024,7 +6037,7 @@ export default function Matchkeeper() {
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
         {nav==="platform"&&<PlatformAdminSc onToast={msg=>toast2(msg)} users={users} comms={comms} venues={venues} uidLinks={uidLinks} onCreateInvite={createInvite} onUnlinkUser={unlinkUser} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onBack={goBack} egypt={egypt} onSaveEgypt={setEgypt} expenseCategories={expenseCategories} onSaveExpenseCategories={setExpenseCategories}
-          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription} subscriptionTransactions={subscriptionTransactions} onConfirmPayment={confirmSubscriptionPayment} onLogAudit={logAudit}
+          subscriptionSettings={subscriptionSettings} onSaveSubscriptionSettings={setSubscriptionSettings} onSetUserSubscription={setUserSubscription} subscriptionTransactions={subscriptionTransactions} onConfirmPayment={confirmSubscriptionPayment} onLogAudit={logAudit} onRestoreDeletedEvent={restoreDeletedEvent}
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
@@ -6236,7 +6249,7 @@ function CommForm({comm,onBack,onSave,egypt}){
 // CommStatsTab's per-member leaderboard below it. Pure/read-only, computed on demand.
 function CommOverview({comm, venues}){
   const now = new Date();
-  const visibleEvents = comm.events.filter(ev=>!ev.archived && ev.status!=="cancelled");
+  const visibleEvents = comm.events.filter(ev=>!ev.archived && !ev.deleted && ev.status!=="cancelled");
   if (visibleEvents.length===0) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No events yet — reports will appear once this community starts running events.</div></Card>;
   const completedEvents = visibleEvents.filter(ev=>ev.status==="completed");
   const totalMatches = completedEvents.reduce((n,ev)=>n+countMatchesPlayed(ev),0);
@@ -6655,7 +6668,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
     </>}
 
     {tab==="events"&&<>{!canViewPrivate?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see events.</div></Card>:<>{isAdmin&&<Btn label="+ New Event" primary onClick={onCreateEv} style={{width:"100%",marginBottom:12}}/>}
-      {(() => { const visEvents = comm.events.filter(ev=>ev.visibility!=="private"||isAdmin||ev.registrations.some(r=>r.userId===me.id));
+      {(() => { const visEvents = comm.events.filter(ev=>!ev.deleted&&(ev.visibility!=="private"||isAdmin||ev.registrations.some(r=>r.userId===me.id)));
       return visEvents.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No events yet</div></Card>:<>
         {(() => {
           const now=Date.now();
@@ -9034,7 +9047,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
               {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
               {(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
-              {!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis cannot be undone — all registrations and data will be permanently lost.`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
+              {!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
               {isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
             </div>}
           </div>}
@@ -9978,7 +9991,7 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
     <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{selected.size} selected</span>
     <div style={{display:"flex",gap:8}}>
       <SmBtn label="🗄 Archive" color="#F59E0B" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Archive ${selItems.length} event(s)?`)){onBulkArchive&&onBulkArchive(selItems);exitSelMode();}}}/>
-      <SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Delete ${selItems.length} event(s)?\n\nThis cannot be undone. Completed events will be skipped — use Archive for those instead.`)){onBulkDelete&&onBulkDelete(selItems);exitSelMode();}}}/>
+      <SmBtn label="🗑 Delete" color="#EF4444" onClick={()=>{if(selItems.length===0)return;if(window.confirm(`Delete ${selItems.length} event(s)?\n\nThis hides them from everyone in their communities immediately — treat it like a permanent action. Completed events will be skipped — use Archive for those instead.`)){onBulkDelete&&onBulkDelete(selItems);exitSelMode();}}}/>
     </div>
   </Card>}
     {showCommPicker&&<Card style={{marginBottom:12}}>
@@ -10112,7 +10125,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     setPhotoUploading(false);
   };
   const lv=usrLv(user.usr),mine=comms.filter(c=>c.members.some(m=>m.userId===user.id));
-  const ec=mine.reduce((s,c)=>s+c.events.filter(e=>e.registrations.some(r=>r.userId===user.id)).length,0);
+  const ec=mine.reduce((s,c)=>s+c.events.filter(e=>!e.deleted&&e.registrations.some(r=>r.userId===user.id)).length,0);
   const usrHist=[...(user.usrHistory||[])].reverse();
 
   // Build team history from all CT completed events the user participated in
@@ -10433,7 +10446,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast,onLogAudit}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast,onLogAudit,onRestoreDeletedEvent}){
   const toast2 = onToast || (()=>{});
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
@@ -10504,7 +10517,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </div>
   </div>
 
-  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["areas",`Areas (${Object.keys(egypt||{}).length} countr${Object.keys(egypt||{}).length===1?"y":"ies"})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["subs","💳 Subscriptions"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
+  <TwoRowTabs tabs={[["audit","🕵️ Audit Trail"],["users",`Users (${users.length})`],["archived","Archived Events"],["deleted",`🗑 Deleted (${allEvents.filter(ev=>ev.deleted).length})`],["areas",`Areas (${Object.keys(egypt||{}).length} countr${Object.keys(egypt||{}).length===1?"y":"ies"})`],["cats",`💰 Categories (${expenseCategories.length})`],["usr","🎯 USR Window"],["subs","💳 Subscriptions"],["data","Data & Backup"]]} active={tab} onChange={setTab}/>
 
   {tab==="cats"&&(()=>{
     const renameCat=(oldName,newName)=>{
@@ -10913,6 +10926,22 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>{ev.commName} · #{ev.id}{SEEDED_EVENT_IDS.has(ev.id)&&<> <SeedBadge/></>}</div>
         <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{ev.name}</div>
         <div style={{fontSize:11,color:"var(--po-dim)"}}>{fmtD(ev.date)} · {ev.type}</div>
+      </Card>)}
+  </>}
+
+  {/* Platform-Admin-only visibility into soft-deleted events — invisible to everyone else,
+      including the community's own admins. Not the same list as Archived: archived events are
+      still visible to the community, these are not. */}
+  {tab==="deleted"&&<>
+    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:12}}>Deleted events are hidden from everyone (including the community's own admins) but never actually erased — only you can see and restore them here.</div>
+    {allEvents.filter(ev=>ev.deleted).length===0
+      ?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No deleted events.</div></Card>
+      :allEvents.filter(ev=>ev.deleted).sort((a,b)=>new Date(b.deletedAt||0)-new Date(a.deletedAt||0)).map(ev=><Card key={`${ev.communityId}-${ev.id}`} style={{marginBottom:8}}>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:4}}>{ev.commName} · #{ev.id}{SEEDED_EVENT_IDS.has(ev.id)&&<> <SeedBadge/></>}</div>
+        <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{ev.name}</div>
+        <div style={{fontSize:11,color:"var(--po-dim)"}}>{fmtD(ev.date)} · {ev.type}</div>
+        <div style={{fontSize:11,color:"#EF4444",marginTop:4}}>🗑 Deleted by {ev.deletedByName||"—"} · {ev.deletedAt?timeAgo(ev.deletedAt):"—"}</div>
+        <SmBtn label="↩️ Restore" onClick={()=>onRestoreDeletedEvent&&onRestoreDeletedEvent(ev.communityId,ev.id)} color="#34D399" style={{width:"100%",marginTop:8}}/>
       </Card>)}
   </>}
   {tab==="areas"&&(()=>{

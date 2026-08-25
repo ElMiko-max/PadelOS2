@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.06";
+const APP_VERSION = "V0.11.07";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3280,7 +3280,7 @@ function Btn({label,onClick,primary,danger,disabled,style={}}){
   return <button onClick={onClick} disabled={disabled} style={{padding:"9px 16px",borderRadius:8,border:`0.5px solid ${bc}`,background:disabled?"var(--po-bdr)":bg,color:disabled?"var(--po-dim)":cl,fontSize:13,fontWeight:500,cursor:disabled?"default":"pointer",opacity:disabled?0.6:1,...style}}>{label}</button>;
 }
 function SmBtn({label,onClick,color="#6366F1",active,style={}}){return <button onClick={onClick} style={{padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",border:`0.5px solid ${active?"#6366F1":color+"44"}`,background:active?"#6366F133":`${color}11`,color:active?"#A5B4FC":color,...style}}>{label}</button>;}
-function Card({children,style={}}){return <div className="po-card" style={{background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,padding:"14px 16px",marginBottom:10,...style}}>{children}</div>;}
+function Card({children,style={},id}){return <div id={id} className="po-card" style={{background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,padding:"14px 16px",marginBottom:10,...style}}>{children}</div>;}
 // A single link using the geo: URI scheme — on a phone with no default maps app set,
 // the OS itself pops up its native "Open with…" chooser (Google Maps, Waze, whatever's
 // installed). No custom in-app menu; falls back to the plain Maps link when we don't
@@ -3714,7 +3714,7 @@ export default function Matchkeeper() {
     setNavHistory(h=>[...h, {nav, view}]); // push current state before navigating
     setView({screen,...extra});
   };
-  const goComm = (cid) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"comm",cid}); };
+  const goComm = (cid,extra) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"comm",cid,...(extra||{})}); };
   const goEvent = (cid,eid) => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"event",cid,eid}); };
   const goCommList = () => { setNavHistory(h=>[...h, {nav, view}]); setNav("communities"); setView({screen:"list"}); };
   const goBack = () => {
@@ -4091,10 +4091,10 @@ export default function Matchkeeper() {
   }, [invites, dataLoaded]);
   const inviteCodeChars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O/1/I/L
   const genInviteCode = () => Array.from({length:7}, () => inviteCodeChars[Math.floor(Math.random()*inviteCodeChars.length)]).join("");
-  const createInvite = ({targetUserId,communityId,eventId,label}) => {
+  const createInvite = ({targetUserId,communityId,eventId,announcementId,label}) => {
     const id = _invid++;
     const code = genInviteCode();
-    setInvites(inv => [...inv, {id, code, createdBy:me.id, createdAt:new Date().toISOString(), targetUserId:targetUserId??null, communityId:communityId??null, eventId:eventId??null, label:label||""}]);
+    setInvites(inv => [...inv, {id, code, createdBy:me.id, createdAt:new Date().toISOString(), targetUserId:targetUserId??null, communityId:communityId??null, eventId:eventId??null, announcementId:announcementId??null, label:label||""}]);
     return code;
   };
   // An invite link skips the generic "which one is you?" search screen for a targeted invite —
@@ -4185,7 +4185,11 @@ export default function Matchkeeper() {
           if (!hasPending) requestJoin(inv.communityId);
         }
       }
-      goComm(inv.communityId);
+      // A poll-link invite (announcementId set, no eventId) drops the opener straight into the
+      // Announcements tab with that specific poll highlighted, instead of the community's
+      // default landing tab — see the "🔗 Poll Link" button in CommDetail's poll block.
+      if (inv.announcementId) goComm(inv.communityId, {tab:"announcements", highlightAid:inv.announcementId});
+      else goComm(inv.communityId);
     }
     clearPendingInvite();
   }, [linkedMe, dataLoaded, invites, comms]);
@@ -6121,7 +6125,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={(message,pollOptions)=>postAnnouncement(comm.id,message,pollOptions)} onVoteAnnouncementPoll={(aid,key)=>voteAnnouncementPoll(comm.id,aid,key)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} onSetBanner={url=>setCommunityBanner(comm.id,url)} onRemoveBanner={()=>removeCommunityBanner(comm.id)} godMode={godMode}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} highlightAid={view.highlightAid} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={(message,pollOptions)=>postAnnouncement(comm.id,message,pollOptions)} onVoteAnnouncementPoll={(aid,key)=>voteAnnouncementPoll(comm.id,aid,key)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} onSetBanner={url=>setCommunityBanner(comm.id,url)} onRemoveBanner={()=>removeCommunityBanner(comm.id)} godMode={godMode}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -6610,9 +6614,16 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onVoteAnnouncementPoll,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,onSetBanner,onRemoveBanner,godMode}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,highlightAid,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onVoteAnnouncementPoll,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,onSetBanner,onRemoveBanner,godMode}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
+  // Poll-link deep link (see the "🔗 Poll Link" button below and the announcementId branch in
+  // App's applied-invite effect) — scroll the linked poll into view once its Card has mounted.
+  useEffect(()=>{
+    if(!highlightAid||tab!=="announcements") return;
+    const t=setTimeout(()=>{ document.getElementById(`ann-${highlightAid}`)?.scrollIntoView({behavior:"smooth",block:"center"}); }, 150);
+    return ()=>clearTimeout(t);
+  }, [highlightAid, tab]);
   const [showInvite,setShowInvite]=useState(false);
   const [inviteUrl,setInviteUrl]=useState(null);
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
@@ -6905,7 +6916,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       {(comm.announcements?.length||0)===0
         ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No announcements yet.</div></Card>
         : [...comm.announcements].reverse().map(a=>
-            <Card key={a.id} style={{marginBottom:8}}>
+            <Card key={a.id} id={`ann-${a.id}`} style={{marginBottom:8,...(a.id===highlightAid?{border:"1.5px solid #6366F1"}:{})}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
@@ -6941,6 +6952,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       : a.poll.endsAt?` · closes ${new Date(a.poll.endsAt).toLocaleString([],{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}`:""}
                     {!closed&&mine.length>0?" · tap a choice again to remove it":""}
                   </div>
+                  {isAdmin&&onCreateInvite&&<div onClick={()=>{const label=`Vote: ${a.message.slice(0,40)}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,announcementId:a.id,label})}`,label});}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>🔗 Copy poll link</div>}
                 </div>;
               })()}
               {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>

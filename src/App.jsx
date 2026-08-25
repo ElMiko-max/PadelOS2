@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.20";
+const APP_VERSION = "V0.11.21";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2087,8 +2087,10 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
   const barHByRank=[190,125,85];
-  // Player names (or the person's own name for CI) are the headline — biggest font of all.
-  // Team name (CT only) is secondary/smaller. Every size steps down by rank.
+  // Player names (individual CI, or a 2-a-side CT team) are the headline — biggest font of
+  // all — with the team name (CT only) secondary/smaller. Past 2 players (e.g. football)
+  // that's flipped below: team name becomes the headline instead, roster becomes secondary.
+  // Every size steps down by rank either way.
   const medalFontByRank=[56,40,34], headlineFontByRank=[30,22,18], teamFontByRank=[17,14,12],
         usrFontByRank=[14,12,10], valueFontByRank=[22,17,14], rankNumFontByRank=[34,26,20];
   const order=[1,0,2].filter(i=>top3[i]);
@@ -2099,23 +2101,31 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
     const barH=barHByRank[rank];
     const cx = 48 + colW*pos + colW/2;
     const hasTeam = e.players && e.players.length>0;
-    const headline = hasTeam ? e.players.map(p=>p.nickname).join(" & ") : e.name;
-    // A 5-a-side football roster is much longer than the 2-a-side padel case this sizing was
-    // originally tuned for — shrink the headline font as the roster grows so the balanced
-    // 2-line wrap above has a real chance of fitting without needing to ellipsis-truncate.
-    const rosterShrink = hasTeam && e.players.length>3 ? 0.72 : hasTeam && e.players.length>2 ? 0.86 : 1;
-    const headlineFont = Math.round(headlineFontByRank[rank]*rosterShrink);
+    // A 2-a-side padel team's 2 joined names comfortably fit as the big headline this was
+    // designed around. A football roster (5+ players here) never does, at any reasonable
+    // font size — so past 2 players, swap which one gets top billing: the (short) team name
+    // becomes the headline, and the roster becomes the secondary line, wrapped across up to 2
+    // lines at a smaller font that has much better odds of fitting all of it without needing
+    // to truncate anyone away.
+    const bigRoster = hasTeam && e.players.length>2;
+    const rosterText = hasTeam ? e.players.map(p=>p.nickname).join(" & ") : null;
+    const headline = bigRoster ? e.name : (hasTeam ? rosterText : e.name);
     let ty = baseY - barH - 20;
     ctx.font = `${medalFontByRank[rank]}px Arial`; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
     ty -= medalFontByRank[rank] + 14;
-    ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFont}px Arial`;
-    const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFont*1.05);
-    ty -= headlineFont*1.45 + (headlineLines>1 ? headlineFont*1.05 : 0);
+    ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFontByRank[rank]}px Arial`;
+    const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFontByRank[rank]*1.05);
+    ty -= headlineFontByRank[rank]*1.45 + (headlineLines>1 ? headlineFontByRank[rank]*1.05 : 0);
     if(hasTeam){
       ctx.fillStyle = COLORS.dim; ctx.font=`${teamFontByRank[rank]}px Arial`;
-      fitTextCentered(ctx, e.name, cx, ty, colW-16);
-      ty -= teamFontByRank[rank]*1.55;
+      if(bigRoster){
+        const rosterLines = fitTextWrapCentered(ctx, rosterText, cx, ty, colW-16, teamFontByRank[rank]*1.2, 2);
+        ty -= teamFontByRank[rank]*1.55*Math.max(rosterLines,1);
+      } else {
+        fitTextCentered(ctx, e.name, cx, ty, colW-16);
+        ty -= teamFontByRank[rank]*1.55;
+      }
     }
     if(e.usrLine){ ctx.fillStyle = COLORS.dim; ctx.font=`${usrFontByRank[rank]}px Arial`; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); ty -= usrFontByRank[rank]*1.7; }
     ctx.fillStyle = colors[rank]; ctx.font=`800 ${valueFontByRank[rank]}px Arial`;
@@ -2630,38 +2640,37 @@ function fitTextCentered(ctx,text,cx,y,maxW){
   ctx.fillText(t,cx,y);
 }
 
-// Wraps to a 2nd line instead of truncating — used for names, since cutting someone's
-// name off with "…" reads badly. yBottom is the baseline of the LOWER line (closest to
-// whatever sits below it); returns the number of lines actually drawn (1 or 2) so the
-// caller can reserve extra vertical space when it wraps.
-function fitTextWrapCentered(ctx,text,cx,yBottom,maxW,lineH){
+// Wraps across up to `maxLines` lines instead of truncating whole chunks away — used for
+// name lists, since losing someone's name entirely (not just clipping its tail) reads far
+// worse than a slightly cramped line. A prior version only ever split into exactly 2 halves
+// (at first the first "&", then the most-balanced "&"): for a 5-a-side football roster even
+// the balanced split still left one half too long to fit, and it got ellipsis-truncated from
+// the end — silently dropping 2-3 whole names from the card. This packs "&"-joined parts (or
+// words, if there's no "&") greedily onto as many lines as it takes, up to maxLines; only
+// once that's exhausted does it fall back to truncating the tail of the LAST line — so at
+// worst one line's end gets cut, never an earlier line's names. yBottom is the baseline of
+// the LAST line; returns how many lines were actually drawn (0 if text was empty).
+function fitTextWrapCentered(ctx,text,cx,yBottom,maxW,lineH,maxLines=2){
   ctx.textAlign="center";
   const t=text||"";
+  if(!t) return 0;
   if(ctx.measureText(t).width<=maxW){ ctx.fillText(t,cx,yBottom); return 1; }
-  let top,bottom;
-  if(t.includes(" & ")){
-    // Split at whichever " & " gets the two halves closest to equal length, not just the
-    // first one — for a 5-a-side football team, splitting at the first "&" put one name on
-    // the top line and the other four crammed onto the bottom line, which the ellipsis-
-    // truncation loop below then chopped down so hard that most of those names vanished
-    // from the card entirely (a genuine "names disappearing" bug, not just a display quirk).
-    const parts=t.split(" & ");
-    let bestI=1, bestDiff=Infinity;
-    for(let i=1;i<parts.length;i++){
-      const diff=Math.abs(parts.slice(0,i).join(" & ").length - parts.slice(i).join(" & ").length);
-      if(diff<bestDiff){ bestDiff=diff; bestI=i; }
-    }
-    top=parts.slice(0,bestI).join(" & "); bottom=("& "+parts.slice(bestI).join(" & ")).trim();
-  } else {
-    const words=t.split(" "); const mid=Math.ceil(words.length/2);
-    top=words.slice(0,mid).join(" "); bottom=words.slice(mid).join(" ")||top;
-    if(!words.slice(mid).length){ top=t; bottom=""; }
+  const units = t.includes(" & ") ? t.split(" & ").map((s,i)=>i===0?s:"& "+s) : t.split(" ");
+  const lines=[]; let cur="";
+  for(const u of units){
+    const candidate = cur ? cur+" "+u : u;
+    if(cur && ctx.measureText(candidate).width>maxW){ lines.push(cur); cur=u; }
+    else cur=candidate;
   }
-  while(ctx.measureText(top).width>maxW && top.length>1) top=top.slice(0,-2)+"…";
-  while(ctx.measureText(bottom).width>maxW && bottom.length>1) bottom=bottom.slice(0,-2)+"…";
-  ctx.fillText(bottom,cx,yBottom);
-  if(top) ctx.fillText(top,cx,yBottom-lineH);
-  return top?2:1;
+  if(cur) lines.push(cur);
+  while(lines.length>maxLines){ const extra=lines.pop(); lines[lines.length-1]+=" "+extra; }
+  for(let i=0;i<lines.length;i++){
+    let line=lines[i];
+    while(ctx.measureText(line).width>maxW && line.length>1) line=line.slice(0,-2)+"…";
+    lines[i]=line;
+  }
+  for(let i=0;i<lines.length;i++) ctx.fillText(lines[lines.length-1-i], cx, yBottom-i*lineH);
+  return lines.length;
 }
 
 function buildStandingsCard(ev,venue,ciStands,tc,plan,communityName){

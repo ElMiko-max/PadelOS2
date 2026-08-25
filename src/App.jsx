@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.22";
+const APP_VERSION = "V0.11.23";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2096,12 +2096,15 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   // roster gets listed there instead of competing for space with the medal/value stack.
   if(top3.some(e=>e && e.players && e.players.length>2)){
     const order0=[1,0,2].filter(i=>top3[i]);
-    const rosterLineH=20, rosterYBottom=y+44+4*rosterLineH;
+    const rosterLineH=26, rosterTop=y+44;
     order0.forEach((rank,pos)=>{
       const e=top3[rank]; if(!e||!e.players||e.players.length<=2) return;
       const cx = 48 + colW0*pos + colW0/2;
       ctx.fillStyle = COLORS.dim; ctx.font="15px Arial";
-      fitTextWrapCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, rosterYBottom, colW0-16, rosterLineH, 5);
+      // One player per line — a joined "&" list wrapped to fit the column width packed
+      // multiple names per line unpredictably (however many happened to fit), which read
+      // worse as a roster than a plain one-name-per-line list does.
+      e.players.forEach((p,pi)=>fitTextCentered(ctx, p.nickname, cx, rosterTop+pi*rosterLineH, colW0-16));
     });
   }
   // Player names (individual CI, or a 2-a-side CT team) are the headline — biggest font of
@@ -9357,10 +9360,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       if(isCT&&plan){
         if(ctStands.length>0) cards.push(buildPodiumCard(effEv,venue,ctStands.slice(0,3).map(s=>{
           const teamPlayers=(s.team?.players||[]).map(p=>users.find(u=>u.id===(p.userId||p.id))||p);
-          const before=s.team?.avgUsr??0;
-          const after=teamPlayers.length?Math.round(teamPlayers.reduce((sum,p)=>sum+(p.usr||0),0)/teamPlayers.length):before;
-          const delta=Math.round(after-before);
-          return {name:s.team?.name,players:teamPlayers,value:plan.format==="ladder"?s.pts:s.wins,valueLabel:plan.format==="ladder"?"pts":"wins",usrLine:`Avg USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
+          // USR is a padel-only rating (football uses FSR, a letter grade with no natural
+          // "average + delta" of its own) — showing "Avg USR" on a football team's card was
+          // just wrong, not merely unnecessary, so this line is skipped entirely for football.
+          let usrLine;
+          if(!isFootballEv){
+            const before=s.team?.avgUsr??0;
+            const after=teamPlayers.length?Math.round(teamPlayers.reduce((sum,p)=>sum+(p.usr||0),0)/teamPlayers.length):before;
+            const delta=Math.round(after-before);
+            usrLine=`Avg USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`;
+          }
+          return {name:s.team?.name,players:teamPlayers,value:plan.format==="ladder"?s.pts:s.wins,valueLabel:plan.format==="ladder"?"pts":"wins",usrLine};
         }),comm.name));
         cards.push(buildCTStandingsCard(effEv,venue,ctStands,plan.format,comm.name,users));
         if(plan.format==="ladder"&&plan.rounds?.length>0)

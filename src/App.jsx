@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.08";
+const APP_VERSION = "V0.11.09";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6819,6 +6819,12 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
     <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:18}}>
       {tdefs.map(([k,l])=><div key={k} onClick={()=>setTab(k)} style={{padding:"7px 14px",borderRadius:20,fontSize:11.5,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer",background:tab===k?"var(--po-text)":"var(--po-inp)",color:tab===k?"var(--po-bg)":"var(--po-dim)",transition:"all 0.15s"}}>{l}</div>)}
     </div>
+    {/* Not tab-scoped — the invite/poll-link modal is opened both from the Members tab ("🔗
+        Invite Link") and the Announcements tab ("🔗 Copy poll link"), so this render check has
+        to live outside every {tab==="..."&&...} block or it silently no-ops on whichever tab
+        didn't trigger it (found live: clicking "Copy poll link" set inviteUrl but nothing
+        appeared, because the check used to sit inside the tab==="members" branch only). */}
+    {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
 
     {tab==="members"&&<>
       {!canViewPrivate?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see the member list.</div></Card>:<>
@@ -6828,7 +6834,6 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
           <SmBtn label={showInvite?"▲ Hide":"+ Invite Platform User"} onClick={()=>setShowInvite(o=>!o)} color="#6366F1" style={{flex:1}}/>
           {onCreateInvite&&<SmBtn label="🔗 Invite Link" onClick={()=>{const label=`Join ${comm.name}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,label})}`,label});}} color="#34D399" style={{flex:1}}/>}
         </div>
-        {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
         {showInvite&&nonMembers.length>0&&<Card style={{marginBottom:12}}>
           {nonMembers.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
             <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>{isFootballComm?`FSR ${u.footballSkill||"Not Rated"}`:`USR ${u.usr}`} · {u.area}</span></div>

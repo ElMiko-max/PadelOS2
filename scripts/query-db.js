@@ -12,6 +12,12 @@
 //   PADELOS_ADMIN_KEY="C:\path\to\key.json" node scripts/query-db.js get comms
 //   PADELOS_ADMIN_KEY="C:\path\to\key.json" node scripts/query-db.js get users --save out.json
 //   PADELOS_ADMIN_KEY="C:\path\to\key.json" node scripts/query-db.js list
+//   PADELOS_ADMIN_KEY="C:\path\to\key.json" node scripts/query-db.js audit 500 --save audit.json
+//
+// `audit` reads the padelos_audit collection (one doc per logAudit() call in src/App.jsx, each
+// with ts/actorId/actorName/action/summary/targetType/targetId/appVersion) — separate from the
+// singleton padelos/{comms,users,...} docs `get`/`list` cover. <n> is how many most-recent
+// entries to fetch (default 200, same as the in-app Audit Trail screen's page size).
 //
 // This script only ever calls .get() — never .set()/.update()/.delete() — as a code-level
 // backstop on top of the IAM role actually enforcing read-only access.
@@ -51,7 +57,16 @@ async function main() {
     else console.log(json);
     return;
   }
-  console.error("Commands: list | get <docId> [--save file.json]");
+  if (cmd === "audit") {
+    const n = parseInt(arg, 10) || 200;
+    const snap = await db.collection("padelos_audit").orderBy("ts", "desc").limit(n).get();
+    const rows = snap.docs.map(d => d.data());
+    const json = JSON.stringify(rows, null, 2);
+    if (savePath) { writeFileSync(savePath, json); console.log(`Saved ${rows.length} entries to ${savePath}`); }
+    else console.log(json);
+    return;
+  }
+  console.error("Commands: list | get <docId> [--save file.json] | audit [n] [--save file.json]");
   process.exit(1);
 }
 

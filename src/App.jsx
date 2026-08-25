@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.13";
+const APP_VERSION = "V0.11.14";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -7049,12 +7049,16 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       <div style={{position:"absolute",inset:0,width:`${pct}%`,background:picked?"#6366F133":"var(--po-bdr)",transition:"width 0.3s"}}/>
                       <div style={{position:"relative",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
                         <span style={{fontSize:12,fontWeight:picked?700:500,color:picked?"#6366F1":"var(--po-text)"}}>{picked?"✓ ":""}{o.label}</span>
-                        <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>{count} · {pct}%</span>
+                        <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>{count} vote{count!==1?"s":""}</span>
                       </div>
                     </div>;
                   })}
                   <div style={{fontSize:10,color:"var(--po-dim)"}}>
                     {totalVoters} voter{totalVoters!==1?"s":""}{a.poll.multiSelect?" · multiple choices allowed":""}
+                    {/* "Strength" = turnout relative to the community's core (regular) membership,
+                        not the raw voter count above — e.g. 10 voters out of 40 regular members
+                        is a 25% strength, regardless of how many casuals/guests also voted. */}
+                    {regularCount>0?` · 💪 ${Math.round(totalVoters/regularCount*100)}% strength (${totalVoters}/${regularCount} regulars)`:""}
                     {closed
                       ? " · 🔒 Poll closed"
                       : a.poll.endsAt?` · closes ${new Date(a.poll.endsAt).toLocaleString([],{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}`:""}

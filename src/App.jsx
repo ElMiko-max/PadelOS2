@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.12";
+const APP_VERSION = "V0.11.13";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4627,7 +4627,21 @@ export default function Matchkeeper() {
     // the actual persistence now goes through a Firestore transaction, which re-reads the true
     // latest server state at commit time and re-applies `fn` to THAT, retrying automatically if
     // another write lands first — no more lost updates under concurrency.
-    const optimistic = comms.map(c=>c.id===id?fn(c):c);
+    //
+    // Second, related incident (poll multi-select "randomly" dropping an earlier selection):
+    // this optimistic step used to read the `comms` state variable directly. Two updC calls
+    // fired back-to-back — e.g. rapidly tapping two different poll options — before React had
+    // re-rendered in between both computed their optimistic result from the SAME stale `comms`
+    // snapshot, and the second setComms(optimistic) call (a plain value, not a functional
+    // updater) fully overwrote the first call's local change rather than building on it. The
+    // eventual Firestore-synced truth was always correct (each transaction re-reads and merges
+    // against the real latest doc, same as the registration fix), so it self-corrected once the
+    // slower of the two transactions resolved — but the visible flicker in between read as data
+    // loss. commsRef.current (already kept in sync after every render, see below) is updated
+    // synchronously right here too, so a same-tick second updC call chains off the first call's
+    // change instead of a stale render.
+    const optimistic = commsRef.current.map(c=>c.id===id?fn(c):c);
+    commsRef.current = optimistic;
     syncedRef.current.comms = JSON.stringify(optimistic);
     setComms(optimistic);
     const docRef = doc(db,"padelos","comms");
@@ -4643,6 +4657,7 @@ export default function Matchkeeper() {
       tx.set(docRef, {value: JSON.stringify(updated)});
       return updated;
     }, {maxAttempts:30}).then(updated => {
+      commsRef.current = updated;
       syncedRef.current.comms = JSON.stringify(updated);
       setComms(updated); // reconcile local state with the true merged server result
     }).catch(async e => {
@@ -4659,6 +4674,7 @@ export default function Matchkeeper() {
         if (snap.exists()) {
           const raw = snap.data().value;
           const real = typeof raw==="string" ? JSON.parse(raw) : raw;
+          commsRef.current = real;
           syncedRef.current.comms = JSON.stringify(real);
           setComms(real);
         }

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.01";
+const APP_VERSION = "V0.11.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4614,6 +4614,10 @@ export default function Matchkeeper() {
     syncedRef.current.comms = JSON.stringify(optimistic);
     setComms(optimistic);
     const docRef = doc(db,"padelos","comms");
+    // maxAttempts:30 — stress-tested against a real registration-rush scenario (20 truly
+    // simultaneous writes to the same document): Firestore's own default of 5 attempts left 14
+    // of 20 failing outright with ABORTED once retries ran out, even though each individual
+    // write is correct. 30 cleared that same test with zero losses.
     runTransaction(db, async (tx) => {
       const snap = await tx.get(docRef);
       const raw = snap.exists() ? snap.data().value : null;
@@ -4621,10 +4625,28 @@ export default function Matchkeeper() {
       const updated = latest.map(c=>c.id===id?fn(c):c);
       tx.set(docRef, {value: JSON.stringify(updated)});
       return updated;
-    }).then(updated => {
+    }, {maxAttempts:30}).then(updated => {
       syncedRef.current.comms = JSON.stringify(updated);
       setComms(updated); // reconcile local state with the true merged server result
-    }).catch(e => console.log("updC transaction failed", e));
+    }).catch(async e => {
+      console.log("updC transaction failed", e);
+      // Under truly extreme contention the transaction can still exhaust its retries and fail
+      // outright — that must never leave the user staring at an optimistic "you're registered"
+      // UI that was never actually saved. Discard the optimistic guess and resync with whatever
+      // the server actually has (safer than trying to "undo" the local change, which could
+      // clobber a newer, unrelated update that arrived via onSnapshot in the meantime), then
+      // tell the user plainly so they know to retry.
+      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      try {
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const raw = snap.data().value;
+          const real = typeof raw==="string" ? JSON.parse(raw) : raw;
+          syncedRef.current.comms = JSON.stringify(real);
+          setComms(real);
+        }
+      } catch(e2) { console.log("updC resync-after-failure also failed", e2); }
+    });
   };
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
 

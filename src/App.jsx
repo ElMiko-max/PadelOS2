@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.09";
+const APP_VERSION = "V0.11.10";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6667,6 +6667,24 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [pollOptions,setPollOptions]=useState(["",""]); // announcement composer's poll-option drafts, min 2
   const [pollMulti,setPollMulti]=useState(false);
   const [pollEndsAt,setPollEndsAt]=useState(""); // datetime-local string, optional
+  const [pollShareState,setPollShareState]=useState({}); // {[announcementId]: "sharing"|"copied"|null} — per-poll "📤 Share poll link" button feedback
+  // Fires the device/browser share sheet directly (no intermediate "copy or share" modal — see
+  // sharePaymentInfo for the same shareImages([], baseName, text) zero-files pattern) with the
+  // poll question + a deep link straight to it (see the announcementId branch in App's
+  // applied-invite effect). CommDetail has no toast prop to report the rare clipboard-fallback
+  // case through, so pollShareState drives its own tiny inline label instead.
+  const sharePollLink = async (a) => {
+    if (!onCreateInvite) return;
+    setPollShareState(s=>({...s,[a.id]:"sharing"}));
+    try {
+      const code = onCreateInvite({communityId:comm.id, announcementId:a.id, label:`Vote: ${a.message.slice(0,40)}`});
+      const url = `${INVITE_BASE_URL}/?invite=${code}`;
+      const text = `🗳 ${a.message}\n${comm.name} — tap to vote:\n${url}`;
+      const result = await shareImages([], `poll_${a.id}`, text);
+      setPollShareState(s=>({...s,[a.id]:result.status==="copied"?"copied":null}));
+      if (result.status==="copied") setTimeout(()=>setPollShareState(s=>({...s,[a.id]:null})), 2000);
+    } catch(e) { console.log("Share poll link error", e); setPollShareState(s=>({...s,[a.id]:null})); }
+  };
   const [bannerUploading,setBannerUploading]=useState(false);
   // Measured client-side from the actual image (not stored anywhere) — so this works
   // retroactively for banners already uploaded before this existed, no data migration needed.
@@ -6991,7 +7009,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       : a.poll.endsAt?` · closes ${new Date(a.poll.endsAt).toLocaleString([],{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}`:""}
                     {!closed&&mine.length>0?" · tap a choice again to remove it":""}
                   </div>
-                  {isAdmin&&onCreateInvite&&<div onClick={()=>{const label=`Vote: ${a.message.slice(0,40)}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,announcementId:a.id,label})}`,label});}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>🔗 Copy poll link</div>}
+                  {isAdmin&&onCreateInvite&&<div onClick={()=>sharePollLink(a)} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>{pollShareState[a.id]==="sharing"?"⏳ Sharing…":pollShareState[a.id]==="copied"?"✓ Copied to clipboard":"📤 Share poll link"}</div>}
                 </div>;
               })()}
               {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>

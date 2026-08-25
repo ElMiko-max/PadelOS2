@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.16";
+const APP_VERSION = "V0.11.17";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8275,12 +8275,16 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
           </div>
           <div style={{fontSize:14,color:"#334155",fontWeight:700,alignSelf:"center"}}>—</div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
-            <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
+            {/* Same top-to-bottom order as team A's column above (Scorers, then the stepper) —
+                having A go Scorers-then-stepper while B went stepper-then-Scorers put each
+                side's rows at different heights, so the divider (and everything else) never
+                lined up between the two columns. */}
             {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB}
               onChangeScorers={v=>setS(ri,mi,side,"scorersB",v)}
               onClose={()=>{const sum=(sc.scorersB||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreB)setS(ri,mi,side,"scoreB",sum);}}
               teamGoals={sc.scoreB} isAdmin={isAdmin} showSummaryText
               expanded={!!expandedGoals[`${ri}_${mi}_${side}_B`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_B`)}/>}
+            <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
           </div>
         </div>
         {(()=>{

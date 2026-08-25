@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.21";
+const APP_VERSION = "V0.11.22";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2087,10 +2087,27 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
   if(!top3||top3.length===0){ drawFooter(ctx,w,h); return c; }
   const medals=["🥇","🥈","🥉"], colors=["#FBBF24","#94A3B8","#CD7C2F"];
   const barHByRank=[190,125,85];
+  const colW0=(w-96)/3;
+  // Football (few teams, many players each) doesn't get a roster line near the medal below —
+  // team name alone identifies the team everywhere else these share cards now rely on
+  // team-name-only for the same reason. This card is the one exception: it has a genuinely
+  // empty band between the event strip and the podium blocks, wide open on every rank
+  // (the podium's own height is fixed by the shortest bar, not the content), so the full
+  // roster gets listed there instead of competing for space with the medal/value stack.
+  if(top3.some(e=>e && e.players && e.players.length>2)){
+    const order0=[1,0,2].filter(i=>top3[i]);
+    const rosterLineH=20, rosterYBottom=y+44+4*rosterLineH;
+    order0.forEach((rank,pos)=>{
+      const e=top3[rank]; if(!e||!e.players||e.players.length<=2) return;
+      const cx = 48 + colW0*pos + colW0/2;
+      ctx.fillStyle = COLORS.dim; ctx.font="15px Arial";
+      fitTextWrapCentered(ctx, e.players.map(p=>p.nickname).join(" & "), cx, rosterYBottom, colW0-16, rosterLineH, 5);
+    });
+  }
   // Player names (individual CI, or a 2-a-side CT team) are the headline — biggest font of
-  // all — with the team name (CT only) secondary/smaller. Past 2 players (e.g. football)
-  // that's flipped below: team name becomes the headline instead, roster becomes secondary.
-  // Every size steps down by rank either way.
+  // all — with the team name (CT only) secondary/smaller. Past 2 players (e.g. football) the
+  // team name becomes the headline instead (the roster is listed up top — see above, not
+  // repeated here). Every size steps down by rank either way.
   const medalFontByRank=[56,40,34], headlineFontByRank=[30,22,18], teamFontByRank=[17,14,12],
         usrFontByRank=[14,12,10], valueFontByRank=[22,17,14], rankNumFontByRank=[34,26,20];
   const order=[1,0,2].filter(i=>top3[i]);
@@ -2108,8 +2125,7 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
     // lines at a smaller font that has much better odds of fitting all of it without needing
     // to truncate anyone away.
     const bigRoster = hasTeam && e.players.length>2;
-    const rosterText = hasTeam ? e.players.map(p=>p.nickname).join(" & ") : null;
-    const headline = bigRoster ? e.name : (hasTeam ? rosterText : e.name);
+    const headline = bigRoster ? e.name : (hasTeam ? e.players.map(p=>p.nickname).join(" & ") : e.name);
     let ty = baseY - barH - 20;
     ctx.font = `${medalFontByRank[rank]}px Arial`; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
@@ -2117,15 +2133,13 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
     ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFontByRank[rank]}px Arial`;
     const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFontByRank[rank]*1.05);
     ty -= headlineFontByRank[rank]*1.45 + (headlineLines>1 ? headlineFontByRank[rank]*1.05 : 0);
-    if(hasTeam){
+    // Team name secondary line only for small (<=2 player) teams — bigRoster teams already
+    // used the team name as the headline above (nothing more to add here), and their full
+    // roster is listed up in the empty band near the top of the card instead (see above).
+    if(hasTeam && !bigRoster){
       ctx.fillStyle = COLORS.dim; ctx.font=`${teamFontByRank[rank]}px Arial`;
-      if(bigRoster){
-        const rosterLines = fitTextWrapCentered(ctx, rosterText, cx, ty, colW-16, teamFontByRank[rank]*1.2, 2);
-        ty -= teamFontByRank[rank]*1.55*Math.max(rosterLines,1);
-      } else {
-        fitTextCentered(ctx, e.name, cx, ty, colW-16);
-        ty -= teamFontByRank[rank]*1.55;
-      }
+      fitTextCentered(ctx, e.name, cx, ty, colW-16);
+      ty -= teamFontByRank[rank]*1.55;
     }
     if(e.usrLine){ ctx.fillStyle = COLORS.dim; ctx.font=`${usrFontByRank[rank]}px Arial`; fitTextCentered(ctx, e.usrLine, cx, ty, colW-16); ty -= usrFontByRank[rank]*1.7; }
     ctx.fillStyle = colors[rank]; ctx.font=`800 ${valueFontByRank[rank]}px Arial`;
@@ -3085,14 +3099,17 @@ function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
       if(hasBothGroups){ ctx.font="700 7px Arial"; ctx.fillText("GRP "+m.side, 34, y+38); }
       ctx.textAlign="left";
 
-      // Team A
+      // Team A. Roster line skipped for rosters >2 (football etc.) — with few teams and many
+      // players each, the team name alone already identifies who's playing; showing 5 names
+      // squeezed into one 8px line either overflowed or added noise without adding info. Still
+      // shown for small (2-a-side padel) teams, where it's short and genuinely useful.
       const nameW = w-28-80;
       const playersA = (m.teamA?.players||[]).map(p=>p.nickname).join(" & ");
+      const bigRosterA = (m.teamA?.players?.length||0)>2;
       ctx.fillStyle = won_A ? COLORS.green : COLORS.text;
       ctx.font = won_A ? "700 11px Arial" : "600 11px Arial";
       fitText(ctx, (won_A?"✓ ":"")+m.teamA?.name, 58, y+16, nameW);
-      ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
-      fitText(ctx, playersA, 58, y+27, nameW);
+      if(!bigRosterA){ ctx.fillStyle = COLORS.dim; ctx.font="8px Arial"; fitText(ctx, playersA, 58, y+27, nameW); }
 
       // Score
       if(m.winner){
@@ -3103,11 +3120,11 @@ function buildLeagueMatchResultsCard(ev, venue, plan, communityName){
 
       // Team B
       const playersB = (m.teamB?.players||[]).map(p=>p.nickname).join(" & ");
+      const bigRosterB = (m.teamB?.players?.length||0)>2;
       ctx.fillStyle = won_B ? COLORS.green : COLORS.sub;
       ctx.font = won_B ? "700 11px Arial" : "11px Arial";
       fitText(ctx, (won_B?"✓ ":"")+m.teamB?.name, 58, y+44, nameW);
-      ctx.fillStyle = COLORS.dim; ctx.font="8px Arial";
-      fitText(ctx, playersB, 58, y+55, nameW);
+      if(!bigRosterB){ ctx.fillStyle = COLORS.dim; ctx.font="8px Arial"; fitText(ctx, playersB, 58, y+55, nameW); }
 
       if(!m.winner){
         ctx.fillStyle = COLORS.dim; ctx.font="9px Arial"; ctx.textAlign="right";
@@ -3142,8 +3159,8 @@ function buildCTStandingsCard(ev, venue, ctStands, format, communityName, users)
     ctx.fillStyle = isTop ? COLORS.amber : i===1?"#64748B":i===2?"#B45309":COLORS.text;
     ctx.font = "700 13px Arial";
     fitText(ctx, `${isTop?"🏆":i+1+"."} ${s.team.name}`, 24, y+17, w-130);
-    ctx.fillStyle = COLORS.dim; ctx.font="9px Arial";
-    fitText(ctx, teamLabel(s.team), 24, y+30, w-130);
+    // Roster line skipped for rosters >2 — see buildLeagueMatchResultsCard's Team A comment.
+    if((s.team.players?.length||0)<=2){ ctx.fillStyle = COLORS.dim; ctx.font="9px Arial"; fitText(ctx, teamLabel(s.team), 24, y+30, w-130); }
 
     if(format==="ladder"){
       ctx.fillStyle = COLORS.accent; ctx.font="700 18px Arial"; ctx.textAlign="right";

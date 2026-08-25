@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.03";
+const APP_VERSION = "V0.11.04";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3236,7 +3236,7 @@ function EventLevelBadge({avg,size="sm",sport}){
   const big=size==="lg";
   const d=big?68:44;
   const isFootball=sport==="Football";
-  const coinD=Math.round(d*0.42);
+  const coinD=Math.round(d*0.42*2);
   const sc=SPORT_COLOR[sport];
   return <div title={`Event level — avg ${isFootball?"FSR":"USR"} ${isFootball?lv.l:avg}`} style={{position:"relative",width:d,height:d,flexShrink:0}}>
     <div style={{width:d,height:d,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:`radial-gradient(circle, ${lv.c}33 0%, ${lv.c}11 70%)`,border:`${big?2.5:2}px solid ${lv.c}`,boxShadow:`0 0 ${big?18:9}px ${lv.c}66`}}>

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.11";
+const APP_VERSION = "V0.11.12";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -263,6 +263,16 @@ const sportLabel = s => `${SPORT_EMOJI[s]||"🏅"} ${s}`;
 // Same colors already used for these sports' pricing badges in Venues (padel courts / football
 // pitches) — reused here so the sport coin on EventLevelBadge stays consistent, not a new hue.
 const SPORT_COLOR = {"Padel Tennis":"#38BDF8", "Football":"#34D399"};
+// Event Settlement's single per-player status button (EvDetail) cycles through these in order
+// on every tap — one control, four mutually-exclusive values, instead of three separate toggle
+// buttons that could previously combine into ambiguous states.
+const PAYMENT_STATUS_CYCLE = ["unpaid","paid","direct","exempt"];
+const PAYMENT_STATUS_META = {
+  unpaid: {label:"Not Paid", color:"var(--po-dim)", bg:"var(--po-inp)", border:"var(--po-bdr)"},
+  paid:   {label:"✓ Paid",   color:"#34D399", bg:"#34D39922", border:"#34D39966"},
+  direct: {label:"↪ Direct", color:"#38BDF8", bg:"#38BDF822", border:"#38BDF866"},
+  exempt: {label:"Exempt",   color:"#F59E0B", bg:"#F59E0B22", border:"#F59E0B66"},
+};
 // Community screen cover-banner gradient, keyed by the community's primary sport — deliberately
 // separate from SPORT_COLOR (a single flat accent) since the banner needs two stops.
 const SPORT_GRADIENT = {"Padel Tennis":["#6366F1","#38BDF8"], "Football":["#059669","#34D399"]};
@@ -4665,7 +4675,7 @@ export default function Matchkeeper() {
     if (uniq.length===0) return;
     const now = new Date().toISOString();
     setNotifications(ns => [
-      ...uniq.map(uid => ({id:_nid++, userId:uid, type, eventId:ev?.id, communityId:ev?.communityId, eventName:ev?.name, profileUserId:ev?.profileUserId, title, body, createdAt:now, read:false})),
+      ...uniq.map(uid => ({id:_nid++, userId:uid, type, eventId:ev?.id, communityId:ev?.communityId, eventName:ev?.name, profileUserId:ev?.profileUserId, announcementId:ev?.announcementId, title, body, createdAt:now, read:false})),
       ...ns,
     ]);
   };
@@ -4681,6 +4691,7 @@ export default function Matchkeeper() {
     markNotifRead(n.id);
     if (n.profileUserId) { setNavHistory(h=>[...h,{nav,view}]); setNav("profile"); setView({screen:"profile", uid:n.profileUserId}); return; }
     if (n.communityId && n.eventId) { goEvent(n.communityId, n.eventId); return; }
+    if (n.communityId && n.announcementId) { goComm(n.communityId, {tab:"announcements", highlightAid:n.announcementId}); return; }
     if (n.communityId) { goComm(n.communityId); return; }
   };
 
@@ -4867,7 +4878,7 @@ export default function Matchkeeper() {
     updC(cid, c=>({...c, announcements:[...(c.announcements||[]), entry]}));
     toast2(poll?"Poll posted ✓":"Announcement posted ✓");
     const recipientIds = (c?.members||[]).map(m=>m.userId).filter(uid=>uid!==me.id);
-    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, poll?`🗳 ${c?.name||"Community"}`:`📢 ${c?.name||"Community"}`, poll?`New poll: ${trimmed}`:trimmed);
+    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid, announcementId:entry.id}, poll?`🗳 ${c?.name||"Community"}`:`📢 ${c?.name||"Community"}`, poll?`New poll: ${trimmed}`:trimmed);
     logAudit("community.announce", `${me.nickname} posted ${poll?"a poll":"an announcement"} in "${c?.name||cid}"${poll?` — "${trimmed.slice(0,60)}" (${poll.options.length} options${poll.multiSelect?", multi-select":""}${poll.endsAt?`, ends ${new Date(poll.endsAt).toLocaleString()}`:", no end time"})`:""}`, "community", cid);
   };
   // Vote logging happens here (the caller), never inside the updC mutator passed below — that
@@ -4895,7 +4906,15 @@ export default function Matchkeeper() {
       }
       return {...a, poll:{...a.poll, votes}};
     })}));
-    if (a?.poll) logAudit("community.pollVote", `${me.nickname} ${adding?"voted for":"removed their vote for"} "${opt?.label||key}" in the poll "${(a.message||"").slice(0,60)}" in "${c?.name||cid}"`, "community", cid);
+    if (a?.poll) {
+      logAudit("community.pollVote", `${me.nickname} ${adding?"voted for":"removed their vote for"} "${opt?.label||key}" in the poll "${(a.message||"").slice(0,60)}" in "${c?.name||cid}"`, "community", cid);
+      // Voting itself is quiet for regular members (no notification per vote — that would spam
+      // a busy poll) but community admins/owners get one, since they're the ones who'd want to
+      // track engagement on a poll they likely posted. Tapping it deep-links straight to this
+      // poll via the same announcementId route used by the poll-link/invite feature.
+      const adminIds = (c?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
+      if (adminIds.length) notify(adminIds, "pollVote", {communityId:cid, announcementId:aid}, `🗳 ${c?.name||"Community"}`, `${me.nickname} ${adding?"voted for":"removed their vote for"} "${opt?.label||key}" in "${(a.message||"").slice(0,60)}"`);
+    }
   };
   const deleteAnnouncement = (cid, aid) => {
     updC(cid, c=>({...c, announcements:(c.announcements||[]).filter(a=>a.id!==aid)}));
@@ -5523,6 +5542,13 @@ export default function Matchkeeper() {
   // collector"). Same toggle-a-Set shape as toggleExempt/togglePaid, same no-toast/no-audit
   // convention (this is a lightweight per-player financial flag, not an event-level action).
   const toggleDirect=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const d=new Set(ev.directIds||[]);d.has(uid)?d.delete(uid):d.add(uid);return{...ev,directIds:[...d]};})}));};
+  // Single mutually-exclusive status setter for the Settlement list's one-button cycle (Not Paid
+  // -> Paid -> Direct -> Exempt -> Not Paid...) — unlike toggleExempt/togglePaid/toggleDirect
+  // above (independent per-flag toggles, still used by the player's own "I Paid" self-button,
+  // where only one flag is ever relevant at a time), this always removes a player from all three
+  // sets first and adds them to at most one, so the admin list can never show an inconsistent
+  // combination like "Exempt" and "Paid" at once.
+  const setPaymentStatus=(cid,eid,uid,status)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);const p=new Set(ev.paidIds||[]);const d=new Set(ev.directIds||[]);ex.delete(uid);p.delete(uid);d.delete(uid);if(status==="exempt")ex.add(uid);else if(status==="paid")p.add(uid);else if(status==="direct")d.add(uid);return{...ev,exempted:[...ex],paidIds:[...p],directIds:[...d]};})}));};
   // Event-scoped admin — promoted/demoted per event, not community-wide (EvDetail's own
   // isAdmin check ORs this in, nowhere else in the app reads it).
   const toggleEventAdmin=(cid,eid,uid)=>{
@@ -6179,6 +6205,7 @@ export default function Matchkeeper() {
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
             onToggleDirect={uid=>toggleDirect(comm.id,event.id,uid)}
+            onSetPaymentStatus={(uid,status)=>setPaymentStatus(comm.id,event.id,uid,status)}
             onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
             onSetMatchModeStart={(startAt,delayMin,roundEndTimes)=>setMatchModeStart(comm.id,event.id,startAt,delayMin,roundEndTimes)}
             onStopMatchMode={()=>stopMatchMode(comm.id,event.id)}
@@ -6675,6 +6702,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [pollMulti,setPollMulti]=useState(false);
   const [pollEndsAt,setPollEndsAt]=useState(""); // datetime-local string, optional
   const [pollShareState,setPollShareState]=useState({}); // {[announcementId]: "sharing"|"copied"|null} — per-poll "📤 Share poll link" button feedback
+  const [revealedPolls,setRevealedPolls]=useState({}); // {[announcementId]: true} — admin-only "who voted for what" reveal, off by default (votes stay anonymous to regular members)
   // Fires the device/browser share sheet directly (no intermediate "copy or share" modal — see
   // sharePaymentInfo for the same shareImages([], baseName, text) zero-files pattern) with the
   // poll question + a deep link straight to it (see the announcementId branch in App's
@@ -7016,7 +7044,20 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       : a.poll.endsAt?` · closes ${new Date(a.poll.endsAt).toLocaleString([],{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}`:""}
                     {!closed&&mine.length>0?" · tap a choice again to remove it":""}
                   </div>
-                  {isAdmin&&onCreateInvite&&<div onClick={()=>sharePollLink(a)} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>{pollShareState[a.id]==="sharing"?"⏳ Sharing…":pollShareState[a.id]==="copied"?"✓ Copied to clipboard":"📤 Share poll link"}</div>}
+                  {/* Voting stays anonymous to regular members (only aggregate counts/percentages
+                      above) — this reveal is admin-only, and off by default even for them, so an
+                      admin has to deliberately choose to see it rather than it being visible by
+                      default. */}
+                  {isAdmin&&<div style={{display:"flex",gap:12}}>
+                    <div onClick={()=>setRevealedPolls(s=>({...s,[a.id]:!s[a.id]}))} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>{revealedPolls[a.id]?"🙈 Hide who voted":"👁 See who voted"}</div>
+                    {onCreateInvite&&<div onClick={()=>sharePollLink(a)} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>{pollShareState[a.id]==="sharing"?"⏳ Sharing…":pollShareState[a.id]==="copied"?"✓ Copied to clipboard":"📤 Share poll link"}</div>}
+                  </div>}
+                  {isAdmin&&revealedPolls[a.id]&&<div style={{padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,display:"flex",flexDirection:"column",gap:5}}>
+                    {a.poll.options.map(o=>{
+                      const voters=Object.entries(votesObj).filter(([,v])=>v.includes(o.key)).map(([uid])=>users.find(u=>u.id===Number(uid))?.nickname||`#${uid}`);
+                      return <div key={o.key} style={{fontSize:11}}><span style={{fontWeight:600,color:"var(--po-text)"}}>{o.label}:</span> <span style={{color:"var(--po-dim)"}}>{voters.length?voters.join(", "):"—"}</span></div>;
+                    })}
+                  </div>}
                 </div>;
               })()}
               {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
@@ -8501,7 +8542,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -8812,6 +8853,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     toggleDirect: (uid) => sim
       ? simMutate(e=>{const d=new Set(e.directIds||[]);d.has(uid)?d.delete(uid):d.add(uid);return{...e,directIds:[...d]};})
       : onToggleDirect&&onToggleDirect(uid),
+    setPaymentStatus: (uid,status) => sim
+      ? simMutate(e=>{const ex=new Set(e.exempted||[]);const p=new Set(e.paidIds||[]);const d=new Set(e.directIds||[]);ex.delete(uid);p.delete(uid);d.delete(uid);if(status==="exempt")ex.add(uid);else if(status==="paid")p.add(uid);else if(status==="direct")d.add(uid);return{...e,exempted:[...ex],paidIds:[...p],directIds:[...d]};})
+      : onSetPaymentStatus&&onSetPaymentStatus(uid,status),
     setMatchModeStart: (startAt,delayMin,roundEndTimes) => sim
       ? simMutate(e=>({...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}}))
       : onSetMatchModeStart&&onSetMatchModeStart(startAt,delayMin,roundEndTimes),
@@ -9865,13 +9909,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               its own button tap means its own single share(), no caption-duplication risk. */}
           <div style={{paddingTop:8}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>
         </Card>
-        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap "Exempt" for anyone who shouldn't pay. Tap "Direct" for anyone who already settled another way (cash to the venue, etc.) — no need to chase them. Everyone else gets marked "Paid" once they settle up with the collector.</div>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap a player's status to cycle it: Not Paid → Paid → Direct (settled another way, e.g. cash to the venue — no need to chase them) → Exempt → back to Not Paid.</div>
         {attendeeIds.map(uid=>{
           const u=users.find(u=>u.id===uid); if(!u) return null;
           const isPayer = uid===payerId;
-          const isEx = exemptedIds.has(uid);
-          const isDirect = !isPayer&&!isEx&&directIds.has(uid);
-          const isPaid = isPayer || (!isDirect&&paidIds.has(uid));
+          // Mutually exclusive by construction (setPaymentStatus always clears the other two
+          // sets before adding to one), so a single derived `status` is safe here.
+          const status = isPayer ? null : exemptedIds.has(uid) ? "exempt" : directIds.has(uid) ? "direct" : paidIds.has(uid) ? "paid" : "unpaid";
+          const isEx = status==="exempt";
+          const isDirect = status==="direct";
+          const isPaid = isPayer || status==="paid";
+          const meta = status && PAYMENT_STATUS_META[status];
           return <Card key={uid} style={{marginBottom:6,background:isEx?"#F59E0B0D":isDirect?"#38BDF80D":isPaid?"#34D39911":"var(--po-card)",borderColor:isEx?"#F59E0B33":isDirect?"#38BDF833":isPaid?"#34D39944":"var(--po-bdr)"}}>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
               <Av u={u} size={32}/>
@@ -9883,17 +9931,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 </div>
                 <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":isDirect?`Paid ${cpp} EGP directly — no need to chase`:`${cpp} EGP`}</div>
               </div>
-              <div style={{display:"flex",gap:6,flexShrink:0}}>
-                <div onClick={()=>act.toggleExempt(uid)} style={{padding:"6px 10px",borderRadius:8,background:isEx?"#F59E0B22":"var(--po-inp)",border:`0.5px solid ${isEx?"#F59E0B66":"var(--po-bdr)"}`,fontSize:12,fontWeight:600,color:isEx?"#F59E0B":"var(--po-dim)",cursor:"pointer"}}>
-                  {isEx?"✓ Exempt":"Exempt"}
-                </div>
-                {!isPayer&&!isEx&&<div onClick={()=>act.toggleDirect(uid)} style={{padding:"6px 10px",borderRadius:8,background:isDirect?"#38BDF822":"var(--po-inp)",border:`0.5px solid ${isDirect?"#38BDF866":"var(--po-bdr)"}`,fontSize:12,fontWeight:600,color:isDirect?"#38BDF8":"var(--po-dim)",cursor:"pointer"}}>
-                  {isDirect?"✓ Direct":"Direct"}
-                </div>}
-                {!isPayer&&!isEx&&!isDirect&&<div onClick={()=>act.togglePaid(uid)} style={{padding:"6px 10px",borderRadius:8,background:isPaid?"#34D39922":"var(--po-inp)",border:`0.5px solid ${isPaid?"#34D39966":"var(--po-bdr)"}`,fontSize:12,fontWeight:600,color:isPaid?"#34D399":"var(--po-dim)",cursor:"pointer"}}>
-                  {isPaid?"✓ Paid":"Not Paid"}
-                </div>}
-              </div>
+              {!isPayer&&<div onClick={()=>act.setPaymentStatus(uid,PAYMENT_STATUS_CYCLE[(PAYMENT_STATUS_CYCLE.indexOf(status)+1)%PAYMENT_STATUS_CYCLE.length])} style={{padding:"6px 10px",borderRadius:8,background:meta.bg,border:`0.5px solid ${meta.border}`,fontSize:12,fontWeight:600,color:meta.color,cursor:"pointer",flexShrink:0,whiteSpace:"nowrap"}}>
+                {meta.label}
+              </div>}
             </div>
           </Card>;
         })}

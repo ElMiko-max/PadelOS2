@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.05";
+const APP_VERSION = "V0.11.06";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4826,27 +4826,36 @@ export default function Matchkeeper() {
   // Community-wide broadcast (Enhancement #18, part 1) — a persistent, scrollable list per
   // community (not just a fire-and-forget push), so it can stand in for a WhatsApp group's
   // message history. Every member gets a push + inbox notification when one is posted.
-  // pollOptions (optional): array of option label strings. General-purpose "ask the community
-  // anything" poll — deliberately separate from an event's own type-decision poll (ev.poll,
-  // votePoll/resolveT), which is a structural mechanism that sets the event's format and isn't
-  // a fit for a generic question here.
-  const postAnnouncement = (cid, message, pollOptions=null) => {
+  // pollOpts (optional): {options:[label,...], multiSelect:bool, endsAt:isoString|null}.
+  // General-purpose "ask the community anything" poll — replaces the old event-type-decision
+  // poll (used to live on the event itself, resolved directly into ev.type; removed once this
+  // existed). votes is {userId:[optionKey,...]} always (single-select just keeps that array at
+  // length 1) so voting logic doesn't need two separate code paths.
+  const postAnnouncement = (cid, message, pollOpts=null) => {
     const trimmed = (message||"").trim();
     if (!trimmed) return;
     const c = comms.find(c=>c.id===cid);
-    const poll = pollOptions?.length ? {options:pollOptions.map((label,i)=>({key:`o${i}`,label})), votes:{}} : null;
+    const poll = pollOpts?.options?.length ? {options:pollOpts.options.map((label,i)=>({key:`o${i}`,label})), votes:{}, multiSelect:!!pollOpts.multiSelect, endsAt:pollOpts.endsAt||null} : null;
     const entry = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString(), poll};
     updC(cid, c=>({...c, announcements:[...(c.announcements||[]), entry]}));
     toast2(poll?"Poll posted ✓":"Announcement posted ✓");
     const recipientIds = (c?.members||[]).map(m=>m.userId).filter(uid=>uid!==me.id);
-    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, poll?`🗳 ${c?.name||"Community"}`:`📢 ${c?.name||"Community"}`, trimmed);
+    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, poll?`🗳 ${c?.name||"Community"}`:`📢 ${c?.name||"Community"}`, poll?`New poll: ${trimmed}`:trimmed);
     logAudit("community.announce", `${me.nickname} posted ${poll?"a poll":"an announcement"} in "${c?.name||cid}"`, "community", cid);
   };
   const voteAnnouncementPoll = (cid, aid, key) => {
     updC(cid, c=>({...c, announcements:(c.announcements||[]).map(a=>{
       if (a.id!==aid || !a.poll) return a;
+      if (a.poll.endsAt && new Date(a.poll.endsAt)<=new Date()) return a; // closed — no more votes
       const votes = {...a.poll.votes};
-      if (votes[me.id]===key) delete votes[me.id]; else votes[me.id]=key;
+      const mine = votes[me.id]||[];
+      if (a.poll.multiSelect) {
+        votes[me.id] = mine.includes(key) ? mine.filter(k=>k!==key) : [...mine,key];
+        if (votes[me.id].length===0) delete votes[me.id];
+      } else {
+        votes[me.id] = mine.includes(key) ? undefined : [key];
+        if (!votes[me.id]) delete votes[me.id];
+      }
       return {...a, poll:{...a.poll, votes}};
     })}));
   };
@@ -4959,13 +4968,13 @@ export default function Matchkeeper() {
     // round/team generator (its own picker, e.g. CI's "Round duration" or CT's "Match duration"
     // at generation time), not the event create/edit form. This is just the seed default those
     // pickers start from before the admin generates anything.
-    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.pollMode?null:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),poll:d.pollMode?{votes:{},resolved:false}:null,registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
+    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
     updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
     if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
     logAudit("event.create", `${me.nickname} created event "${ev.name}" in ${comm?.name||cid}`, "event", id);
-    if (!d.pollMode && ev.type && ev.visibility!=="private") {
+    if (ev.type && ev.visibility!=="private") {
       const recipients = (comm?.members||[]).filter(m=>m.userId!==me.id).map(m=>m.userId);
       notify(recipients, "reg_open", ev, `🎾 New event: ${ev.name}`, `Registration is open — ${fmtD(ev.date)}`);
     }
@@ -5025,7 +5034,6 @@ export default function Matchkeeper() {
       closedAt:null,
       regOpenAt:new Date().toISOString(),
       regularUntil:new Date(Date.now()+24*3600000).toISOString(),
-      poll:ev.poll?{votes:{},resolved:false}:null,
       registrations: keepPlayers
         ? liveRegs.map(r=>({...r, registeredAt:new Date().toISOString(), eventUsr:null}))
         : [],
@@ -5397,8 +5405,6 @@ export default function Matchkeeper() {
     else toast2("No missing guest memberships found — all clean ✓");
   };
   const checkIn=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]})}));toast2("Checked in ✓");};
-  const votePoll=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.poll)return ev;const v={...ev.poll.votes};const my=v[me.id]||[];v[me.id]=my.includes(key)?my.filter(k=>k!==key):[...my,key];return{...ev,poll:{...ev.poll,votes:v}};})}));};
-  const resolveT=(cid,eid,key)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,type:key,poll:ev.poll?{...ev.poll,resolved:true,result:key}:null})}));toast2("Type set ✓");};
   const setPlan=(cid,eid,plan)=>updC(cid,c=>({...c,events:c.events.map(ev=>ev.id===eid?{...ev,plan}:ev)}));
   const removeFromEvent=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -6049,7 +6055,12 @@ export default function Matchkeeper() {
       {/* iOS "Add to Home Screen" walkthrough — full-screen the first time (can't be missed),
           then collapses to a small floating icon on close instead of dismissing forever, same
           interaction shape as the God Mode button above. Left corner so the two never collide. */}
-      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:20,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044",color:"#6366F1"}}>📱</div>}
+      {/* Real Apple logo silhouette (inline SVG, not an emoji — glyphs render inconsistently
+          across platforms/fonts and a phone emoji doesn't read as "this is for iPhone") so it's
+          instantly recognizable regardless of the device's emoji set. */}
+      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:20,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044"}}>
+        <svg width="24" height="24" viewBox="0 0 384 512" fill="#6366F1" aria-hidden="true"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>
+      </div>}
       {isIosNonStandalone()&&showIosOverlay&&<div style={{position:"fixed",inset:0,zIndex:300,background:"linear-gradient(160deg,#1E1B4B 0%,#0E1117 60%)",overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
         <div style={{minHeight:"100%",display:"flex",flexDirection:"column",alignItems:"center",padding:"28px 20px 40px",boxSizing:"border-box"}}>
           <div onClick={collapseIosOverlay} title="Minimize" style={{position:"absolute",top:16,right:16,width:36,height:36,borderRadius:"50%",background:"#FFFFFF18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"#fff",cursor:"pointer"}}>✕</div>
@@ -6154,8 +6165,6 @@ export default function Matchkeeper() {
             onCheckIn={uid=>checkIn(comm.id,event.id,uid)}
             onAddMember={uid=>addMember(comm.id,event.id,uid)}
             onAddGuest={g=>addGuest(comm.id,event.id,g)}
-            onVote={k=>votePoll(comm.id,event.id,k)}
-            onResolveType={k=>resolveT(comm.id,event.id,k)}
             onStartCI={(n,dur)=>startCI(comm.id,event.id,n,dur)}
             onSetWinCI={(ri,mi,w,sA,sB)=>setWinCI(comm.id,event.id,ri,mi,w,sA,sB)}
             onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
@@ -6611,6 +6620,8 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [announcementText,setAnnouncementText]=useState("");
   const [pollMode,setPollMode]=useState(false);
   const [pollOptions,setPollOptions]=useState(["",""]); // announcement composer's poll-option drafts, min 2
+  const [pollMulti,setPollMulti]=useState(false);
+  const [pollEndsAt,setPollEndsAt]=useState(""); // datetime-local string, optional
   const [bannerUploading,setBannerUploading]=useState(false);
   // Measured client-side from the actual image (not stored anywhere) — so this works
   // retroactively for banners already uploaded before this existed, no data migration needed.
@@ -6867,17 +6878,28 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
             {pollOptions.length>2&&<SmBtn label="✕" onClick={()=>setPollOptions(p=>p.filter((_,ii)=>ii!==i))} color="#EF4444"/>}
           </div>)}
           {pollOptions.length<6&&<SmBtn label="+ Add option" onClick={()=>setPollOptions(p=>[...p,""])} color="#6366F1"/>}
+          <div onClick={()=>setPollMulti(m=>!m)} style={{display:"flex",alignItems:"center",gap:8,marginTop:12,cursor:"pointer"}}>
+            <div style={{width:36,height:20,borderRadius:10,background:pollMulti?"#6366F1":"var(--po-bdr)",position:"relative",transition:"background 0.15s",flexShrink:0}}>
+              <div style={{position:"absolute",top:2,left:pollMulti?18:2,width:16,height:16,borderRadius:"50%",background:"#fff",transition:"left 0.15s"}}/>
+            </div>
+            <span style={{fontSize:12,color:"var(--po-text)"}}>Allow selecting more than one option</span>
+          </div>
+          <div style={{marginTop:10}}>
+            <div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Ends at (optional)</div>
+            <input type="datetime-local" value={pollEndsAt} onChange={e=>setPollEndsAt(e.target.value)} className="po-inp" style={{width:"100%",padding:"7px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+            <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4}}>Voting closes automatically at this time — leave blank to keep it open until you remove the poll.</div>
+          </div>
         </div>}
         <Btn label={pollMode?"🗳 Post poll":"📢 Post to everyone"} primary onClick={()=>{
           if(!announcementText.trim())return;
           if(pollMode){
             const opts=pollOptions.map(o=>o.trim()).filter(Boolean);
             if(opts.length<2)return; // need at least 2 real options — silently no-ops rather than posting a broken poll
-            onPostAnnouncement&&onPostAnnouncement(announcementText,opts);
+            onPostAnnouncement&&onPostAnnouncement(announcementText,{options:opts,multiSelect:pollMulti,endsAt:pollEndsAt?new Date(pollEndsAt).toISOString():null});
           } else {
             onPostAnnouncement&&onPostAnnouncement(announcementText);
           }
-          setAnnouncementText("");setPollOptions(["",""]);setPollMode(false);
+          setAnnouncementText("");setPollOptions(["",""]);setPollMode(false);setPollMulti(false);setPollEndsAt("");
         }} style={{width:"100%"}}/>
       </Card>}
       {(comm.announcements?.length||0)===0
@@ -6891,25 +6913,34 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                 </div>
                 {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteAnnouncement&&onDeleteAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
               </div>
-              {/* General-purpose community poll — separate from an event's own type-decision
-                  poll (ev.poll). Single-choice: tapping your current choice again retracts it. */}
+              {/* General-purpose community poll — replaces the old event-type-decision poll
+                  (used to live on the event itself). votes is {userId:[optionKey,...]} — always
+                  an array, whether the poll is single- or multi-select. */}
               {a.poll&&(()=>{
-                const totalVotes=Object.keys(a.poll.votes||{}).length;
-                const myVote=a.poll.votes?.[me.id];
+                const votesObj=a.poll.votes||{};
+                const totalVoters=Object.keys(votesObj).length;
+                const mine=votesObj[me.id]||[];
+                const closed=a.poll.endsAt&&new Date(a.poll.endsAt)<=new Date();
                 return <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:6}}>
                   {a.poll.options.map(o=>{
-                    const count=Object.values(a.poll.votes||{}).filter(v=>v===o.key).length;
-                    const pct=totalVotes?Math.round(count/totalVotes*100):0;
-                    const mine=myVote===o.key;
-                    return <div key={o.key} onClick={()=>onVoteAnnouncementPoll&&onVoteAnnouncementPoll(a.id,o.key)} style={{position:"relative",borderRadius:8,border:`1.5px solid ${mine?"#6366F1":"var(--po-bdr)"}`,padding:"8px 10px",cursor:"pointer",overflow:"hidden",background:"var(--po-inp)"}}>
-                      <div style={{position:"absolute",inset:0,width:`${pct}%`,background:mine?"#6366F133":"var(--po-bdr)",transition:"width 0.3s"}}/>
+                    const count=Object.values(votesObj).filter(v=>v.includes(o.key)).length;
+                    const pct=totalVoters?Math.round(count/totalVoters*100):0;
+                    const picked=mine.includes(o.key);
+                    return <div key={o.key} onClick={()=>!closed&&onVoteAnnouncementPoll&&onVoteAnnouncementPoll(a.id,o.key)} style={{position:"relative",borderRadius:8,border:`1.5px solid ${picked?"#6366F1":"var(--po-bdr)"}`,padding:"8px 10px",cursor:closed?"default":"pointer",overflow:"hidden",background:"var(--po-inp)",opacity:closed&&!picked?0.7:1}}>
+                      <div style={{position:"absolute",inset:0,width:`${pct}%`,background:picked?"#6366F133":"var(--po-bdr)",transition:"width 0.3s"}}/>
                       <div style={{position:"relative",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
-                        <span style={{fontSize:12,fontWeight:mine?700:500,color:mine?"#6366F1":"var(--po-text)"}}>{mine?"✓ ":""}{o.label}</span>
+                        <span style={{fontSize:12,fontWeight:picked?700:500,color:picked?"#6366F1":"var(--po-text)"}}>{picked?"✓ ":""}{o.label}</span>
                         <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>{count} · {pct}%</span>
                       </div>
                     </div>;
                   })}
-                  <div style={{fontSize:10,color:"var(--po-dim)"}}>{totalVotes} vote{totalVotes!==1?"s":""} · tap to vote{myVote?" (tap again to remove your vote)":""}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)"}}>
+                    {totalVoters} voter{totalVoters!==1?"s":""}{a.poll.multiSelect?" · multiple choices allowed":""}
+                    {closed
+                      ? " · 🔒 Poll closed"
+                      : a.poll.endsAt?` · closes ${new Date(a.poll.endsAt).toLocaleString([],{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"})}`:""}
+                    {!closed&&mine.length>0?" · tap a choice again to remove it":""}
+                  </div>
                 </div>;
               })()}
               {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
@@ -7338,7 +7369,7 @@ function EvCard({ev,me,users,venues,onClick}){
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",pollMode:false,eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
+  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
   const venuePitches=v?.pitches||[];
@@ -7402,7 +7433,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     {c>0&&v&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>{(isFootball?[["Pitches",c],["Teams",f.numTeams||0],["Cost",`${tot} EGP`]]:[["Min",c*4],["Max",c*5],["Cost",`${tot} EGP`]]).map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"9px 4px",textAlign:"center"}}><div style={{fontSize:15,fontWeight:700,color:"#6366F1"}}>{val}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{l}</div></div>)}</div>}
     {!isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 5 = <b>{(parseInt(f.courts)||0)*5}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
-    <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div><div style={{display:"flex",gap:8,marginBottom:8}}>{[["Choose Now",false],["🗳 Poll (24h)",true]].map(([lbl,pm])=><button key={lbl} onClick={()=>set("pollMode",pm)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.pollMode===pm?"#6366F1":"var(--po-bdr)"}`,background:f.pollMode===pm?"#6366F133":"var(--po-bdr)",color:f.pollMode===pm?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div>{!f.pollMode&&getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}{f.pollMode&&<div style={{padding:"10px 12px",background:"var(--po-inp)",borderRadius:8,fontSize:12,color:"var(--po-sub)"}}>Regular Members vote 24h. Admin can override.</div>}</div>
+    <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div>{getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}</div>
     <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
   </Card></>;
 }
@@ -7483,18 +7514,6 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
 // ══════════════════════════════════════════════════════
 //  POLL BLOCK — outside EvDetail to prevent remount
 // ══════════════════════════════════════════════════════
-function PollBlock({ev,me,isReg,isAdmin,onVote,onResolveType}){
-  if(!ev.poll||ev.poll.resolved)return null;
-  const pt=EVENT_TYPES.reduce((acc,t)=>{acc[t.key]=Object.values(ev.poll.votes).filter(vs=>vs.includes(t.key)).length;return acc;},{});
-  const pw=Object.entries(pt).sort((a,b)=>b[1]-a[1])[0]?.[0];
-  const mv=ev.poll.votes[me.id]||[];
-  return <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:10,padding:"12px",marginBottom:12}}>
-    <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>🗳 Event Type Poll</div>
-    {EVENT_TYPES.map(t=>{const votes=pt[t.key],tot2=Math.max(Object.keys(ev.poll.votes).length,1),pct=Math.round(votes/tot2*100),voted=mv.includes(t.key);return <div key={t.key} onClick={()=>(isReg||isAdmin)&&onVote(t.key)} style={{marginBottom:6,cursor:(isReg||isAdmin)?"pointer":"default",padding:"8px 10px",borderRadius:8,border:`0.5px solid ${voted?"#6366F1":"var(--po-bdr)"}`,background:voted?"#6366F111":"transparent"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{t.label}</span><span style={{fontSize:12,color:"var(--po-dim)"}}>{votes}</span></div><div style={{height:4,background:"var(--po-bdr)",borderRadius:2}}><div style={{height:"100%",width:`${pct}%`,background:"#6366F1",borderRadius:2,transition:"width 0.3s"}}/></div></div>;})}
-    {isAdmin&&<div style={{marginTop:10}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Override:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{EVENT_TYPES.map(t=><SmBtn key={t.key} label={t.label} onClick={()=>onResolveType(t.key)} color={pw===t.key?"#34D399":"#6366F1"}/>)}</div></div>}
-  </div>;
-}
-
 // ══════════════════════════════════════════════════════
 //  BREAKS TAB
 // ══════════════════════════════════════════════════════
@@ -8406,7 +8425,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -8708,8 +8727,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     closeEvent: (scoringMethod) => sim
       ? (onToast&&onToast("Can't close an event while simulating — exit Simulation Mode first.","err"))
       : onCloseEvent(scoringMethod),
-    vote: (k) => sim ? null : onVote(k),
-    resolveType: (k) => sim ? null : onResolveType(k),
     toggleExempt: (uid) => sim
       ? simMutate(e=>{const ex=new Set(e.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...e,exempted:[...ex]};})
       : onToggleExempt&&onToggleExempt(uid),
@@ -9255,6 +9272,20 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
   return <>
     <BBtn onBack={onBack} label="Back" sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
+    {/* A real switch, not a menu item buried in "⋮" — direct, one-tap, matches how the admin
+        actually wants to use it in the moment (e.g. flip it open right at kickoff time). */}
+    {isAdmin&&!isCompleted&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+      <div>
+        <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>{regPaused?"🔒":"🔓"} Registration</div>
+        <div style={{fontSize:11,color:"var(--po-dim)"}}>{regPaused?"Paused — players can't register yet":"Open — players can register now"}</div>
+      </div>
+      <div onClick={()=>{
+        if(regPaused){ onSetRegistrationOpen(true); }
+        else if(window.confirm(`Pause registration for "${ev.name}"?\n\nPlayers won't be able to register or request to join until you open it again — anyone already registered stays registered.`)) onSetRegistrationOpen(false);
+      }} style={{width:44,height:24,borderRadius:12,background:regPaused?"var(--po-bdr)":"#34D399",position:"relative",cursor:"pointer",flexShrink:0,transition:"background 0.15s"}}>
+        <div style={{position:"absolute",top:2,left:regPaused?2:22,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+      </div>
+    </div>}
     {isAdmin&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice Session</div><div style={{fontSize:11,color:"var(--po-dim)"}}>Try out registrations, matches & scores — nothing is saved</div></div><SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/></div>}
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
@@ -9277,9 +9308,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:150,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
               <SmBtn label="✏️ Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}} color="#6366F1" style={{width:"100%"}}/>
               <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
-              {!isCompleted&&(regPaused
-                ? <SmBtn label="🔓 Open Registration" onClick={()=>{onSetRegistrationOpen(true);setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>
-                : <SmBtn label="🔒 Pause Registration" onClick={()=>{if(window.confirm(`Pause registration for "${ev.name}"?\n\nPlayers won't be able to register or request to join until you open it again — anyone already registered stays registered.`)){onSetRegistrationOpen(false);setShowHeaderMenu(false);}}} color="#94A3B8" style={{width:"100%"}}/>)}
               {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
               {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
               {canDeleteOrArchive&&!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
@@ -9336,8 +9364,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
         {shareDiag.map((d,i)=><div key={i} style={{fontSize:10,color:"var(--po-dim)",fontFamily:"monospace",marginBottom:2}}>{d}</div>)}
       </div>}
-
-      <PollBlock ev={effEv} me={me} isReg={isReg} isAdmin={isAdmin} onVote={act.vote} onResolveType={act.resolveType}/>
 
       {(()=>{
         // Graduated Min/Max capacity indicator (approved design, replaces the old plain bar +

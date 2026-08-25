@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.19";
+const APP_VERSION = "V0.11.20";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2100,13 +2100,18 @@ function buildPodiumCard(ev, venue, top3, communityName, title){
     const cx = 48 + colW*pos + colW/2;
     const hasTeam = e.players && e.players.length>0;
     const headline = hasTeam ? e.players.map(p=>p.nickname).join(" & ") : e.name;
+    // A 5-a-side football roster is much longer than the 2-a-side padel case this sizing was
+    // originally tuned for — shrink the headline font as the roster grows so the balanced
+    // 2-line wrap above has a real chance of fitting without needing to ellipsis-truncate.
+    const rosterShrink = hasTeam && e.players.length>3 ? 0.72 : hasTeam && e.players.length>2 ? 0.86 : 1;
+    const headlineFont = Math.round(headlineFontByRank[rank]*rosterShrink);
     let ty = baseY - barH - 20;
     ctx.font = `${medalFontByRank[rank]}px Arial`; ctx.textAlign="center";
     ctx.fillText(medals[rank], cx, ty);
     ty -= medalFontByRank[rank] + 14;
-    ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFontByRank[rank]}px Arial`;
-    const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFontByRank[rank]*1.05);
-    ty -= headlineFontByRank[rank]*1.45 + (headlineLines>1 ? headlineFontByRank[rank]*1.05 : 0);
+    ctx.fillStyle = COLORS.text; ctx.font=`800 ${headlineFont}px Arial`;
+    const headlineLines = fitTextWrapCentered(ctx, headline, cx, ty, colW-16, headlineFont*1.05);
+    ty -= headlineFont*1.45 + (headlineLines>1 ? headlineFont*1.05 : 0);
     if(hasTeam){
       ctx.fillStyle = COLORS.dim; ctx.font=`${teamFontByRank[rank]}px Arial`;
       fitTextCentered(ctx, e.name, cx, ty, colW-16);
@@ -2635,8 +2640,18 @@ function fitTextWrapCentered(ctx,text,cx,yBottom,maxW,lineH){
   if(ctx.measureText(t).width<=maxW){ ctx.fillText(t,cx,yBottom); return 1; }
   let top,bottom;
   if(t.includes(" & ")){
-    const i=t.indexOf(" & ");
-    top=t.slice(0,i).trim(); bottom=("& "+t.slice(i+3)).trim();
+    // Split at whichever " & " gets the two halves closest to equal length, not just the
+    // first one — for a 5-a-side football team, splitting at the first "&" put one name on
+    // the top line and the other four crammed onto the bottom line, which the ellipsis-
+    // truncation loop below then chopped down so hard that most of those names vanished
+    // from the card entirely (a genuine "names disappearing" bug, not just a display quirk).
+    const parts=t.split(" & ");
+    let bestI=1, bestDiff=Infinity;
+    for(let i=1;i<parts.length;i++){
+      const diff=Math.abs(parts.slice(0,i).join(" & ").length - parts.slice(i).join(" & ").length);
+      if(diff<bestDiff){ bestDiff=diff; bestI=i; }
+    }
+    top=parts.slice(0,bestI).join(" & "); bottom=("& "+parts.slice(bestI).join(" & ")).trim();
   } else {
     const words=t.split(" "); const mid=Math.ceil(words.length/2);
     top=words.slice(0,mid).join(" "); bottom=words.slice(mid).join(" ")||top;

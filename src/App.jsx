@@ -25,7 +25,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit, startAfter } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit, startAfter, runTransaction } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.10.59";
+const APP_VERSION = "V0.11.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4602,7 +4602,29 @@ export default function Matchkeeper() {
       const realRole = c?.members.find(m=>m.userId===1)?.role;
       if (realRole!=="owner" && realRole!=="admin" && !window.confirm(`⚡ God Mode — you're not actually a member/admin of "${c?.name||"this community"}".\n\nApply this change anyway?`)) return;
     }
-    setComms(cs=>cs.map(c=>c.id===id?fn(c):c));
+    // Real incident: during a registration rush (many people tapping "register" for the same
+    // event within seconds), the whole `comms` document was getting clobbered — every client
+    // read its own possibly-stale local copy, mutated it, and blind-overwrote the ENTIRE
+    // document, so whichever write landed last at the server silently erased every other
+    // concurrent registration. Optimistic local update below is just for instant UI feedback;
+    // the actual persistence now goes through a Firestore transaction, which re-reads the true
+    // latest server state at commit time and re-applies `fn` to THAT, retrying automatically if
+    // another write lands first — no more lost updates under concurrency.
+    const optimistic = comms.map(c=>c.id===id?fn(c):c);
+    syncedRef.current.comms = JSON.stringify(optimistic);
+    setComms(optimistic);
+    const docRef = doc(db,"padelos","comms");
+    runTransaction(db, async (tx) => {
+      const snap = await tx.get(docRef);
+      const raw = snap.exists() ? snap.data().value : null;
+      const latest = raw ? (typeof raw==="string" ? JSON.parse(raw) : raw) : optimistic;
+      const updated = latest.map(c=>c.id===id?fn(c):c);
+      tx.set(docRef, {value: JSON.stringify(updated)});
+      return updated;
+    }).then(updated => {
+      syncedRef.current.comms = JSON.stringify(updated);
+      setComms(updated); // reconcile local state with the true merged server result
+    }).catch(e => console.log("updC transaction failed", e));
   };
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
 

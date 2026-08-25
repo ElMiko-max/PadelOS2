@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.14";
+const APP_VERSION = "V0.11.15";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4803,7 +4803,21 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,bookkeeping:{...(c.bookkeeping||{enabled:false,monthlyDue:100,entries:[]}),entries:[...((c.bookkeeping||{}).entries||[]),...entriesArr.map((entry,i)=>({id:`${Date.now()}-${i}-${Math.random().toString(36).slice(2,6)}`,recordedBy:me.id,date:new Date().toISOString(),...entry}))]}}));
   };
   const deleteLedgerEntry=(cid,entryId)=>{updC(cid,c=>({...c,bookkeeping:{...c.bookkeeping,entries:(c.bookkeeping?.entries||[]).filter(e=>e.id!==entryId)}}));toast2("Removed");};
-  const approveReq=(cid,uid)=>{updC(cid,c=>({...c,joinRequests:c.joinRequests.filter(r=>r.userId!==uid),members:[...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}]}));toast2("Approved ✓");
+  // Real incident: someone who'd already picked up a lightweight "guest" membership footprint
+  // (from registering for an event via invite before joining the community itself — see
+  // registerViaInvite) separately submitted a community join request, which this function used
+  // to approve by blindly pushing a SECOND members[] entry — same userId, two rows, one stuck
+  // at "guest" forever. joinCommunityViaInvite already guards against this same case; this
+  // brings approveReq in line with it: upgrade the existing entry in place if there is one.
+  const approveReq=(cid,uid)=>{updC(cid,c=>{
+    const already = c.members.some(m=>m.userId===uid);
+    return {...c,
+      joinRequests:c.joinRequests.filter(r=>r.userId!==uid),
+      members: already
+        ? c.members.map(m=>m.userId===uid?{...m,status:initialMemberStatus(c)}:m)
+        : [...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}],
+    };
+  });toast2("Approved ✓");
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.join", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${c?.name||cid}"`, "community", cid);
   };
@@ -4848,7 +4862,7 @@ export default function Matchkeeper() {
     const c=comms.find(c=>c.id===cid),u=users.find(u=>u.id===uid);
     logAudit("member.statusChange", `${me.nickname} set ${u?.nickname||uid} to ${newStatus} in ${c?.name||cid}`, "community", cid);
   };
-  const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>({...c,members:[...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}]}));toast2(`${u?.nickname} added ✓`);
+  const inviteUser=(cid,uid)=>{const u=users.find(u=>u.id===uid);updC(cid,c=>c.members.some(m=>m.userId===uid)?c:({...c,members:[...c.members,{userId:uid,role:"member",status:initialMemberStatus(c),since:today}]}));toast2(`${u?.nickname} added ✓`);
     const c=comms.find(c=>c.id===cid);
     logAudit("member.join", `${me.nickname} added ${u?.nickname||uid} to "${c?.name||cid}"`, "community", cid);
   };

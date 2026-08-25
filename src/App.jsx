@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.07";
+const APP_VERSION = "V0.11.08";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4717,6 +4717,29 @@ export default function Matchkeeper() {
     const iv = setInterval(checkReminders, 60000);
     return () => clearInterval(iv);
   }, []);
+  // Poll voting already closes itself purely at render time (see the `closed` calc in
+  // CommDetail) — nothing here is needed for that. This just puts a matching audit-trail
+  // entry on record once a poll's end time has actually passed, same "fired flag so retries/
+  // multiple clients don't double-log" approach as checkReminders above (poll.closedLogged
+  // instead of ev.remindersFired).
+  useEffect(() => {
+    const checkPollClosures = () => {
+      const now = Date.now();
+      commsRef.current.forEach(c => {
+        (c.announcements||[]).forEach(a => {
+          if (!a.poll?.endsAt || a.poll.closedLogged) return;
+          if (new Date(a.poll.endsAt).getTime() > now) return;
+          updC(c.id, c2=>({...c2, announcements:(c2.announcements||[]).map(a2=>
+            a2.id!==a.id || !a2.poll || a2.poll.closedLogged ? a2 : {...a2, poll:{...a2.poll, closedLogged:true}}
+          )}));
+          logAudit("community.pollEnded", `Poll "${(a.message||"").slice(0,60)}" in "${c.name}" closed — voting has ended`, "community", c.id);
+        });
+      });
+    };
+    checkPollClosures();
+    const iv2 = setInterval(checkPollClosures, 60000);
+    return () => clearInterval(iv2);
+  }, []);
 
   // Community
   const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
@@ -4845,9 +4868,19 @@ export default function Matchkeeper() {
     toast2(poll?"Poll posted ✓":"Announcement posted ✓");
     const recipientIds = (c?.members||[]).map(m=>m.userId).filter(uid=>uid!==me.id);
     if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, poll?`🗳 ${c?.name||"Community"}`:`📢 ${c?.name||"Community"}`, poll?`New poll: ${trimmed}`:trimmed);
-    logAudit("community.announce", `${me.nickname} posted ${poll?"a poll":"an announcement"} in "${c?.name||cid}"`, "community", cid);
+    logAudit("community.announce", `${me.nickname} posted ${poll?"a poll":"an announcement"} in "${c?.name||cid}"${poll?` — "${trimmed.slice(0,60)}" (${poll.options.length} options${poll.multiSelect?", multi-select":""}${poll.endsAt?`, ends ${new Date(poll.endsAt).toLocaleString()}`:", no end time"})`:""}`, "community", cid);
   };
+  // Vote logging happens here (the caller), never inside the updC mutator passed below — that
+  // mutator re-runs on every Firestore transaction retry (see updC), so a logAudit call placed
+  // inside it would double- or triple-log a single vote under contention. Same pattern already
+  // used by registerEv/etc: compute the "what changed" description from local state once, log
+  // once, then let updC's transaction reconcile the actual write against the server's truth.
   const voteAnnouncementPoll = (cid, aid, key) => {
+    const c = comms.find(c=>c.id===cid);
+    const a = c?.announcements?.find(a=>a.id===aid);
+    const opt = a?.poll?.options?.find(o=>o.key===key);
+    const mine = a?.poll?.votes?.[me.id]||[];
+    const adding = !mine.includes(key);
     updC(cid, c=>({...c, announcements:(c.announcements||[]).map(a=>{
       if (a.id!==aid || !a.poll) return a;
       if (a.poll.endsAt && new Date(a.poll.endsAt)<=new Date()) return a; // closed — no more votes
@@ -4862,6 +4895,7 @@ export default function Matchkeeper() {
       }
       return {...a, poll:{...a.poll, votes}};
     })}));
+    if (a?.poll) logAudit("community.pollVote", `${me.nickname} ${adding?"voted for":"removed their vote for"} "${opt?.label||key}" in the poll "${(a.message||"").slice(0,60)}" in "${c?.name||cid}"`, "community", cid);
   };
   const deleteAnnouncement = (cid, aid) => {
     updC(cid, c=>({...c, announcements:(c.announcements||[]).filter(a=>a.id!==aid)}));

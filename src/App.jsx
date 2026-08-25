@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.15";
+const APP_VERSION = "V0.11.16";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8259,8 +8259,13 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
       })()}
       <H2HRow/>
       {isAdmin?<>
-        <div style={{display:"flex",justifyContent:"center",alignItems:"flex-start",gap:14,marginBottom:6,flexWrap:"wrap"}}>
-          <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
+        {/* Grid, not flex-wrap — matches the TeamBox row's own gridTemplateColumns above. A
+            flex row that wraps under gap+content pressure (narrow phones, 5-a-side football
+            rosters, the Scorers button appearing alongside the score stepper) reflows
+            ambiguously and could visually collide; a 1fr/auto/1fr grid gives each side a hard
+            column boundary that can never overlap the other, regardless of content width. */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"start"}}>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
             {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={sc.scorersA}
               onChangeScorers={v=>setS(ri,mi,side,"scorersA",v)}
               onClose={()=>{const sum=(sc.scorersA||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreA)setS(ri,mi,side,"scoreA",sum);}}
@@ -8268,8 +8273,8 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
               expanded={!!expandedGoals[`${ri}_${mi}_${side}_A`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_A`)}/>}
             <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
           </div>
-          <div style={{fontSize:14,color:"#334155",fontWeight:700,marginTop:14}}>—</div>
-          <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
+          <div style={{fontSize:14,color:"#334155",fontWeight:700,alignSelf:"center"}}>—</div>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
             <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
             {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB}
               onChangeScorers={v=>setS(ri,mi,side,"scorersB",v)}

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.02";
+const APP_VERSION = "V0.11.03";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -10982,10 +10982,12 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
                   const target=resolveAuditTarget(e);
                   return <tr key={e.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
                     <td style={{padding:"8px 6px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap"}} title={e.ts}>
-                      {/* Exact clock time (with seconds) is the primary line now — "9h ago" alone
-                          made it impossible to tell WHICH of several same-hour entries came
-                          first, exactly the detail needed to diagnose a registration-rush
-                          incident. Relative time stays as a secondary line for quick scanning. */}
+                      {/* Exact date + clock time (with seconds) are the primary lines now —
+                          "9h ago" alone made it impossible to tell WHICH of several same-hour
+                          entries came first (or even which calendar day, inside a bucket like
+                          "This week"), exactly the detail needed to diagnose a registration-rush
+                          incident. Relative time stays as a trailing line for quick scanning. */}
+                      <div style={{fontWeight:600,color:"var(--po-text)"}}>{new Date(e.ts).toLocaleDateString([],{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</div>
                       <div style={{fontWeight:600,color:"var(--po-text)"}}>{new Date(e.ts).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",second:"2-digit"})}</div>
                       <div>{timeAgo(e.ts)}</div>
                     </td>

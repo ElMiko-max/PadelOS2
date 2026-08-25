@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.17";
+const APP_VERSION = "V0.11.18";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8259,34 +8259,36 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
       })()}
       <H2HRow/>
       {isAdmin?<>
-        {/* Grid, not flex-wrap — matches the TeamBox row's own gridTemplateColumns above. A
-            flex row that wraps under gap+content pressure (narrow phones, 5-a-side football
-            rosters, the Scorers button appearing alongside the score stepper) reflows
-            ambiguously and could visually collide; a 1fr/auto/1fr grid gives each side a hard
-            column boundary that can never overlap the other, regardless of content width. */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:6,alignItems:"start"}}>
-          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
-            {isFootballEv&&<TeamGoalsEditor players={m.teamA?.players||[]} scorers={sc.scorersA}
+        {/* Score row (grid, matching the TeamBox row's gridTemplateColumns above) is kept
+            deliberately separate from the Scorers panels below it. Scorers is independently
+            expandable per team (a full per-player list, potentially tall) — when it was in the
+            same grid as the score+divider, expanding just ONE side made that column far taller
+            than the other, and the vertically-centered "—" divider ended up floating next to
+            whatever happened to be at the row's half-height instead of next to either score. A
+            1fr/auto/1fr grid gives each side a hard column boundary that can never overlap the
+            other regardless of content width, but only the compact score row needs that
+            symmetry — the divider now always sits next to the actual scores. */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,marginBottom:isFootballEv?0:6,alignItems:"center"}}>
+          <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
+          <div style={{fontSize:14,color:"#334155",fontWeight:700}}>—</div>
+          <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
+        </div>
+        {isFootballEv&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:6,marginBottom:6}}>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+            <TeamGoalsEditor players={m.teamA?.players||[]} scorers={sc.scorersA}
               onChangeScorers={v=>setS(ri,mi,side,"scorersA",v)}
               onClose={()=>{const sum=(sc.scorersA||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreA)setS(ri,mi,side,"scoreA",sum);}}
               teamGoals={sc.scoreA} isAdmin={isAdmin} showSummaryText
-              expanded={!!expandedGoals[`${ri}_${mi}_${side}_A`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_A`)}/>}
-            <ScoreStepper value={sc.scoreA} onChange={v=>setS(ri,mi,side,"scoreA",v)} label={m.teamA?.name||"A"}/>
+              expanded={!!expandedGoals[`${ri}_${mi}_${side}_A`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_A`)}/>
           </div>
-          <div style={{fontSize:14,color:"#334155",fontWeight:700,alignSelf:"center"}}>—</div>
-          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6}}>
-            {/* Same top-to-bottom order as team A's column above (Scorers, then the stepper) —
-                having A go Scorers-then-stepper while B went stepper-then-Scorers put each
-                side's rows at different heights, so the divider (and everything else) never
-                lined up between the two columns. */}
-            {isFootballEv&&<TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB}
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+            <TeamGoalsEditor players={m.teamB?.players||[]} scorers={sc.scorersB}
               onChangeScorers={v=>setS(ri,mi,side,"scorersB",v)}
               onClose={()=>{const sum=(sc.scorersB||[]).reduce((s,x)=>s+x.goals,0);if(sum>sc.scoreB)setS(ri,mi,side,"scoreB",sum);}}
               teamGoals={sc.scoreB} isAdmin={isAdmin} showSummaryText
-              expanded={!!expandedGoals[`${ri}_${mi}_${side}_B`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_B`)}/>}
-            <ScoreStepper value={sc.scoreB} onChange={v=>setS(ri,mi,side,"scoreB",v)} label={m.teamB?.name||"B"} flip/>
+              expanded={!!expandedGoals[`${ri}_${mi}_${side}_B`]} onToggleExpand={()=>toggleGoalsExpand(`${ri}_${mi}_${side}_B`)}/>
           </div>
-        </div>
+        </div>}
         {(()=>{
           // Floor-enforced at the actual commit point, not just when the goals panel is
           // closed — tagging goals then tapping a win/lose button directly (without closing

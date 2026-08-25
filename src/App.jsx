@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.18";
+const APP_VERSION = "V0.11.19";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3271,8 +3271,14 @@ function Podium({top3,title}){
     <div style={{display:"flex",alignItems:"flex-end",justifyContent:"center",gap:8}}>
       {order.map((rank,pos)=>{const e=top3[rank]; if(!e) return null; return <div key={rank} style={{display:"flex",flexDirection:"column",alignItems:"center",width:100}}>
         <div style={{fontSize:22,marginBottom:4}}>{medals[rank]}</div>
+        {/* gap:-6 below used to be here — invalid CSS (gap can't go negative, so it just did
+            nothing) — and the overlapping-avatar effect via marginLeft had no width limit at
+            all, so a 5-a-side football team's avatar row (much wider than this 100px-wide
+            podium column) spilled sideways into the neighboring team's column, visually piling
+            names and avatars from different teams on top of each other. flexWrap + a size that
+            shrinks past 3 players keeps every team's avatars inside its own column instead. */}
         {e.players&&e.players.length>0
-          ? <div style={{display:"flex",gap:-6}}>{e.players.map((p,pi)=><div key={p.id||pi} style={{marginLeft:pi>0?-8:0,border:"2px solid var(--po-bg)",borderRadius:"50%"}}><Av u={p} size={rank===0?38:32}/></div>)}</div>
+          ? <div style={{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:2,maxWidth:96}}>{e.players.map((p,pi)=><div key={p.id||pi} style={{border:"2px solid var(--po-bg)",borderRadius:"50%"}}><Av u={p} size={e.players.length>3?(rank===0?26:22):(rank===0?38:32)}/></div>)}</div>
           : e.avatarUser?<Av u={e.avatarUser} size={rank===0?48:38}/>:null}
         <div style={{fontSize:12,fontWeight:700,color:"var(--po-text)",marginTop:6,textAlign:"center",lineHeight:1.2}}>{e.name}</div>
         {e.players&&e.players.length>0&&<div style={{fontSize:9,color:"var(--po-dim)",textAlign:"center",lineHeight:1.2}}>{e.players.map(p=>p.nickname).join(" & ")}</div>}

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.04";
+const APP_VERSION = "V0.11.05";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3236,13 +3236,16 @@ function EventLevelBadge({avg,size="sm",sport}){
   const big=size==="lg";
   const d=big?68:44;
   const isFootball=sport==="Football";
-  const coinD=Math.round(d*0.42*2);
+  const coinD=Math.round(d*0.42*1.5);
   const sc=SPORT_COLOR[sport];
   return <div title={`Event level — avg ${isFootball?"FSR":"USR"} ${isFootball?lv.l:avg}`} style={{position:"relative",width:d,height:d,flexShrink:0}}>
     <div style={{width:d,height:d,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:`radial-gradient(circle, ${lv.c}33 0%, ${lv.c}11 70%)`,border:`${big?2.5:2}px solid ${lv.c}`,boxShadow:`0 0 ${big?18:9}px ${lv.c}66`}}>
       <div style={{fontSize:isFootball?(big?28:19):(big?24:15),fontWeight:800,color:lv.c,lineHeight:1,fontVariantNumeric:"tabular-nums"}}>{isFootball?lv.l:avg}</div>
     </div>
-    {sc&&<div style={{position:"absolute",bottom:-2,right:-2,width:coinD,height:coinD,borderRadius:"50%",background:sc,border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.round(coinD*0.55),lineHeight:1}}>{SPORT_EMOJI[sport]}</div>}
+    {/* Pushed further outward (bigger negative offset) as coinD grew, so the badge gets visibly
+        bigger without its inner edge creeping further into the center and covering the level
+        number — it grows into the surrounding space instead of over the number. */}
+    {sc&&<div style={{position:"absolute",bottom:-6,right:-6,width:coinD,height:coinD,borderRadius:"50%",background:sc,border:"2px solid var(--po-card)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.round(coinD*0.55),lineHeight:1}}>{SPORT_EMOJI[sport]}</div>}
   </div>;
 }
 
@@ -4823,16 +4826,29 @@ export default function Matchkeeper() {
   // Community-wide broadcast (Enhancement #18, part 1) — a persistent, scrollable list per
   // community (not just a fire-and-forget push), so it can stand in for a WhatsApp group's
   // message history. Every member gets a push + inbox notification when one is posted.
-  const postAnnouncement = (cid, message) => {
+  // pollOptions (optional): array of option label strings. General-purpose "ask the community
+  // anything" poll — deliberately separate from an event's own type-decision poll (ev.poll,
+  // votePoll/resolveT), which is a structural mechanism that sets the event's format and isn't
+  // a fit for a generic question here.
+  const postAnnouncement = (cid, message, pollOptions=null) => {
     const trimmed = (message||"").trim();
     if (!trimmed) return;
     const c = comms.find(c=>c.id===cid);
-    const entry = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
+    const poll = pollOptions?.length ? {options:pollOptions.map((label,i)=>({key:`o${i}`,label})), votes:{}} : null;
+    const entry = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString(), poll};
     updC(cid, c=>({...c, announcements:[...(c.announcements||[]), entry]}));
-    toast2("Announcement posted ✓");
+    toast2(poll?"Poll posted ✓":"Announcement posted ✓");
     const recipientIds = (c?.members||[]).map(m=>m.userId).filter(uid=>uid!==me.id);
-    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, `📢 ${c?.name||"Community"}`, trimmed);
-    logAudit("community.announce", `${me.nickname} posted an announcement in "${c?.name||cid}"`, "community", cid);
+    if (recipientIds.length) notify(recipientIds, "announcement", {communityId:cid}, poll?`🗳 ${c?.name||"Community"}`:`📢 ${c?.name||"Community"}`, trimmed);
+    logAudit("community.announce", `${me.nickname} posted ${poll?"a poll":"an announcement"} in "${c?.name||cid}"`, "community", cid);
+  };
+  const voteAnnouncementPoll = (cid, aid, key) => {
+    updC(cid, c=>({...c, announcements:(c.announcements||[]).map(a=>{
+      if (a.id!==aid || !a.poll) return a;
+      const votes = {...a.poll.votes};
+      if (votes[me.id]===key) delete votes[me.id]; else votes[me.id]=key;
+      return {...a, poll:{...a.poll, votes}};
+    })}));
   };
   const deleteAnnouncement = (cid, aid) => {
     updC(cid, c=>({...c, announcements:(c.announcements||[]).filter(a=>a.id!==aid)}));
@@ -5071,6 +5087,16 @@ export default function Matchkeeper() {
     toast2("Event restored");
     const ev=getEv(cid,eid);
     logAudit("event.unarchive", `${me.nickname} unarchived event "${ev?.name||eid}"`, "event", eid);
+  };
+  // Admin-controlled registration pause — independent of status/date, so an event can exist
+  // (venue, plan, everything set up) without registration actually opening until the admin
+  // flips it. registrationOpen is undefined on every event created before this existed, which
+  // reads as "open" everywhere it's checked (===false is the only paused state).
+  const setEventRegistrationOpen=(cid,eid,open)=>{
+    const ev=getEv(cid,eid);
+    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,registrationOpen:open})}));
+    toast2(open?"Registration opened ✓":"Registration paused");
+    logAudit(open?"event.regOpen":"event.regPause", `${me.nickname} ${open?"opened":"paused"} registration for "${ev?.name||eid}"`, "event", eid);
   };
   // Bulk versions for the Events list "Select" mode — unlike the single-event
   // archiveEvent/deleteEvent above, these don't navigate away (the caller stays
@@ -6023,7 +6049,7 @@ export default function Matchkeeper() {
       {/* iOS "Add to Home Screen" walkthrough — full-screen the first time (can't be missed),
           then collapses to a small floating icon on close instead of dismissing forever, same
           interaction shape as the God Mode button above. Left corner so the two never collide. */}
-      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:20,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044",color:"#6366F1"}}>🍎</div>}
+      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:20,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044",color:"#6366F1"}}>📱</div>}
       {isIosNonStandalone()&&showIosOverlay&&<div style={{position:"fixed",inset:0,zIndex:300,background:"linear-gradient(160deg,#1E1B4B 0%,#0E1117 60%)",overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
         <div style={{minHeight:"100%",display:"flex",flexDirection:"column",alignItems:"center",padding:"28px 20px 40px",boxSizing:"border-box"}}>
           <div onClick={collapseIosOverlay} title="Minimize" style={{position:"absolute",top:16,right:16,width:36,height:36,borderRadius:"50%",background:"#FFFFFF18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:"#fff",cursor:"pointer"}}>✕</div>
@@ -6084,7 +6110,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}
         {nav==="communities"&&view.screen==="createComm"&&<CommForm onBack={goBack} onSave={createComm} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
-        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={message=>postAnnouncement(comm.id,message)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} onSetBanner={url=>setCommunityBanner(comm.id,url)} onRemoveBanner={()=>removeCommunityBanner(comm.id)} godMode={godMode}/>}
+        {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={(message,pollOptions)=>postAnnouncement(comm.id,message,pollOptions)} onVoteAnnouncementPoll={(aid,key)=>voteAnnouncementPoll(comm.id,aid,key)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} onSetBanner={url=>setCommunityBanner(comm.id,url)} onRemoveBanner={()=>removeCommunityBanner(comm.id)} godMode={godMode}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
@@ -6093,6 +6119,7 @@ export default function Matchkeeper() {
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
+            onSetRegistrationOpen={open=>setEventRegistrationOpen(comm.id,event.id,open)}
             onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
@@ -6574,7 +6601,7 @@ function InviteModal({url,label,onClose}){
   </div>;
 }
 
-function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,onSetBanner,onRemoveBanner,godMode}){
+function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onReject,onRequestJoin,onPromote,onDemote,onKick,onToggleStatus,onConvertGuest,onInvite,onOpenEv,onCreateEv,onViewProfile,onCreateInvite,onTransferOwnership,initialTab,onTabChange,onSetBookkeeping,onAddLedgerEntry,onAddLedgerEntries,onDeleteLedgerEntry,onSetFootballSkill,expenseCategories,onPostAnnouncement,onVoteAnnouncementPoll,onDeleteAnnouncement,onReplyAnnouncement,onDeleteAnnouncementReply,onSetBanner,onRemoveBanner,godMode}){
   const [tab,setTab]=useState(initialTab||"members");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [showInvite,setShowInvite]=useState(false);
@@ -6582,6 +6609,8 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   const [openMemberMenu,setOpenMemberMenu]=useState(null); // userId whose kebab menu is currently open
   const [memberSearch,setMemberSearch]=useState("");
   const [announcementText,setAnnouncementText]=useState("");
+  const [pollMode,setPollMode]=useState(false);
+  const [pollOptions,setPollOptions]=useState(["",""]); // announcement composer's poll-option drafts, min 2
   const [bannerUploading,setBannerUploading]=useState(false);
   // Measured client-side from the actual image (not stored anywhere) — so this works
   // retroactively for banners already uploaded before this existed, no data migration needed.
@@ -6826,8 +6855,30 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
     </>}
     {tab==="announcements"&&<>
       {isAdmin&&<Card style={{marginBottom:12}}>
-        <Inp label="Post an announcement" value={announcementText} onChange={setAnnouncementText} placeholder="e.g. Court change this week, new pricing, event reminder..." multiline/>
-        <Btn label="📢 Post to everyone" primary onClick={()=>{if(announcementText.trim()){onPostAnnouncement&&onPostAnnouncement(announcementText);setAnnouncementText("");}}} style={{width:"100%"}}/>
+        <div style={{display:"flex",gap:6,marginBottom:12}}>
+          <div onClick={()=>setPollMode(false)} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,background:!pollMode?"#6366F1":"var(--po-inp)",color:!pollMode?"#fff":"var(--po-dim)"}}>📢 Announcement</div>
+          <div onClick={()=>setPollMode(true)} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,background:pollMode?"#6366F1":"var(--po-inp)",color:pollMode?"#fff":"var(--po-dim)"}}>🗳 Poll</div>
+        </div>
+        <Inp label={pollMode?"Poll question":"Post an announcement"} value={announcementText} onChange={setAnnouncementText} placeholder={pollMode?"e.g. Friday or Saturday for the next event?":"e.g. Court change this week, new pricing, event reminder..."} multiline/>
+        {pollMode&&<div style={{marginBottom:12}}>
+          <div className="po-dim" style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Options</div>
+          {pollOptions.map((opt,i)=><div key={i} style={{display:"flex",gap:6,marginBottom:6}}>
+            <input value={opt} onChange={e=>setPollOptions(p=>p.map((o,ii)=>ii===i?e.target.value:o))} placeholder={`Option ${i+1}`} className="po-inp" style={{flex:1,padding:"7px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+            {pollOptions.length>2&&<SmBtn label="✕" onClick={()=>setPollOptions(p=>p.filter((_,ii)=>ii!==i))} color="#EF4444"/>}
+          </div>)}
+          {pollOptions.length<6&&<SmBtn label="+ Add option" onClick={()=>setPollOptions(p=>[...p,""])} color="#6366F1"/>}
+        </div>}
+        <Btn label={pollMode?"🗳 Post poll":"📢 Post to everyone"} primary onClick={()=>{
+          if(!announcementText.trim())return;
+          if(pollMode){
+            const opts=pollOptions.map(o=>o.trim()).filter(Boolean);
+            if(opts.length<2)return; // need at least 2 real options — silently no-ops rather than posting a broken poll
+            onPostAnnouncement&&onPostAnnouncement(announcementText,opts);
+          } else {
+            onPostAnnouncement&&onPostAnnouncement(announcementText);
+          }
+          setAnnouncementText("");setPollOptions(["",""]);setPollMode(false);
+        }} style={{width:"100%"}}/>
       </Card>}
       {(comm.announcements?.length||0)===0
         ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No announcements yet.</div></Card>
@@ -6840,6 +6891,27 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                 </div>
                 {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteAnnouncement&&onDeleteAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
               </div>
+              {/* General-purpose community poll — separate from an event's own type-decision
+                  poll (ev.poll). Single-choice: tapping your current choice again retracts it. */}
+              {a.poll&&(()=>{
+                const totalVotes=Object.keys(a.poll.votes||{}).length;
+                const myVote=a.poll.votes?.[me.id];
+                return <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:6}}>
+                  {a.poll.options.map(o=>{
+                    const count=Object.values(a.poll.votes||{}).filter(v=>v===o.key).length;
+                    const pct=totalVotes?Math.round(count/totalVotes*100):0;
+                    const mine=myVote===o.key;
+                    return <div key={o.key} onClick={()=>onVoteAnnouncementPoll&&onVoteAnnouncementPoll(a.id,o.key)} style={{position:"relative",borderRadius:8,border:`1.5px solid ${mine?"#6366F1":"var(--po-bdr)"}`,padding:"8px 10px",cursor:"pointer",overflow:"hidden",background:"var(--po-inp)"}}>
+                      <div style={{position:"absolute",inset:0,width:`${pct}%`,background:mine?"#6366F133":"var(--po-bdr)",transition:"width 0.3s"}}/>
+                      <div style={{position:"relative",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:12,fontWeight:mine?700:500,color:mine?"#6366F1":"var(--po-text)"}}>{mine?"✓ ":""}{o.label}</span>
+                        <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>{count} · {pct}%</span>
+                      </div>
+                    </div>;
+                  })}
+                  <div style={{fontSize:10,color:"var(--po-dim)"}}>{totalVotes} vote{totalVotes!==1?"s":""} · tap to vote{myVote?" (tap again to remove your vote)":""}</div>
+                </div>;
+              })()}
               {(a.replies?.length||0)>0&&<div style={{marginTop:10,paddingTop:8,borderTop:"0.5px solid var(--po-bdr)",display:"flex",flexDirection:"column",gap:8}}>
                 {a.replies.map(r=>
                   <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6,paddingLeft:10}}>
@@ -8334,7 +8406,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onVote,onResolveType,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -8720,7 +8792,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // rule as a self-registering Casual (see isPriorityReg — "approved" is deliberately not
   // priority), just gated behind an admin saying yes first.
   const isGuestTier = !myMem || myMem.status==="guest";
-  const canReg = !myReg&&effEv.status==="registration_open"&&!isGuestTier;
+  // Admin-controlled pause, independent of the event's date/status — lets an admin create the
+  // event ahead of time (so it exists, has a venue/plan set up) without registration actually
+  // opening until they flip it on, instead of hacking this with the Private visibility flag
+  // (which is about who can SEE the event, not whether registering is allowed).
+  const regPaused = effEv.registrationOpen===false;
+  const canReg = !myReg&&effEv.status==="registration_open"&&!isGuestTier&&!regPaused;
   const myWouldWaitlist = !myReg && (()=>{
     const max=getMaxPlayers(effEv); if(!max) return false;
     const simEv={...effEv, registrations:[...effEv.registrations,{userId:me.id,addedBy:null}]};
@@ -9200,6 +9277,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:150,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
               <SmBtn label="✏️ Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}} color="#6366F1" style={{width:"100%"}}/>
               <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
+              {!isCompleted&&(regPaused
+                ? <SmBtn label="🔓 Open Registration" onClick={()=>{onSetRegistrationOpen(true);setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>
+                : <SmBtn label="🔒 Pause Registration" onClick={()=>{if(window.confirm(`Pause registration for "${ev.name}"?\n\nPlayers won't be able to register or request to join until you open it again — anyone already registered stays registered.`)){onSetRegistrationOpen(false);setShowHeaderMenu(false);}}} color="#94A3B8" style={{width:"100%"}}/>)}
               {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
               {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
               {canDeleteOrArchive&&!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
@@ -9211,6 +9291,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
           {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
           {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
+          {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
           {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
         </div>
       </div>
@@ -9307,7 +9388,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {!isCompleted&&effEv.status==="registration_open"&&<>
         {canReg&&<Btn label={myWouldWaitlist?"⏳ Join Waitlist":"I'm In ✓"} primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
         {canReg&&myWouldWaitlist&&inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:-3,marginBottom:6,textAlign:"center"}}>Regular Members get priority for the first 24h — you'll move up automatically after {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})} if there's room.</div>}
-        {!canReg&&!myReg&&(myEventJoinPending
+        {regPaused&&!myReg&&<div style={{padding:"9px",textAlign:"center",background:"#94A3B822",border:"0.5px solid #94A3B844",borderRadius:8,fontSize:13,fontWeight:500,color:"var(--po-dim)",marginBottom:6}}>🔒 Registration hasn't opened yet — check back soon.</div>}
+        {!canReg&&!myReg&&!regPaused&&(myEventJoinPending
           ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
           : <Btn label="🙋 Request to Join" onClick={act.requestEventJoin} style={{width:"100%",marginBottom:6}}/>)}
         {myReg&&isSubscriptionLocked(me,subscriptionSettings)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>🚫 Suspended — your subscription expired, so you've been moved to the waitlist. Renew to reclaim your spot.</div>}

@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.28";
+const APP_VERSION = "V0.11.29";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4220,6 +4220,13 @@ export default function Matchkeeper() {
   // and expected a truly fresh visit. Now both auto-create paths below stage this confirmation
   // instead of creating anything immediately, so it's always an explicit choice.
   const [pendingFreshProfileConfirm, setPendingFreshProfileConfirm] = useState(false);
+  // Opening an event/community invite link used to register/join the person immediately, no
+  // question asked — fine for someone who deliberately clicked "Register", but a plain link
+  // (shared in a WhatsApp group, forwarded around) doesn't carry that same explicit intent.
+  // Now it stages this confirmation instead: they land on the actual event/community page (so
+  // they can see what it even is) with a "register/join?" prompt over it — declining just
+  // dismisses the prompt, leaving them signed in and browsing normally but not enrolled.
+  const [pendingInviteAction, setPendingInviteAction] = useState(null); // {inv, kind:"event"|"community"} | null
   useEffect(() => {
     if (!authUser || linkedMe || !dataLoaded || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
     const code = readPendingInvite();
@@ -4274,26 +4281,23 @@ export default function Matchkeeper() {
     if (!inv) return;
     appliedInviteRef.current = code;
     if (inv.eventId && inv.communityId) {
-      // Registers immediately, bypassing the regular-member priority window entirely (see
-      // registerViaInvite) — and leaves a community guest-tier footprint too if they weren't
-      // already a member of any status.
-      registerViaInvite(inv.communityId, inv.eventId, linkedMe.id);
+      const ev = getEv(inv.communityId, inv.eventId);
+      const alreadyIn = ev?.registrations.some(r=>r.userId===linkedMe.id);
       goEvent(inv.communityId, inv.eventId);
+      // Only prompt if there's actually a decision to make — already-registered (e.g. they
+      // reopened their own link) or an event that's no longer open for it skips straight
+      // through with no dialog in the way.
+      if (!alreadyIn && ev && ev.status!=="completed" && ev.status!=="cancelled") setPendingInviteAction({inv, kind:"event"});
     } else if (inv.communityId) {
       const c = comms.find(c=>c.id===inv.communityId);
       const isMember = c?.members.some(m=>m.userId===linkedMe.id);
-      if (c && !isMember) {
-        if (inv.targetUserId!=null) joinCommunityViaInvite(inv.communityId, linkedMe.id);
-        else {
-          const hasPending = c.joinRequests.some(r=>r.userId===linkedMe.id);
-          if (!hasPending) requestJoin(inv.communityId);
-        }
-      }
+      const hasPending = c?.joinRequests.some(r=>r.userId===linkedMe.id);
       // A poll-link invite (announcementId set, no eventId) drops the opener straight into the
       // Announcements tab with that specific poll highlighted, instead of the community's
       // default landing tab — see the "🔗 Poll Link" button in CommDetail's poll block.
       if (inv.announcementId) goComm(inv.communityId, {tab:"announcements", highlightAid:inv.announcementId});
       else goComm(inv.communityId);
+      if (c && !isMember && !hasPending) setPendingInviteAction({inv, kind:"community"});
     }
     clearPendingInvite();
   }, [linkedMe, dataLoaded, invites, comms]);
@@ -6275,6 +6279,44 @@ export default function Matchkeeper() {
         else if(window.confirm("⚡ Enable God Mode?\n\nYou'll get full admin authority on any community or event screen, regardless of your real membership there. Any actual change you make while flagged will ask for confirmation again first — use carefully."))
           {setGodMode(true);toast2("⚡ God Mode ON — full authority everywhere until you turn it off");}
       }} title={godMode?"God Mode ON — tap to turn off":"Tap to enable God Mode"} style={{position:"fixed",bottom:20,right:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:godMode?"#EF4444":"var(--po-card)",border:`2px solid ${godMode?"#EF4444":"var(--po-bdr)"}`,boxShadow:godMode?"0 0 16px #EF444488":"0 2px 8px #00000044",color:godMode?"#fff":"var(--po-dim)",transition:"all 0.2s"}}>⚡</div>}
+      {/* Register/join confirmation for an invite link — staged by the applied-invite effect
+          instead of acting immediately. They've already been navigated to the actual event/
+          community page underneath this (so they can see what it is either way); declining
+          just dismisses the prompt, leaving them signed in and able to browse normally without
+          being enrolled. */}
+      {pendingInviteAction&&(()=>{
+        const {inv, kind} = pendingInviteAction;
+        const ic = comms.find(cc=>cc.id===inv.communityId);
+        const iev = kind==="event" ? ic?.events.find(e=>e.id===inv.eventId) : null;
+        const decline = () => setPendingInviteAction(null);
+        const confirmInvite = () => {
+          if (kind==="event") {
+            registerViaInvite(inv.communityId, inv.eventId, me.id);
+          } else if (inv.targetUserId!=null) {
+            joinCommunityViaInvite(inv.communityId, me.id);
+          } else {
+            const hasPending = ic?.joinRequests.some(r=>r.userId===me.id);
+            if (!hasPending) requestJoin(inv.communityId);
+          }
+          setPendingInviteAction(null);
+        };
+        const title = kind==="event" ? `Register for "${iev?.name||"this event"}"?` : `Join "${ic?.name||"this community"}"?`;
+        const body = kind==="event"
+          ? "You opened a link to this event. Register now, or just look around first — you can always register later from the event page."
+          : inv.targetUserId!=null
+            ? "You opened a link to this community. Join now, or just look around first — you can always join later from the community page."
+            : "You opened a link to this community. Send a request to join now, or just look around first — you can always request later from the community page.";
+        return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:250,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={decline}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:360,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+            <div style={{fontSize:16,fontWeight:700,color:"var(--po-text)",marginBottom:8}}>🔗 {title}</div>
+            <div style={{fontSize:13,color:"var(--po-dim)",marginBottom:16}}>{body}</div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn label="Not now" onClick={decline} style={{flex:1}}/>
+              <Btn label={kind==="event"?"Yes, register":inv.targetUserId!=null?"Yes, join":"Send request"} primary onClick={confirmInvite} style={{flex:1}}/>
+            </div>
+          </div>
+        </div>;
+      })()}
       {/* iOS "Add to Home Screen" walkthrough — full-screen the first time (can't be missed),
           then collapses to a small floating icon on close instead of dismissing forever, same
           interaction shape as the God Mode button above. Left corner so the two never collide. */}

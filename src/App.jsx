@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.27";
+const APP_VERSION = "V0.11.28";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -10840,7 +10840,20 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     )}
   </div>
 
-  {tab==="usr"&&effSportView==="Padel Tennis"&&<>
+  {tab==="usr"&&effSportView==="Padel Tennis"&&(()=>{
+    // Which events are actually inside the current rolling window (i.e. still moving today's
+    // USR number) vs already aged out of it — same accumulation calcWeightedUSR itself does
+    // (newest-first, skip retired/excludedFromWindow, stop once the window's weight budget is
+    // spent), computed once here so every row below can just look up its own eventId.
+    const inWindowIds = new Set();
+    let windowWeight = 0;
+    for (const h of usrHist) {
+      if (h.retired || h.excludedFromWindow) continue;
+      if (windowWeight >= usrWindowSize) break;
+      windowWeight += Math.min(h.type==="ct"?0.5:1.0, usrWindowSize-windowWeight);
+      inWindowIds.add(h.eventId);
+    }
+    return <>
     {usrHist.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No CI event history yet.</div></Card>
     :<Card style={{padding:0,overflow:"hidden"}}>
       {/* Column headers */}
@@ -10884,8 +10897,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
             if (s) extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt:null, isTeam:true};
           }
         }
-        return <div key={i} style={{borderBottom:i<usrHist.length-1?"0.5px solid var(--po-bdr)":"none"}}>
-        <div onClick={()=>hostComm&&setExpandedHist(o=>o===h.eventId?null:h.eventId)} style={{display:"grid",gridTemplateColumns:"68px 1fr 44px 64px",gap:2,padding:"10px 12px",alignItems:"center",cursor:hostComm?"pointer":"default"}}>
+        const inWindow = inWindowIds.has(h.eventId);
+        return <div key={i} style={{borderBottom:i<usrHist.length-1?"0.5px solid var(--po-bdr)":"none",background:inWindow?"#6366F111":"transparent"}}>
+        <div onClick={()=>hostComm&&setExpandedHist(o=>o===h.eventId?null:h.eventId)} style={{display:"grid",gridTemplateColumns:"68px 1fr 44px 64px",gap:2,padding:"10px 12px",alignItems:"center",cursor:hostComm?"pointer":"default",opacity:inWindow?1:0.55}}>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(h.date)}</div>
           <div>
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4}}>
@@ -10916,8 +10930,13 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     </Card>}
     <div style={{marginTop:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>
       Seed USR: <b style={{color:"var(--po-text)"}}>{user.seedUsr??user.usr}</b> · Rolling avg of last 5 events · BEF = USR before each event
+      <div style={{marginTop:4,display:"flex",alignItems:"center",gap:6}}>
+        <span style={{width:10,height:10,borderRadius:3,background:"#6366F111",border:"0.5px solid #6366F144",flexShrink:0}}/>
+        highlighted rows are currently counted in your USR · faded rows have aged out of the window
+      </div>
     </div>
-  </>}
+    </>;
+  })()}
 
   {tab==="teams"&&effSportView==="Padel Tennis"&&<>
     {(()=>{

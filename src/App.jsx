@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.24";
+const APP_VERSION = "V0.11.25";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -879,6 +879,8 @@ const REPORT_MIN_MATCHES = 3;
 const REPORT_RECENT_DAYS = 183; // ~6 months
 function calcPartnerOpponentStats(comms, userId, opts){
   const recentOnly = opts && opts.recentOnly;
+  const sportFilter = opts && opts.sport; // profile screen passes this so a football partner
+  // never shows up mislabeled under a padel "Reports" view, or vice versa
   const cutoffTime = recentOnly ? Date.now()-REPORT_RECENT_DAYS*24*60*60*1000 : null;
   const partners = {}, opponents = {};
   const recordPartner=(partner,ev,won,oppPlayers,score,type)=>{
@@ -899,6 +901,7 @@ function calcPartnerOpponentStats(comms, userId, opts){
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
     if(ev.status!=="completed"||!ev.plan) return;
     if(cutoffTime && new Date(ev.date).getTime()<cutoffTime) return;
+    if(sportFilter && (ev.sport||DEFAULT_SPORT)!==sportFilter) return;
     if(ev.type==="closed_ind"){
       ev.plan.rounds.forEach(r=>r.matches.forEach(m=>{
         if(!m.winner) return;
@@ -10627,6 +10630,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     return <span onClick={e=>{if(onViewProfile){e.stopPropagation();onViewProfile(uid);}}} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{nickname}</span>;
   };
   const [tab,setTab]=useState("usr");
+  const [sportView,setSportView]=useState(null); // null = not chosen yet, defaults to whichever sport the player actually has
   const [expandedHist,setExpandedHist]=useState(null); // eventId currently expanded, or null
   const [recentOnly,setRecentOnly]=useState(false);
   const [expandedRow,setExpandedRow]=useState(null); // `${kind}-${userId}` for the open Partners/Opponents row, or null
@@ -10646,6 +10650,25 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   const lv=usrLv(user.usr),mine=comms.filter(c=>c.members.some(m=>m.userId===user.id));
   const ec=mine.reduce((s,c)=>s+c.events.filter(e=>!e.deleted&&e.registrations.some(r=>r.userId===user.id)).length,0);
   const usrHist=[...(user.usrHistory||[])].reverse();
+
+  // Which sport(s) this player actually participates in — a member of a sport-tagged
+  // community, or having played at least one event of that sport, either counts. A player
+  // who's never touched football shouldn't see an empty "⚽ Football — Not Rated" section on
+  // their profile (and vice versa for padel).
+  const activeSports = new Set();
+  mine.forEach(c => (c.sports?.length ? c.sports : [DEFAULT_SPORT]).forEach(sp => activeSports.add(sp)));
+  mine.forEach(c => c.events.forEach(ev => {
+    if (!ev.deleted && ev.registrations.some(r=>r.userId===user.id)) activeSports.add(ev.sport||DEFAULT_SPORT);
+  }));
+  const hasPadel = activeSports.has("Padel Tennis"), hasFootball = activeSports.has("Football");
+  const showSportSwitcher = hasPadel && hasFootball;
+  const effSportView = sportView || (hasPadel ? "Padel Tennis" : "Football");
+  // Football has no USR History/Teams tabs (no computed rating to show — see the closeEvent
+  // fix above), so switching into Football while on one of those isn't a valid tab anymore.
+  useEffect(()=>{
+    if(effSportView==="Football" && (tab==="usr"||tab==="teams")) setTab("matches");
+    if(effSportView==="Padel Tennis" && tab==="matches") setTab("usr");
+  }, [effSportView]);
 
   // Build team history from all CT completed events the user participated in
 
@@ -10695,28 +10718,36 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       </div>
     )}
   </div>
-  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}}>
-    <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 10px"}}>
-      <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:4}}>🎾 Padel</div>
-      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between"}}>
-        <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
-        <span style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{user.usr}</span>
-      </div>
-      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginTop:2}}>
-        <span style={{fontSize:11,color:"var(--po-dim)"}}>Level</span>
-        <span style={{fontSize:14,fontWeight:700,color:lv.c}}>{lv.l}</span>
-      </div>
-    </div>
-    {/* Football has no computed rating (no match-result history to derive one from yet) — just
-        the admin's manually-set A-E tier. Always shown (with a "Not Rated" fallback) so the
-        profile visibly reflects football data even before an admin has set anything. */}
-    <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 10px"}}>
-      <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:4}}>⚽ Football</div>
-      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between"}}>
-        <span style={{fontSize:11,color:"var(--po-dim)"}}>Skill Level</span>
-        <span style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{user.footballSkill||"Not Rated"}</span>
-      </div>
-    </div>
+  {/* Sport-filtered, not both-always-shown — a player who's never touched football (or padel)
+      shouldn't see an empty/irrelevant stat block for a sport they don't play. The switcher
+      itself only appears when the player actually has both. */}
+  {showSportSwitcher&&<div style={{display:"flex",gap:6,marginTop:8}}>
+    <div onClick={()=>setSportView("Padel Tennis")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Padel Tennis"?"#6366F1":"var(--po-inp)",color:effSportView==="Padel Tennis"?"#fff":"var(--po-sub)"}}>🎾 Padel</div>
+    <div onClick={()=>setSportView("Football")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Football"?"#34D399":"var(--po-inp)",color:effSportView==="Football"?"#fff":"var(--po-sub)"}}>⚽ Football</div>
+  </div>}
+  <div style={{marginTop:8}}>
+    {effSportView==="Padel Tennis"
+      ? <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 10px"}}>
+          <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:4}}>🎾 Padel</div>
+          <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between"}}>
+            <span style={{fontSize:11,color:"var(--po-dim)"}}>USR</span>
+            <span style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{user.usr}</span>
+          </div>
+          <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginTop:2}}>
+            <span style={{fontSize:11,color:"var(--po-dim)"}}>Level</span>
+            <span style={{fontSize:14,fontWeight:700,color:lv.c}}>{lv.l}</span>
+          </div>
+        </div>
+      : /* Football has no computed rating (no match-result history to derive one from —
+           see the closeEvent fix keeping football events out of usrHistory) — just the
+           admin's manually-set A-E tier, "Not Rated" until one's set. */
+        <div className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 10px"}}>
+          <div style={{fontSize:11,fontWeight:600,color:"var(--po-dim)",marginBottom:4}}>⚽ Football</div>
+          <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between"}}>
+            <span style={{fontSize:11,color:"var(--po-dim)"}}>Skill Level</span>
+            <span style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{user.footballSkill||"Not Rated"}</span>
+          </div>
+        </div>}
   </div>
   </Card>
 
@@ -10735,12 +10766,17 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
 
   {canSeeActivity ? <>
   <div style={{display:"flex",gap:6,margin:"16px 0 8px"}}>
-    {[["usr","📈 USR History"],["teams","👥 Teams"],["reports","🤝 Reports"]].map(([k,l])=>
+    {/* Football has no USR History/Teams (TR is seeded from USR, a padel concept) — a plain
+        Match History replaces both when viewing the Football side of the profile. */}
+    {(effSportView==="Padel Tennis"
+      ? [["usr","📈 USR History"],["teams","👥 Teams"],["reports","🤝 Reports"]]
+      : [["matches","📋 Match History"],["reports","🤝 Reports"]]
+    ).map(([k,l])=>
       <button key={k} onClick={()=>setTab(k)} style={{flex:1,padding:"9px",borderRadius:8,border:`0.5px solid ${tab===k?"#6366F1":"var(--po-bdr)"}`,background:tab===k?"#6366F122":"var(--po-inp)",color:tab===k?"#A5B4FC":"var(--po-sub)",fontSize:13,fontWeight:600,cursor:"pointer"}}>{l}</button>
     )}
   </div>
 
-  {tab==="usr"&&<>
+  {tab==="usr"&&effSportView==="Padel Tennis"&&<>
     {usrHist.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No CI event history yet.</div></Card>
     :<Card style={{padding:0,overflow:"hidden"}}>
       {/* Column headers */}
@@ -10819,7 +10855,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     </div>
   </>}
 
-  {tab==="teams"&&<>
+  {tab==="teams"&&effSportView==="Padel Tennis"&&<>
     {(()=>{
       // Group teamsHistory by combination (comboKey)
       const rawHist = user.teamsHistory||[];
@@ -10851,8 +10887,39 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     </div>
   </>}
 
+  {/* Football's activity tab — plain match list, no PES/TR/USR concepts (those are padel-only;
+      football has no computed rating, see the closeEvent fix keeping it out of usrHistory). */}
+  {tab==="matches"&&effSportView==="Football"&&(()=>{
+    const footballEvents = [];
+    mine.forEach(c => c.events.forEach(ev => {
+      if (ev.sport!=="Football" || ev.status!=="completed" || ev.deleted) return;
+      if (!ev.registrations.some(r=>r.userId===user.id)) return;
+      footballEvents.push({ev, comm:c});
+    }));
+    footballEvents.sort((a,b)=>b.ev.date.localeCompare(a.ev.date));
+    if (footballEvents.length===0) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No football match history yet.</div></Card>;
+    return <Card style={{padding:0,overflow:"hidden"}}>
+      {footballEvents.map(({ev,comm},i)=>{
+        let resultLabel=null, resultColor="var(--po-dim)";
+        if (ev.type==="closed_teams" && ev.plan) {
+          const stands = calcCTStandings(ev.plan);
+          const team = ev.plan.teams?.find(t=>t.players?.some(p=>p.userId===user.id));
+          const s = team && stands.find(s=>s.team?.id===team.id);
+          if (s) { resultLabel=`${s.wins}W-${s.losses}L`; resultColor = s.wins>s.losses?"#34D399":s.wins<s.losses?"#EF4444":"var(--po-dim)"; }
+        }
+        return <div key={ev.id} onClick={()=>onOpenEvent&&onOpenEvent(comm.id,ev.id)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",borderBottom:i<footballEvents.length-1?"0.5px solid var(--po-bdr)":"none",cursor:onOpenEvent?"pointer":"default"}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>{ev.name}</div>
+            <div style={{fontSize:10,color:"var(--po-dim)"}}>{fmtD(ev.date)} · {comm.name}</div>
+          </div>
+          <div style={{fontSize:12,fontWeight:700,color:resultColor}}>{resultLabel||"played"}</div>
+        </div>;
+      })}
+    </Card>;
+  })()}
+
   {tab==="reports"&&(()=>{
-    const stats = calcPartnerOpponentStats(comms, user.id, {recentOnly});
+    const stats = calcPartnerOpponentStats(comms, user.id, {recentOnly, sport:effSportView});
     const totalPairs = stats.partnersRanked.length+stats.partnersInsufficient.length+stats.opponentsRanked.length+stats.opponentsInsufficient.length;
     const dream = calcDreamOrFunnyMatch(stats,"dream");
     const funny = calcDreamOrFunnyMatch(stats,"funny");

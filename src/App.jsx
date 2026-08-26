@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.25";
+const APP_VERSION = "V0.11.26";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -961,6 +961,47 @@ function calcDreamOrFunnyMatch(stats, kind){
   if(eligibleOpponents.length<2) return null;
   const opps = kind==="dream" ? [eligibleOpponents[0],eligibleOpponents[1]] : [eligibleOpponents[eligibleOpponents.length-1],eligibleOpponents[eligibleOpponents.length-2]];
   return {partner, opponents:opps};
+}
+// Football's own, much simpler "Reports" — team success rate (win/loss across every completed
+// football match this player was part of) and goals (total + per-event average). Football has
+// no per-partner rating concept the way padel's Partners/Opponents win-rate does (see the
+// closeEvent fix keeping football out of USR/TR entirely), so this just answers the two things
+// that actually matter for football: how often do I win, and how many goals do I score.
+function calcFootballPlayerStats(comms, userId){
+  let matches=0, wins=0, losses=0, goals=0;
+  const eventIds = new Set();
+  comms.forEach(c=>(c.events||[]).forEach(ev=>{
+    if(ev.sport!=="Football"||ev.status!=="completed"||!ev.plan) return;
+    if(!ev.registrations.some(r=>r.userId===userId)) return;
+    let playedThisEvent=false;
+    if(ev.type==="closed_ind"){
+      (ev.plan.rounds||[]).forEach(r=>(r.matches||[]).forEach(m=>{
+        if(!m.winner) return;
+        const inA=m.teamA.some(p=>p.userId===userId), inB=m.teamB.some(p=>p.userId===userId);
+        if(!inA&&!inB) return;
+        playedThisEvent=true; matches++;
+        if((inA&&m.winner==="A")||(inB&&m.winner==="B")) wins++; else losses++;
+      }));
+    } else if(ev.type==="closed_teams"){
+      (ev.plan.rounds||[]).forEach(r=>{
+        [...(r.matchesA||[]),...(r.matchesB||[])].forEach(m=>{
+          if(!m.winner||!m.teamA?.players||!m.teamB?.players) return;
+          const inA=m.teamA.players.some(p=>p.userId===userId), inB=m.teamB.players.some(p=>p.userId===userId);
+          if(!inA&&!inB) return;
+          playedThisEvent=true; matches++;
+          const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+          if(won) wins++; else losses++;
+          const myScorers = inA ? m.scorersA : m.scorersB;
+          goals += (myScorers||[]).find(s=>s.userId===userId)?.goals || 0;
+        });
+      });
+    }
+    if(playedThisEvent) eventIds.add(ev.id);
+  }));
+  return {
+    matches, wins, losses, winRate: matches?wins/matches:0,
+    goals, events: eventIds.size, goalsPerEvent: eventIds.size?goals/eventIds.size:0,
+  };
 }
 // Dream/Funny Match is one player's personal view of a matchup, not a court-wide fact — two
 // different players on the very same court can each have their own (or no) reason this
@@ -10918,7 +10959,34 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     </Card>;
   })()}
 
-  {tab==="reports"&&(()=>{
+  {/* Football's Reports is its own, simpler thing — team success rate + goals — not padel's
+      partner/opponent chemistry breakdown (see calcFootballPlayerStats above for why). */}
+  {tab==="reports"&&effSportView==="Football"&&(()=>{
+    const fs = calcFootballPlayerStats(comms, user.id);
+    if(fs.matches===0) return <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No football match history yet.</div></Card>;
+    return <>
+      <ST>🏆 Team Success Rate</ST>
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+          <span style={{fontSize:28,fontWeight:800,color:fs.winRate>=0.5?"#34D399":"#EF4444"}}>{Math.round(fs.winRate*100)}%</span>
+          <span style={{fontSize:12,color:"var(--po-dim)"}}>{fs.wins}W – {fs.losses}L · {fs.matches} match{fs.matches!==1?"es":""}</span>
+        </div>
+      </Card>
+      <ST>⚽ Goals</ST>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        <Card style={{textAlign:"center"}}>
+          <div style={{fontSize:22,fontWeight:800,color:"var(--po-text)"}}>{fs.goals}</div>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Total goals</div>
+        </Card>
+        <Card style={{textAlign:"center"}}>
+          <div style={{fontSize:22,fontWeight:800,color:"var(--po-text)"}}>{fs.goalsPerEvent.toFixed(1)}</div>
+          <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Goals / event ({fs.events} played)</div>
+        </Card>
+      </div>
+    </>;
+  })()}
+
+  {tab==="reports"&&effSportView==="Padel Tennis"&&(()=>{
     const stats = calcPartnerOpponentStats(comms, user.id, {recentOnly, sport:effSportView});
     const totalPairs = stats.partnersRanked.length+stats.partnersInsufficient.length+stats.opponentsRanked.length+stats.opponentsInsufficient.length;
     const dream = calcDreamOrFunnyMatch(stats,"dream");

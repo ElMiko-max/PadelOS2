@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.26";
+const APP_VERSION = "V0.11.27";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4344,6 +4344,29 @@ export default function Matchkeeper() {
 
     if (anyUpdate) setUsers(updatedUsers);
   }, [dataLoaded]); // re-runs once the restore completes; only meaningful after that
+
+  useEffect(() => {
+    if (!dataLoaded) return;
+    // One-time cleanup for the football-into-USR contamination bug (V0.11.24 fixed closeEvent
+    // going forward, but couldn't retroactively fix usrHistory entries already written before
+    // that fix shipped — confirmed still showing up on a real profile after the fix was live).
+    // Strips any usrHistory entry tied to a football event and recomputes usr from what's left.
+    // No-ops for anyone who was never actually contaminated.
+    const footballEventIds = new Set(
+      comms.flatMap(c => c.events.filter(ev => ev.sport==="Football").map(ev => ev.id))
+    );
+    if (footballEventIds.size === 0) return;
+    let anyFootballCleanup = false;
+    const cleanedUsers = users.map(u => {
+      const hist = u.usrHistory || [];
+      if (!hist.some(h => footballEventIds.has(h.eventId))) return u;
+      anyFootballCleanup = true;
+      const cleaned = hist.filter(h => !footballEventIds.has(h.eventId));
+      const seedUsr = u.seedUsr ?? u.usr;
+      return {...u, usr: calcWeightedUSR(cleaned, seedUsr, usrWindowSize), usrHistory: cleaned};
+    });
+    if (anyFootballCleanup) setUsers(cleanedUsers);
+  }, [dataLoaded]);
 
 
   // Nickname (the name everyone sees) and phone must be unique across every local profile —

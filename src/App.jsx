@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.23";
+const APP_VERSION = "V0.11.24";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5359,12 +5359,18 @@ export default function Matchkeeper() {
         const newTr=Math.round(padded.reduce((sum,h)=>sum+h.tes,0)/padded.length);
         newEntry.tr=newTr;
 
-        // Also add TES to usrHistory with weight 0.5 → affects USR
+        const otherHistory=prevHistory.filter(h=>h.comboKey!==comboKey);
+        // USR is a padel-only rating — TR above is already sport-agnostic (its own seed/rolling
+        // average), but this "also feed TES into usrHistory at 0.5 weight" step was unconditional,
+        // so closing a FOOTBALL closed-teams event was silently corrupting players' padel USR
+        // with football results (real incident: event #53 pushed a usrHistory entry and bumped
+        // USR 50->51 for a football-only match). Football has no computed rating by design — see
+        // the "Not Rated" fallback on the profile screen — just the admin's manual A-E tier, so
+        // it should never touch usr/usrHistory at all.
+        if(ev.sport==="Football") return {...u, teamsHistory:[...otherHistory,...comboHist]};
         const seedUsr = u.seedUsr ?? u.usr;
         const usrHist=[...(u.usrHistory||[]), {eventId:eid, eventName:ev.name, date:ev.date, pes:tes, type:"ct", retired:(ev.retiredIds||[]).includes(u.id)}];
         const newUsr = calcWeightedUSR(usrHist, seedUsr, usrWindowSize);
-
-        const otherHistory=prevHistory.filter(h=>h.comboKey!==comboKey);
         return {...u, usr:newUsr, usrHistory:usrHist, seedUsr, teamsHistory:[...otherHistory,...comboHist]};
       }));
     }

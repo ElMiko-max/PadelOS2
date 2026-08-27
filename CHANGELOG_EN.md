@@ -4,6 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.40 — Hard Android update gate
+
+- New: real protection against an old Android install silently missing a critical fix like V0.11.39's. Until now there was only a soft "new version available" banner — easy to ignore, and evidently was. Now, when we set a required minimum version (`minSupported` in `releases/latest.json`), any **signed-in** Android install below it sees a full-screen "Update Required" screen instead of the normal app, with a direct download button — not just a notice, an actual block until they update.
+- **Deliberately fails open by default.** If the check hasn't finished yet, the network is down, or the field is missing from `latest.json`, the app just continues normally — no blocking. It only blocks once it's actually confirmed the running version is below `minSupported`.
+- **Web is untouched** — every page load already pulls the latest code, so there's no equivalent "stuck on an old install" risk to guard against there.
+- **Bootstrapping note:** this is the first version that has the check itself — so `minSupported` has no effect on anything installed **before** this version (like the V0.10.24 build that caused the original incident), since it has no code to check with. Going forward, any new critical fix raises `minSupported`, and anyone on V0.11.40 or later gets forced to update automatically.
+- The deeper fix (a real server-side Cloud Function for registration, instead of relying entirely on client code) is agreed as a separate next phase.
+
+---
+
 ## V0.11.39 — Critical real bug fixed: registration was still possible while paused
 
 - **Real bug caught live on a real event during a registration rush:** the "pause registration" toggle (`registrationOpen`) only ever hid the "I'm In" button on screen — the functions that actually write a registration (`registerEv`, `registerViaInvite`) never checked that flag at all, only whether the event itself was closed/cancelled. Anyone with the page already loaded (or an old Android APK, e.g. V0.10.24) could still register while the pause was genuinely active.

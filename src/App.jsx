@@ -220,13 +220,17 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.39";
+const APP_VERSION = "V0.11.40";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
 // the "Download Android App" link; it just means the very first paint may briefly show an old
 // number before the fetch lands.
 const LATEST_APK_VERSION_FALLBACK = "V0.10.00";
+// "VX.Y.Z" -> [X,Y,Z] for numeric comparison — plain string comparison breaks the moment any
+// segment hits double digits ("V0.11.9" > "V0.11.10" lexically, which is backwards).
+function parseVer(v){ const m=/^V?(\d+)\.(\d+)\.(\d+)/.exec(v||""); return m ? [+m[1],+m[2],+m[3]] : null; }
+function verLt(a,b){ const pa=parseVer(a),pb=parseVer(b); if(!pa||!pb) return false; for(let i=0;i<3;i++){ if(pa[i]!==pb[i]) return pa[i]<pb[i]; } return false; }
 // Splits CHANGELOG.md's raw text into one entry per "## " heading (its established format —
 // see CLAUDE.md §2). Each heading line is "VX.X.X (الحالي) — title" or "VX.X.X — title"; the
 // "(الحالي)" marker is stripped since the modal shows entries newest-first regardless. Anything
@@ -3683,6 +3687,30 @@ export default function Matchkeeper() {
     return unsub;
   }, []);
 
+  // Hard update gate — Android only. Found live (V0.11.39 incident): an installed APK never
+  // auto-updates, so someone on a build old enough to predate a safety-critical fix (e.g. the
+  // registration-pause check) can keep silently running the broken behavior indefinitely — the
+  // existing "update available" banner is easy to miss/ignore, and clearly was here. This reads
+  // an explicit `minSupported` field from the same releases/latest.json the banner already
+  // polls, and — only once that fetch has actually succeeded — blocks the whole app for anyone
+  // below it, same "confirmed stale, not just assumed" caution as the banner's own version
+  // check. Deliberately fails OPEN: no fetch yet, a failed fetch, or a missing/malformed field
+  // all mean "don't block" — this must never be able to lock out everyone by accident. Web is
+  // untouched — every page load already pulls fresh JS, so there's no equivalent staleness risk
+  // there to guard against.
+  const [minSupportedVersion, setMinSupportedVersion] = useState(null);
+  const [latestApkForGate, setLatestApkForGate] = useState(null); // download link target — same fetch, no separate round-trip
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let cancelled = false;
+    fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => { if (!cancelled) { if (d.minSupported) setMinSupportedVersion(d.minSupported); if (d.version) setLatestApkForGate(d.version); } })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const blockedByMinVersion = Capacitor.isNativePlatform() && minSupportedVersion && verLt(APP_VERSION, minSupportedVersion);
+
   // Invite links (Enhancement #1) — capture ?invite=CODE from a cold-start URL once, stash it
   // in localStorage so it survives the login/claim screens (which today carry no routing
   // state at all), and strip it from the address bar so a refresh doesn't re-trigger it.
@@ -6304,6 +6332,18 @@ export default function Matchkeeper() {
   }
   if (!authUser) {
     return <LoginScreen/>;
+  }
+  if (blockedByMinVersion) {
+    const apkUrl = latestApkForGate ? `https://padelos-6f999.web.app/releases/Matchkeeper-${latestApkForGate}-debug.apk` : null;
+    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{maxWidth:340,textAlign:"center"}}>
+        <div style={{fontSize:32,marginBottom:12}}>📥</div>
+        <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Update Required</div>
+        <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>This app version ({APP_VERSION}) is too old to keep using safely — a required fix has shipped since. Please update to continue.</div>
+        {apkUrl && <a href={apkUrl} target="_blank" rel="noreferrer" style={{display:"inline-block",padding:"11px 20px",borderRadius:10,background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,textDecoration:"none"}}>📥 Download Update</a>}
+        <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:16}}>Sign out</div>
+      </div>
+    </div>;
   }
   if (linkedMe?.suspended) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>

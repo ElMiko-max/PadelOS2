@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.42 — Hardened addMember/approveEventJoin + Standings tab improvements
+
+- **Additional hardening:** `addMemberToEvent` and `approveEventJoinRequest` (new Cloud Functions) — same idea as `registerForEvent`, applied to the two admin-only paths (manually adding a player, approving a join request). They re-check event status (closed/cancelled) against live server data, not just client code. `registrationOpen` (the pause) is deliberately **not** checked here — pausing is meant to stop random public self-service, not the admin's own direct action, matching existing behavior exactly.
+- **New in the Standings tab (Padel, Closed Individual):**
+  - **In both tabs literally labeled "PES"** (Court-Based and Performance Based): each player now shows what this PES would do to their real USR if the event were closed with that number right now — e.g. "USR +5". Only shown while the event is still open (before it's actually closed), so it never sits next to a number that already happened for real.
+  - **In the "PES (Performance Based)" tab specifically:** a new "⚖️ Compare with Court-Based" toggle — when on, shows each player's traditional court-based PES (and its own USR effect) right next to the performance-based one, for an easy side-by-side comparison.
+
+---
+
 ## V0.11.41 — The real fix: a server-side Cloud Function for registration
 
 - New: **`registerForEvent`**, a Cloud Function (`functions/index.js`) that checks event status and `registrationOpen` against the **live server data at the moment of the write itself**, not whatever the calling client believes. That means no device — no matter how old — can register through an active pause anymore, because the check now lives entirely outside client code.

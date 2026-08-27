@@ -262,6 +262,41 @@ exports.confirmEmailMatch = onCall(async (request) => {
   });
 });
 
+// Shared by registerForEvent/addMemberToEvent/approveEventJoinRequest below — a deliberate
+// line-for-line port of getMaxPlayers/isPriorityReg/splitRegsByCapacity from src/App.jsx. Keep
+// them in sync if that logic ever changes there. Duplicated rather than shared because this
+// runs in a separate Node/CommonJS runtime from the client's Vite/JSX bundle; a real
+// shared-module setup is more invasive than these fixes warranted.
+const getMaxPlayers = e => (e?.maxPlayers > 0 ? e.maxPlayers : null);
+const isPriorityReg = (r, c) => {
+  if (r.addedBy != null && r.addedBy !== "approved") return true;
+  return c?.members?.find(m => m.userId === r.userId)?.status === "regular";
+};
+const splitRegsByCapacity = (e, c) => {
+  const max = getMaxPlayers(e);
+  if (!max) return {active: e.registrations, waitlisted: []};
+  const windowActive = e?.regularUntil && Date.now() < new Date(e.regularUntil).getTime();
+  if (!windowActive || !c) return {active: e.registrations.slice(0, max), waitlisted: e.registrations.slice(max)};
+  const active = [], waitlisted = [];
+  e.registrations.forEach(r => {
+    if (isPriorityReg(r, c) && active.length < max) active.push(r);
+    else waitlisted.push(r);
+  });
+  return {active, waitlisted};
+};
+// Resolves {comms, commIdx, comm, ev} from the live comms blob inside an already-open
+// transaction, or throws the right HttpsError — shared lookup for all three functions below.
+const resolveCommEventTx = async (tx, commsRef, communityId, eventId) => {
+  const commsSnap = await tx.get(commsRef);
+  const comms = JSON.parse(commsSnap.data()?.value || "[]");
+  const commIdx = comms.findIndex(c => c.id === communityId);
+  if (commIdx === -1) throw new HttpsError("not-found", "Community not found.");
+  const comm = comms[commIdx];
+  const ev = comm.events.find(e => e.id === eventId);
+  if (!ev) throw new HttpsError("not-found", "Event not found.");
+  return {comms, commIdx, comm, ev};
+};
+
 // registerForEvent — same "close the stale-client gap" reasoning as claimOrCreateProfile above,
 // applied to event registration instead of profile identity. Real incident that motivated this
 // (2026-08-27, event #55 "Thursday trial"): the admin's "pause registration" toggle only ever
@@ -280,11 +315,6 @@ exports.confirmEmailMatch = onCall(async (request) => {
 // client-side (see registerEv's own guard) — this function is a strictly-additional layer for
 // clients recent enough to know to call it, not a replacement for that check.
 //
-// The capacity/waitlist math below (getMaxPlayers/isPriorityReg/splitRegsByCapacity) is a
-// deliberate line-for-line port of the same-named functions in src/App.jsx — keep them in sync
-// if that logic ever changes there. Duplicated rather than shared because this function runs in
-// a separate Node/CommonJS runtime from the client's Vite/JSX bundle; a real shared-module setup
-// is more invasive than this fix warranted.
 exports.registerForEvent = onCall(async (request) => {
   const auth = request.auth;
   if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
@@ -302,13 +332,7 @@ exports.registerForEvent = onCall(async (request) => {
     if (!linkSnap.exists) throw new HttpsError("failed-precondition", "No linked player profile for this account yet.");
     const userId = linkSnap.data().userId;
 
-    const commsSnap = await tx.get(commsRef);
-    const comms = JSON.parse(commsSnap.data()?.value || "[]");
-    const commIdx = comms.findIndex(c => c.id === communityId);
-    if (commIdx === -1) throw new HttpsError("not-found", "Community not found.");
-    const comm = comms[commIdx];
-    const ev = comm.events.find(e => e.id === eventId);
-    if (!ev) throw new HttpsError("not-found", "Event not found.");
+    const {comms, commIdx, comm, ev} = await resolveCommEventTx(tx, commsRef, communityId, eventId);
 
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", via === "invite"
@@ -322,26 +346,6 @@ exports.registerForEvent = onCall(async (request) => {
     if (ev.registrations.some(r => r.userId === userId)) {
       return {status: "already-registered", waitlisted: false, eventName: ev.name};
     }
-
-    // --- ported from splitRegsByCapacity/isPriorityReg/getMaxPlayers in src/App.jsx ---
-    const getMaxPlayers = e => (e?.maxPlayers > 0 ? e.maxPlayers : null);
-    const isPriorityReg = (r, c) => {
-      if (r.addedBy != null && r.addedBy !== "approved") return true;
-      return c?.members?.find(m => m.userId === r.userId)?.status === "regular";
-    };
-    const splitRegsByCapacity = (e, c) => {
-      const max = getMaxPlayers(e);
-      if (!max) return {active: e.registrations, waitlisted: []};
-      const windowActive = e?.regularUntil && Date.now() < new Date(e.regularUntil).getTime();
-      if (!windowActive || !c) return {active: e.registrations.slice(0, max), waitlisted: e.registrations.slice(max)};
-      const active = [], waitlisted = [];
-      e.registrations.forEach(r => {
-        if (isPriorityReg(r, c) && active.length < max) active.push(r);
-        else waitlisted.push(r);
-      });
-      return {active, waitlisted};
-    };
-    // --- end ported block ---
 
     const addedBy = via === "invite" ? "invite" : null;
     const newReg = {userId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
@@ -361,5 +365,87 @@ exports.registerForEvent = onCall(async (request) => {
     tx.set(commsRef, {value: JSON.stringify(updatedComms)});
 
     return {status: "ok", waitlisted: isWaitlisted, pos: isWaitlisted ? waitlistArr.length : 0, eventName: ev.name};
+  });
+});
+
+// addMemberToEvent / approveEventJoinRequest — same server-side backstop as registerForEvent,
+// applied to the two admin-initiated registration paths (src/App.jsx's addMember and
+// approveEventJoin). These don't check registrationOpen — pausing registration is meant to stop
+// random public self-service, not the admin's own deliberate management, so an admin adding or
+// approving someone specific stays allowed while paused, matching existing behavior exactly.
+// What this DOES re-validate server-side is event status (completed/cancelled), same as
+// registerForEvent — a stale client could otherwise silently add someone to a book-closed event.
+// Note: like every other write in this app, these don't verify the CALLER is actually an admin
+// of this community/event — that trust boundary is enforced client-side only today (the button
+// itself is hidden for non-admins), same as it already was before this function existed. Adding
+// real server-side role verification is a separate, larger piece of work (would need to extend
+// to every other write in the app to be meaningful) — out of scope for what these two close.
+exports.addMemberToEvent = onCall(async (request) => {
+  const auth = request.auth;
+  if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+  const {communityId, eventId, targetUserId} = request.data || {};
+  if (communityId == null || eventId == null || targetUserId == null) {
+    throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
+  }
+
+  const db = getFirestore();
+  const commsRef = db.collection("padelos").doc("comms");
+
+  return db.runTransaction(async (tx) => {
+    const {comms, commIdx, comm, ev} = await resolveCommEventTx(tx, commsRef, communityId, eventId);
+
+    if (ev.status === "completed" || ev.status === "cancelled") {
+      throw new HttpsError("failed-precondition", "This event is closed — can't add players anymore.");
+    }
+    if (ev.registrations.some(r => r.userId === targetUserId)) {
+      return {status: "already-registered", waitlisted: false, eventName: ev.name};
+    }
+
+    const newReg = {userId: targetUserId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "admin", isGuest: false};
+    const simEv = {...ev, registrations: [...ev.registrations, newReg]};
+    const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
+    const isWaitlisted = waitlistArr.some(r => r.userId === targetUserId);
+
+    const updatedEvents = comm.events.map(e => e.id === eventId ? {...e, registrations: [...e.registrations, newReg]} : e);
+    const updatedComms = [...comms];
+    updatedComms[commIdx] = {...comm, events: updatedEvents};
+    tx.set(commsRef, {value: JSON.stringify(updatedComms)});
+
+    return {status: "ok", waitlisted: isWaitlisted, eventName: ev.name};
+  });
+});
+exports.approveEventJoinRequest = onCall(async (request) => {
+  const auth = request.auth;
+  if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+  const {communityId, eventId, targetUserId} = request.data || {};
+  if (communityId == null || eventId == null || targetUserId == null) {
+    throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
+  }
+
+  const db = getFirestore();
+  const commsRef = db.collection("padelos").doc("comms");
+
+  return db.runTransaction(async (tx) => {
+    const {comms, commIdx, comm, ev} = await resolveCommEventTx(tx, commsRef, communityId, eventId);
+
+    if (ev.status === "completed" || ev.status === "cancelled") {
+      throw new HttpsError("failed-precondition", "This event is closed — the request can't be approved anymore.");
+    }
+
+    const newJoinRequests = (ev.joinRequests || []).filter(r => r.userId !== targetUserId);
+    const alreadyReg = ev.registrations.find(r => r.userId === targetUserId);
+    const newReg = {userId: targetUserId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "approved", isGuest: false};
+    const newRegs = alreadyReg ? ev.registrations : [...ev.registrations, newReg];
+
+    const simEv = {...ev, registrations: newRegs};
+    const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
+    const isWaitlisted = waitlistArr.some(r => r.userId === targetUserId);
+
+    const updatedEvents = comm.events.map(e => e.id === eventId ? {...e, joinRequests: newJoinRequests, registrations: newRegs} : e);
+    const updatedComms = [...comms];
+    updatedComms[commIdx] = {...comm, events: updatedEvents};
+    tx.set(commsRef, {value: JSON.stringify(updatedComms)});
+
+    return {status: "ok", waitlisted: isWaitlisted, eventName: ev.name};
   });
 });

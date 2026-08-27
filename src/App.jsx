@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.41";
+const APP_VERSION = "V0.11.42";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1470,6 +1470,19 @@ function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
     totalWeight = windowSize;
   }
   return Math.round(weightedSum / totalWeight);
+}
+// Preview-only: what would THIS event's PES do to a player's real USR if the event were closed
+// right now with that value? Mirrors closeEvent's own CI USR-update formula exactly (same
+// hist-append + calcWeightedUSR call, same seedUsr resolution) so the preview number shown in
+// the Standings tab is never optimistic/pessimistic relative to what actually closing would
+// produce — it's the same calculation, just not written anywhere. Not event-specific beyond the
+// hypothetical entry itself, so it's safe to call repeatedly per-row without side effects.
+function previewUsrDelta(u, pes, ev, usrWindowSize){
+  if(pes==null||!u) return null;
+  const seedUsr = u.seedUsr ?? u.usr;
+  const hist = [...(u.usrHistory||[]), {eventId:ev.id, eventName:ev.name, date:ev.date, pes, type:"ci", retired:false}];
+  const newUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
+  return newUsr - u.usr;
 }
 
 // Max possible pts for a specific team across all played rounds
@@ -5606,16 +5619,35 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
     afterRegistered(waitlisted, waitPos);
   };
-  const addMember=(cid,eid,uid)=>{
+  const addMember=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — can't add players anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
+    const afterAdded = (waitlisted) => {
+      toast2(`${u?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
+      if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
+      logAudit("event.register", `${me.nickname} added ${u?.nickname||uid} to "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+    };
+    // Server-side backstop, same pattern as registerEv — see addMemberToEvent's comment in
+    // functions/index.js. Falls back to the direct write below on anything except the function
+    // explicitly rejecting it (event closed).
+    if (!IS_DEV_ENV) {
+      try {
+        const fn = httpsCallable(getFunctionsLazy(), "addMemberToEvent");
+        const res = await withTimeout(fn({communityId:cid, eventId:eid, targetUserId:uid}), 8000);
+        const {status, waitlisted} = res.data || {};
+        if (status === "already-registered") return;
+        afterAdded(!!waitlisted);
+        return;
+      } catch (e) {
+        if (e?.code === "functions/failed-precondition") { toast2(e.message || "This event is closed", "err"); return; }
+        console.log("addMemberToEvent unavailable, falling back to direct write", e);
+      }
+    }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})}));
-    toast2(`${u?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
-    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
-    logAudit("event.register", `${me.nickname} added ${u?.nickname||uid} to "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+    afterAdded(waitlisted);
   };
   // An invite link is deliberate access granted by an admin — it skips the regular-member
   // priority window entirely (that gate exists to stop random public sign-ups from queue-
@@ -5675,11 +5707,31 @@ export default function Matchkeeper() {
     if (ev) notify([ev.createdBy].filter(Boolean), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
     logAudit("event.requestJoin", `${me.nickname} requested to join "${ev?.name||eid}"`, "event", eid);
   };
-  const approveEventJoin=(cid,eid,uid)=>{
+  const approveEventJoin=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — the request can't be approved anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
+    const afterApproved = (waitlisted) => {
+      toast2(waitlisted?"Approved — waitlisted (event full)":"Approved ✓");
+      if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
+      logAudit("event.register", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+    };
+    // Server-side backstop, same pattern as registerEv — see approveEventJoinRequest's comment
+    // in functions/index.js. Falls back to the direct write below on anything except the
+    // function explicitly rejecting it (event closed).
+    if (!IS_DEV_ENV) {
+      try {
+        const fn = httpsCallable(getFunctionsLazy(), "approveEventJoinRequest");
+        const res = await withTimeout(fn({communityId:cid, eventId:eid, targetUserId:uid}), 8000);
+        const {waitlisted} = res.data || {};
+        afterApproved(!!waitlisted);
+        return;
+      } catch (e) {
+        if (e?.code === "functions/failed-precondition") { toast2(e.message || "This event is closed", "err"); return; }
+        console.log("approveEventJoinRequest unavailable, falling back to direct write", e);
+      }
+    }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
     const updateOne=e=>{
       if(e.id!==eid) return e;
@@ -5689,9 +5741,7 @@ export default function Matchkeeper() {
       return {...e,joinRequests:newJoinRequests,registrations:newRegs};
     };
     updC(cid,c=>({...c,events:c.events.map(updateOne)}));
-    toast2(waitlisted?"Approved — waitlisted (event full)":"Approved ✓");
-    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
-    logAudit("event.register", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+    afterApproved(waitlisted);
   };
   const rejectEventJoin=(cid,eid,uid)=>{
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)})}));
@@ -6600,7 +6650,7 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
         {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
-          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} godMode={godMode} subscriptionSettings={subscriptionSettings} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
+          <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} godMode={godMode} subscriptionSettings={subscriptionSettings} usrWindowSize={usrWindowSize} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
             onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
@@ -8199,10 +8249,13 @@ function XStandingsPreview({rows}){
 // Output PES / Output TES — deliberately flat, no expand/collapse: the owner only wants the
 // three numbers that matter (Entry USR, the delta that moved it, and the result), not the
 // per-match archaeology XStandingsPreview offers for the Delta view.
-function OutputPESTable({rows}){
+// usrDelta/courtPes/courtUsrDelta are optional — only the CI (player) call site passes them
+// (CT teams don't have a USR-equivalent concept to preview against). compare only ever shows
+// anything when both the caller turned it on AND the row actually carries a courtPes value.
+function OutputPESTable({rows,compare}){
   if(!rows.length) return <div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No completed matches yet to preview.</div>;
   return <div>
-    {rows.map((r,i)=><div key={r.key} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",borderRadius:8,background:"var(--po-inp)",marginBottom:6}}>
+    {rows.map((r,i)=><div key={r.key} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",borderRadius:8,background:"var(--po-inp)",marginBottom:6,flexWrap:"wrap"}}>
       <span style={{fontSize:11,color:"var(--po-dim)",width:18}}>{i+1}</span>
       <span style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</div>
@@ -8210,7 +8263,16 @@ function OutputPESTable({rows}){
       </span>
       <span style={{fontSize:11,color:"var(--po-dim)",textAlign:"right",whiteSpace:"nowrap"}}>Entry <b style={{color:"var(--po-text)"}}>{Math.round(r.entryUsr*10)/10}</b></span>
       <span style={{fontSize:11,fontWeight:700,color:r.avgDelta>=0?"#34D399":"#EF4444",textAlign:"right",whiteSpace:"nowrap"}}>{r.avgDelta>=0?"+":""}{Math.round(r.avgDelta*100)}%</span>
-      <span style={{fontSize:15,fontWeight:700,color:"#A78BFA",textAlign:"right",whiteSpace:"nowrap"}}>{r.score}</span>
+      <div style={{textAlign:"right"}}>
+        <div style={{fontSize:9,color:"var(--po-dim)"}}>Performance</div>
+        <div style={{fontSize:15,fontWeight:700,color:"#A78BFA",whiteSpace:"nowrap"}}>{r.score}</div>
+        {r.usrDelta!=null&&<div style={{fontSize:10,fontWeight:700,color:r.usrDelta>0?"#34D399":r.usrDelta<0?"#EF4444":"var(--po-dim)",whiteSpace:"nowrap"}}>USR {r.usrDelta>0?"+":""}{r.usrDelta}</div>}
+      </div>
+      {compare&&r.courtPes!=null&&<div style={{textAlign:"right",paddingLeft:8,borderLeft:"0.5px solid var(--po-bdr)"}}>
+        <div style={{fontSize:9,color:"var(--po-dim)"}}>Court-Based</div>
+        <div style={{fontSize:15,fontWeight:700,color:"#6366F1",whiteSpace:"nowrap"}}>{r.courtPes}%</div>
+        {r.courtUsrDelta!=null&&<div style={{fontSize:10,fontWeight:700,color:r.courtUsrDelta>0?"#34D399":r.courtUsrDelta<0?"#EF4444":"var(--po-dim)",whiteSpace:"nowrap"}}>USR {r.courtUsrDelta>0?"+":""}{r.courtUsrDelta}</div>}
+      </div>}
     </div>)}
     <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4,padding:"0 4px",lineHeight:1.5}}>🧪 Output PES = Entry USR + this event's performance delta. Computed live, not stored, not official — only becomes real if this event is closed with Output PES below.</div>
   </div>;
@@ -9024,7 +9086,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -9087,6 +9149,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [ctSel,setCtSel]   = useState(null); // {teamId,userId} — for tap-a-player-to-swap between teams
   const [showResultsTable,setShowResultsTable] = useState(false);
   const [standingsView,setStandingsView] = useState("pes"); // "pes" | "delta" | "output" — Platform-Admin-only toggle, everyone else always sees "pes"
+  const [compareCourtBased,setCompareCourtBased] = useState(false); // Output PES sub-tab only — show the court-based PES/USR effect alongside performance-based, for direct comparison
   const [ctC,setCtC]       = useState(null);
   const [ctTopPoolSize,setCtTopPoolSize] = useState(null); // null = auto (top-ranked players → the auto-computed bigger pool)
   const [ctF,setCtF]       = useState("league");
@@ -10643,7 +10706,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {standingsView==="pes"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
         {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
-          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({historicUsr(s.user.id,plan,s.user.usr)})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
+          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;
+            // Live-only — once the event's actually closed, this PES already happened and is
+            // sitting in real USR history; showing a hypothetical "would be" delta on top of a
+            // number that already landed would just be confusing, not useful.
+            const usrDelta=!isCompleted?previewUsrDelta(s.user,pes,effEv,usrWindowSize):null;
+            return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({historicUsr(s.user.id,plan,s.user.usr)})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div>{usrDelta!=null&&<div style={{fontSize:11,fontWeight:700,color:usrDelta>0?"#34D399":usrDelta<0?"#EF4444":"var(--po-dim)",marginTop:2}}>USR {usrDelta>0?"+":""}{usrDelta}</div>}</div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
           {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
         </>}
@@ -10656,7 +10724,26 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {standingsView==="output"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"#A78BFA11",border:"0.5px solid #A78BFA33",borderRadius:8,fontSize:11,color:"var(--po-dim)",lineHeight:1.5}}>🧪 <b>Output PES — Performance Based.</b> Entry USR adjusted by this event's performance delta — a typical day nudges ~±7 points, a genuinely extreme day (best/worst observed) moves close to ~±40. Same 0–100 scale as real USR, so it's directly comparable — view only. {isPlatformAdmin?`This is what gets written to USR history if this event is closed with "🧪 Close with Output PES" below instead of the standard close.`:"Only the Platform Admin can close an event using this instead of the standard scoring."}</div>
-        {plan?<OutputPESTable rows={calcXCIPreview(plan,users,comms,effEv).map(p=>({key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES})).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
+        <div onClick={()=>setCompareCourtBased(o=>!o)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",marginBottom:10,borderRadius:8,background:"var(--po-card)",cursor:"pointer"}}>
+          <span style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>⚖️ Compare with Court-Based</span>
+          <div style={{width:38,height:22,borderRadius:11,background:compareCourtBased?"#A78BFA":"var(--po-bdr)",position:"relative",transition:"background 0.15s",flexShrink:0}}>
+            <div style={{width:18,height:18,borderRadius:"50%",background:"#fff",position:"absolute",top:2,left:compareCourtBased?18:2,transition:"left 0.15s"}}/>
+          </div>
+        </div>
+        {plan?<OutputPESTable compare={compareCourtBased} rows={calcXCIPreview(plan,users,comms,effEv).map(p=>{
+          // Live-only, same reasoning as the "pes" sub-tab above — once closed, this already
+          // happened for real, so a hypothetical "would be" delta is just noise at that point.
+          const usrDelta=!isCompleted?previewUsrDelta(p.user,p.outputPES,effEv,usrWindowSize):null;
+          // Same court-based formula as the "pes" sub-tab above (personalMaxCI/personalRoundsCI),
+          // computed here too only when the toggle actually needs it — matched to the same
+          // player so the two numbers are directly comparable, not just visually adjacent.
+          let courtPes=null, courtUsrDelta=null;
+          if(compareCourtBased){
+            const cs=ciStands.find(s=>s.user.id===p.userId);
+            if(cs){ const mp=personalMaxCI(cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=!isCompleted?previewUsrDelta(p.user,courtPes,effEv,usrWindowSize):null; }
+          }
+          return {key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES,usrDelta,courtPes,courtUsrDelta};
+        }).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
     </>}
 

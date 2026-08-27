@@ -214,7 +214,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.30";
+const APP_VERSION = "V0.11.31";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5699,29 +5699,24 @@ export default function Matchkeeper() {
   // collector"). Same toggle-a-Set shape as toggleExempt/togglePaid, same no-toast/no-audit
   // convention (this is a lightweight per-player financial flag, not an event-level action).
   const toggleDirect=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const d=new Set(ev.directIds||[]);d.has(uid)?d.delete(uid):d.add(uid);return{...ev,directIds:[...d]};})}));};
-  // Single mutually-exclusive status CYCLER for the Settlement list's one-button toggle (Not
-  // Paid -> Paid -> Direct -> Exempt -> Not Paid...) — unlike toggleExempt/togglePaid/
-  // toggleDirect above (independent per-flag toggles, still used by the player's own "I Paid"
-  // self-button, where only one flag is ever relevant at a time), this always removes a player
-  // from all three sets first and adds them to at most one, so the admin list can never show an
-  // inconsistent combination like "Exempt" and "Paid" at once.
+  // Single mutually-exclusive status setter for the Settlement list — unlike toggleExempt/
+  // togglePaid/toggleDirect above (independent per-flag toggles, still used by the player's own
+  // "I Paid" self-button, where only one flag is ever relevant at a time), this always removes
+  // a player from all three sets first and adds them to at most one, so the admin list can
+  // never show an inconsistent combination like "Exempt" and "Paid" at once.
   //
-  // Real incident: this used to take an explicit target `status` computed by the CALLER (the
-  // button's onClick) from the current render's status — fine for a single tap, but rapid taps
-  // before a re-render all read that SAME stale status and computed the SAME "next" status, so
-  // 2 or 3 quick taps landed on the same result instead of advancing through the cycle each
-  // time (the same class of bug as the poll multi-select race, just one layer up — see updC's
-  // commsRef fix). Fixed the same way that one was: the cycle decision now happens INSIDE the
-  // updC mutator, which always runs against the true latest state (commsRef.current for the
-  // optimistic step, the real Firestore doc at transaction-commit time) rather than a stale
-  // closure — so a same-tick second tap correctly builds on the first tap's change.
-  const cyclePaymentStatus=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{
+  // This used to be a single button that CYCLED to "whatever's next" — first computing that
+  // client-side (racy under rapid taps: see the poll multi-select incident), then computing it
+  // inside the updC mutator instead (correct, but still confusing in practice since nothing on
+  // screen told you what a tap would actually land on until after it happened). Replaced with an
+  // explicit picker (kebab menu, 4 named options) instead of trying to out-clever the timing —
+  // every choice here is a fixed target, not "relative to whatever the current state turns out
+  // to be", so there's no stale-snapshot class of bug possible here at all, race or otherwise.
+  const setPaymentStatus=(cid,eid,uid,status)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{
     if(ev.id!==eid)return ev;
     const ex=new Set(ev.exempted||[]), p=new Set(ev.paidIds||[]), d=new Set(ev.directIds||[]);
-    const current = ex.has(uid)?"exempt":d.has(uid)?"direct":p.has(uid)?"paid":"unpaid";
-    const next = PAYMENT_STATUS_CYCLE[(PAYMENT_STATUS_CYCLE.indexOf(current)+1)%PAYMENT_STATUS_CYCLE.length];
     ex.delete(uid); p.delete(uid); d.delete(uid);
-    if(next==="exempt")ex.add(uid); else if(next==="paid")p.add(uid); else if(next==="direct")d.add(uid);
+    if(status==="exempt")ex.add(uid); else if(status==="paid")p.add(uid); else if(status==="direct")d.add(uid);
     return{...ev,exempted:[...ex],paidIds:[...p],directIds:[...d]};
   })}));};
   // Event-scoped admin — promoted/demoted per event, not community-wide (EvDetail's own
@@ -6418,7 +6413,7 @@ export default function Matchkeeper() {
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
             onToggleDirect={uid=>toggleDirect(comm.id,event.id,uid)}
-            onSetPaymentStatus={uid=>cyclePaymentStatus(comm.id,event.id,uid)}
+            onSetPaymentStatus={(uid,status)=>setPaymentStatus(comm.id,event.id,uid,status)}
             onSetBreakPrefOverride={(uid,pref)=>setBreakPrefOverride(comm.id,event.id,uid,pref)}
             onSetMatchModeStart={(startAt,delayMin,roundEndTimes)=>setMatchModeStart(comm.id,event.id,startAt,delayMin,roundEndTimes)}
             onStopMatchMode={()=>stopMatchMode(comm.id,event.id)}
@@ -8800,6 +8795,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [openPlayerMenu,setOpenPlayerMenu] = useState(null); // userId whose Players-tab action menu is open
+  const [openPaymentMenu,setOpenPaymentMenu] = useState(null); // userId whose Settlement status menu is open
   const [photoUploading2,setPhotoUploading2] = useState(false);
   const [photoUploadProgress,setPhotoUploadProgress] = useState(null); // {done,total} while a multi-select batch is in flight
   const [photoUploadError,setPhotoUploadError] = useState("");
@@ -9081,16 +9077,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     toggleDirect: (uid) => sim
       ? simMutate(e=>{const d=new Set(e.directIds||[]);d.has(uid)?d.delete(uid):d.add(uid);return{...e,directIds:[...d]};})
       : onToggleDirect&&onToggleDirect(uid),
-    setPaymentStatus: (uid) => sim
+    setPaymentStatus: (uid,status) => sim
       ? simMutate(e=>{
           const ex=new Set(e.exempted||[]), p=new Set(e.paidIds||[]), d=new Set(e.directIds||[]);
-          const current = ex.has(uid)?"exempt":d.has(uid)?"direct":p.has(uid)?"paid":"unpaid";
-          const next = PAYMENT_STATUS_CYCLE[(PAYMENT_STATUS_CYCLE.indexOf(current)+1)%PAYMENT_STATUS_CYCLE.length];
           ex.delete(uid); p.delete(uid); d.delete(uid);
-          if(next==="exempt")ex.add(uid); else if(next==="paid")p.add(uid); else if(next==="direct")d.add(uid);
+          if(status==="exempt")ex.add(uid); else if(status==="paid")p.add(uid); else if(status==="direct")d.add(uid);
           return{...e,exempted:[...ex],paidIds:[...p],directIds:[...d]};
         })
-      : onSetPaymentStatus&&onSetPaymentStatus(uid),
+      : onSetPaymentStatus&&onSetPaymentStatus(uid,status),
     setMatchModeStart: (startAt,delayMin,roundEndTimes) => sim
       ? simMutate(e=>({...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}}))
       : onSetMatchModeStart&&onSetMatchModeStart(startAt,delayMin,roundEndTimes),
@@ -10151,14 +10145,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               its own button tap means its own single share(), no caption-duplication risk. */}
           <div style={{paddingTop:8}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>
         </Card>
-        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap a player's status to cycle it: Not Paid → Paid → Direct (settled another way, e.g. cash to the venue — no need to chase them) → Exempt → back to Not Paid.</div>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap a player's status badge to set it: Not Paid, Paid, Direct (settled another way, e.g. cash to the venue — no need to chase them), or Exempt.</div>
         {attendeeIds.map(uid=>{
           const u=users.find(u=>u.id===uid); if(!u) return null;
           const isPayer = uid===payerId;
-          // Mutually exclusive by construction (cyclePaymentStatus always clears the other two
-          // sets before adding to one), so a single derived `status` is safe here — this is
-          // still only used for DISPLAY (badge/color/label), never to decide the next status
-          // on tap anymore (that happens inside cyclePaymentStatus itself now).
+          // Mutually exclusive by construction (setPaymentStatus always clears the other two
+          // sets before adding to one), so a single derived `status` is safe here.
           const status = isPayer ? null : exemptedIds.has(uid) ? "exempt" : directIds.has(uid) ? "direct" : paidIds.has(uid) ? "paid" : "unpaid";
           const isEx = status==="exempt";
           const isDirect = status==="direct";
@@ -10175,12 +10167,20 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 </div>
                 <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":isDirect?`Paid ${cpp} EGP directly — no need to chase`:`${cpp} EGP`}</div>
               </div>
-              {/* No longer computes "next status" here from this render's (possibly stale)
-                  `status` — the cycle decision now happens inside cyclePaymentStatus's updC
-                  mutator instead, so rapid taps chain correctly instead of repeating the same
-                  transition. See cyclePaymentStatus's comment for the full incident. */}
-              {!isPayer&&<div onClick={()=>act.setPaymentStatus(uid)} style={{padding:"6px 10px",borderRadius:8,background:meta.bg,border:`0.5px solid ${meta.border}`,fontSize:12,fontWeight:600,color:meta.color,cursor:"pointer",flexShrink:0,whiteSpace:"nowrap"}}>
-                {meta.label}
+              {/* An explicit picker (kebab menu, 4 named options), not a tap-to-cycle button —
+                  every choice here is a fixed target, so there's no "compute next from current"
+                  step left to race on at all, under rapid taps or otherwise. See
+                  setPaymentStatus's comment for the tap-to-cycle version this replaced. */}
+              {!isPayer&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <div onClick={()=>setOpenPaymentMenu(o=>o===uid?null:uid)} style={{padding:"6px 10px",borderRadius:8,background:meta.bg,border:`0.5px solid ${meta.border}`,fontSize:12,fontWeight:600,color:meta.color,cursor:"pointer",whiteSpace:"nowrap"}}>
+                  {meta.label} ▾
+                </div>
+                {openPaymentMenu===uid&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+                  {PAYMENT_STATUS_CYCLE.map(s=>{
+                    const m=PAYMENT_STATUS_META[s];
+                    return <SmBtn key={s} label={s===status?`✓ ${m.label}`:m.label} onClick={()=>{act.setPaymentStatus(uid,s);setOpenPaymentMenu(null);}} color={m.color==="var(--po-dim)"?"#94A3B8":m.color} style={{width:"100%"}}/>;
+                  })}
+                </div>}
               </div>}
             </div>
           </Card>;

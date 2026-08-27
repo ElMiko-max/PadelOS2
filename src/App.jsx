@@ -7,6 +7,12 @@ import { App as CapApp } from "@capacitor/app";
 import { PushNotifications } from "@capacitor/push-notifications";
 import { GoogleSignIn } from "@capawesome/capacitor-google-sign-in";
 import { NativeSettings, AndroidSettings, IOSSettings } from "capacitor-native-settings";
+// Raw text import (Vite `?raw`) — bundles CHANGELOG_EN.md's content at build time, so the
+// in-app "Version Updates" screen (platform-admin only, see TopBar/VersionUpdatesModal) always
+// shows exactly what's in the file, with no separate data structure to remember to update.
+// English on purpose — CHANGELOG.md itself stays Arabic (CLAUDE.md §2), but this app's UI is
+// English, so the in-app admin viewer reads from this parallel English-only file instead.
+import CHANGELOG_RAW from "../CHANGELOG_EN.md?raw";
 
 // Native Android plugin (see /android/.../MatchModePlugin.kt) — persistent Match Mode
 // notification: shows live courts/teams for the current round, lets the organizer tap a
@@ -214,13 +220,31 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.31";
+const APP_VERSION = "V0.11.32";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
 // the "Download Android App" link; it just means the very first paint may briefly show an old
 // number before the fetch lands.
 const LATEST_APK_VERSION_FALLBACK = "V0.10.00";
+// Splits CHANGELOG.md's raw text into one entry per "## " heading (its established format —
+// see CLAUDE.md §2). Each heading line is "VX.X.X (الحالي) — title" or "VX.X.X — title"; the
+// "(الحالي)" marker is stripped since the modal shows entries newest-first regardless. Anything
+// before the first heading (the file's own intro line) and the "---" separators are discarded.
+function parseChangelogEntries(raw) {
+  if (!raw) return [];
+  const chunks = raw.split(/\n## /).slice(1); // drop the H1 intro chunk before the first entry
+  return chunks.map(chunk => {
+    const lines = chunk.split("\n");
+    const heading = lines[0].replace(/\(الحالي\)\s*/,"").trim();
+    const dash = heading.indexOf("—");
+    const version = (dash>=0 ? heading.slice(0,dash) : heading).trim();
+    const title = (dash>=0 ? heading.slice(dash+1) : "").trim();
+    const body = lines.slice(1).join("\n").split("\n---")[0].trim();
+    return { version, title, body };
+  }).filter(e => e.version);
+}
+const CHANGELOG_ENTRIES = parseChangelogEntries(CHANGELOG_RAW); // parsed once — see VersionUpdatesModal
 const INVITE_BASE_URL = "https://www.matchkeeper.app"; // custom domain (Vercel, auto-deploys on git push to main) — the real user-facing web app; padelos-6f999.web.app is Firebase's own URL for the same backend, not what real users see
 // localStorage persists across sign-out/sign-in on the same device, so a pending invite code
 // that never resolved (e.g. the person closed the tab mid-flow) can otherwise sit there
@@ -4227,6 +4251,7 @@ export default function Matchkeeper() {
   // they can see what it even is) with a "register/join?" prompt over it — declining just
   // dismisses the prompt, leaving them signed in and browsing normally but not enrolled.
   const [pendingInviteAction, setPendingInviteAction] = useState(null); // {inv, kind:"event"|"community"} | null
+  const [showVersionUpdates, setShowVersionUpdates] = useState(false); // platform-admin-only "Version Updates" modal, see TopBar
   useEffect(() => {
     if (!authUser || linkedMe || !dataLoaded || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
     const code = readPendingInvite();
@@ -6277,7 +6302,7 @@ export default function Matchkeeper() {
         select.po-inp option{background:var(--po-card);color:var(--po-text);}
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
       `}</style>
-      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
+      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onVersionUpdates={()=>{setShowVersionUpdates(true);setMenu(false);}} onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
         comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
         onMarkNotifRead={markNotifRead} onMarkAllNotifRead={markAllNotifRead}
@@ -6330,6 +6355,10 @@ export default function Matchkeeper() {
           </div>
         </div>;
       })()}
+      {/* "Version Updates" — Platform Admin only, opened from the gear menu (TopBar). Shows the
+          latest CHANGELOG.md entry with a "Load more" to reveal the full history, so the admin
+          can check what actually shipped without leaving the app or opening the repo. */}
+      {showVersionUpdates&&me.id===1&&<VersionUpdatesModal onClose={()=>setShowVersionUpdates(false)}/>}
       {/* iOS "Add to Home Screen" walkthrough — full-screen the first time (can't be missed),
           then collapses to a small floating icon on close instead of dismissing forever, same
           interaction shape as the God Mode button above. Left corner so the two never collide. */}
@@ -6516,7 +6545,7 @@ export default function Matchkeeper() {
   );
 }
 
-function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,onSettings,onPlatformAdmin,onSignOut,TH,dark,
+function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,onSettings,onPlatformAdmin,onVersionUpdates,onSignOut,TH,dark,
   comms,eventCommFilter,onSetEventCommFilter,
   notifications=[],notifMenu,setNotifMenu,onMarkNotifRead,onMarkAllNotifRead,onOpenNotif,onSeeAllNotifs}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
@@ -6631,7 +6660,14 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
             {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>}
-        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),...(isNativeAndroid&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),{i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":x.muted?"var(--po-dim)":"var(--po-sub)",fontSize:13,cursor:x.muted?"default":"pointer",opacity:x.muted?0.7:1,textAlign:"left"}}>{x.i} {x.l}</button>)}
+        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),...(isNativeAndroid&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),
+          // Admin-only tools, grouped right above Sign Out per admin's own preference rather than
+          // mixed in at the top of the menu (Version Updates) or buried in Platform Admin (DEV env link).
+          ...(me.id===1?[
+            {i:"📋",l:"Version Updates",fn:()=>{setMenu(false);onVersionUpdates&&onVersionUpdates();}},
+            {i:IS_DEV_ENV?"🏭":"🧪",l:IS_DEV_ENV?"Open Production":"Open DEV Environment",fn:()=>{setMenu(false);window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank");}},
+          ]:[]),
+          {i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":x.muted?"var(--po-dim)":"var(--po-sub)",fontSize:13,cursor:x.muted?"default":"pointer",opacity:x.muted?0.7:1,textAlign:"left"}}>{x.i} {x.l}</button>)}
       </div>}
     </div>
   </div>;
@@ -6886,6 +6922,46 @@ function InviteModal({url,label,onClose}){
         <Btn label="📤 Share" primary onClick={share} style={{flex:1}}/>
       </div>
       <div onClick={onClose} style={{textAlign:"center",fontSize:12,color:"var(--po-dim)",cursor:"pointer",marginTop:14}}>Close</div>
+    </div>
+  </div>;
+}
+
+// Renders a single changelog bullet line, turning **bold** markdown (the only markdown the
+// changelog actually uses) into real <b> spans — everything else is shown as plain text.
+function mdBoldLine(line, key){
+  const parts = line.split("**");
+  return <React.Fragment key={key}>{parts.map((p,i)=> i%2===1 ? <b key={i}>{p}</b> : p)}</React.Fragment>;
+}
+
+function ChangelogEntry({e}){
+  const bulletLines = e.body.split("\n").filter(l=>l.trim().startsWith("-"));
+  return <div style={{marginBottom:18}}>
+    <div style={{fontSize:13,fontWeight:700,color:"#6366F1",marginBottom:2}}>{e.version}</div>
+    {e.title&&<div style={{fontSize:14,fontWeight:700,color:"var(--po-text)",marginBottom:6}}>{e.title}</div>}
+    <ul style={{margin:0,paddingLeft:18,display:"flex",flexDirection:"column",gap:5}}>
+      {bulletLines.map((l,i)=><li key={i} style={{fontSize:12.5,color:"var(--po-sub)",lineHeight:1.5}}>{mdBoldLine(l.replace(/^-\s*/,""),i)}</li>)}
+    </ul>
+  </div>;
+}
+
+// Platform-admin-only "what actually shipped" viewer — bundled straight from CHANGELOG.md at
+// build time (see CHANGELOG_ENTRIES above), so there's nothing separate to keep in sync. Opens
+// showing just the latest entry; "Load more" reveals the rest of the history in the same list.
+function VersionUpdatesModal({onClose}){
+  const [expanded,setExpanded]=useState(false);
+  const entries = CHANGELOG_ENTRIES;
+  const shown = expanded ? entries : entries.slice(0,1);
+  return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:440,width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+      <div style={{fontSize:16,fontWeight:700,color:"var(--po-text)",marginBottom:2}}>📋 Version Updates</div>
+      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14}}>What actually shipped, straight from CHANGELOG.md.</div>
+      <div style={{overflowY:"auto",flex:1,marginBottom:14}}>
+        {entries.length===0
+          ? <div style={{fontSize:12,color:"var(--po-dim)"}}>No changelog entries found.</div>
+          : shown.map((e,i)=><ChangelogEntry key={e.version+i} e={e}/>)}
+      </div>
+      {!expanded&&entries.length>1&&<Btn label={`Load more (${entries.length-1} older)`} onClick={()=>setExpanded(true)} style={{marginBottom:8}}/>}
+      <div onClick={onClose} style={{textAlign:"center",fontSize:12,color:"var(--po-dim)",cursor:"pointer"}}>Close</div>
     </div>
   </div>;
 }
@@ -11867,16 +11943,11 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>
-      {!IS_DEV_ENV&&<div onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:cloningToDev?"default":"pointer",opacity:cloningToDev?0.5:1,borderBottom:"0.5px solid var(--po-bdr)"}}>
+      {!IS_DEV_ENV&&<div onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:cloningToDev?"default":"pointer",opacity:cloningToDev?0.5:1}}>
         <span style={{fontSize:18}}>☁️</span>
         <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{cloningToDev?"Cloning to DEV…":"Clone Data to DEV"}</span>
         <span style={{color:"var(--po-dim)"}}>›</span>
       </div>}
-      <div onClick={()=>window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank")} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
-        <span style={{fontSize:18}}>{IS_DEV_ENV?"🏭":"🧪"}</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{IS_DEV_ENV?"Open Production":"Open DEV Environment"}</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
     </Card>
     {showDupEmails&&<Card style={{marginBottom:16}}>
       {dupEmailGroups.length===0&&<div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"10px 0"}}>No duplicate emails found ✓</div>}

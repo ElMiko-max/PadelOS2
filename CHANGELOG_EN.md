@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.33 — Scorers is now a modal instead of expanding inline
+
+- Admin's idea: instead of the "⚽ Scorers" button expanding/collapsing a panel inside the match card (which stretched the card and occasionally threw off its alignment), it now opens a single modal covering both teams at once.
+- New: explicit Save / Cancel. Taps (+/−) only update a local draft inside the modal — hit Cancel and nothing gets written at all (reverts to whatever was there before the modal opened). Hit Save and both teams commit together in one go (same score-floor behavior as before: the score gets raised if the tagged total is higher).
+- The "⚽ Scorers" button now shows the tagged goal count next to it (e.g. "⚽ Scorers (3)") so you can tell at a glance which matches still need tagging, without opening anything.
+
+---
+
 ## V0.11.32 — New "Version Updates" admin menu item
 
 - New: a "📋 Version Updates" item in the top-right (⚙️) menu — visible to the Platform Admin only — opens a modal showing the latest changelog entry, with a "Load more" button revealing the rest of the history.

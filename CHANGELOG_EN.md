@@ -4,6 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.34 — Admin alerts as registrations approach/hit/drop below the minimum
+
+- New: when a player leaves an event (self-cancel or admin-removed) and the registration count nears the event's minimum viable size (courts × 4), the event's admin(s) and creator now get notified at 3 moments:
+  - **⚠️ Approaching:** registrations = minimum + 1 (one more drop-out and it's exactly at the line).
+  - **🔶 At minimum:** registrations = exactly the minimum.
+  - **🚨 Below minimum:** registrations are now under the minimum.
+- Each alert fires once, exactly at the moment that threshold is crossed (not repeatedly for every further drop-out while already below) — and can fire again later if the event fills back up and then drains a second time.
+- Same recipients as the existing last-minute-cancellation alert (event admins + creator) — same "this event needs your attention" reasoning.
+
+---
+
 ## V0.11.33 — Scorers is now a modal instead of expanding inline
 
 - Admin's idea: instead of the "⚽ Scorers" button expanding/collapsing a panel inside the match card (which stretched the card and occasionally threw off its alignment), it now opens a single modal covering both teams at once.

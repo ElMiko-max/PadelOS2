@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.33";
+const APP_VERSION = "V0.11.34";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5657,10 +5657,15 @@ export default function Matchkeeper() {
       const idx = ev.registrations.findIndex(r=>r.userId===uid);
       if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
     }
+    const hadReg = ev && ev.registrations.some(r=>r.userId===uid);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}),{bypassSubscriptionLock:uid===me.id});
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
+    // Recipients shared by both alerts below (last-minute cancellation + falling toward the
+    // minimum) — same "this event needs the admin's attention" reasoning either way, computed
+    // once so both can reuse it without duplicating the filter.
+    const eventHealthRecipients = ev ? [...new Set([ev.createdBy, ...(ev.eventAdmins||[])])].filter(id=>id!==uid&&id!==me.id) : [];
     // Last-minute cancellation alert — the creator/event admins should hear about a dropout
     // close to start time, not just find out when the roster comes up short. Fires regardless
     // of who removed the player (self-cancel or admin-removed), excluding the leaving player
@@ -5669,8 +5674,23 @@ export default function Matchkeeper() {
       const startMs = new Date(`${ev.date}T${ev.time||"00:00"}`).getTime();
       const hoursUntil = (startMs-Date.now())/3600000;
       if (!isNaN(startMs) && hoursUntil>0 && hoursUntil<=3) {
-        const recipients = [...new Set([ev.createdBy, ...(ev.eventAdmins||[])])].filter(id=>id!==uid&&id!==me.id);
-        if (recipients.length) notify(recipients, "lastMinuteCancel", ev, `⚠️ Last-minute cancellation — ${ev.name}`, `${u?.nickname||"A player"} dropped out ${hoursUntil<1?"less than an hour":`~${Math.round(hoursUntil)}h`} before start.`);
+        if (eventHealthRecipients.length) notify(eventHealthRecipients, "lastMinuteCancel", ev, `⚠️ Last-minute cancellation — ${ev.name}`, `${u?.nickname||"A player"} dropped out ${hoursUntil<1?"less than an hour":`~${Math.round(hoursUntil)}h`} before start.`);
+      }
+    }
+    // Minimum-headcount alert — as the roster drains toward (and past) an event's minimum
+    // viable size (courts×4), the admin needs the heads-up early enough to actually recruit
+    // replacements, not just discover a doomed event on the day. `ev` here is still the
+    // pre-removal snapshot (captured at the top of this function, before updC ran), so
+    // `before`/`after` are exact — and since this function only ever removes one registration
+    // per call, `after` is always exactly `before-1`, so each of the 3 thresholds below can
+    // only ever be hit once per crossing (no risk of a single removal skipping past one).
+    if (ev && hadReg && ev.status!=="completed" && ev.status!=="cancelled") {
+      const minReq = (ev.courts||0)*4;
+      const before = ev.registrations.length, after = before-1;
+      if (minReq>0 && eventHealthRecipients.length) {
+        if (after===minReq+1) notify(eventHealthRecipients, "eventNearMin", ev, `⚠️ ${ev.name} is close to the minimum`, `${after} registered, needs ${minReq} to run — one more drop-out and it's right at the line.`);
+        else if (after===minReq) notify(eventHealthRecipients, "eventAtMin", ev, `🔶 ${ev.name} just hit the minimum`, `Exactly ${minReq} registered — any more drop-outs and the event won't have enough players.`);
+        else if (after===minReq-1) notify(eventHealthRecipients, "eventBelowMin", ev, `🚨 ${ev.name} is below the minimum`, `Only ${after} registered, needs ${minReq} — start recruiting replacements now.`);
       }
     }
     logAudit("event.unregister", `${me.nickname} ${uid===me.id?"unregistered themselves":`removed ${u?.nickname||uid}`} from "${ev?.name||eid}"`, "event", eid);
@@ -12111,7 +12131,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
 function NotificationsSc({notifications,me,onBack,onMarkAllRead,onOpen}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗"};
+  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗",lastMinuteCancel:"⚠️",eventNearMin:"⚠️",eventAtMin:"🔶",eventBelowMin:"🚨"};
   return <><BBtn onBack={onBack} label="Back"/>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.40";
+const APP_VERSION = "V0.11.41";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5548,7 +5548,7 @@ export default function Matchkeeper() {
     const onIt = waitlisted.some(r=>r.userId===uid);
     return {waitlisted:onIt, pos:onIt?waitlisted.length:0};
   };
-  const registerEv=(cid,eid)=>{
+  const registerEv=async (cid,eid)=>{
     const ev=getEv(cid,eid);
     // The "I'm In" button already hides itself once an event is completed/cancelled, but that's
     // UI-only — nothing at the write layer stopped a registration from landing on an already-
@@ -5558,28 +5558,53 @@ export default function Matchkeeper() {
     // guard — found live: an admin paused registration for a rush event, but anyone who still
     // had the app open (or an invite link — see registerViaInvite's matching fix) could still
     // register right through it, since only the UI button read the pause flag, not this
-    // function itself.
+    // function itself. This is still the FIRST line of defense (fires before any network call,
+    // and is what the registerForEvent Cloud Function's fallback below relies on) — but the
+    // real backstop against a stale client not even having this check yet is that function.
     if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — registration is no longer open","err");return;}
     if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
+    const afterRegistered = (waitlisted, waitPos) => {
+      if (waitlisted) {
+        toast2(`You're #${waitPos} on the waitlist`);
+        if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${waitPos} on the waitlist for ${ev.name}`, "We'll notify you if a spot opens up.");
+      } else {
+        toast2("Registered ✓");
+        if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
+      }
+      // Let the event's creator + community admins know someone registered themselves — the
+      // admin-driven paths (addMember, registerViaInvite, approveEventJoin) don't need this,
+      // since the admin already knows because they're the one who took the action.
+      if (ev) {
+        const adminIds = (comm?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
+        const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
+        notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
+      }
+      logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+    };
+    // Server-side gateway first — see registerForEvent's own comment in functions/index.js for
+    // why this exists (it re-checks status/registrationOpen against LIVE server data, so it's
+    // correct even if this client's own code is the stale thing). Falls back to the direct
+    // write below on anything that ISN'T the function explicitly rejecting the registration —
+    // dev (no functions deployed there — see IS_DEV_ENV), a network hiccup, or a timeout should
+    // all still let a legitimate registration through via the (already-guarded, see above)
+    // client path, same resilience story as claimOrCreateProfile already relies on.
+    if (!IS_DEV_ENV) {
+      try {
+        const fn = httpsCallable(getFunctionsLazy(), "registerForEvent");
+        const res = await withTimeout(fn({communityId:cid, eventId:eid, via:null}), 8000);
+        const {status, waitlisted, pos} = res.data || {};
+        if (status === "already-registered") return;
+        afterRegistered(!!waitlisted, pos||0);
+        return;
+      } catch (e) {
+        if (e?.code === "functions/failed-precondition") { toast2(e.message || "Registration is currently closed", "err"); return; }
+        console.log("registerForEvent unavailable, falling back to direct write", e);
+      }
+    }
     const {waitlisted, pos:waitPos} = willLandWaitlisted(ev, me.id, comm, null);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
-    if (waitlisted) {
-      toast2(`You're #${waitPos} on the waitlist`);
-      if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${waitPos} on the waitlist for ${ev.name}`, "We'll notify you if a spot opens up.");
-    } else {
-      toast2("Registered ✓");
-      if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
-    }
-    // Let the event's creator + community admins know someone registered themselves — the
-    // admin-driven paths (addMember, registerViaInvite, approveEventJoin) don't need this,
-    // since the admin already knows because they're the one who took the action.
-    if (ev) {
-      const adminIds = (comm?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
-      const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
-      notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
-    }
-    logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+    afterRegistered(waitlisted, waitPos);
   };
   const addMember=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -5598,7 +5623,7 @@ export default function Matchkeeper() {
   // footprint at the community level if the invitee wasn't already a member of any status —
   // a name that exists for reference with no extra visibility, upgradeable later via the
   // existing "Make Member" action, rather than a total stranger with zero community trace.
-  const registerViaInvite=(cid,eid,uid)=>{
+  const registerViaInvite=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     // Confirmed live: someone opened a stale invite link the day AFTER the event had already
     // been closed (event #50) — this path had no status check at all, so it silently added a
@@ -5608,10 +5633,30 @@ export default function Matchkeeper() {
     // Same gap as registerEv, confirmed live on a real rush event: the admin's "pause
     // registration" toggle only ever hid the in-app "I'm In" button — an invite link someone
     // already had (shared before the pause, in a WhatsApp group etc.) still registered them
-    // right through it, since this function had no idea the event had been paused.
+    // right through it, since this function had no idea the event had been paused. Still the
+    // first line of defense (see registerEv's matching comment) — registerForEvent below is the
+    // real backstop for a client that predates even this check.
     if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
+    // Only ever called with uid===me.id (see the sole call site) — registerForEvent always
+    // registers whoever is actually signed in (resolved server-side from their own auth token),
+    // so it can't stand in for a hypothetical admin-on-behalf-of-someone-else call. Skips
+    // straight to the direct write below if that's ever not the case.
+    if (!IS_DEV_ENV && uid===me.id) {
+      try {
+        const fn = httpsCallable(getFunctionsLazy(), "registerForEvent");
+        const res = await withTimeout(fn({communityId:cid, eventId:eid, via:"invite"}), 8000);
+        const {status, waitlisted} = res.data || {};
+        if (status === "already-registered") return;
+        if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
+        logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
+        return;
+      } catch (e) {
+        if (e?.code === "functions/failed-precondition") { toast2(e.message || "This invite link is no longer valid", "err"); return; }
+        console.log("registerForEvent unavailable, falling back to direct write", e);
+      }
+    }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
     updC(cid,c=>({...c,
       members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],

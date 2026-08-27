@@ -261,3 +261,105 @@ exports.confirmEmailMatch = onCall(async (request) => {
     return {status: "linked", userId};
   });
 });
+
+// registerForEvent — same "close the stale-client gap" reasoning as claimOrCreateProfile above,
+// applied to event registration instead of profile identity. Real incident that motivated this
+// (2026-08-27, event #55 "Thursday trial"): the admin's "pause registration" toggle only ever
+// hid the client's "I'm In" button — the actual write functions had no server-side awareness of
+// it, so an already-loaded tab or an old Android APK (confirmed live: V0.10.24, several minor
+// versions behind) could still write a registration straight through a pause. A client-side fix
+// closes it for anyone running current code, but a client that predates the fix has no way to
+// know to apply it. This function is the actual backstop: it re-validates event status AND the
+// pause flag itself, from the live server data, inside the same transaction as the write, so
+// the result is correct regardless of what the calling client's own code thinks is true.
+//
+// Client usage (see src/App.jsx's registerEv/registerViaInvite): call this first; on ANY
+// failure (including plain unavailability — padelos-dev has no functions deployed, matching
+// claimOrCreateProfile's own fallback story) fall back to the existing direct client-side write.
+// That fallback path is NOT a regression — it already carries the same registrationOpen check
+// client-side (see registerEv's own guard) — this function is a strictly-additional layer for
+// clients recent enough to know to call it, not a replacement for that check.
+//
+// The capacity/waitlist math below (getMaxPlayers/isPriorityReg/splitRegsByCapacity) is a
+// deliberate line-for-line port of the same-named functions in src/App.jsx — keep them in sync
+// if that logic ever changes there. Duplicated rather than shared because this function runs in
+// a separate Node/CommonJS runtime from the client's Vite/JSX bundle; a real shared-module setup
+// is more invasive than this fix warranted.
+exports.registerForEvent = onCall(async (request) => {
+  const auth = request.auth;
+  if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+  const {communityId, eventId, via} = request.data || {};
+  if (communityId == null || eventId == null) {
+    throw new HttpsError("invalid-argument", "communityId and eventId are required.");
+  }
+
+  const db = getFirestore();
+  const linkRef = db.collection("padelos_links").doc(auth.uid);
+  const commsRef = db.collection("padelos").doc("comms");
+
+  return db.runTransaction(async (tx) => {
+    const linkSnap = await tx.get(linkRef);
+    if (!linkSnap.exists) throw new HttpsError("failed-precondition", "No linked player profile for this account yet.");
+    const userId = linkSnap.data().userId;
+
+    const commsSnap = await tx.get(commsRef);
+    const comms = JSON.parse(commsSnap.data()?.value || "[]");
+    const commIdx = comms.findIndex(c => c.id === communityId);
+    if (commIdx === -1) throw new HttpsError("not-found", "Community not found.");
+    const comm = comms[commIdx];
+    const ev = comm.events.find(e => e.id === eventId);
+    if (!ev) throw new HttpsError("not-found", "Event not found.");
+
+    if (ev.status === "completed" || ev.status === "cancelled") {
+      throw new HttpsError("failed-precondition", via === "invite"
+        ? "This event has already ended — the invite link is no longer valid."
+        : "This event is closed — registration is no longer open.");
+    }
+    if (ev.registrationOpen === false) {
+      throw new HttpsError("failed-precondition", "Registration is currently paused for this event — check back later.");
+    }
+
+    if (ev.registrations.some(r => r.userId === userId)) {
+      return {status: "already-registered", waitlisted: false, eventName: ev.name};
+    }
+
+    // --- ported from splitRegsByCapacity/isPriorityReg/getMaxPlayers in src/App.jsx ---
+    const getMaxPlayers = e => (e?.maxPlayers > 0 ? e.maxPlayers : null);
+    const isPriorityReg = (r, c) => {
+      if (r.addedBy != null && r.addedBy !== "approved") return true;
+      return c?.members?.find(m => m.userId === r.userId)?.status === "regular";
+    };
+    const splitRegsByCapacity = (e, c) => {
+      const max = getMaxPlayers(e);
+      if (!max) return {active: e.registrations, waitlisted: []};
+      const windowActive = e?.regularUntil && Date.now() < new Date(e.regularUntil).getTime();
+      if (!windowActive || !c) return {active: e.registrations.slice(0, max), waitlisted: e.registrations.slice(max)};
+      const active = [], waitlisted = [];
+      e.registrations.forEach(r => {
+        if (isPriorityReg(r, c) && active.length < max) active.push(r);
+        else waitlisted.push(r);
+      });
+      return {active, waitlisted};
+    };
+    // --- end ported block ---
+
+    const addedBy = via === "invite" ? "invite" : null;
+    const newReg = {userId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
+    const simEv = {...ev, registrations: [...ev.registrations, newReg]};
+    const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
+    const isWaitlisted = waitlistArr.some(r => r.userId === userId);
+
+    const updatedEvents = comm.events.map(e => e.id === eventId ? {...e, registrations: [...e.registrations, newReg]} : e);
+    let updatedComm = {...comm, events: updatedEvents};
+    // Matches registerViaInvite's own side effect: an invite link also grants guest-tier
+    // community membership, not just the event registration, if they aren't a member yet.
+    if (via === "invite" && !updatedComm.members.some(m => m.userId === userId)) {
+      updatedComm = {...updatedComm, members: [...updatedComm.members, {userId, role: "member", status: "guest", since: new Date().toISOString().slice(0, 10)}]};
+    }
+    const updatedComms = [...comms];
+    updatedComms[commIdx] = updatedComm;
+    tx.set(commsRef, {value: JSON.stringify(updatedComms)});
+
+    return {status: "ok", waitlisted: isWaitlisted, pos: isWaitlisted ? waitlistArr.length : 0, eventName: ev.name};
+  });
+});

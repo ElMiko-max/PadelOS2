@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.41 — The real fix: a server-side Cloud Function for registration
+
+- New: **`registerForEvent`**, a Cloud Function (`functions/index.js`) that checks event status and `registrationOpen` against the **live server data at the moment of the write itself**, not whatever the calling client believes. That means no device — no matter how old — can register through an active pause anymore, because the check now lives entirely outside client code.
+- **How the call works:** the app tries this function first; if it's unavailable (dev — `padelos-dev` has no Cloud Functions deployed at all — a network issue, or a timeout) it automatically falls back to the same direct write path already fixed in V0.11.39. So a function problem can never fully block registration — but if the function explicitly rejects it (event genuinely closed), that decision is respected and there's no fallback around it.
+- **Full picture now:** V0.11.39 (client-side check) + V0.11.40 (forces old Android installs to update) + V0.11.41 (real server-side check nothing can bypass) — together these close this class of problem from every angle.
+
+---
+
 ## V0.11.40 — Hard Android update gate
 
 - New: real protection against an old Android install silently missing a critical fix like V0.11.39's. Until now there was only a soft "new version available" banner — easy to ignore, and evidently was. Now, when we set a required minimum version (`minSupported` in `releases/latest.json`), any **signed-in** Android install below it sees a full-screen "Update Required" screen instead of the normal app, with a direct download button — not just a notice, an actual block until they update.

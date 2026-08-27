@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.34";
+const APP_VERSION = "V0.11.39";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -684,14 +684,25 @@ function genNextRoundCI(plan, retiredIds=[]) {
   const matches=[]; for(let c=1;c<=courts;c++){const cp=buckets[c].slice(0,4);if(cp.length<4)continue;const pair=diversePair(cp,ph,lastRoundPairs);matches.push({court:c,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
   return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds.filter(id=>!retiredIds.includes(id))}],partnerHistory:ph};
 }
-function regenerateBreakPlan(plan, playedRounds) {
+function regenerateBreakPlan(plan, playedRounds, retiredIds=[]) {
   // Keep breaks for played rounds as-is
   // Recompute breaks for future rounds respecting rules
-  const players = plan.sorted;
+  // Anyone retired/no-shown since Start CI is dropped from the pool entirely here (not just
+  // given priority for a break) — they're not playing at all, so they shouldn't occupy a
+  // break slot OR count toward how many players still need to fit on courts each round. Without
+  // this, bpr (breaks needed per round) stays computed against the ORIGINAL headcount forever,
+  // which is exactly the staleness BUGS.md-style bug this filter closes.
+  const retired = new Set(retiredIds);
+  const players = plan.sorted.filter(p=>!retired.has(p.userId));
   const courts = plan.courts;
   const totalRounds = plan.totalRounds;
   const bpr = Math.max(0, players.length - courts*4);
-  if (bpr === 0) return plan.breakPlan;
+  // Was `return plan.breakPlan` unchanged — correct the moment this function was first written
+  // (nobody's ever needed a break, so there was nothing to compute), but wrong the moment a
+  // mid-event retire/no-show can DROP bpr to 0 from a nonzero value: it left every future
+  // round's stale, nonzero break list exactly as it was instead of actually clearing it, so
+  // "Regenerate Future" looked like it was doing nothing no matter how many times it ran.
+  if (bpr === 0) return plan.breakPlan.map((r,ri) => ri<playedRounds ? r : []);
   const firmBreaks = plan.firmBreaks || {}; // {roundIndex: [userId,...]} — admin-locked breaks that must survive regeneration untouched
 
   // Count breaks already assigned in played rounds
@@ -5515,7 +5526,13 @@ export default function Matchkeeper() {
     // UI-only — nothing at the write layer stopped a registration from landing on an already-
     // closed event through any OTHER path (an invite link doesn't go through this button at
     // all). Guard it here too, not just at every call site.
+    // registrationOpen===false (the admin's separate "pause" toggle) was missing from this same
+    // guard — found live: an admin paused registration for a rush event, but anyone who still
+    // had the app open (or an invite link — see registerViaInvite's matching fix) could still
+    // register right through it, since only the UI button read the pause flag, not this
+    // function itself.
     if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — registration is no longer open","err");return;}
+    if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const {waitlisted, pos:waitPos} = willLandWaitlisted(ev, me.id, comm, null);
     updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
@@ -5560,6 +5577,11 @@ export default function Matchkeeper() {
     // registration to a completed event with no round/match to ever put them in. The link
     // itself has no way to know it's stale, so the check has to live here.
     if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event has already ended — the invite link is no longer valid","err");return;}
+    // Same gap as registerEv, confirmed live on a real rush event: the admin's "pause
+    // registration" toggle only ever hid the in-app "I'm In" button — an invite link someone
+    // already had (shared before the pause, in a WhatsApp group etc.) still registered them
+    // right through it, since this function had no idea the event had been paused.
+    if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
@@ -5703,13 +5725,22 @@ export default function Matchkeeper() {
   const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
   // Retiring mid-event: from here on the player is skipped when future rounds/matches are
   // generated (genNextRoundCI / genNextCTLadder / applyPromoRelegation all filter
-  // ev.retiredIds — past rounds/results are untouched). Closed Teams is fixed doubles with no
-  // "continue short-handed" mode, so retiring one player retires their whole team together.
-  // Finance default: retiring before the event's scheduled midpoint exempts them from the rest
-  // of the cost split, retiring after it they still owe their share — either way it just seeds
-  // the existing `exempted` set, so the admin can override it same as any other exemption from
-  // the Finance tab. Un-retiring never touches the exempt flag — only retiring sets a default.
-  const retirePlayer=(cid,eid,uid)=>{
+  // ev.retiredIds — past rounds/results are untouched), AND skipped from team/round-1
+  // formation itself if they're already retired before Start CI / Form Teams even runs
+  // (startCI/startCT both filter `active` by retiredIds — see there). Closed Teams is fixed
+  // doubles with no "continue short-handed" mode, so retiring one player retires their whole
+  // team together. Finance default: retiring before the event's scheduled midpoint exempts
+  // them from the rest of the cost split, retiring after it they still owe their share —
+  // either way it just seeds the existing `exempted` set, so the admin can override it same as
+  // any other exemption from the Finance tab. Un-retiring never touches the exempt flag — only
+  // retiring sets a default.
+  // noShow: same mechanism (same retiredIds set — no-show is not a separate exclusion path),
+  // just additionally tagged in `noShowIds` for the shame-mark badge in the Players list. A
+  // player can only be in one state at a time in the UI (only one action button shows per
+  // player, depending on whether they're currently retired), so un-marking always clears both
+  // sets together regardless of which button is showing — there's no case where a player needs
+  // to be "retired AND no-show" as distinguishable states beyond the badge itself.
+  const retirePlayer=(cid,eid,uid,noShow)=>{
     const ev=getEv(cid,eid);
     if(!ev) return;
     const isRetiring=!(ev.retiredIds||[]).includes(uid);
@@ -5720,7 +5751,11 @@ export default function Matchkeeper() {
     updC(cid,c=>({...c,events:c.events.map(e=>{
       if(e.id!==eid) return e;
       const ret=new Set(e.retiredIds||[]);
-      ids.forEach(id=>{ isRetiring?ret.add(id):ret.delete(id); });
+      const noShowSet=new Set(e.noShowIds||[]);
+      ids.forEach(id=>{
+        if(isRetiring){ ret.add(id); if(noShow) noShowSet.add(id); }
+        else { ret.delete(id); noShowSet.delete(id); }
+      });
       let exempted=e.exempted||[];
       if(isRetiring){
         const start=e.date&&e.time?new Date(`${e.date}T${e.time}`).getTime():null;
@@ -5731,11 +5766,33 @@ export default function Matchkeeper() {
         ids.forEach(id=>{ beforeMid?exSet.add(id):exSet.delete(id); });
         exempted=[...exSet];
       }
-      return {...e,retiredIds:[...ret],exempted};
+      // CI's break schedule is precomputed for the WHOLE event up front (buildBreakPlan, at
+      // Start CI), unlike round-by-round formats — so unless it's rebuilt right here, it stays
+      // silently stale forever: "needs N breaks" keeps reflecting the headcount from Start CI
+      // time, not who's actually still playing. Computed inside this same mutator (not a
+      // separate updC call after this one) so it always sees the retiredIds change it depends
+      // on immediately, not whatever `comms` happened to hold before this transaction landed —
+      // same reasoning as the settlement-status race fix elsewhere in this file.
+      // Also drops any PENDING round (generated, not yet played) — found live: leaving a stale
+      // pending round's break assignment in place could strand a match a player short (the
+      // player who just retired, PLUS whoever the stale plan still expected to sit out), and
+      // genNextRoundCI has no fallback for that — it produced a real duplicate-player match
+      // instead of a clean 4-a-court split. A pending round has no results recorded yet, so
+      // nothing real is lost dropping it — the admin just taps "Next Round" again and it
+      // regenerates fresh, correctly, against the corrected breakPlan below. Rounds that
+      // actually have results stay completely untouched either way.
+      const plan = e.type==="closed_ind"&&e.plan
+        ? (()=>{
+            const completedRounds = e.plan.rounds.filter(r=>r.matches.every(m=>m.winner!=null)).length;
+            const rounds = e.plan.rounds.slice(0, completedRounds);
+            return {...e.plan, rounds, breakPlan: regenerateBreakPlan({...e.plan,rounds}, completedRounds, [...ret])};
+          })()
+        : e.plan;
+      return {...e,retiredIds:[...ret],noShowIds:[...noShowSet],exempted,plan};
     })}));
-    toast2(isRetiring?(ids.length>1?"Team marked retired 🚑":"Player marked retired 🚑"):"Retirement undone");
+    toast2(isRetiring?(ids.length>1?(noShow?"Team marked as no-show 🙈":"Team marked retired 🚑"):(noShow?"Player marked as no-show 🙈":"Player marked retired 🚑")):"Undone — back on the roster");
     const names=ids.map(id=>users.find(u=>u.id===id)?.nickname||id).join(", ");
-    logAudit(isRetiring?"player.retire":"player.unretire", `${me.nickname} ${isRetiring?"retired":"un-retired"} ${names} from "${ev.name}"`, "event", eid);
+    logAudit(isRetiring?(noShow?"player.noShow":"player.retire"):"player.unretire", `${me.nickname} ${isRetiring?(noShow?"marked as no-show":"retired"):"un-retired"} ${names} from "${ev.name}"`, "event", eid);
   };
   const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
   // "Direct" = paid their share through some channel that bypasses the collector entirely (cash
@@ -5836,7 +5893,11 @@ export default function Matchkeeper() {
   // CI
   const startCI=(cid,eid,n,dur)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    const active=splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active;
+    // Excludes anyone already marked retired/no-show (see retirePlayer) before Round 1 even
+    // exists — otherwise marking someone no-show before Start CI had no actual effect, since
+    // nothing else filters `active` by retiredIds until genNextRoundCI runs for round 2+.
+    const retired=new Set(ev.retiredIds||[]);
+    const active=splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.filter(r=>!retired.has(r.userId));
     const players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
     // A registered player whose user record couldn't be resolved used to just silently vanish
     // from the plan (filter(Boolean) above swallowing it) — no toast, no error, nothing to tell
@@ -5941,7 +6002,7 @@ export default function Matchkeeper() {
     // generatedRounds = how many rounds exist (including pending ones not played yet)
     // We lock all generated rounds (their breaks are fixed) and only recompute open ones
     const generatedRounds=ev.plan.rounds.length;
-    const newBreakPlan=regenerateBreakPlan(ev.plan,generatedRounds);
+    const newBreakPlan=regenerateBreakPlan(ev.plan,generatedRounds,ev.retiredIds||[]);
     setPlan(cid,eid,{...ev.plan,breakPlan:newBreakPlan});
     toast2("Break plan regenerated ✓");
   };
@@ -6089,7 +6150,9 @@ export default function Matchkeeper() {
     const ev=getEv(cid,eid);if(!ev)return;
     const comm=comms.find(c=>c.id===cid);
     const isFootballEv=ev.sport==="Football";
-    const active=splitRegsByCapacity(ev,comm).active;
+    // Same exclusion as startCI — see the comment there.
+    const retired=new Set(ev.retiredIds||[]);
+    const active=splitRegsByCapacity(ev,comm).active.filter(r=>!retired.has(r.userId));
     let players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,ev),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
     // Same silent-drop risk as startCI — a registered player whose user record didn't resolve
     // (most likely a stale-state race right after they registered) used to just vanish with no
@@ -6474,7 +6537,7 @@ export default function Matchkeeper() {
             onApproveEventJoin={uid=>approveEventJoin(comm.id,event.id,uid)}
             onRejectEventJoin={uid=>rejectEventJoin(comm.id,event.id,uid)}
             onSetFootballSkill={setFootballSkill}
-            onRetirePlayer={uid=>retirePlayer(comm.id,event.id,uid)}
+            onRetirePlayer={(uid,noShow)=>retirePlayer(comm.id,event.id,uid,noShow)}
             onToggleEventAdmin={uid=>toggleEventAdmin(comm.id,event.id,uid)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
             onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)}
@@ -8068,7 +8131,13 @@ function OutputPESTable({rows}){
   </div>;
 }
 function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewProfile}){
-  const activeRegistrations=splitRegsByCapacity(ev).active;
+  // Was splitRegsByCapacity(ev).active — raw registration count, which drifts from reality
+  // the moment anyone's retired/no-shown (still "registered", just not actually playing) or
+  // was excluded from Round 1 formation entirely (retired before Start CI ever ran). plan.sorted
+  // minus retiredIds is the actual player pool the break math itself is built against — see
+  // regenerateBreakPlan — so "needs N" here now matches what a regenerate would actually produce.
+  const retiredIds=new Set(ev.retiredIds||[]);
+  const activeRegistrations=(plan.sorted||[]).filter(p=>!retiredIds.has(p.userId));
   const bpr=Math.max(0,activeRegistrations.length-tc*4);
 
   // Count completed rounds (all matches have winners)
@@ -8083,7 +8152,13 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewP
 
   function validate(bp2){
     const w=[];
-    bp2.forEach((r,ri)=>{if(r.length!==bpr)w.push(`R${ri+1}: ${r.length} breaks (needs ${bpr})`);});
+    // Only flag the "needs N" mismatch for rounds a regenerate could actually fix (ri >=
+    // generatedRounds — see the column-state comment above). Generated rounds (frozen or
+    // pending) are locked history by design — their break count reflects whatever bpr was
+    // true when THEY were generated, which can legitimately differ from today's bpr after a
+    // mid-event retire/no-show. Flagging those as "issues" would just be permanent, unfixable
+    // noise from the moment anyone retires.
+    bp2.forEach((r,ri)=>{if(ri>=generatedRounds&&r.length!==bpr)w.push(`R${ri+1}: ${r.length} breaks (needs ${bpr})`);});
     activeRegistrations.forEach(r=>{let last=-2;bp2.forEach((round,ri)=>{if(round.includes(r.userId)){if(ri-last===1)w.push(`${users.find(u=>u.id===r.userId)?.nickname}: consecutive breaks R${ri} & R${ri+1}`);last=ri;}});});
     const counts={};activeRegistrations.forEach(r=>{counts[r.userId]=bp2.filter(b=>b.includes(r.userId)).length;});
     const vals=Object.values(counts);if(vals.length>0&&Math.max(...vals)-Math.min(...vals)>1)w.push(`Unequal breaks: max=${Math.max(...vals)}, min=${Math.min(...vals)}`);
@@ -8985,7 +9060,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       : onRemoveFromEvent(uid),
     editGuestUsr: (uid,usr) => sim ? null /* not applicable in sim */ : onEditGuestUsr(uid,usr),
     setFootballSkill: (uid,skill) => sim ? null /* not applicable in sim */ : onSetFootballSkill(uid,skill),
-    retirePlayer: (uid) => sim ? null /* not applicable in sim */ : onRetirePlayer(uid),
+    retirePlayer: (uid,noShow) => sim ? null /* not applicable in sim */ : onRetirePlayer(uid,noShow),
     toggleEventAdmin: (uid) => sim ? null /* not applicable in sim */ : onToggleEventAdmin(uid),
     editEventUsr: (uid,usr) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}))
@@ -9993,6 +10068,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
         const ci2=effEv.checkedIn.includes(u.id);
         const isRetired=(effEv.retiredIds||[]).includes(u.id);
+        const isNoShow=(effEv.noShowIds||[]).includes(u.id);
         // Whether this player ever actually showed up in a generated round/match, regardless
         // of Round-1-locked status — found live: a registration can exist for someone who was
         // never included when the plan was formed (a stale invite link, or the silent-drop bug
@@ -10032,7 +10108,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
                 {mStatus&&mStatus!=="guest"&&sBdg(mStatus)}
-                {isRetired&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
+                {isNoShow&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🙈 NO-SHOW</span>}
+                {isRetired&&!isNoShow&&<span style={{marginLeft:4,fontSize:10,color:"#EF4444",fontWeight:700}}>🚑 RETIRED</span>}
                 {suspendedIds.has(u.id)&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 {uIsEventAdmin&&<span style={{marginLeft:4,fontSize:10,color:"#A78BFA",fontWeight:700}}>🛡️ EVENT ADMIN</span>}
               </div>
@@ -10101,7 +10178,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   {isOpen&&!ci2&&isDay&&<SmBtn label="✓ Check In" onClick={()=>{act.checkIn(u.id);setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join ${effEv.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label});setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
                   {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{width:"100%"}}/>}
-                  {effEv.status!=="completed"&&effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<SmBtn label={isRetired?"↩ Un-retire":"🚑 Retire"} onClick={()=>{setOpenPlayerMenu(null);if(isRetired||window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color={isRetired?"#34D399":"#F59E0B"} style={{width:"100%"}}/>}
+                  {/* Retired/no-show share one underlying state (retiredIds), so once a player is
+                      in it there's a single combined undo button rather than two separate ones —
+                      see retirePlayer's comment for why that's always safe. */}
+                  {isRetired
+                    ? effEv.status!=="completed"&&<SmBtn label={isNoShow?"↩ Undo No-Show":"↩ Un-retire"} onClick={()=>{setOpenPlayerMenu(null);act.retirePlayer(u.id);}} color="#34D399" style={{width:"100%"}}/>
+                    : <>
+                      {effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<SmBtn label="🚑 Retire" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color="#F59E0B" style={{width:"100%"}}/>}
+                      {/* Unlike Retire, visible before match start too — marking someone no-show
+                          before Start CI / Form Teams excludes them from formation entirely
+                          (startCI/startCT filter by retiredIds), not just future rounds. */}
+                      <SmBtn label="🙈 Didn't Show Up" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(isCT&&effEv.plan?`Mark ${u.nickname}'s whole team as a no-show for "${ev.name}"?\n\nClosed Teams is fixed doubles, so this marks their teammate(s) too — the team stops being scheduled in future matches, and both get a visible "NO-SHOW" mark instead of the neutral "Retired" one. Finance exemption is auto-set based on whether it's before or after the event's midpoint — you can always override it in the Finance tab.`:`Mark ${u.nickname} as a no-show for "${ev.name}"?\n\nThey'll stop being scheduled (or excluded from team/round formation if it hasn't happened yet), and get a visible "NO-SHOW" mark instead of the neutral "Retired" one. Finance exemption is auto-set based on whether it's before or after the event's midpoint — you can always override it in the Finance tab.`))act.retirePlayer(u.id,true);}} color="#EF4444" style={{width:"100%"}}/>
+                    </>}
                   {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked)||!wasEverInPlan)&&<SmBtn label="✕ Remove" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(wasEverInPlan?`Remove ${u.nickname} from this event?`:`Remove ${u.nickname} from this event?\n\nThey're registered but were never actually included in any round or match — this just cleans up the registration, no real match data is affected.`))act.removeFromEvent(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
                 </div>}
               </div>}

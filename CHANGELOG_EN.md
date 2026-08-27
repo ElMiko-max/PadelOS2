@@ -4,6 +4,50 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.39 — Critical real bug fixed: registration was still possible while paused
+
+- **Real bug caught live on a real event during a registration rush:** the "pause registration" toggle (`registrationOpen`) only ever hid the "I'm In" button on screen — the functions that actually write a registration (`registerEv`, `registerViaInvite`) never checked that flag at all, only whether the event itself was closed/cancelled. Anyone with the page already loaded (or an old Android APK, e.g. V0.10.24) could still register while the pause was genuinely active.
+- **Real proof from the live event:** two players registered 35 seconds and 15 seconds **before** the admin reopened registration — i.e. registration went through while it was still actually paused.
+- **Fix:** the `registrationOpen` check now lives inside the actual registration-writing functions, not just the button — so even a stale client's write gets rejected.
+- **⚠️ Limit of this fix:** this closes the gap immediately for anyone on web (always runs the latest code), but **Android users on an old APK are still exposed** until they actually update — there's no auto-update. A real root-cause fix (a hard minimum supported app version, or moving registration to a server-side Cloud Function) is being discussed as a separate next step.
+
+---
+
+## V0.11.38 — Third fix: "Regenerate Future" returned the same stale schedule once the needed breaks hit zero
+
+- **Real bug found through a detailed live test on dev (14 players, one No-Show, one Retired):** `regenerateBreakPlan` had an early-exit that had been there since the function was first written — "if zero breaks are needed (bpr=0), just return the schedule unchanged, nothing to compute" — correct when bpr was already 0 to begin with (nobody ever needed a break), but wrong the moment bpr **drops** to 0 after starting above 0 (i.e. after a Retire/No-Show brings the count down to exactly fit the courts) — it kept returning the old schedule with real names still holding break slots from before, instead of clearing anything. That's exactly why "🔄 Regenerate Future" looked like it was doing nothing no matter how many times it was tapped.
+- **Fix:** that case now clears every not-yet-played round's break list down to empty instead of returning the old one unchanged. Rounds that already have a result are still left exactly as they were.
+
+---
+
+## V0.11.37 — More serious bug found and fixed: a pending round could lock in a duplicate player after Retire/No-Show
+
+- **A more serious real bug, found while testing V0.11.36 on dev:** if a player got marked Retired/No-Show **after** a new round (Pending — no result recorded yet) had already been generated, that round was left as-is with its old (pre-retirement) break assignment — the result was the scheduling algorithm trying to fit fewer real players onto courts than it had slots for, and in practice **the same player ended up listed twice in the same round** (a real data error, not just a display one).
+- **Fix:** marking someone Retired/No-Show now automatically drops any round that hasn't been played yet (Pending) — rounds that actually have a result are completely unaffected. The admin just taps "▶ Generate Next Round" again and it regenerates correctly, with no duplicate, against the corrected break schedule.
+- Manual cleanup was applied to the dev test event (event #54) to bring it back to a clean state for testing.
+
+---
+
+## V0.11.36 — Fixed: the Breaks tab kept using the old headcount after Retire/No-Show
+
+- **Real bug found while testing V0.11.35 on dev:** when a player got marked Retired or Didn't Show Up **after** Start CI had already run, the Breaks tab kept computing "needs N breaks" from the original registration count, never excluding the player who left — and even the "🔄 Regenerate Future" button didn't fix it, because the same math was built on `plan.sorted` (the team-formation snapshot), which also never excluded them afterward.
+- **Fix:**
+  - The Breaks tab's "needs N" calculation now excludes anyone actually Retired/No-Show, not just raw registrations.
+  - `regenerateBreakPlan` (what "Regenerate Future" runs) now accounts for who's actually left too.
+  - **Most importantly:** marking someone Retired/No-Show now **automatically** recomputes the break schedule for any not-yet-generated (Open) rounds in the same action — no need to remember to tap Regenerate Future separately.
+  - Rounds already generated (Pending or Frozen) are left exactly as they were — that's locked history by design — the fix only applies going forward, to Open rounds that don't have a final schedule yet.
+
+---
+
+## V0.11.35 — New "Didn't Show Up" action in the Players list, works before and after match start
+
+- New: a "🙈 Didn't Show Up" button in the Players list (⋮) — does exactly what "🚑 Retire" already does (stops the player being scheduled into any future round/match, same automatic finance-exemption logic based on where the event's midpoint falls), just with a visibly different "shame mark": "🙈 NO-SHOW" instead of "🚑 RETIRED".
+- Key difference from Retire: "Didn't Show Up" is visible **before match start too** (before Start CI / Form Teams has even run), not just after round 1 is locked in like regular Retire. Marking someone no-show before teams/round 1 are formed now excludes them from that formation entirely, instead of having no effect until later.
+- Closed Teams: marking one player as a no-show marks their whole team, exactly like Retire ("the team drops together").
+- One combined Undo button per player, regardless of whether they were marked Retired or No-Show.
+
+---
+
 ## V0.11.34 — Admin alerts as registrations approach/hit/drop below the minimum
 
 - New: when a player leaves an event (self-cancel or admin-removed) and the registration count nears the event's minimum viable size (courts × 4), the event's admin(s) and creator now get notified at 3 moments:

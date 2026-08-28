@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.44";
+const APP_VERSION = "V0.11.45";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1471,29 +1471,34 @@ function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
   }
   return Math.round(weightedSum / totalWeight);
 }
-// Preview-only: what would THIS event's PES do to a player's real USR if the event were closed
-// right now with that value? Works both before AND after the event's actually closed:
-//   - Still open (no usrHistory entry for this event yet): appends a hypothetical entry at the
-//     end — a genuine "if closed right now" preview, same as before.
-//   - Already closed (a real entry for this event exists somewhere in the history): swaps the
-//     PES value at that EXACT position instead of appending — so the answer correctly accounts
-//     for the rolling window's real composition today. If enough events happened since, this
-//     event may have already aged out of the window entirely, in which case swapping its value
-//     correctly yields 0 (not a guess) — a naive re-append would get this wrong. This is what
-//     lets both PES tabs show "what would this event's OTHER scoring method have done to USR"
-//     even long after the event closed, not just as a live pre-close preview.
-// Either way it's the same calcWeightedUSR the real close path uses, just never written anywhere.
+// Preview-only: what does THIS candidate PES value actually contribute to a player's real USR?
+// Compares two histories built from the SAME baseline (this event's own entry removed
+// entirely, if it exists) — one with the candidate pes applied, one without — rather than
+// comparing the candidate against today's actual history directly. That distinction matters:
+// comparing against actual history means "swapping in the SAME value the event was really
+// closed with" trivially nets to 0 (found live — the Court-Based tab showed "USR 0" for
+// everyone, even players the podium clearly showed a real, non-zero change for, because
+// court-based WAS how the event was actually closed, so the candidate always matched what was
+// already stored). Comparing against a shared "this event never happened" baseline instead
+// means: if the candidate matches what was really used, the result reproduces the event's real,
+// already-recorded impact (matching the podium); if it's the OTHER method, the result is a
+// genuine "what would that have done instead" counterfactual. Both live (no entry yet — appends
+// a hypothetical at the end) and closed (real entry — removed/replaced at its exact original
+// position, so the rolling window's composition and ordering stay correct either way, including
+// correctly yielding 0 once the event has aged out of the window entirely) are handled the same
+// way through this one baseline-vs-candidate comparison.
 function previewUsrDelta(u, pes, ev, usrWindowSize){
   if(pes==null||!u) return null;
   const seedUsr = u.seedUsr ?? u.usr;
   const hist = u.usrHistory||[];
   const existingIdx = hist.findIndex(h=>h.eventId===ev.id);
-  const counterfactualHist = existingIdx!==-1
+  const baselineHist = existingIdx!==-1 ? hist.filter((_,i)=>i!==existingIdx) : hist;
+  const candidateHist = existingIdx!==-1
     ? hist.map((h,i)=> i===existingIdx ? {...h, pes} : h)
     : [...hist, {eventId:ev.id, eventName:ev.name, date:ev.date, pes, type:"ci", retired:false}];
-  const actualUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
-  const counterfactualUsr = calcWeightedUSR(counterfactualHist, seedUsr, usrWindowSize);
-  return counterfactualUsr - actualUsr;
+  const baselineUsr = calcWeightedUSR(baselineHist, seedUsr, usrWindowSize);
+  const candidateUsr = calcWeightedUSR(candidateHist, seedUsr, usrWindowSize);
+  return candidateUsr - baselineUsr;
 }
 
 // Max possible pts for a specific team across all played rounds

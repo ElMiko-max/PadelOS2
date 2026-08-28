@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.45 — Real bug fixed: wrong "USR 0" in the PES tab when the value matched what actually closed the event
+
+- **Real bug caught live (admin screenshot):** the "PES (Court-Based)" tab showed "USR 0" for every player — even ones the podium itself showed a real USR change for! Cause: V0.11.44's calculation compared the candidate value against today's history as-is — so if the event really was closed with that same scoring method (Court-Based), the comparison trivially found "no difference," since the candidate already matched what was recorded.
+- **Fix:** the calculation now compares against one fixed baseline (the player's history with this event's entry removed entirely) instead of comparing against current history — so when the candidate matches what actually closed the event, the result now reproduces the real, already-recorded impact (verified against the player's actual USR History), and for the other method it's a genuine, correct counterfactual.
+- **Note:** a completely separate bug was found while investigating this (an old mismatch between the podium's number and the player's real USR) — that gets its own investigation later, not part of this fix.
+
+---
+
 ## V0.11.44 — USR effect now works after an event closes too (not just live)
 
 - **Per admin feedback — it was wrong that this only showed while the event was still open.** The calculation changed completely: `previewUsrDelta` now tells whether the event already has a real USR history entry — if so, it swaps that entry's PES value (at its exact position in history, not tacked onto the end) and recomputes, instead of appending a hypothetical entry on top of one that already happened for real.

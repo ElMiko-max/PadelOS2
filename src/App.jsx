@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.42";
+const APP_VERSION = "V0.11.43";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8249,32 +8249,33 @@ function XStandingsPreview({rows}){
 // Output PES / Output TES — deliberately flat, no expand/collapse: the owner only wants the
 // three numbers that matter (Entry USR, the delta that moved it, and the result), not the
 // per-match archaeology XStandingsPreview offers for the Delta view.
-// usrDelta/courtPes/courtUsrDelta are optional — only the CI (player) call site passes them
-// (CT teams don't have a USR-equivalent concept to preview against). compare only ever shows
-// anything when both the caller turned it on AND the row actually carries a courtPes value.
+// usrDelta/courtPes/courtUsrDelta/courtRank are optional — only the CI (player) call site
+// passes them (CT teams don't have a USR-equivalent concept to preview against). compare only
+// ever shows anything when both the caller turned it on AND the row actually carries a
+// courtPes value.
 function OutputPESTable({rows,compare}){
   if(!rows.length) return <div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No completed matches yet to preview.</div>;
   return <div>
     {rows.map((r,i)=><div key={r.key} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",borderRadius:8,background:"var(--po-inp)",marginBottom:6,flexWrap:"wrap"}}>
       <span style={{fontSize:11,color:"var(--po-dim)",width:18}}>{i+1}</span>
       <span style={{flex:1,minWidth:0}}>
-        <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}</div>
+        <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{r.name}{r.entryUsr!=null&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({Math.round(r.entryUsr*10)/10})</span>}</div>
         {r.subtitle&&<div style={{fontSize:10,color:"var(--po-dim)"}}>{r.subtitle}</div>}
       </span>
-      <span style={{fontSize:11,color:"var(--po-dim)",textAlign:"right",whiteSpace:"nowrap"}}>Entry <b style={{color:"var(--po-text)"}}>{Math.round(r.entryUsr*10)/10}</b></span>
-      <span style={{fontSize:11,fontWeight:700,color:r.avgDelta>=0?"#34D399":"#EF4444",textAlign:"right",whiteSpace:"nowrap"}}>{r.avgDelta>=0?"+":""}{Math.round(r.avgDelta*100)}%</span>
       <div style={{textAlign:"right"}}>
-        <div style={{fontSize:9,color:"var(--po-dim)"}}>Performance</div>
-        <div style={{fontSize:15,fontWeight:700,color:"#A78BFA",whiteSpace:"nowrap"}}>{r.score}</div>
-        {r.usrDelta!=null&&<div style={{fontSize:10,fontWeight:700,color:r.usrDelta>0?"#34D399":r.usrDelta<0?"#EF4444":"var(--po-dim)",whiteSpace:"nowrap"}}>USR {r.usrDelta>0?"+":""}{r.usrDelta}</div>}
+        <div style={{fontSize:9,color:"var(--po-dim)"}}>Δ</div>
+        <div style={{fontSize:13,fontWeight:700,color:r.avgDelta>=0?"#34D399":"#EF4444",whiteSpace:"nowrap"}}>{r.avgDelta>=0?"+":""}{Math.round(r.avgDelta*100)}%</div>
+      </div>
+      <div style={{textAlign:"right"}}>
+        <div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div>
+        <div style={{fontSize:15,fontWeight:700,color:"#A78BFA",whiteSpace:"nowrap"}}>{r.score}{r.usrDelta!=null&&<span style={{fontSize:11,fontWeight:700,color:r.usrDelta>0?"#34D399":r.usrDelta<0?"#EF4444":"var(--po-dim)"}}> (USR {r.usrDelta>0?"+":""}{r.usrDelta})</span>}</div>
       </div>
       {compare&&r.courtPes!=null&&<div style={{textAlign:"right",paddingLeft:8,borderLeft:"0.5px solid var(--po-bdr)"}}>
-        <div style={{fontSize:9,color:"var(--po-dim)"}}>Court-Based</div>
-        <div style={{fontSize:15,fontWeight:700,color:"#6366F1",whiteSpace:"nowrap"}}>{r.courtPes}%</div>
-        {r.courtUsrDelta!=null&&<div style={{fontSize:10,fontWeight:700,color:r.courtUsrDelta>0?"#34D399":r.courtUsrDelta<0?"#EF4444":"var(--po-dim)",whiteSpace:"nowrap"}}>USR {r.courtUsrDelta>0?"+":""}{r.courtUsrDelta}</div>}
+        <div style={{fontSize:9,color:"var(--po-dim)"}}>Court-Based{r.courtRank!=null&&` · #${r.courtRank}`}</div>
+        <div style={{fontSize:15,fontWeight:700,color:"#6366F1",whiteSpace:"nowrap"}}>{r.courtPes}%{r.courtUsrDelta!=null&&<span style={{fontSize:11,fontWeight:700,color:r.courtUsrDelta>0?"#34D399":r.courtUsrDelta<0?"#EF4444":"var(--po-dim)"}}> (USR {r.courtUsrDelta>0?"+":""}{r.courtUsrDelta})</span>}</div>
       </div>}
     </div>)}
-    <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4,padding:"0 4px",lineHeight:1.5}}>🧪 Output PES = Entry USR + this event's performance delta. Computed live, not stored, not official — only becomes real if this event is closed with Output PES below.</div>
+    <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4,padding:"0 4px",lineHeight:1.5}}>🧪 PES = Entry USR + (Δ × {OUTPUT_PES_K}%) — <b>not</b> a plain sum of the two numbers above (Δ above is the raw %, only {OUTPUT_PES_K}% of it actually feeds into PES — e.g. Δ +13% adds {Math.round(0.13*OUTPUT_PES_K*10)/10} points, not 13). Computed live, not stored, not official — only becomes real if this event is closed with Output PES below.</div>
   </div>;
 }
 function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewProfile}){
@@ -10711,7 +10712,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             // sitting in real USR history; showing a hypothetical "would be" delta on top of a
             // number that already landed would just be confusing, not useful.
             const usrDelta=!isCompleted?previewUsrDelta(s.user,pes,effEv,usrWindowSize):null;
-            return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({historicUsr(s.user.id,plan,s.user.usr)})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC"}}>{pes}%</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div>{usrDelta!=null&&<div style={{fontSize:11,fontWeight:700,color:usrDelta>0?"#34D399":usrDelta<0?"#EF4444":"var(--po-dim)",marginTop:2}}>USR {usrDelta>0?"+":""}{usrDelta}</div>}</div><div style={{textAlign:"right"}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div></div></Card>;})}
+            return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({historicUsr(s.user.id,plan,s.user.usr)})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div><div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC",whiteSpace:"nowrap"}}>{pes}%{usrDelta!=null&&<span style={{fontSize:11,fontWeight:700,color:usrDelta>0?"#34D399":usrDelta<0?"#EF4444":"var(--po-dim)"}}> (USR {usrDelta>0?"+":""}{usrDelta})</span>}</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div></div></Card>;})}
           {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
         </>}
@@ -10737,12 +10738,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           // Same court-based formula as the "pes" sub-tab above (personalMaxCI/personalRoundsCI),
           // computed here too only when the toggle actually needs it — matched to the same
           // player so the two numbers are directly comparable, not just visually adjacent.
-          let courtPes=null, courtUsrDelta=null;
+          let courtPes=null, courtUsrDelta=null, courtRank=null;
           if(compareCourtBased){
-            const cs=ciStands.find(s=>s.user.id===p.userId);
-            if(cs){ const mp=personalMaxCI(cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=!isCompleted?previewUsrDelta(p.user,courtPes,effEv,usrWindowSize):null; }
+            const csIdx=ciStands.findIndex(s=>s.user.id===p.userId);
+            if(csIdx!==-1){ const cs=ciStands[csIdx]; const mp=personalMaxCI(cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=!isCompleted?previewUsrDelta(p.user,courtPes,effEv,usrWindowSize):null; courtRank=csIdx+1; }
           }
-          return {key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES,usrDelta,courtPes,courtUsrDelta};
+          return {key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES,usrDelta,courtPes,courtUsrDelta,courtRank};
         }).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}
       </>}
     </>}

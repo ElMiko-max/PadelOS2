@@ -4,6 +4,19 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.43 — Reworked the PES tabs per admin feedback + clarified the Output PES formula
+
+- **"PES (Court-Based)" tab:** reordered — match points (pts) now sit on the left, PES% moved to the far right with its USR effect right next to it in brackets, e.g. "100% (USR +5)".
+- **"PES (Performance Based)" tab — full redesign:**
+  - Entry USR now sits in brackets next to the player's name, matching the Court-Based tab exactly, instead of its own separate column.
+  - The Delta (Δ) column now comes right before PES.
+  - "Performance" is renamed to **"PES"** (it was confusing that the label didn't match what the value actually was).
+  - The PES number now shows its USR effect right next to it in brackets: "(USR +4)".
+  - **Real bug clarified:** the number next to Δ (e.g. "+13%") doesn't add directly onto Entry USR — the actual formula is `Entry + (Δ × 80%)`, not `Entry + Δ`. That's why something that looked like "63 + 13" was showing "73.5", not "76". A clear explanation was added under the table spelling this out exactly.
+  - **Comparison (when the toggle is on):** now shows the Court-Based PES **with its own USR effect** too, plus **that player's rank in the Court-Based tab** (e.g. #3), so the two standings are directly comparable side by side.
+
+---
+
 ## V0.11.42 — Hardened addMember/approveEventJoin + Standings tab improvements
 
 - **Additional hardening:** `addMemberToEvent` and `approveEventJoinRequest` (new Cloud Functions) — same idea as `registerForEvent`, applied to the two admin-only paths (manually adding a player, approving a join request). They re-check event status (closed/cancelled) against live server data, not just client code. `registrationOpen` (the pause) is deliberately **not** checked here — pausing is meant to stop random public self-service, not the admin's own direct action, matching existing behavior exactly.

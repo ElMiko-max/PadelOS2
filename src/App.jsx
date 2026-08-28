@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.50";
+const APP_VERSION = "V0.11.51";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4012,14 +4012,15 @@ export default function Matchkeeper() {
     }, e => { console.log("Firestore comms error", e); recordDiag("comms", `${e.code||"error"}: ${e.message||e}`); markLoaded("comms"); });
     return unsub;
   }, [authUser]);
-  useEffect(() => {
-    if (!dataLoaded) return;
-    if (!everRealRef.current.comms) { console.log("Blocked write: haven't confirmed real comms data this session yet — refusing to write, to avoid overwriting real data with seed-derived edits"); return; }
-    const json = JSON.stringify(comms);
-    if (json === syncedRef.current.comms) return;
-    syncedRef.current.comms = json;
-    setDoc(doc(db,"padelos","comms"), {value:JSON.stringify(comms)}).catch(e=>console.log("Firestore write error (comms)", e));
-  }, [comms, dataLoaded]);
+  // REMOVED (2026-08-28, comms-split migration prep): there used to be a second effect here that
+  // blindly `setDoc`'d the whole `comms` value back to padelos/comms whenever local state changed
+  // — a leftover safety net from before updC/updAllComms existed. It never actually fired in
+  // practice (every setComms call already kept syncedRef.current.comms in lockstep, so its own
+  // guard always matched), but it was a live loaded gun: any future change that broke that
+  // lockstep invariant even once would resurrect a blind, non-transactional whole-document
+  // overwrite — exactly the class of bug this migration exists to eliminate. All real comms
+  // writes already go through updC/updAllComms/updCommunityAndEvent, which write transactionally
+  // on their own; this effect was never load-bearing for that.
 
   // users
   useEffect(() => {
@@ -4972,6 +4973,16 @@ export default function Matchkeeper() {
       } catch(e2) { console.log("updAllComms resync-after-failure also failed", e2); }
     });
   };
+  // A handful of mutations atomically touch BOTH a community-level field (members, ledger) AND
+  // one specific event's fields in a single transaction — closeEvent (member promote/demote
+  // streaks + marking the event completed), registerViaInvite and addGuest (granting guest
+  // membership + the event registration together, so a crash between two separate writes can
+  // never leave one without the other). Today there's only one document (padelos/comms) so this
+  // is just updC with an explicit `eid` threaded through — but naming it separately and forcing
+  // callers to state which event is involved means that when this data eventually splits into
+  // separate community/event documents, this funnel's INTERNALS become a genuine two-document
+  // transaction while every call site below stays completely unchanged.
+  const updCommunityAndEvent = (cid, eid, fn) => updC(cid, fn);
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
 
   // ── Notifications ──────────────────────────────────────
@@ -5623,7 +5634,7 @@ export default function Matchkeeper() {
       }));
     }
 
-    updC(cid,c=>{
+    updCommunityAndEvent(cid,eid,c=>{
       const updatedEvents = c.events.map(e=>e.id!==eid?e:{...e,status:"completed",closedAt:new Date().toISOString()});
       const promoteAfter = c.promoteAfter||3, demoteAfter = c.demoteAfter||4;
       const completedEvs = updatedEvents.filter(e=>e.status==="completed").sort((a,b)=>new Date(a.date)-new Date(b.date));
@@ -5790,7 +5801,7 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
-    updC(cid,c=>({...c,
+    updCommunityAndEvent(cid,eid,c=>({...c,
       members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
@@ -5855,7 +5866,7 @@ export default function Matchkeeper() {
     const id=_uid++;
     const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,country:"—",gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
     setUsers(us=>[...us,newUser]);
-    updC(cid,c=>({...c,
+    updCommunityAndEvent(cid,eid,c=>({...c,
       members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
       events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
     toast2(`${g.n} added ✓`);

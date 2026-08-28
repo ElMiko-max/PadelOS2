@@ -4,7 +4,10 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.11.50 — Hardened the remaining spots that still overwrote all data without a transaction
+## V0.11.51 — First step of a larger project: restructuring how community/event data is stored
+
+- **Start of a longer-term project** (discussed with the admin after the V0.11.49/50 incident): the real root cause behind every race-condition bug this app has had, including this week's incident, is that all community and event data lives in one giant Firestore document — so anything happening anywhere in the app can collide with anything else happening at the same moment. The real fix is splitting that into separate documents (one per community, one per event) — a genuine project that will take time and ship in stages without taking the app down.
+- **Only the first step today (zero visible change for users):** three spots in the code that change a community's data and one specific event's data together in the same moment (closing an event, joining via an invite link, adding a guest) now go through their own dedicated channel instead of being buried in the general one — preparation for the next stage, which actually separates the data. Also removed old code that could, in theory, have blindly overwritten all community data unsafely if a future bug ever triggered it.
 
 - **Follow-up to V0.11.49:** seven other spots in the code were still using the old risky pattern (take a local copy that might be stale, and write it over ALL of the comms data with no check against the server's real latest state first) instead of the safe transaction-based pattern regular registration has used for a while.
 - **The most important of the seven:** starting Match Mode — this happens routinely, not rarely — now uses the same safe pattern.

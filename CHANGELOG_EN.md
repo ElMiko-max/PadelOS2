@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.50 — Hardened the remaining spots that still overwrote all data without a transaction
+
+- **Follow-up to V0.11.49:** seven other spots in the code were still using the old risky pattern (take a local copy that might be stale, and write it over ALL of the comms data with no check against the server's real latest state first) instead of the safe transaction-based pattern regular registration has used for a while.
+- **The most important of the seven:** starting Match Mode — this happens routinely, not rarely — now uses the same safe pattern.
+- **The rest (all admin-only, all rare):** Bulk Archive and Bulk Delete for events (the exact action from the V0.11.49 incident), deleting a user, restoring a backup, the duplicate-ID repair tool, the old guest-membership repair tool, and creating a new community.
+- **No visible change for regular users** — same screens, same buttons — but now none of these can ever silently erase someone else's registration happening elsewhere in the app at the same moment.
+
+---
+
 ## V0.11.49 — 🚨 Serious security bug fixed: a new sign-in could silently take over the main admin account
 
 - **Confirmed live in production:** over about two weeks, five different real people, on their very first sign-in, were silently and automatically linked to the platform owner/admin account (User #1) instead of getting their own new profile — no confirmation screen, no audit trail entry at the moment it happened. One of them renamed the shared profile to their own name and bulk-archived 9 events, while effectively holding full Platform Admin rights.

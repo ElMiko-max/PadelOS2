@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.49";
+const APP_VERSION = "V0.11.50";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3989,7 +3989,7 @@ export default function Matchkeeper() {
     if (!dataLoaded) return;
     const needsPatch = comms.some(c => c.events.some(ev => (ev.id===2||ev.id===3) && !ev.isDemo));
     if (!needsPatch) return;
-    setComms(cs => cs.map(c => ({...c, events: c.events.map(ev => (ev.id===2||ev.id===3) ? {...ev, isDemo:true} : ev)})));
+    updAllComms(cs => cs.map(c => ({...c, events: c.events.map(ev => (ev.id===2||ev.id===3) ? {...ev, isDemo:true} : ev)})));
   }, [dataLoaded]);
 
   useEffect(() => { try { const d = localStorage.getItem('padelos_dark'); if (d!==null) setDark(d==='1'); } catch(e){} }, []);
@@ -4592,7 +4592,7 @@ export default function Matchkeeper() {
     const u = users.find(u=>u.id===id);
     setUsers(us => us.filter(u => u.id!==id));
     // Clean up stale references across all communities/events so counts stay accurate
-    setComms(cs => cs.map(c => ({
+    updAllComms(cs => cs.map(c => ({
       ...c,
       members: c.members.filter(m => m.userId !== id),
       events: c.events.map(ev => ({
@@ -4740,7 +4740,7 @@ export default function Matchkeeper() {
       const snap = JSON.parse(b.value);
       setUsers(snap.users||[]);
       setVenues(snap.venues||[]);
-      setComms(snap.comms||[]);
+      updAllComms(() => snap.comms||[]);
       toast2(`Restored backup from ${timeAgo(b.createdAt)} ✓`);
       logAudit("admin.restoreBackup", `${me.nickname} restored a backup from ${timeAgo(b.createdAt)}`, "backup", backupId);
     } catch(e) { console.log("Restore backup error", e); toast2("Restore failed — backup data unreadable","err"); }
@@ -4750,22 +4750,29 @@ export default function Matchkeeper() {
     catch(e) { console.log("Delete backup error", e); toast2("Delete failed","err"); }
   };
   const repairDuplicateIds = () => {
+    // fn below can run more than once (an optimistic pass, then again inside the transaction,
+    // possibly retried) — seenEventIds has to be local to each run, or a second run would see
+    // every id as "already seen" from the first run and treat everything as a duplicate.
     let fixed = 0;
-    const seenEventIds = new Set();
-    const newComms = comms.map(c => ({
-      ...c,
-      events: c.events.map(ev => {
-        if (seenEventIds.has(ev.id)) {
-          fixed++;
-          const newId = _eid++;
-          seenEventIds.add(newId);
-          return {...ev, id: newId};
-        }
-        seenEventIds.add(ev.id);
-        return ev;
-      }),
-    }));
-    setComms(newComms);
+    updAllComms(cs => {
+      let runFixed = 0;
+      const seenEventIds = new Set();
+      const result = cs.map(c => ({
+        ...c,
+        events: c.events.map(ev => {
+          if (seenEventIds.has(ev.id)) {
+            runFixed++;
+            const newId = _eid++;
+            seenEventIds.add(newId);
+            return {...ev, id: newId};
+          }
+          seenEventIds.add(ev.id);
+          return ev;
+        }),
+      }));
+      fixed = runFixed; // last run wins — that's the one that actually got committed
+      return result;
+    });
 
     let venuesFixed = 0;
     const newVenues = venues.map(v => {
@@ -4927,6 +4934,44 @@ export default function Matchkeeper() {
       } catch(e2) { console.log("updC resync-after-failure also failed", e2); }
     });
   };
+  // Same transaction-safe pattern as updC, generalized for the handful of actions that touch
+  // more than one community at once (bulk archive/delete, delete user, restore backup, the
+  // one-time repair tools, starting Match Mode) — those used to call setComms directly with a
+  // plain array, which is exactly the "read-modify-blind-overwrite" pattern that let a single
+  // stale client erase concurrent changes app-wide (see V0.11.49's real incident). `fn` receives
+  // the full comms array and returns the full array, same shape either way.
+  const updAllComms = (fn) => {
+    const optimistic = fn(commsRef.current);
+    commsRef.current = optimistic;
+    syncedRef.current.comms = JSON.stringify(optimistic);
+    setComms(optimistic);
+    const docRef = doc(db,"padelos","comms");
+    runTransaction(db, async (tx) => {
+      const snap = await tx.get(docRef);
+      const raw = snap.exists() ? snap.data().value : null;
+      const latest = raw ? (typeof raw==="string" ? JSON.parse(raw) : raw) : optimistic;
+      const updated = fn(latest);
+      tx.set(docRef, {value: JSON.stringify(updated)});
+      return updated;
+    }, {maxAttempts:30}).then(updated => {
+      commsRef.current = updated;
+      syncedRef.current.comms = JSON.stringify(updated);
+      setComms(updated);
+    }).catch(async e => {
+      console.log("updAllComms transaction failed", e);
+      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      try {
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const raw = snap.data().value;
+          const real = typeof raw==="string" ? JSON.parse(raw) : raw;
+          commsRef.current = real;
+          syncedRef.current.comms = JSON.stringify(real);
+          setComms(real);
+        }
+      } catch(e2) { console.log("updAllComms resync-after-failure also failed", e2); }
+    });
+  };
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
 
   // ── Notifications ──────────────────────────────────────
@@ -5015,7 +5060,7 @@ export default function Matchkeeper() {
   }, []);
 
   // Community
-  const createComm=(d)=>{const id=_cid++;setComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
+  const createComm=(d)=>{const id=_cid++;updAllComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
     if (me.id!==1) notify([1], "new_community", {communityId:id}, "🌱 New community created", `${me.nickname} created "${d.name}"`);
     logAudit("community.create", `${me.nickname} created community "${d.name}"`, "community", id);
   };
@@ -5445,7 +5490,7 @@ export default function Matchkeeper() {
   const bulkArchiveEvents=(items)=>{ // items: [{cid,eid}]
     const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
     const names=items.map(({cid,eid})=>getEv(cid,eid)?.name).filter(Boolean);
-    setComms(cs=>cs.map(c=>{
+    updAllComms(cs=>cs.map(c=>{
       const eids=byCid[c.id]; if(!eids) return c;
       return {...c,events:c.events.map(e=>eids.has(e.id)?{...e,archived:true,archivedAt:new Date().toISOString()}:e)};
     }));
@@ -5458,16 +5503,23 @@ export default function Matchkeeper() {
   const bulkDeleteEvents=(items)=>{ // items: [{cid,eid}] — completed events are skipped, same rule as single deleteEvent
     if(me.id!==1){toast2("Only the platform admin can bulk-delete events","err");return;}
     const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
-    let deletedCount=0, skippedCount=0; const deletedNames=[];
-    setComms(cs=>cs.map(c=>{
-      const eids=byCid[c.id]; if(!eids) return c;
-      return {...c,events:c.events.map(e=>{
-        if(!eids.has(e.id)) return e;
-        if(e.status==="completed"){ skippedCount++; return e; }
-        deletedCount++; deletedNames.push(e.name);
-        return {...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname};
-      })};
-    }));
+    // fn below can run more than once (optimistic pass, then again inside the transaction) — the
+    // counters have to reset each run, or a second run would double-count on top of the first.
+    let deletedCount=0, skippedCount=0, deletedNames=[];
+    updAllComms(cs=>{
+      let runDeleted=0, runSkipped=0; const runNames=[];
+      const result = cs.map(c=>{
+        const eids=byCid[c.id]; if(!eids) return c;
+        return {...c,events:c.events.map(e=>{
+          if(!eids.has(e.id)) return e;
+          if(e.status==="completed"){ runSkipped++; return e; }
+          runDeleted++; runNames.push(e.name);
+          return {...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname};
+        })};
+      });
+      deletedCount=runDeleted; skippedCount=runSkipped; deletedNames=runNames;
+      return result;
+    });
     toast2(skippedCount>0?`${deletedCount} event(s) deleted · ${skippedCount} completed event(s) skipped (use Archive instead)`:`${deletedCount} event(s) deleted ✓`);
     if(deletedCount>0) logAudit("event.bulkDelete", `${me.nickname} deleted ${deletedCount} event(s): ${deletedNames.slice(0,5).join(", ")}${deletedNames.length>5?` and ${deletedNames.length-5} more`:""}`, null, null);
   };
@@ -5821,19 +5873,26 @@ export default function Matchkeeper() {
   // scans every event's registrations for isGuest players and adds any missing ones
   // to their community's member list (status: guest), without touching anyone already there.
   const backfillGuestMemberships = () => {
+    // fn below can run more than once (optimistic pass, then again inside the transaction) —
+    // `added` has to reset each run, or a second run would double-count on top of the first.
     let added = 0;
-    const newComms = comms.map(c => {
-      const existingIds = new Set(c.members.map(m=>m.userId));
-      const guestIdsInEvents = new Set();
-      c.events.forEach(ev => ev.registrations.forEach(r => {
-        if (r.isGuest || users.find(u=>u.id===r.userId)?.isGuest) guestIdsInEvents.add(r.userId);
-      }));
-      const toAdd = [...guestIdsInEvents].filter(uid => !existingIds.has(uid));
-      if (toAdd.length===0) return c;
-      added += toAdd.length;
-      return {...c, members:[...c.members, ...toAdd.map(uid=>({userId:uid, role:"member", status:"guest", since:today}))]};
+    updAllComms(cs => {
+      let runAdded = 0;
+      const result = cs.map(c => {
+        const existingIds = new Set(c.members.map(m=>m.userId));
+        const guestIdsInEvents = new Set();
+        c.events.forEach(ev => ev.registrations.forEach(r => {
+          if (r.isGuest || users.find(u=>u.id===r.userId)?.isGuest) guestIdsInEvents.add(r.userId);
+        }));
+        const toAdd = [...guestIdsInEvents].filter(uid => !existingIds.has(uid));
+        if (toAdd.length===0) return c;
+        runAdded += toAdd.length;
+        return {...c, members:[...c.members, ...toAdd.map(uid=>({userId:uid, role:"member", status:"guest", since:today}))]};
+      });
+      added = runAdded;
+      return result;
     });
-    if (added>0) { setComms(newComms); toast2(`Added ${added} guest(s) to their communities ✓`); }
+    if (added>0) toast2(`Added ${added} guest(s) to their communities ✓`);
     else toast2("No missing guest memberships found — all clean ✓");
   };
   const checkIn=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]})}));toast2("Checked in ✓");};
@@ -6008,7 +6067,7 @@ export default function Matchkeeper() {
   // app-wide. This is what the Events-list LIVE badge relies on to never have to
   // disambiguate between two "current" events.
   const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
-    setComms(cs=>cs.map(c=>({...c,events:c.events.map(ev=>{
+    updAllComms(cs=>cs.map(c=>({...c,events:c.events.map(ev=>{
       if (c.id===cid && ev.id===eid) return !ev.plan ? ev : {...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}};
       if (ev.plan?.matchModeStartAt) return {...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}};
       return ev;

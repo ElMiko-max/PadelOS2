@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.49 — 🚨 Serious security bug fixed: a new sign-in could silently take over the main admin account
+
+- **Confirmed live in production:** over about two weeks, five different real people, on their very first sign-in, were silently and automatically linked to the platform owner/admin account (User #1) instead of getting their own new profile — no confirmation screen, no audit trail entry at the moment it happened. One of them renamed the shared profile to their own name and bulk-archived 9 events, while effectively holding full Platform Admin rights.
+- **Root cause:** an old "bootstrap" exception in the sign-in code said, in effect, "if the owner account (#1) has no linked account at all yet, silently link whoever is signing in to it, no confirmation needed" — meant only for the very first-ever setup, before any real admin existed. The check relied on this client's own local, possibly-not-yet-loaded copy of the link table, which reads as empty on a cold start — exactly the normal case for anyone's very first sign-in — even though the real owner was already linked on the server. That handed full admin access to a stranger every time the race was hit.
+- **Fix:** that silent exception is gone for good. Every sign-in with no valid link now goes through the same safe path everyone else already used — a server-side transaction that matches by the real stored email and always requires an explicit "Is this you?" confirmation before linking to any existing profile. There is no automatic/silent way left for anyone to end up in someone else's account, admin or not.
+- **The stray accounts that had been wrongly linked to the admin profile were found and removed directly from the Firebase Console (outside the app).**
+
+---
+
 ## V0.11.48 — Second root-cause fix: the podium could never permanently agree with the Standings tab
 
 - **The admin noticed the podium and Standings tab were still showing two different numbers for the same player, same event (63 (+5) on the podium, 63 (+3) in Standings) — even after V0.11.46/47.** Real cause: the podium was reading from `plan.sorted` — a snapshot frozen the moment "Start CI" ran, that never updates again. Any event that closed while a player had leftover USR debt (like the case that surfaced this whole investigation) would show that debt-polluted number on its podium **forever**, even after the debt itself got fixed — because the snapshot itself is permanently frozen and never gets refreshed.

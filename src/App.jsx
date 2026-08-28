@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.48";
+const APP_VERSION = "V0.11.49";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4337,24 +4337,32 @@ export default function Matchkeeper() {
   }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
   // No generic "which one is you?" self-service claim screen anymore (see BUGS.md #17) —
   // anyone signing in with no pending targeted invite just gets a brand-new profile (after the
-  // confirmation above), same as an untargeted invite already did. One bootstrap exception: if
-  // the platform-owner seed profile (#1) has no linked account at all yet (first-ever setup, or
-  // the owner's own device/session got wiped), link straight to it instead of creating a
-  // duplicate — there's nobody else who could send #1 an invite link, so #1 can't rely on the
-  // normal targeted-invite path itself. That one case stays silent/automatic on purpose.
+  // confirmation above), same as an untargeted invite already did.
+  //
+  // REMOVED (real incident, 2026-08-28): there used to be a bootstrap exception here — if the
+  // platform-owner seed profile (#1) had no linked account at all yet, this silently linked
+  // WHOEVER was signing in straight to it, no confirmation, on the theory that #1 can't receive
+  // a targeted invite from anyone else so it needed its own bootstrap path. The guard checked
+  // `!Object.values(uidLinks).includes(1)` against this CLIENT's local, possibly-not-yet-loaded
+  // copy of padelos_links — on a cold sign-in (exactly the common case for a brand-new user,
+  // whose local state has nothing cached yet), that local copy can read as empty for a moment
+  // even though #1 is already claimed on the server. Five different real people hit that race
+  // over about two weeks and were each silently, invisibly handed full Platform Admin access to
+  // the real owner's account — confirmed live when one of them renamed the profile and bulk-
+  // archived 9 events with it. The bootstrap need this existed for (very first-ever setup, no
+  // admin yet) is long over — every sign-in now goes through the one normal path below
+  // (createFreshProfileOrMatch → the server-side claimOrCreateProfile transaction), which
+  // already handles the real owner reclaiming #1 safely: it matches by the REAL server-stored
+  // email in a transaction and still requires an explicit "Is this you?" confirmation click, so
+  // a stranger's email can never match and land them in someone else's account by accident.
   const autoFreshProfileRef = useRef(false);
   useEffect(() => {
     if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
     if (readPendingInvite()) return; // the invite-claim effect above owns this case
     if (autoFreshProfileRef.current) return;
     autoFreshProfileRef.current = true;
-    if (!Object.values(uidLinks).includes(1)) {
-      linkUidToUser(authUser.uid, 1);
-      setUsers(us => us.map(u => u.id===1 ? {...u, email:authUser.email||u.email, photoURL:u.photoURL||authUser.photoURL||""} : u));
-    } else {
-      setPendingFreshProfileConfirm(true);
-    }
-  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm, uidLinks]);
+    setPendingFreshProfileConfirm(true);
+  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
   // both a brand-new profile and a confirmed targeted claim of an existing one — join them to
   // the invited community/event. Deliberately re-checked on every render where these

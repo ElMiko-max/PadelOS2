@@ -177,6 +177,16 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
 //   confirmEmailMatch({userId}) — call only after the user confirms "yes, that's me".
 const normEmail = e => (e || "").toLowerCase().trim();
 
+// Hard lock on the platform-owner/admin profile (userId 1) — see V0.11.49's CHANGELOG entry for
+// the real incident this closes. Even with the silent auto-claim fallback removed from the
+// client, the normal email-match path below is still a path that COULD in theory offer/link
+// userId 1 to the wrong person if user 1's stored email were ever wrong (corrupted data, a
+// future bug, a direct Firestore write bypassing the app). This is the actual, non-bypassable
+// backstop: no matter what the stored email says, userId 1 can only ever be matched to or linked
+// with THIS exact address. Update it here (and only here) if the real owner's email changes.
+const PLATFORM_OWNER_USER_ID = 1;
+const PLATFORM_OWNER_EMAIL = "ahmadkamalhammad@gmail.com";
+
 exports.claimOrCreateProfile = onCall(async (request) => {
   const auth = request.auth;
   if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
@@ -214,6 +224,10 @@ exports.claimOrCreateProfile = onCall(async (request) => {
         if (match) targetUserId = match.id;
       }
 
+      // Hard lock: never even offer userId 1 as a match unless this really is the owner's own
+      // email — see PLATFORM_OWNER_EMAIL above.
+      if (targetUserId === PLATFORM_OWNER_USER_ID && email !== PLATFORM_OWNER_EMAIL) targetUserId = null;
+
       if (targetUserId != null) {
         const target = users.find(u => u.id === targetUserId);
         if (target) {
@@ -250,6 +264,11 @@ exports.confirmEmailMatch = onCall(async (request) => {
   return db.runTransaction(async (tx) => {
     const linkSnap = await tx.get(linkRef);
     if (linkSnap.exists) return {status: "already-linked", userId: linkSnap.data().userId};
+    // Hard lock: no matter what the client asked to confirm, userId 1 can never be linked to
+    // anyone but the real owner's exact email. See PLATFORM_OWNER_EMAIL above.
+    if (userId === PLATFORM_OWNER_USER_ID && email !== PLATFORM_OWNER_EMAIL) {
+      throw new HttpsError("permission-denied", "This profile can't be claimed.");
+    }
     const usersSnap = await tx.get(usersRef);
     const users = JSON.parse(usersSnap.data()?.value || "[]");
     const target = users.find(u => u.id === userId);

@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.46 — Root-cause fix: changing the "USR window" size was silently moving players' numbers before they did anything
+
+- **Found the actual bug behind the podium-vs-USR-History mismatch — not a display issue, a real calculation one.** When the admin changes how many recent events USR averages over (e.g. last 5 → last 9), the old code left anyone with fewer events than the old size completely unprotected — the next time such a player closed any event, their number shifted from the setting change itself (not from that event), blended silently into the same number as the event's own real effect, with no way to tell the two apart.
+- **Real example confirmed:** a player's USR was 63 before the admin changed the setting from 5 to 9. It stayed 63 (no immediate change, that part was already intentional). Then they played a new event and their number jumped to 68 — but only +3 of that was really their performance that day; the other +2 was a delayed "correction" from the old setting change, bundled invisibly into the same number.
+- **Fix:** changing the setting now **cannot move anyone's number by itself, at all** — it freezes everyone's existing history and anchors their current number as a fresh starting point, so the next event they close shows purely its own effect, nothing blended in.
+- **Note:** this prevents it going forward — some players still carry old "debt" from before this fix (like the example above) until they next close an event. A separate, optional one-time cleanup can settle that for everyone right now if wanted.
+
+---
+
 ## V0.11.45 — Real bug fixed: wrong "USR 0" in the PES tab when the value matched what actually closed the event
 
 - **Real bug caught live (admin screenshot):** the "PES (Court-Based)" tab showed "USR 0" for every player — even ones the podium itself showed a real USR change for! Cause: V0.11.44's calculation compared the candidate value against today's history as-is — so if the event really was closed with that same scoring method (Court-Based), the comparison trivially found "no difference," since the candidate already matched what was recorded.

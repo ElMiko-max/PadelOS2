@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.45";
+const APP_VERSION = "V0.11.46";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4520,41 +4520,35 @@ export default function Matchkeeper() {
     toast2(`Payment confirmed — ${u?.nickname||"user"} extended to ${fmtD(newExp.toISOString())} ✓`);
     logAudit("user.subscriptionPayment", `${me.nickname} confirmed a ${plan} payment (${amount} EGP via ${method}) from ${u?.nickname||id} — extended to ${fmtD(newExp.toISOString())}`, "user", id);
   };
-  // Changing the USR rolling-average window (calcWeightedUSR's windowSize) must never
-  // retroactively pull an already-dropped event back into anyone's average. Before applying the
-  // new size, freeze every usrHistory entry that's currently OUTSIDE the *old* window (per user,
-  // walking newest-first exactly like calcWeightedUSR does) — those get excludedFromWindow:true
-  // permanently, regardless of which direction the size changes later. Nothing about anyone's
-  // live .usr changes at this moment; the new size only affects what gets counted starting with
-  // the next event they complete (a growing window just has less-than-full budget to fill until
-  // enough new events accrue, which is exactly the "grow forward, don't refill from history" ask).
+  // Changing the USR rolling-average window must NEVER move anyone's live USR by itself, full
+  // stop — not even a one-time "catch-up" absorbed into their next event. The previous version
+  // here only froze entries already outside the OLD window, leaving anyone whose full history
+  // still fit inside both the old and new window (any newer/lower-activity player, basically)
+  // fully exposed: the same real events just got re-averaged against a different amount of seed
+  // filler, silently shifting their number the next time ANY event of theirs closed — and
+  // because that shift landed in the same write as that event's own real PES, it read as if the
+  // event itself had caused it. Confirmed live: an admin's window change from 5→9 sat dormant,
+  // then surfaced as an unexplained +2 bundled into a player's next real event's own +3 (looked
+  // like a single +5, no way to tell the two apart without recomputing by hand).
+  // Fix: freeze EVERY existing entry (not just already-out-of-window ones) and anchor seedUsr to
+  // today's actual usr. Right after this runs, calcWeightedUSR for anyone with no history newer
+  // than this moment has 100% of its window budget filled by that anchored seed — which by
+  // construction equals what their usr already was — so the number is provably unchanged. Only
+  // events closed AFTER this point ever feed into the new window size, cleanly, with nothing old
+  // still blended in a different ratio.
   const setUsrWindowSize = (newSize) => {
     const oldSize = usrWindowSize;
     if (newSize===oldSize) return;
     setUsers(us => us.map(u => {
       const hist = u.usrHistory||[];
-      if (!hist.length) return u;
-      const chron = [...hist].reverse();
-      let totalWeight = 0;
-      const activeEventIds = new Set();
-      for (const h of chron) {
-        if (h.retired || h.excludedFromWindow) continue;
-        if (totalWeight>=oldSize) break;
-        const w = h.type==="ct" ? 0.5 : 1.0;
-        totalWeight += Math.min(w, oldSize-totalWeight);
-        activeEventIds.add(h.eventId);
-      }
-      let changed = false;
-      const newHist = hist.map(h => {
-        if (h.retired || h.excludedFromWindow || activeEventIds.has(h.eventId)) return h;
-        changed = true;
-        return {...h, excludedFromWindow:true};
-      });
-      return changed ? {...u, usrHistory:newHist} : u;
+      const newHist = hist.map(h => h.excludedFromWindow ? h : {...h, excludedFromWindow:true});
+      const histChanged = newHist.some((h,i)=>h!==hist[i]);
+      if (!histChanged && u.seedUsr===u.usr) return u;
+      return {...u, usrHistory:newHist, seedUsr:u.usr};
     }));
     setUsrWindowSizeRaw(newSize);
     logAudit("admin.usrWindowSize", `${me.nickname} changed the USR rolling-average window from ${oldSize} to ${newSize} events`, null, null);
-    toast2(`USR window set to ${newSize} — takes effect from each player's next completed event ✓`);
+    toast2(`USR window set to ${newSize} — nobody's current USR changes from this alone; only events closed from now on count toward it ✓`);
   };
   const deleteUser = (id) => {
     const u = users.find(u=>u.id===id);

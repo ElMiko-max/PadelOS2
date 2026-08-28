@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.44 — USR effect now works after an event closes too (not just live)
+
+- **Per admin feedback — it was wrong that this only showed while the event was still open.** The calculation changed completely: `previewUsrDelta` now tells whether the event already has a real USR history entry — if so, it swaps that entry's PES value (at its exact position in history, not tacked onto the end) and recomputes, instead of appending a hypothetical entry on top of one that already happened for real.
+- **This gives the right answer even in a tricky case:** if the event has since aged out of the rolling USR window (enough later events happened), changing its value now correctly shows **zero** effect — not a wrong guess — because the calculation runs through the exact same windowing logic the real close does.
+- Both PES tabs (Court-Based and Performance Based) now answer "if we'd used the other method, how would it affect current USR?" even for events closed a while ago.
+
+---
+
 ## V0.11.43 — Reworked the PES tabs per admin feedback + clarified the Output PES formula
 
 - **"PES (Court-Based)" tab:** reordered — match points (pts) now sit on the left, PES% moved to the far right with its USR effect right next to it in brackets, e.g. "100% (USR +5)".

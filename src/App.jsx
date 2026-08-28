@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.43";
+const APP_VERSION = "V0.11.44";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1472,17 +1472,28 @@ function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
   return Math.round(weightedSum / totalWeight);
 }
 // Preview-only: what would THIS event's PES do to a player's real USR if the event were closed
-// right now with that value? Mirrors closeEvent's own CI USR-update formula exactly (same
-// hist-append + calcWeightedUSR call, same seedUsr resolution) so the preview number shown in
-// the Standings tab is never optimistic/pessimistic relative to what actually closing would
-// produce — it's the same calculation, just not written anywhere. Not event-specific beyond the
-// hypothetical entry itself, so it's safe to call repeatedly per-row without side effects.
+// right now with that value? Works both before AND after the event's actually closed:
+//   - Still open (no usrHistory entry for this event yet): appends a hypothetical entry at the
+//     end — a genuine "if closed right now" preview, same as before.
+//   - Already closed (a real entry for this event exists somewhere in the history): swaps the
+//     PES value at that EXACT position instead of appending — so the answer correctly accounts
+//     for the rolling window's real composition today. If enough events happened since, this
+//     event may have already aged out of the window entirely, in which case swapping its value
+//     correctly yields 0 (not a guess) — a naive re-append would get this wrong. This is what
+//     lets both PES tabs show "what would this event's OTHER scoring method have done to USR"
+//     even long after the event closed, not just as a live pre-close preview.
+// Either way it's the same calcWeightedUSR the real close path uses, just never written anywhere.
 function previewUsrDelta(u, pes, ev, usrWindowSize){
   if(pes==null||!u) return null;
   const seedUsr = u.seedUsr ?? u.usr;
-  const hist = [...(u.usrHistory||[]), {eventId:ev.id, eventName:ev.name, date:ev.date, pes, type:"ci", retired:false}];
-  const newUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
-  return newUsr - u.usr;
+  const hist = u.usrHistory||[];
+  const existingIdx = hist.findIndex(h=>h.eventId===ev.id);
+  const counterfactualHist = existingIdx!==-1
+    ? hist.map((h,i)=> i===existingIdx ? {...h, pes} : h)
+    : [...hist, {eventId:ev.id, eventName:ev.name, date:ev.date, pes, type:"ci", retired:false}];
+  const actualUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
+  const counterfactualUsr = calcWeightedUSR(counterfactualHist, seedUsr, usrWindowSize);
+  return counterfactualUsr - actualUsr;
 }
 
 // Max possible pts for a specific team across all played rounds
@@ -10708,10 +10719,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
         {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
           {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;
-            // Live-only — once the event's actually closed, this PES already happened and is
-            // sitting in real USR history; showing a hypothetical "would be" delta on top of a
-            // number that already landed would just be confusing, not useful.
-            const usrDelta=!isCompleted?previewUsrDelta(s.user,pes,effEv,usrWindowSize):null;
+            // Works whether the event's still open (a live "if closed now" preview) or already
+            // closed (a real "what this event's court-based PES actually did/would have done"
+            // recompute) — see previewUsrDelta's own comment for how it tells the two apart.
+            const usrDelta=previewUsrDelta(s.user,pes,effEv,usrWindowSize);
             return <Card key={s.user.id} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(s.user.id)} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,background:i<3?"#6366F133":"var(--po-bdr)",color:i===0?"#FBBF24":i===1?"#94A3B8":i===2?"#CD7C2F":"var(--po-dim)"}}>{i+1}</div><Av u={s.user} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{s.user.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({historicUsr(s.user.id,plan,s.user.usr)})</span></div><div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins} wins · {s.breaks} breaks · {s.played} played · max {mp}pts</div></div><div style={{textAlign:"right",marginRight:8}}><div style={{fontSize:22,fontWeight:700,color:"#6366F1"}}>{s.pts}</div><div style={{fontSize:10,color:"var(--po-dim)"}}>pts</div></div><div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:700,color:"#A5B4FC",whiteSpace:"nowrap"}}>{pes}%{usrDelta!=null&&<span style={{fontSize:11,fontWeight:700,color:usrDelta>0?"#34D399":usrDelta<0?"#EF4444":"var(--po-dim)"}}> (USR {usrDelta>0?"+":""}{usrDelta})</span>}</div><div style={{fontSize:9,color:"var(--po-dim)"}}>PES</div></div></div></Card>;})}
           {plan&&<SmBtn label={showResultsTable?"▲ Hide Results Table":"▼ Show Results Table"} onClick={()=>setShowResultsTable(o=>!o)} color="#6366F1" style={{width:"100%",marginTop:6,marginBottom:showResultsTable?10:0,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {showResultsTable&&plan&&<Card style={{padding:8}}><ResultsTable plan={plan} ciStands={ciStands} tc={tc}/></Card>}
@@ -10732,16 +10743,15 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </div>
         </div>
         {plan?<OutputPESTable compare={compareCourtBased} rows={calcXCIPreview(plan,users,comms,effEv).map(p=>{
-          // Live-only, same reasoning as the "pes" sub-tab above — once closed, this already
-          // happened for real, so a hypothetical "would be" delta is just noise at that point.
-          const usrDelta=!isCompleted?previewUsrDelta(p.user,p.outputPES,effEv,usrWindowSize):null;
+          // Works whether still open or already closed — see previewUsrDelta's own comment.
+          const usrDelta=previewUsrDelta(p.user,p.outputPES,effEv,usrWindowSize);
           // Same court-based formula as the "pes" sub-tab above (personalMaxCI/personalRoundsCI),
           // computed here too only when the toggle actually needs it — matched to the same
           // player so the two numbers are directly comparable, not just visually adjacent.
           let courtPes=null, courtUsrDelta=null, courtRank=null;
           if(compareCourtBased){
             const csIdx=ciStands.findIndex(s=>s.user.id===p.userId);
-            if(csIdx!==-1){ const cs=ciStands[csIdx]; const mp=personalMaxCI(cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=!isCompleted?previewUsrDelta(p.user,courtPes,effEv,usrWindowSize):null; courtRank=csIdx+1; }
+            if(csIdx!==-1){ const cs=ciStands[csIdx]; const mp=personalMaxCI(cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=previewUsrDelta(p.user,courtPes,effEv,usrWindowSize); courtRank=csIdx+1; }
           }
           return {key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES,usrDelta,courtPes,courtUsrDelta,courtRank};
         }).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}

@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.48 — Second root-cause fix: the podium could never permanently agree with the Standings tab
+
+- **The admin noticed the podium and Standings tab were still showing two different numbers for the same player, same event (63 (+5) on the podium, 63 (+3) in Standings) — even after V0.11.46/47.** Real cause: the podium was reading from `plan.sorted` — a snapshot frozen the moment "Start CI" ran, that never updates again. Any event that closed while a player had leftover USR debt (like the case that surfaced this whole investigation) would show that debt-polluted number on its podium **forever**, even after the debt itself got fixed — because the snapshot itself is permanently frozen and never gets refreshed.
+- **Root-cause fix:** the podium now runs the exact same calculation the Standings tab does (player's history with this event's own entry removed, recomputed fresh) instead of relying on the frozen snapshot — so the two numbers can never disagree again, for any player or event, past or future.
+
+---
+
 ## V0.11.47 — Automatic one-time cleanup for any leftover USR "debt" from before V0.11.46
 
 - **A one-time automatic cleanup** finds any player still carrying old debt from USR-window-size changes made before V0.11.46 (like Hashim in the case that surfaced this) — detected by comparing their stored number against a fresh calculation under today's settings; a mismatch is the sign of leftover debt.

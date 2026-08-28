@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.47";
+const APP_VERSION = "V0.11.48";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -10741,7 +10741,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
     {/* CI STANDINGS */}
     {tab==="standings"&&isCI&&<>
-      {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>{const before=plan?.sorted?.find(p=>p.userId===s.user.id)?.usr??s.user.usr;const delta=Math.round(s.user.usr-before);return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};})}/>}
+      {isCompleted&&ciStands.length>0&&<Podium top3={ciStands.slice(0,3).map(s=>{
+        // Was plan.sorted's frozen team-formation snapshot — permanently baked into the event
+        // the moment "Start CI" ran, so for any event that closed while a player had leftover
+        // USR-window debt (see V0.11.46/47), this number could NEVER agree with the Standings
+        // tab's live, freshly-recomputed one, even after the debt itself got fixed — confirmed
+        // live: podium kept showing "+5" while Standings correctly showed "+3" for the same
+        // player, same event. Now computed the exact same way the Standings/PES tabs do (history
+        // with this event's own entry removed, recomputed fresh) so the two can never disagree.
+        const hist=s.user.usrHistory||[];
+        const idx=hist.findIndex(h=>h.eventId===effEv.id);
+        const baselineHist=idx!==-1?hist.filter((_,i)=>i!==idx):hist;
+        const before=calcWeightedUSR(baselineHist, s.user.seedUsr??s.user.usr, usrWindowSize);
+        const delta=Math.round(s.user.usr-before);
+        return{name:s.user.nickname,avatarUser:s.user,value:s.pts,valueLabel:"pts",usrLine:`USR ${before}${delta!==0?` (${delta>0?"+":""}${delta})`:""}`};
+      })}/>}
       {plan&&<StandingsViewToggle view={standingsView} onChange={setStandingsView}/>}
 
       {standingsView==="pes"&&<>

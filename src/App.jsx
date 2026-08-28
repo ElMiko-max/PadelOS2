@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.46";
+const APP_VERSION = "V0.11.47";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4465,6 +4465,36 @@ export default function Matchkeeper() {
     if (anyFootballCleanup) setUsers(cleanedUsers);
   }, [dataLoaded]);
 
+  useEffect(() => {
+    if (!dataLoaded) return;
+    // One-time cleanup for the pre-V0.11.46 USR-window-size bug: setUsrWindowSize used to leave
+    // anyone whose full history still fit inside the OLD window completely unfrozen, so the next
+    // event they closed silently blended a window-size "catch-up" into that event's own real PES
+    // effect (confirmed live — a player's number jumped +5 on one event, but only +3 of it was
+    // that event; the other +2 was leftover debt from an earlier 5→9 window change). V0.11.46
+    // fixed this going forward, but can't retroactively fix players already carrying that debt.
+    // This applies the exact same fix retroactively, but ONLY to players who actually have
+    // unresolved debt — detected by recomputing calcWeightedUSR fresh against CURRENT settings
+    // and comparing to their stored usr. A mismatch is the precise signature of debt (their
+    // stored number predates the last window-size change catching up for them); a match means
+    // there's nothing to fix. This distinction matters: blanket-freezing EVERY player's history
+    // regardless would leave normal, never-affected players' USR History screens wrongly showing
+    // their whole history as "aged out" even though nothing was ever wrong for them. Anchors
+    // seedUsr to the CURRENT (possibly stale) usr, never the fresh-recomputed one — jumping
+    // anyone to that now would be just as unexplained a shift as the original bug.
+    let anyWindowDebtCleanup = false;
+    const debtCleanedUsers = users.map(u => {
+      const hist = u.usrHistory || [];
+      if (!hist.length) return u;
+      const seedUsr = u.seedUsr ?? u.usr;
+      const freshUsr = calcWeightedUSR(hist, seedUsr, usrWindowSize);
+      if (freshUsr === u.usr) return u; // no debt — already matches current settings, leave untouched
+      anyWindowDebtCleanup = true;
+      const newHist = hist.map(h => h.excludedFromWindow ? h : {...h, excludedFromWindow:true});
+      return {...u, usrHistory:newHist, seedUsr:u.usr};
+    });
+    if (anyWindowDebtCleanup) setUsers(debtCleanedUsers);
+  }, [dataLoaded]);
 
   // Nickname (the name everyone sees) and phone must be unique across every local profile —
   // guests included, since a guest today can become a real linked member tomorrow.

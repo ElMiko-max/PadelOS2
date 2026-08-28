@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.11.47 — Automatic one-time cleanup for any leftover USR "debt" from before V0.11.46
+
+- **A one-time automatic cleanup** finds any player still carrying old debt from USR-window-size changes made before V0.11.46 (like Hashim in the case that surfaced this) — detected by comparing their stored number against a fresh calculation under today's settings; a mismatch is the sign of leftover debt.
+- **Important:** the cleanup doesn't change anyone's number right now — it just freezes their old history and anchors their current number as the starting point, exactly the same philosophy as V0.11.46 itself. Anyone whose number already matches current calculations (no debt) is left completely untouched — even their USR History screen stays exactly as it was.
+
+---
+
 ## V0.11.46 — Root-cause fix: changing the "USR window" size was silently moving players' numbers before they did anything
 
 - **Found the actual bug behind the podium-vs-USR-History mismatch — not a display issue, a real calculation one.** When the admin changes how many recent events USR averages over (e.g. last 5 → last 9), the old code left anyone with fewer events than the old size completely unprotected — the next time such a player closed any event, their number shifted from the setting change itself (not from that event), blended silently into the same number as the event's own real effect, with no way to tell the two apart.

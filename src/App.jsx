@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Geolocation } from "@capacitor/geolocation";
 import { Filesystem, Directory } from "@capacitor/filesystem";
@@ -31,7 +31,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit, startAfter, runTransaction } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -1997,6 +1997,11 @@ const INIT_COMMS = [
     }]
   },
 ];
+// Split versions of the same seed data, for the padelos_communities/padelos_events collections
+// (comms-split migration) — only ever used as the local fallback shown before Firestore confirms
+// whether real data exists yet (see the sync effects below), same role INIT_COMMS always played.
+const INIT_COMMUNITIES = INIT_COMMS.map(({events, ...c}) => c);
+const INIT_EVENTS = INIT_COMMS.flatMap(c => c.events.map(ev => ({...ev, communityId: c.id})));
 
 let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_invid=1;
 
@@ -3700,7 +3705,16 @@ export default function Matchkeeper() {
   const [subscriptionTransactions, setSubscriptionTransactions] = useState([]);
   const [expenseCategories, setExpenseCategories] = useState(INIT_EXPENSE_CATEGORIES);
   const [usrWindowSize, setUsrWindowSizeRaw] = useState(5);
-  const [comms,  setComms]  = useState(INIT_COMMS);
+  // comms-split migration: raw synced state is now `communities` + `events` (two collections,
+  // one document per community/event). `comms` below is derived from these two — kept identical
+  // in shape to the old single-blob `comms` so the ~200+ existing read sites (comms.find, getEv,
+  // comm.events.filter/flatMap, etc.) need zero changes.
+  const [communities, setCommunities] = useState(INIT_COMMUNITIES);
+  const [events, setEvents] = useState(INIT_EVENTS);
+  const comms = useMemo(
+    () => communities.map(c => ({...c, events: events.filter(e => e.communityId === c.id)})),
+    [communities, events]
+  );
   const [notifications, setNotifications] = useState([]);
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
   const [invites, setInvites] = useState([]); // {id, code, createdBy, createdAt, label, communityId, eventId}
@@ -3968,48 +3982,56 @@ export default function Matchkeeper() {
   // syncedRef tracks, per key, the JSON of whatever we last received FROM Firestore or
   // sent TO it — this is what stops the listen-effect and write-effect from echoing
   // back and forth into an infinite loop.
-  const syncedRef = useRef({comms:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null, usrWindowSize:null});
+  const syncedRef = useRef({communities:null, events:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null, usrWindowSize:null});
   // Tracks whether each collection has EVER returned real data this session. Firestore's
   // onSnapshot can occasionally misfire "not found" on a transient network blip even when
   // the document genuinely exists — this flag is what stops that from being mistaken for
   // "first-time setup" and destructively overwriting live data with empty seed defaults.
-  const everRealRef = useRef({comms:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
+  const everRealRef = useRef({communities:false, events:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
-  const dataLoaded = ["comms","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings","subscriptionTransactions"].every(k => loadedKeys.includes(k));
+  const dataLoaded = ["communities","events","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings","subscriptionTransactions"].every(k => loadedKeys.includes(k));
   // Captures the real Firestore error (code + message) whenever a collection fails to load,
   // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
   const [loadDiag, setLoadDiag] = useState({});
   const recordDiag = (k, info) => setLoadDiag(d => ({...d, [k]: info}));
 
-  // One-time migration: earlier deploys wrote seed events to Firestore before the
-  // isDemo flag existed in code. Patch events #2/#3 in the seed community so the
-  // Demo badge actually shows, without needing a manual Firestore edit.
-  useEffect(() => {
-    if (!dataLoaded) return;
-    const needsPatch = comms.some(c => c.events.some(ev => (ev.id===2||ev.id===3) && !ev.isDemo));
-    if (!needsPatch) return;
-    updAllComms(cs => cs.map(c => ({...c, events: c.events.map(ev => (ev.id===2||ev.id===3) ? {...ev, isDemo:true} : ev)})));
-  }, [dataLoaded]);
-
   useEffect(() => { try { const d = localStorage.getItem('padelos_dark'); if (d!==null) setDark(d==='1'); } catch(e){} }, []);
   useEffect(() => { try { localStorage.setItem('padelos_dark', dark?'1':'0'); } catch(e){} }, [dark]);
 
-  // comms
+  // communities + events — comms-split migration (see PLAN). One Firestore document per
+  // community/event, natively (not the old {value: JSON-string} blob wrapper) so security rules
+  // can actually see fields like `communityId`. Unlike the old single-doc listener, an empty
+  // collection isn't a Firestore "not found" error — it's a normal, valid snapshot with zero
+  // docs — so the seed-fallback check below is a length check, not an existence check.
   useEffect(() => {
     if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
-    const unsub = onSnapshot(doc(db,"padelos","comms"), snap => {
-      if (snap.exists()) {
-        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
+    const unsub = onSnapshot(collection(db,"padelos_communities"), snap => {
+      const remote = snap.docs.map(d => d.data());
+      if (remote.length > 0) {
         const json = JSON.stringify(remote);
-        if (json !== syncedRef.current.comms) { syncedRef.current.comms = json; setComms(remote);
+        if (json !== syncedRef.current.communities) { syncedRef.current.communities = json; setCommunities(remote);
           _cid = Math.max(_cid, ...remote.map(c=>c.id), 0) + 1;
-          _eid = Math.max(_eid, ...remote.flatMap(c=>c.events.map(e=>e.id)), 0) + 1;
         }
-        everRealRef.current.comms = true;
-      } else if (!everRealRef.current.comms) { syncedRef.current.comms = JSON.stringify(INIT_COMMS); setComms(INIT_COMMS); recordDiag("comms","document not found — showing local seed fallback"); } // local fallback only — NEVER auto-write seed data to Firestore; a transient "not found" on a fresh session must not overwrite real production data. Use the manual Factory Reset button for genuine first-time setup.
-      markLoaded("comms");
-    }, e => { console.log("Firestore comms error", e); recordDiag("comms", `${e.code||"error"}: ${e.message||e}`); markLoaded("comms"); });
+        everRealRef.current.communities = true;
+      } else if (!everRealRef.current.communities) { syncedRef.current.communities = JSON.stringify(INIT_COMMUNITIES); setCommunities(INIT_COMMUNITIES); recordDiag("communities","collection empty — showing local seed fallback"); } // local fallback only — NEVER auto-write seed data to Firestore; a transient empty read on a fresh session must not overwrite real production data.
+      markLoaded("communities");
+    }, e => { console.log("Firestore communities error", e); recordDiag("communities", `${e.code||"error"}: ${e.message||e}`); markLoaded("communities"); });
+    return unsub;
+  }, [authUser]);
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = onSnapshot(collection(db,"padelos_events"), snap => {
+      const remote = snap.docs.map(d => d.data());
+      if (remote.length > 0) {
+        const json = JSON.stringify(remote);
+        if (json !== syncedRef.current.events) { syncedRef.current.events = json; setEvents(remote);
+          _eid = Math.max(_eid, ...remote.map(e=>e.id), 0) + 1;
+        }
+        everRealRef.current.events = true;
+      } else if (!everRealRef.current.events) { syncedRef.current.events = JSON.stringify(INIT_EVENTS); setEvents(INIT_EVENTS); recordDiag("events","collection empty — showing local seed fallback"); }
+      markLoaded("events");
+    }, e => { console.log("Firestore events error", e); recordDiag("events", `${e.code||"error"}: ${e.message||e}`); markLoaded("events"); });
     return unsub;
   }, [authUser]);
   // REMOVED (2026-08-28, comms-split migration prep): there used to be a second effect here that
@@ -4592,16 +4614,22 @@ export default function Matchkeeper() {
   const deleteUser = (id) => {
     const u = users.find(u=>u.id===id);
     setUsers(us => us.filter(u => u.id!==id));
-    // Clean up stale references across all communities/events so counts stay accurate
-    updAllComms(cs => cs.map(c => ({
-      ...c,
-      members: c.members.filter(m => m.userId !== id),
-      events: c.events.map(ev => ({
-        ...ev,
-        registrations: ev.registrations.filter(r => r.userId !== id),
-        checkedIn: (ev.checkedIn||[]).filter(uid => uid !== id),
-      })),
-    })));
+    // Clean up stale references across all communities/events so counts stay accurate — one
+    // write per community they're a member of, one per event they're registered/checked into,
+    // not a platform-wide rewrite (see batchWriteCommunitiesAndEvents above).
+    const touchedCommunities = communitiesRef.current
+      .filter(c => c.members.some(m=>m.userId===id))
+      .map(c => ({id: c.id, data: {...c, members: c.members.filter(m => m.userId !== id)}}));
+    const touchedEvents = eventsRef.current
+      .filter(ev => ev.registrations.some(r=>r.userId===id) || (ev.checkedIn||[]).includes(id))
+      .map(ev => ({id: ev.id, data: {...ev, registrations: ev.registrations.filter(r => r.userId !== id), checkedIn: (ev.checkedIn||[]).filter(uid => uid !== id)}}));
+    const newCommunities = communitiesRef.current.map(c => touchedCommunities.find(t=>t.id===c.id)?.data ?? c);
+    const newEvents = eventsRef.current.map(ev => touchedEvents.find(t=>t.id===ev.id)?.data ?? ev);
+    communitiesRef.current = newCommunities; eventsRef.current = newEvents;
+    syncedRef.current.communities = JSON.stringify(newCommunities);
+    syncedRef.current.events = JSON.stringify(newEvents);
+    setCommunities(newCommunities); setEvents(newEvents);
+    batchWriteCommunitiesAndEvents(touchedCommunities, touchedEvents).catch(e=>console.log("deleteUser batch write failed", e));
     // Also release any identity link to this user so their email/Google account is free to
     // sign in fresh again, instead of staying permanently claimed by a deleted profile — this
     // was previously left dangling (the exact "the system still remembers a deleted test user"
@@ -4741,7 +4769,28 @@ export default function Matchkeeper() {
       const snap = JSON.parse(b.value);
       setUsers(snap.users||[]);
       setVenues(snap.venues||[]);
-      updAllComms(() => snap.comms||[]);
+      // Old-shape backups (comms = communities with nested .events) need splitting; and since
+      // this is a wholesale restore (implicitly DELETING anything created after the backup was
+      // taken), it needs an explicit diff against current doc IDs — a batch of set() calls alone
+      // wouldn't remove documents that exist now but aren't in the snapshot.
+      const snapComms = snap.comms||[];
+      const snapCommunities = snapComms.map(({events, ...c}) => c);
+      const snapEvents = snapComms.flatMap(c => (c.events||[]).map(ev => ({...ev, communityId: c.id})));
+      const snapCommunityIds = new Set(snapCommunities.map(c=>c.id));
+      const snapEventIds = new Set(snapEvents.map(e=>e.id));
+      const communityUpdates = [
+        ...snapCommunities.map(c => ({id:c.id, data:c})),
+        ...communitiesRef.current.filter(c=>!snapCommunityIds.has(c.id)).map(c=>({id:c.id, delete:true})),
+      ];
+      const eventUpdates = [
+        ...snapEvents.map(e => ({id:e.id, data:e})),
+        ...eventsRef.current.filter(e=>!snapEventIds.has(e.id)).map(e=>({id:e.id, delete:true})),
+      ];
+      communitiesRef.current = snapCommunities; eventsRef.current = snapEvents;
+      syncedRef.current.communities = JSON.stringify(snapCommunities);
+      syncedRef.current.events = JSON.stringify(snapEvents);
+      setCommunities(snapCommunities); setEvents(snapEvents);
+      await batchWriteCommunitiesAndEvents(communityUpdates, eventUpdates);
       toast2(`Restored backup from ${timeAgo(b.createdAt)} ✓`);
       logAudit("admin.restoreBackup", `${me.nickname} restored a backup from ${timeAgo(b.createdAt)}`, "backup", backupId);
     } catch(e) { console.log("Restore backup error", e); toast2("Restore failed — backup data unreadable","err"); }
@@ -4751,28 +4800,16 @@ export default function Matchkeeper() {
     catch(e) { console.log("Delete backup error", e); toast2("Delete failed","err"); }
   };
   const repairDuplicateIds = () => {
-    // fn below can run more than once (an optimistic pass, then again inside the transaction,
-    // possibly retried) — seenEventIds has to be local to each run, or a second run would see
-    // every id as "already seen" from the first run and treat everything as a duplicate.
+    // Structurally impossible now that each event is its own Firestore document keyed by its own
+    // id as the doc ID — Firestore itself won't allow two docs to share an ID within a
+    // collection, so two events can never again end up with the same id the way the old single-
+    // blob array allowed. Kept as a scan (rather than removed outright) so the existing admin
+    // button doesn't dead-end; it just always finds nothing to fix against live data.
+    const seenEventIds = new Set();
     let fixed = 0;
-    updAllComms(cs => {
-      let runFixed = 0;
-      const seenEventIds = new Set();
-      const result = cs.map(c => ({
-        ...c,
-        events: c.events.map(ev => {
-          if (seenEventIds.has(ev.id)) {
-            runFixed++;
-            const newId = _eid++;
-            seenEventIds.add(newId);
-            return {...ev, id: newId};
-          }
-          seenEventIds.add(ev.id);
-          return ev;
-        }),
-      }));
-      fixed = runFixed; // last run wins — that's the one that actually got committed
-      return result;
+    eventsRef.current.forEach(ev => {
+      if (seenEventIds.has(ev.id)) fixed++;
+      seenEventIds.add(ev.id);
     });
 
     let venuesFixed = 0;
@@ -4799,8 +4836,22 @@ export default function Matchkeeper() {
       // context, aborting any writes still in flight, so an un-awaited call here
       // silently loses the reset (found via padelos-dev: reset "succeeded" but the
       // seed docs were never actually written).
+      // comms-split migration: seed data now lives in padelos_communities/padelos_events, not
+      // the old padelos/comms blob (which is abandoned post-migration — writing to it here would
+      // both be wrong and trip the tripwire watching for exactly that). Existing docs in both
+      // collections are cleared first so a reset genuinely returns to ONLY the seed set, not
+      // seed-plus-whatever-was-there-before.
+      const [existingCommsSnap, existingEventsSnap] = await Promise.all([
+        getDocs(collection(db,"padelos_communities")),
+        getDocs(collection(db,"padelos_events")),
+      ]);
+      const resetBatch = writeBatch(db);
+      existingCommsSnap.docs.forEach(d=>resetBatch.delete(d.ref));
+      existingEventsSnap.docs.forEach(d=>resetBatch.delete(d.ref));
+      INIT_COMMUNITIES.forEach(c=>resetBatch.set(doc(db,"padelos_communities",String(c.id)), clean(c)));
+      INIT_EVENTS.forEach(e=>resetBatch.set(doc(db,"padelos_events",String(e.id)), clean(e)));
+      await resetBatch.commit();
       await Promise.all([
-        setDoc(doc(db,"padelos","comms"), {value:JSON.stringify(INIT_COMMS)}),
         setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)}),
         setDoc(doc(db,"padelos","venues"), {value:JSON.stringify(INIT_VENUES)}),
         setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify([])}),
@@ -4856,133 +4907,255 @@ export default function Matchkeeper() {
   // whenever godMode is on. This one only fires for a write to a community/event the Platform
   // Admin isn't actually a real owner/admin of — i.e. exactly the writes God Mode alone made
   // possible. A real admin's own communities behave normally, no extra prompt.
-  const updC = (id,fn,opts={}) => {
-    // Read-only enforcement (Enhancement #17) — this single funnel already covers essentially
-    // every community/event write in the app (members, events, ledger, announcements,
-    // registrations...), same reason God Mode's second-confirm gate lives here too. Platform
-    // Admin is exempt so they can always manage the system regardless of their own subscription.
-    // A 1-day grace period after expiry (isSubscriptionLocked) delays the actual lockout — see
-    // isSubscriptionLocked. opts.bypassSubscriptionLock is the one carve-out: a locked user can
-    // still unregister themselves from events (removeFromEvent passes it for self-cancel only).
+  // ── updCommunity / updEvent / updCommunityAndEvent — comms-split write funnels ──────────
+  // Same transaction/optimistic/retry/resync discipline the old single-document `updC` used
+  // (Firestore re-reads the true latest doc at commit time and retries under contention,
+  // maxAttempts:30 — stress-tested against a real registration-rush scenario where Firestore's
+  // own default of 5 attempts left 14/20 concurrent writes failing outright), just each one
+  // scoped to exactly the document(s) it actually needs — so an action on one event can never
+  // again collide with anything happening on a different event or community (see V0.11.49's real
+  // incident, and the earlier poll-multi-select bug this same optimistic-ref-chaining pattern
+  // already fixed once for the single-document version).
+  //
+  // Firestore documents can't hold `undefined` (unlike the old JSON.stringify-based blob, which
+  // silently dropped them) — every write below strips them via JSON.parse(JSON.stringify(...)).
+  const clean = (x) => JSON.parse(JSON.stringify(x));
+  const communitiesRef = useRef(communities);
+  useEffect(() => { communitiesRef.current = communities; }, [communities]);
+  const eventsRef = useRef(events);
+  useEffect(() => { eventsRef.current = events; }, [events]);
+  // Read-only enforcement (Enhancement #17) + the second (interactive) God Mode warning — shared
+  // by all three funnels below, same reasoning as when this all lived inside one updC.
+  const checkSubscriptionGuard = (opts={}) => {
     if (!opts.bypassSubscriptionLock && isSubscriptionLocked(me, subscriptionSettings)) {
       toast2("Your subscription has expired — you can still view everything and unregister from events, but renewing is needed for anything else.", "err");
-      return;
+      return false;
     }
-    if (godMode && me.id===1) {
-      const c = comms.find(cc=>cc.id===id);
-      const realRole = c?.members.find(m=>m.userId===1)?.role;
-      if (realRole!=="owner" && realRole!=="admin" && !window.confirm(`⚡ God Mode — you're not actually a member/admin of "${c?.name||"this community"}".\n\nApply this change anyway?`)) return;
-    }
-    // Real incident: during a registration rush (many people tapping "register" for the same
-    // event within seconds), the whole `comms` document was getting clobbered — every client
-    // read its own possibly-stale local copy, mutated it, and blind-overwrote the ENTIRE
-    // document, so whichever write landed last at the server silently erased every other
-    // concurrent registration. Optimistic local update below is just for instant UI feedback;
-    // the actual persistence now goes through a Firestore transaction, which re-reads the true
-    // latest server state at commit time and re-applies `fn` to THAT, retrying automatically if
-    // another write lands first — no more lost updates under concurrency.
-    //
-    // Second, related incident (poll multi-select "randomly" dropping an earlier selection):
-    // this optimistic step used to read the `comms` state variable directly. Two updC calls
-    // fired back-to-back — e.g. rapidly tapping two different poll options — before React had
-    // re-rendered in between both computed their optimistic result from the SAME stale `comms`
-    // snapshot, and the second setComms(optimistic) call (a plain value, not a functional
-    // updater) fully overwrote the first call's local change rather than building on it. The
-    // eventual Firestore-synced truth was always correct (each transaction re-reads and merges
-    // against the real latest doc, same as the registration fix), so it self-corrected once the
-    // slower of the two transactions resolved — but the visible flicker in between read as data
-    // loss. commsRef.current (already kept in sync after every render, see below) is updated
-    // synchronously right here too, so a same-tick second updC call chains off the first call's
-    // change instead of a stale render.
-    const optimistic = commsRef.current.map(c=>c.id===id?fn(c):c);
-    commsRef.current = optimistic;
-    syncedRef.current.comms = JSON.stringify(optimistic);
-    setComms(optimistic);
-    const docRef = doc(db,"padelos","comms");
-    // maxAttempts:30 — stress-tested against a real registration-rush scenario (20 truly
-    // simultaneous writes to the same document): Firestore's own default of 5 attempts left 14
-    // of 20 failing outright with ABORTED once retries ran out, even though each individual
-    // write is correct. 30 cleared that same test with zero losses.
-    runTransaction(db, async (tx) => {
-      const snap = await tx.get(docRef);
-      const raw = snap.exists() ? snap.data().value : null;
-      const latest = raw ? (typeof raw==="string" ? JSON.parse(raw) : raw) : optimistic;
-      const updated = latest.map(c=>c.id===id?fn(c):c);
-      tx.set(docRef, {value: JSON.stringify(updated)});
-      return updated;
-    }, {maxAttempts:30}).then(updated => {
-      commsRef.current = updated;
-      syncedRef.current.comms = JSON.stringify(updated);
-      setComms(updated); // reconcile local state with the true merged server result
-    }).catch(async e => {
-      console.log("updC transaction failed", e);
-      // Under truly extreme contention the transaction can still exhaust its retries and fail
-      // outright — that must never leave the user staring at an optimistic "you're registered"
-      // UI that was never actually saved. Discard the optimistic guess and resync with whatever
-      // the server actually has (safer than trying to "undo" the local change, which could
-      // clobber a newer, unrelated update that arrived via onSnapshot in the meantime), then
-      // tell the user plainly so they know to retry.
-      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
-      try {
-        const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const raw = snap.data().value;
-          const real = typeof raw==="string" ? JSON.parse(raw) : raw;
-          commsRef.current = real;
-          syncedRef.current.comms = JSON.stringify(real);
-          setComms(real);
-        }
-      } catch(e2) { console.log("updC resync-after-failure also failed", e2); }
-    });
+    return true;
   };
-  // Same transaction-safe pattern as updC, generalized for the handful of actions that touch
-  // more than one community at once (bulk archive/delete, delete user, restore backup, the
-  // one-time repair tools, starting Match Mode) — those used to call setComms directly with a
-  // plain array, which is exactly the "read-modify-blind-overwrite" pattern that let a single
-  // stale client erase concurrent changes app-wide (see V0.11.49's real incident). `fn` receives
-  // the full comms array and returns the full array, same shape either way.
-  const updAllComms = (fn) => {
-    const optimistic = fn(commsRef.current);
-    commsRef.current = optimistic;
-    syncedRef.current.comms = JSON.stringify(optimistic);
-    setComms(optimistic);
-    const docRef = doc(db,"padelos","comms");
+  const checkGodModeGuard = (cid) => {
+    if (!(godMode && me.id===1)) return true;
+    const c = communitiesRef.current.find(cc=>cc.id===cid);
+    const realRole = c?.members.find(m=>m.userId===1)?.role;
+    if (realRole!=="owner" && realRole!=="admin" && !window.confirm(`⚡ God Mode — you're not actually a member/admin of "${c?.name||"this community"}".\n\nApply this change anyway?`)) return false;
+    return true;
+  };
+
+  const updCommunity = (id, fn, opts={}) => {
+    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(id)) return;
+    const optimistic = communitiesRef.current.map(c=>c.id===id?fn(c):c);
+    communitiesRef.current = optimistic;
+    syncedRef.current.communities = JSON.stringify(optimistic);
+    setCommunities(optimistic);
+    const docRef = doc(db,"padelos_communities",String(id));
     runTransaction(db, async (tx) => {
       const snap = await tx.get(docRef);
-      const raw = snap.exists() ? snap.data().value : null;
-      const latest = raw ? (typeof raw==="string" ? JSON.parse(raw) : raw) : optimistic;
+      const latest = snap.exists() ? snap.data() : optimistic.find(c=>c.id===id);
       const updated = fn(latest);
-      tx.set(docRef, {value: JSON.stringify(updated)});
+      tx.set(docRef, clean(updated));
       return updated;
     }, {maxAttempts:30}).then(updated => {
-      commsRef.current = updated;
-      syncedRef.current.comms = JSON.stringify(updated);
-      setComms(updated);
+      communitiesRef.current = communitiesRef.current.map(c=>c.id===id?updated:c);
+      syncedRef.current.communities = JSON.stringify(communitiesRef.current);
+      setCommunities(communitiesRef.current);
     }).catch(async e => {
-      console.log("updAllComms transaction failed", e);
+      console.log("updCommunity transaction failed", e);
       toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
       try {
         const snap = await getDoc(docRef);
         if (snap.exists()) {
-          const raw = snap.data().value;
-          const real = typeof raw==="string" ? JSON.parse(raw) : raw;
-          commsRef.current = real;
-          syncedRef.current.comms = JSON.stringify(real);
-          setComms(real);
+          const real = communitiesRef.current.map(c=>c.id===id?snap.data():c);
+          communitiesRef.current = real;
+          syncedRef.current.communities = JSON.stringify(real);
+          setCommunities(real);
         }
-      } catch(e2) { console.log("updAllComms resync-after-failure also failed", e2); }
+      } catch(e2) { console.log("updCommunity resync-after-failure also failed", e2); }
     });
   };
-  // A handful of mutations atomically touch BOTH a community-level field (members, ledger) AND
-  // one specific event's fields in a single transaction — closeEvent (member promote/demote
-  // streaks + marking the event completed), registerViaInvite and addGuest (granting guest
-  // membership + the event registration together, so a crash between two separate writes can
-  // never leave one without the other). Today there's only one document (padelos/comms) so this
-  // is just updC with an explicit `eid` threaded through — but naming it separately and forcing
-  // callers to state which event is involved means that when this data eventually splits into
-  // separate community/event documents, this funnel's INTERNALS become a genuine two-document
-  // transaction while every call site below stays completely unchanged.
-  const updCommunityAndEvent = (cid, eid, fn) => updC(cid, fn);
+
+  const updEvent = (cid, eid, fn, opts={}) => {
+    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return;
+    const optimistic = eventsRef.current.map(e=>e.id===eid?fn(e):e);
+    eventsRef.current = optimistic;
+    syncedRef.current.events = JSON.stringify(optimistic);
+    setEvents(optimistic);
+    const docRef = doc(db,"padelos_events",String(eid));
+    runTransaction(db, async (tx) => {
+      const snap = await tx.get(docRef);
+      const latest = snap.exists() ? snap.data() : optimistic.find(e=>e.id===eid);
+      const updated = fn(latest);
+      tx.set(docRef, clean(updated));
+      return updated;
+    }, {maxAttempts:30}).then(updated => {
+      eventsRef.current = eventsRef.current.map(e=>e.id===eid?updated:e);
+      syncedRef.current.events = JSON.stringify(eventsRef.current);
+      setEvents(eventsRef.current);
+    }).catch(async e => {
+      console.log("updEvent transaction failed", e);
+      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      try {
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const real = eventsRef.current.map(e=>e.id===eid?snap.data():e);
+          eventsRef.current = real;
+          syncedRef.current.events = JSON.stringify(real);
+          setEvents(real);
+        }
+      } catch(e2) { console.log("updEvent resync-after-failure also failed", e2); }
+    });
+  };
+
+  // Same reasoning as createEventDoc below, for a brand-new community.
+  const createCommunityDoc = (communityObj) => {
+    const optimistic = [...communitiesRef.current, communityObj];
+    communitiesRef.current = optimistic;
+    syncedRef.current.communities = JSON.stringify(optimistic);
+    setCommunities(optimistic);
+    setDoc(doc(db,"padelos_communities",String(communityObj.id)), clean(communityObj)).catch(e=>console.log("Firestore write error (createCommunityDoc)", e));
+  };
+  // Creating a brand-new event: no existing padelos_events doc to transact against yet (nobody
+  // else can know about an id that was only just allocated), so this is a plain write, not a
+  // transaction — same conflict-free reasoning as claimOrCreateProfile allocating a new user id.
+  const createEventDoc = (eventObj) => {
+    const optimistic = [...eventsRef.current, eventObj];
+    eventsRef.current = optimistic;
+    syncedRef.current.events = JSON.stringify(optimistic);
+    setEvents(optimistic);
+    setDoc(doc(db,"padelos_events",String(eventObj.id)), clean(eventObj)).catch(e=>console.log("Firestore write error (createEventDoc)", e));
+  };
+  // For mutations that atomically touch BOTH a community-level field AND one specific event's
+  // fields (registerViaInvite, addGuest — granting guest membership + the event registration
+  // together, so a crash between two separate writes can never leave one without the other).
+  // `fn` receives {...community, events:[event]} (a "virtual community" with just the one
+  // relevant event) and must return the same shape — matches these functions' existing bodies
+  // exactly, since they only ever touch the single event matching `eid` despite structurally
+  // `.map`-ing over `.events`. (closeEvent needs every OTHER completed event in the community too,
+  // for its promote/demote streak calc — it has its own bespoke transaction, see closeEvent.)
+  const updCommunityAndEvent = (cid, eid, fn, opts={}) => {
+    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return;
+    const buildVirtual = (c, e) => ({...c, events: e ? [e] : []});
+    const splitResult = (result) => {
+      const {events: resultEvents, ...resultCommunity} = result;
+      const updatedEvent = resultEvents?.find(e=>e.id===eid) ?? resultEvents?.[0] ?? null;
+      return {resultCommunity, updatedEvent};
+    };
+    const startingC = communitiesRef.current.find(c=>c.id===cid);
+    const startingE = eventsRef.current.find(e=>e.id===eid);
+    const {resultCommunity: optC, updatedEvent: optE} = splitResult(fn(buildVirtual(startingC, startingE)));
+    const optCommunities = communitiesRef.current.map(c=>c.id===cid?optC:c);
+    const optEvents = optE ? eventsRef.current.map(e=>e.id===eid?optE:e) : eventsRef.current;
+    communitiesRef.current = optCommunities; eventsRef.current = optEvents;
+    syncedRef.current.communities = JSON.stringify(optCommunities);
+    syncedRef.current.events = JSON.stringify(optEvents);
+    setCommunities(optCommunities); setEvents(optEvents);
+
+    const cDocRef = doc(db,"padelos_communities",String(cid));
+    const eDocRef = doc(db,"padelos_events",String(eid));
+    runTransaction(db, async (tx) => {
+      const [cSnap, eSnap] = await Promise.all([tx.get(cDocRef), tx.get(eDocRef)]);
+      const latestC = cSnap.exists() ? cSnap.data() : optC;
+      const latestE = eSnap.exists() ? eSnap.data() : optE;
+      const {resultCommunity, updatedEvent} = splitResult(fn(buildVirtual(latestC, latestE)));
+      tx.set(cDocRef, clean(resultCommunity));
+      if (updatedEvent) tx.set(eDocRef, clean(updatedEvent));
+      return {resultCommunity, updatedEvent};
+    }, {maxAttempts:30}).then(({resultCommunity, updatedEvent}) => {
+      communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
+      if (updatedEvent) eventsRef.current = eventsRef.current.map(e=>e.id===eid?updatedEvent:e);
+      syncedRef.current.communities = JSON.stringify(communitiesRef.current);
+      syncedRef.current.events = JSON.stringify(eventsRef.current);
+      setCommunities(communitiesRef.current); setEvents(eventsRef.current);
+    }).catch(async e => {
+      console.log("updCommunityAndEvent transaction failed", e);
+      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      try {
+        const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
+        if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
+        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?eSnap.data():ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
+      } catch(e2) { console.log("updCommunityAndEvent resync-after-failure also failed", e2); }
+    });
+  };
+  // Back-compat alias: every call site below that never touches `.events` (members, ledger,
+  // announcements, banners...) still calls `updC(cid, fn)` unchanged — safe, since updCommunity
+  // has the exact same (id, fn, opts) signature and those fn bodies never reference events at
+  // all. Only call sites that actually mutate an event needed to change to updEvent/
+  // updCommunityAndEvent below.
+  const updC = updCommunity;
+  // closeEvent needs every OTHER completed event in the community (not just the one being
+  // closed) to recompute member promote/demote streaks — updCommunityAndEvent above only ever
+  // gives `fn` a single event, so this gets its own bespoke transaction: reads the community doc
+  // plus every one of its event docs (a transactional query against live server data, not a
+  // guess from local state), applies the same promote/demote logic, but only ever WRITES the
+  // community doc and the one event actually being closed — every sibling event is read for
+  // context only, never rewritten.
+  const closeEventTx = (cid, eid, fn) => {
+    if (!checkSubscriptionGuard() || !checkGodModeGuard(cid)) return;
+    const buildVirtual = (c, evs) => ({...c, events: evs});
+    const splitResult = (result) => {
+      const {events: resultEvents, ...resultCommunity} = result;
+      return {resultCommunity, targetEvent: resultEvents.find(e=>e.id===eid) ?? null};
+    };
+    const siblingEvents = eventsRef.current.filter(e=>e.communityId===cid);
+    const {resultCommunity: optC, targetEvent: optE} = splitResult(fn(buildVirtual(communitiesRef.current.find(c=>c.id===cid), siblingEvents)));
+    const optCommunities = communitiesRef.current.map(c=>c.id===cid?optC:c);
+    const optEvents = optE ? eventsRef.current.map(e=>e.id===eid?optE:e) : eventsRef.current;
+    communitiesRef.current = optCommunities; eventsRef.current = optEvents;
+    syncedRef.current.communities = JSON.stringify(optCommunities);
+    syncedRef.current.events = JSON.stringify(optEvents);
+    setCommunities(optCommunities); setEvents(optEvents);
+
+    const cDocRef = doc(db,"padelos_communities",String(cid));
+    const eDocRef = doc(db,"padelos_events",String(eid));
+    const eventsQuery = query(collection(db,"padelos_events"), where("communityId","==",cid));
+    runTransaction(db, async (tx) => {
+      const [cSnap, evsSnap] = await Promise.all([tx.get(cDocRef), tx.get(eventsQuery)]);
+      const latestC = cSnap.exists() ? cSnap.data() : optC;
+      const latestEvents = evsSnap.docs.map(d=>d.data());
+      const {resultCommunity, targetEvent} = splitResult(fn(buildVirtual(latestC, latestEvents)));
+      tx.set(cDocRef, clean(resultCommunity));
+      if (targetEvent) tx.set(eDocRef, clean(targetEvent));
+      return {resultCommunity, targetEvent};
+    }, {maxAttempts:30}).then(({resultCommunity, targetEvent}) => {
+      communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
+      if (targetEvent) eventsRef.current = eventsRef.current.map(e=>e.id===eid?targetEvent:e);
+      syncedRef.current.communities = JSON.stringify(communitiesRef.current);
+      syncedRef.current.events = JSON.stringify(eventsRef.current);
+      setCommunities(communitiesRef.current); setEvents(eventsRef.current);
+    }).catch(async e => {
+      console.log("closeEventTx transaction failed", e);
+      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      try {
+        const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
+        if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
+        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?eSnap.data():ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
+      } catch(e2) { console.log("closeEventTx resync-after-failure also failed", e2); }
+    });
+  };
+  // Shared by the handful of rare admin/maintenance tools that touch many communities and/or
+  // events at once (deleteUser, restoreBackup, repairDuplicateIds, backfillGuestMemberships,
+  // bulkArchiveEvents/bulkDeleteEvents) — each targeted document gets its own write in a
+  // Firestore batch (chunked at 450, under the 500-per-batch limit) instead of one all-or-
+  // nothing document rewrite, so a big admin operation can never again collide with something
+  // happening on a document it doesn't even touch. No transactional re-read here (unlike
+  // updCommunity/updEvent above) — these are all rare, admin-triggered operations against a
+  // specific known set of documents, not a hot path with realistic concurrent writers on the
+  // very same doc, so the added retry machinery isn't buying anything real.
+  // `communityUpdates`/`eventUpdates`: [{id, data}] to upsert, or [{id, delete:true}] to delete.
+  const batchWriteCommunitiesAndEvents = async (communityUpdates=[], eventUpdates=[]) => {
+    const all = [
+      ...communityUpdates.map(u=>({...u, col:"padelos_communities"})),
+      ...eventUpdates.map(u=>({...u, col:"padelos_events"})),
+    ];
+    for (let i=0;i<all.length;i+=450) {
+      const chunk = all.slice(i,i+450);
+      const batch = writeBatch(db);
+      chunk.forEach(u => {
+        const ref = doc(db,u.col,String(u.id));
+        if (u.delete) batch.delete(ref); else batch.set(ref, clean(u.data));
+      });
+      await batch.commit();
+    }
+  };
   const getEv = (cid,eid) => comms.find(c=>c.id===cid)?.events.find(e=>e.id===eid);
 
   // ── Notifications ──────────────────────────────────────
@@ -5036,7 +5209,7 @@ export default function Matchkeeper() {
             if (hoursLeft<=h && hoursLeft>0 && !fired[key]) {
               const recipients = ev.registrations.map(r=>r.userId);
               notify(recipients, `reminder_${key}`, ev, `⏰ ${ev.name} starts in ${label}`, `${fmtD(ev.date)} · ${fmtT(ev.time)}`);
-              updC(ev.communityId, c2=>({...c2,events:c2.events.map(e=>e.id!==ev.id?e:{...e,remindersFired:{...(e.remindersFired||{}),[key]:true}})}));
+              updEvent(ev.communityId, ev.id, e=>({...e,remindersFired:{...(e.remindersFired||{}),[key]:true}}));
             }
           });
         });
@@ -5071,7 +5244,7 @@ export default function Matchkeeper() {
   }, []);
 
   // Community
-  const createComm=(d)=>{const id=_cid++;updAllComms(cs=>[...cs,{id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[],events:[]}]);toast2(`${d.name} created!`);go("comm",{cid:id});
+  const createComm=(d)=>{const id=_cid++;createCommunityDoc({id,...d,founded:today,members:[{userId:me.id,role:"owner",status:"regular",since:today}],joinRequests:[]});toast2(`${d.name} created!`);go("comm",{cid:id});
     if (me.id!==1) notify([1], "new_community", {communityId:id}, "🌱 New community created", `${me.nickname} created "${d.name}"`);
     logAudit("community.create", `${me.nickname} created community "${d.name}"`, "community", id);
   };
@@ -5279,14 +5452,14 @@ export default function Matchkeeper() {
     if (!trimmed) return;
     const ev = getEv(cid,eid);
     const entry = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
-    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:[...(e.announcements||[]), entry]})}));
+    updEvent(cid, eid, e=>({...e, announcements:[...(e.announcements||[]), entry]}));
     toast2("Announcement posted ✓");
     const recipientIds = (ev?.registrations||[]).map(r=>r.userId).filter(uid=>uid!==me.id);
     if (recipientIds.length) notify(recipientIds, "eventAnnouncement", ev, `📢 ${ev?.name||"Event"}`, trimmed);
     logAudit("event.announce", `${me.nickname} posted an announcement in "${ev?.name||eid}"`, "event", eid);
   };
   const deleteEventAnnouncement = (cid, eid, aid) => {
-    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).filter(a=>a.id!==aid)})}));
+    updEvent(cid, eid, e=>({...e, announcements:(e.announcements||[]).filter(a=>a.id!==aid)}));
     toast2("Removed");
   };
   const postEventAnnouncementReply = (cid, eid, aid, message) => {
@@ -5296,14 +5469,14 @@ export default function Matchkeeper() {
     const ann = ev?.announcements?.find(a=>a.id===aid);
     if (!ann) return;
     const reply = {id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, authorId:me.id, authorName:me.nickname, message:trimmed, createdAt:new Date().toISOString()};
-    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:[...(a.replies||[]), reply]})})}));
+    updEvent(cid, eid, e=>({...e, announcements:(e.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:[...(a.replies||[]), reply]})}));
     const threadIds = new Set([ann.authorId, ...(ann.replies||[]).map(r=>r.authorId)]);
     threadIds.delete(me.id);
     if (threadIds.size) notify([...threadIds], "eventAnnouncementReply", ev, `💬 ${ev?.name||"Event"}`, `${me.nickname}: ${trimmed}`);
     logAudit("event.announce", `${me.nickname} replied to an announcement in "${ev?.name||eid}"`, "event", eid);
   };
   const deleteEventAnnouncementReply = (cid, eid, aid, rid) => {
-    updC(cid, c=>({...c, events:c.events.map(e=>e.id!==eid?e:{...e, announcements:(e.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:(a.replies||[]).filter(r=>r.id!==rid)})})}));
+    updEvent(cid, eid, e=>({...e, announcements:(e.announcements||[]).map(a=>a.id!==aid?a:{...a, replies:(a.replies||[]).filter(r=>r.id!==rid)})}));
     toast2("Removed");
   };
 
@@ -5358,7 +5531,7 @@ export default function Matchkeeper() {
     // at generation time), not the event create/edit form. This is just the seed default those
     // pickers start from before the admin generates anything.
     const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
-    updC(cid,c=>({...c,events:[...c.events,ev]}));toast2("Event created ✓");go("event",{cid,eid:id});
+    createEventDoc(ev);toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
     if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
@@ -5370,7 +5543,7 @@ export default function Matchkeeper() {
   };
   const editEvent=(cid,eid,d)=>{
     const before = getEv(cid,eid);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...d})}));toast2("Event updated ✓");goBack();
+    updEvent(cid,eid,ev=>({...ev,...d}));toast2("Event updated ✓");goBack();
     logAudit("event.edit", `${me.nickname} edited event "${before?.name||eid}"`, "event", eid);
     if (before) {
       const changed = [];
@@ -5433,7 +5606,7 @@ export default function Matchkeeper() {
       settlementPayerId:null,
       extraExpenses:0,
     };
-    updC(cid,c=>({...c,events:[...c.events,copy]}));
+    createEventDoc(copy);
     if(keepPlayers&&droppedCount>0){
       toast2(`Event duplicated — ${droppedCount} stale player(s) skipped`,"err");
     }else{
@@ -5452,14 +5625,14 @@ export default function Matchkeeper() {
     if(!ev){toast2("Event not found (id "+eid+")","err");return;}
     if(!(ev.createdBy===me.id||(me.id===1&&godMode))){toast2("Only this event's creator (or the platform admin) can delete it","err");return;}
     if(ev.status==="completed"){toast2("Cannot delete a completed event — use Archive instead","err");return;}
-    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname})}));
+    updEvent(cid,eid,e=>({...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname}));
     toast2("Event deleted (id "+eid+")");
     logAudit("event.delete", `${me.nickname} deleted event "${ev.name}"`, "event", eid);
     goBack();
   };
   const restoreDeletedEvent=(cid,eid)=>{
     const ev=getEv(cid,eid);
-    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,deleted:false,deletedAt:null,deletedBy:null,deletedByName:null})}));
+    updEvent(cid,eid,e=>({...e,deleted:false,deletedAt:null,deletedBy:null,deletedByName:null}));
     toast2("Event restored ✓");
     logAudit("event.restore", `${me.nickname} restored deleted event "${ev?.name||eid}"`, "event", eid);
   };
@@ -5469,9 +5642,9 @@ export default function Matchkeeper() {
     console.log("[archiveEvent] found event:", ev);
     if(!ev){toast2("Event not found (id "+eid+")","err");return;}
     if(!(ev.createdBy===me.id||(me.id===1&&godMode))){toast2("Only this event's creator (or the platform admin) can archive it","err");return;}
-    updC(cid,c=>{
-      const updated={...c,events:c.events.map(e=>e.id!==eid?e:{...e,archived:true,archivedAt:new Date().toISOString()})};
-      console.log("[archiveEvent] updated events:", updated.events.find(e=>e.id===eid));
+    updEvent(cid,eid,e=>{
+      const updated={...e,archived:true,archivedAt:new Date().toISOString()};
+      console.log("[archiveEvent] updated event:", updated);
       return updated;
     });
     toast2("Event archived (id "+eid+")");
@@ -5480,7 +5653,7 @@ export default function Matchkeeper() {
   };
   const unarchiveEvent=(cid,eid)=>{
     console.log("[unarchiveEvent] called with", {cid, eid});
-    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,archived:false,archivedAt:null})}));
+    updEvent(cid,eid,e=>({...e,archived:false,archivedAt:null}));
     toast2("Event restored");
     const ev=getEv(cid,eid);
     logAudit("event.unarchive", `${me.nickname} unarchived event "${ev?.name||eid}"`, "event", eid);
@@ -5491,20 +5664,22 @@ export default function Matchkeeper() {
   // reads as "open" everywhere it's checked (===false is the only paused state).
   const setEventRegistrationOpen=(cid,eid,open)=>{
     const ev=getEv(cid,eid);
-    updC(cid,c=>({...c,events:c.events.map(e=>e.id!==eid?e:{...e,registrationOpen:open})}));
+    updEvent(cid,eid,e=>({...e,registrationOpen:open}));
     toast2(open?"Registration opened ✓":"Registration paused");
     logAudit(open?"event.regOpen":"event.regPause", `${me.nickname} ${open?"opened":"paused"} registration for "${ev?.name||eid}"`, "event", eid);
   };
   // Bulk versions for the Events list "Select" mode — unlike the single-event
   // archiveEvent/deleteEvent above, these don't navigate away (the caller stays
   // on the list) and can span multiple communities in one selection.
-  const bulkArchiveEvents=(items)=>{ // items: [{cid,eid}]
-    const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
+  const bulkArchiveEvents=(items)=>{ // items: [{cid,eid}] — each becomes its own document write, never touching any other event
+    const eids = new Set(items.map(({eid})=>eid));
     const names=items.map(({cid,eid})=>getEv(cid,eid)?.name).filter(Boolean);
-    updAllComms(cs=>cs.map(c=>{
-      const eids=byCid[c.id]; if(!eids) return c;
-      return {...c,events:c.events.map(e=>eids.has(e.id)?{...e,archived:true,archivedAt:new Date().toISOString()}:e)};
-    }));
+    const touched = eventsRef.current.filter(e=>eids.has(e.id)).map(e=>({...e,archived:true,archivedAt:new Date().toISOString()}));
+    const newEvents = eventsRef.current.map(e=>touched.find(t=>t.id===e.id) ?? e);
+    eventsRef.current = newEvents;
+    syncedRef.current.events = JSON.stringify(newEvents);
+    setEvents(newEvents);
+    batchWriteCommunitiesAndEvents([], touched.map(e=>({id:e.id, data:e}))).catch(e=>console.log("bulkArchiveEvents batch write failed", e));
     toast2(`${items.length} event(s) archived ✓`);
     logAudit("event.bulkArchive", `${me.nickname} archived ${items.length} event(s): ${names.slice(0,5).join(", ")}${names.length>5?` and ${names.length-5} more`:""}`, null, null);
   };
@@ -5513,24 +5688,17 @@ export default function Matchkeeper() {
   // who did it), unlike the single-event action which always has.
   const bulkDeleteEvents=(items)=>{ // items: [{cid,eid}] — completed events are skipped, same rule as single deleteEvent
     if(me.id!==1){toast2("Only the platform admin can bulk-delete events","err");return;}
-    const byCid={}; items.forEach(({cid,eid})=>{(byCid[cid]=byCid[cid]||new Set()).add(eid);});
-    // fn below can run more than once (optimistic pass, then again inside the transaction) — the
-    // counters have to reset each run, or a second run would double-count on top of the first.
-    let deletedCount=0, skippedCount=0, deletedNames=[];
-    updAllComms(cs=>{
-      let runDeleted=0, runSkipped=0; const runNames=[];
-      const result = cs.map(c=>{
-        const eids=byCid[c.id]; if(!eids) return c;
-        return {...c,events:c.events.map(e=>{
-          if(!eids.has(e.id)) return e;
-          if(e.status==="completed"){ runSkipped++; return e; }
-          runDeleted++; runNames.push(e.name);
-          return {...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname};
-        })};
-      });
-      deletedCount=runDeleted; skippedCount=runSkipped; deletedNames=runNames;
-      return result;
-    });
+    const eids = new Set(items.map(({eid})=>eid));
+    const targets = eventsRef.current.filter(e=>eids.has(e.id));
+    const toDelete = targets.filter(e=>e.status!=="completed");
+    const skippedCount = targets.length - toDelete.length;
+    const touched = toDelete.map(e=>({...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname}));
+    const newEvents = eventsRef.current.map(e=>touched.find(t=>t.id===e.id) ?? e);
+    eventsRef.current = newEvents;
+    syncedRef.current.events = JSON.stringify(newEvents);
+    setEvents(newEvents);
+    batchWriteCommunitiesAndEvents([], touched.map(e=>({id:e.id, data:e}))).catch(e=>console.log("bulkDeleteEvents batch write failed", e));
+    const deletedCount = touched.length, deletedNames = touched.map(e=>e.name);
     toast2(skippedCount>0?`${deletedCount} event(s) deleted · ${skippedCount} completed event(s) skipped (use Archive instead)`:`${deletedCount} event(s) deleted ✓`);
     if(deletedCount>0) logAudit("event.bulkDelete", `${me.nickname} deleted ${deletedCount} event(s): ${deletedNames.slice(0,5).join(", ")}${deletedNames.length>5?` and ${deletedNames.length-5} more`:""}`, null, null);
   };
@@ -5634,7 +5802,7 @@ export default function Matchkeeper() {
       }));
     }
 
-    updCommunityAndEvent(cid,eid,c=>{
+    closeEventTx(cid,eid,c=>{
       const updatedEvents = c.events.map(e=>e.id!==eid?e:{...e,status:"completed",closedAt:new Date().toISOString()});
       const promoteAfter = c.promoteAfter||3, demoteAfter = c.demoteAfter||4;
       const completedEvs = updatedEvents.filter(e=>e.status==="completed").sort((a,b)=>new Date(a.date)-new Date(b.date));
@@ -5727,7 +5895,7 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted, pos:waitPos} = willLandWaitlisted(ev, me.id, comm, null);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]})}));
+    updEvent(cid,eid,ev=>ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]});
     afterRegistered(waitlisted, waitPos);
   };
   const addMember=async (cid,eid,uid)=>{
@@ -5757,7 +5925,7 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})}));
+    updEvent(cid,eid,ev=>ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]});
     afterAdded(waitlisted);
   };
   // An invite link is deliberate access granted by an admin — it skips the regular-member
@@ -5813,7 +5981,7 @@ export default function Matchkeeper() {
   // than the button just being hidden with no way to ask at all.
   const requestEventJoin=(cid,eid)=>{
     const ev=getEv(cid,eid);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:(ev.joinRequests||[]).some(r=>r.userId===me.id)?ev:{...ev,joinRequests:[...(ev.joinRequests||[]),{userId:me.id,requestedAt:new Date().toISOString()}]})}));
+    updEvent(cid,eid,ev=>(ev.joinRequests||[]).some(r=>r.userId===me.id)?ev:{...ev,joinRequests:[...(ev.joinRequests||[]),{userId:me.id,requestedAt:new Date().toISOString()}]});
     toast2("Request sent ✓");
     if (ev) notify([ev.createdBy].filter(Boolean), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
     logAudit("event.requestJoin", `${me.nickname} requested to join "${ev?.name||eid}"`, "event", eid);
@@ -5844,18 +6012,16 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
-    const updateOne=e=>{
-      if(e.id!==eid) return e;
+    updEvent(cid,eid,e=>{
       const newJoinRequests=(e.joinRequests||[]).filter(r=>r.userId!==uid);
       const alreadyReg=e.registrations.find(r=>r.userId===uid);
       const newRegs=alreadyReg?e.registrations:[...e.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"approved",isGuest:false}];
       return {...e,joinRequests:newJoinRequests,registrations:newRegs};
-    };
-    updC(cid,c=>({...c,events:c.events.map(updateOne)}));
+    });
     afterApproved(waitlisted);
   };
   const rejectEventJoin=(cid,eid,uid)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)})}));
+    updEvent(cid,eid,ev=>({...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)}));
     toast2("Rejected");
   };
   const addGuest=(cid,eid,g)=>{
@@ -5884,30 +6050,33 @@ export default function Matchkeeper() {
   // scans every event's registrations for isGuest players and adds any missing ones
   // to their community's member list (status: guest), without touching anyone already there.
   const backfillGuestMemberships = () => {
-    // fn below can run more than once (optimistic pass, then again inside the transaction) —
-    // `added` has to reset each run, or a second run would double-count on top of the first.
+    const eventsByCommunity = {};
+    eventsRef.current.forEach(ev => { (eventsByCommunity[ev.communityId] = eventsByCommunity[ev.communityId] || []).push(ev); });
     let added = 0;
-    updAllComms(cs => {
-      let runAdded = 0;
-      const result = cs.map(c => {
-        const existingIds = new Set(c.members.map(m=>m.userId));
-        const guestIdsInEvents = new Set();
-        c.events.forEach(ev => ev.registrations.forEach(r => {
-          if (r.isGuest || users.find(u=>u.id===r.userId)?.isGuest) guestIdsInEvents.add(r.userId);
-        }));
-        const toAdd = [...guestIdsInEvents].filter(uid => !existingIds.has(uid));
-        if (toAdd.length===0) return c;
-        runAdded += toAdd.length;
-        return {...c, members:[...c.members, ...toAdd.map(uid=>({userId:uid, role:"member", status:"guest", since:today}))]};
-      });
-      added = runAdded;
-      return result;
+    const touched = [];
+    communitiesRef.current.forEach(c => {
+      const existingIds = new Set(c.members.map(m=>m.userId));
+      const guestIdsInEvents = new Set();
+      (eventsByCommunity[c.id]||[]).forEach(ev => ev.registrations.forEach(r => {
+        if (r.isGuest || users.find(u=>u.id===r.userId)?.isGuest) guestIdsInEvents.add(r.userId);
+      }));
+      const toAdd = [...guestIdsInEvents].filter(uid => !existingIds.has(uid));
+      if (toAdd.length===0) return;
+      added += toAdd.length;
+      touched.push({...c, members:[...c.members, ...toAdd.map(uid=>({userId:uid, role:"member", status:"guest", since:today}))]});
     });
+    if (touched.length) {
+      const newCommunities = communitiesRef.current.map(c=>touched.find(t=>t.id===c.id) ?? c);
+      communitiesRef.current = newCommunities;
+      syncedRef.current.communities = JSON.stringify(newCommunities);
+      setCommunities(newCommunities);
+      batchWriteCommunitiesAndEvents(touched.map(c=>({id:c.id, data:c})), []).catch(e=>console.log("backfillGuestMemberships batch write failed", e));
+    }
     if (added>0) toast2(`Added ${added} guest(s) to their communities ✓`);
     else toast2("No missing guest memberships found — all clean ✓");
   };
-  const checkIn=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]})}));toast2("Checked in ✓");};
-  const setPlan=(cid,eid,plan)=>updC(cid,c=>({...c,events:c.events.map(ev=>ev.id===eid?{...ev,plan}:ev)}));
+  const checkIn=(cid,eid,uid)=>{updEvent(cid,eid,ev=>ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]});toast2("Checked in ✓");};
+  const setPlan=(cid,eid,plan)=>updEvent(cid,eid,ev=>({...ev,plan}));
   const removeFromEvent=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     // If the person leaving held an active (non-waitlisted) spot and someone's waiting,
@@ -5921,7 +6090,7 @@ export default function Matchkeeper() {
       if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
     }
     const hadReg = ev && ev.registrations.some(r=>r.userId===uid);
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)})}),{bypassSubscriptionLock:uid===me.id});
+    updEvent(cid,eid,ev=>({...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)}),{bypassSubscriptionLock:uid===me.id});
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
@@ -5958,12 +6127,12 @@ export default function Matchkeeper() {
     }
     logAudit("event.unregister", `${me.nickname} ${uid===me.id?"unregistered themselves":`removed ${u?.nickname||uid}`} from "${ev?.name||eid}"`, "event", eid);
   };
-  const addEventPhoto=(cid,eid,photo)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]})}));toast2("Photo added 📸");
+  const addEventPhoto=(cid,eid,photo)=>{updEvent(cid,eid,ev=>({...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]}));toast2("Photo added 📸");
     const ev=getEv(cid,eid);
     logAudit("event.photo", `${me.nickname} uploaded a photo to "${ev?.name||eid}"`, "event", eid);
   };
-  const removeEventPhoto=(cid,eid,photoId)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)})}));toast2("Photo removed");};
-  const toggleExempt=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};})}));};
+  const removeEventPhoto=(cid,eid,photoId)=>{updEvent(cid,eid,ev=>({...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)}));toast2("Photo removed");};
+  const toggleExempt=(cid,eid,uid)=>{updEvent(cid,eid,ev=>{const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};});};
   // Retiring mid-event: from here on the player is skipped when future rounds/matches are
   // generated (genNextRoundCI / genNextCTLadder / applyPromoRelegation all filter
   // ev.retiredIds — past rounds/results are untouched), AND skipped from team/round-1
@@ -5989,8 +6158,7 @@ export default function Matchkeeper() {
       ? (ev.plan.teams?.find(t=>t.players?.some(p=>p.userId===uid))?.players||[]).map(p=>p.userId)
       : [uid];
     const ids = teamMateIds.length ? teamMateIds : [uid];
-    updC(cid,c=>({...c,events:c.events.map(e=>{
-      if(e.id!==eid) return e;
+    updEvent(cid,eid,e=>{
       const ret=new Set(e.retiredIds||[]);
       const noShowSet=new Set(e.noShowIds||[]);
       ids.forEach(id=>{
@@ -6030,18 +6198,18 @@ export default function Matchkeeper() {
           })()
         : e.plan;
       return {...e,retiredIds:[...ret],noShowIds:[...noShowSet],exempted,plan};
-    })}));
+    });
     toast2(isRetiring?(ids.length>1?(noShow?"Team marked as no-show 🙈":"Team marked retired 🚑"):(noShow?"Player marked as no-show 🙈":"Player marked retired 🚑")):"Undone — back on the roster");
     const names=ids.map(id=>users.find(u=>u.id===id)?.nickname||id).join(", ");
     logAudit(isRetiring?(noShow?"player.noShow":"player.retire"):"player.unretire", `${me.nickname} ${isRetiring?(noShow?"marked as no-show":"retired"):"un-retired"} ${names} from "${ev.name}"`, "event", eid);
   };
-  const togglePaid=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};})}));};
+  const togglePaid=(cid,eid,uid)=>{updEvent(cid,eid,ev=>{const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};});};
   // "Direct" = paid their share through some channel that bypasses the collector entirely (cash
   // to the venue, handed to another admin, etc.) — settled, but not money the collector actually
   // holds, so it's tracked separately from paidIds (which specifically means "paid TO the
   // collector"). Same toggle-a-Set shape as toggleExempt/togglePaid, same no-toast/no-audit
   // convention (this is a lightweight per-player financial flag, not an event-level action).
-  const toggleDirect=(cid,eid,uid)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid)return ev;const d=new Set(ev.directIds||[]);d.has(uid)?d.delete(uid):d.add(uid);return{...ev,directIds:[...d]};})}));};
+  const toggleDirect=(cid,eid,uid)=>{updEvent(cid,eid,ev=>{const d=new Set(ev.directIds||[]);d.has(uid)?d.delete(uid):d.add(uid);return{...ev,directIds:[...d]};});};
   // Single mutually-exclusive status setter for the Settlement list — unlike toggleExempt/
   // togglePaid/toggleDirect above (independent per-flag toggles, still used by the player's own
   // "I Paid" self-button, where only one flag is ever relevant at a time), this always removes
@@ -6055,19 +6223,18 @@ export default function Matchkeeper() {
   // explicit picker (kebab menu, 4 named options) instead of trying to out-clever the timing —
   // every choice here is a fixed target, not "relative to whatever the current state turns out
   // to be", so there's no stale-snapshot class of bug possible here at all, race or otherwise.
-  const setPaymentStatus=(cid,eid,uid,status)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{
-    if(ev.id!==eid)return ev;
+  const setPaymentStatus=(cid,eid,uid,status)=>{updEvent(cid,eid,ev=>{
     const ex=new Set(ev.exempted||[]), p=new Set(ev.paidIds||[]), d=new Set(ev.directIds||[]);
     ex.delete(uid); p.delete(uid); d.delete(uid);
     if(status==="exempt")ex.add(uid); else if(status==="paid")p.add(uid); else if(status==="direct")d.add(uid);
     return{...ev,exempted:[...ex],paidIds:[...p],directIds:[...d]};
-  })}));};
+  });};
   // Event-scoped admin — promoted/demoted per event, not community-wide (EvDetail's own
   // isAdmin check ORs this in, nowhere else in the app reads it).
   const toggleEventAdmin=(cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     let promoting=null;
-    updC(cid,c=>({...c,events:c.events.map(e=>{if(e.id!==eid)return e;const a=new Set(e.eventAdmins||[]);promoting=!a.has(uid);promoting?a.add(uid):a.delete(uid);return{...e,eventAdmins:[...a]};})}));
+    updEvent(cid,eid,e=>{const a=new Set(e.eventAdmins||[]);promoting=!a.has(uid);promoting?a.add(uid):a.delete(uid);return{...e,eventAdmins:[...a]};});
     toast2("Event admin updated ✓");
     const u=users.find(u=>u.id===uid);
     logAudit(promoting?"eventAdmin.promote":"eventAdmin.demote", `${me.nickname} ${promoting?"made":"removed"} ${u?.nickname||uid} ${promoting?"an admin for":"as admin for"} "${ev?.name||eid}"`, "event", eid);
@@ -6078,11 +6245,21 @@ export default function Matchkeeper() {
   // app-wide. This is what the Events-list LIVE badge relies on to never have to
   // disambiguate between two "current" events.
   const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
-    updAllComms(cs=>cs.map(c=>({...c,events:c.events.map(ev=>{
-      if (c.id===cid && ev.id===eid) return !ev.plan ? ev : {...ev,plan:{...ev.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}};
-      if (ev.plan?.matchModeStartAt) return {...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}};
-      return ev;
-    })})));
+    // "Any other event with Match Mode live" is a scan of the in-memory events collection (every
+    // client already holds it all live, same as today's whole-blob download) — not a query, and
+    // not a platform-wide rewrite: only the target event plus whichever other single event (there
+    // can only ever be one) actually had it set get touched.
+    const target = eventsRef.current.find(e=>e.id===eid);
+    const targetUpdated = target && target.plan ? {...target,plan:{...target.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}} : target;
+    const others = eventsRef.current.filter(e=>e.id!==eid && e.plan?.matchModeStartAt).map(e=>({...e,plan:{...e.plan,matchModeStartAt:null,matchModeDelayMin:null}}));
+    const touched = [...(targetUpdated && targetUpdated!==target ? [targetUpdated] : []), ...others];
+    if (touched.length) {
+      const newEvents = eventsRef.current.map(e=>touched.find(t=>t.id===e.id) ?? e);
+      eventsRef.current = newEvents;
+      syncedRef.current.events = JSON.stringify(newEvents);
+      setEvents(newEvents);
+      batchWriteCommunitiesAndEvents([], touched.map(e=>({id:e.id, data:e}))).catch(e=>console.log("setMatchModeStart batch write failed", e));
+    }
     if (!roundEndTimes || !roundEndTimes.length) return;
     const comm = comms.find(c=>c.id===cid);
     const ev = comm?.events.find(e=>e.id===eid);
@@ -6104,7 +6281,7 @@ export default function Matchkeeper() {
   // effect picks up as a real stop signal (cancels the notification + all scheduled
   // whistles). Useful for cutting a test run short without closing the whole event.
   const stopMatchMode=(cid,eid)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}})}));
+    updEvent(cid,eid,ev=>!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}});
     toast2("Match Mode stopped");
   };
   // Records "whistles are already scheduled for this exact Match Mode start time" durably
@@ -6114,9 +6291,9 @@ export default function Matchkeeper() {
   // which was causing a full re-schedule (and, worse, cancellation of still-pending
   // alarms) on every single app reopen.
   const markWhistlesScheduled=(cid,eid,startAt)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid||!ev.plan?ev:{...ev,plan:{...ev.plan,mmScheduledFor:startAt}})}));
+    updEvent(cid,eid,ev=>!ev.plan?ev:{...ev,plan:{...ev.plan,mmScheduledFor:startAt}});
   };
-  const updateEventFinance=(cid,eid,fields)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,...fields})}));toast2("Updated ✓");};
+  const updateEventFinance=(cid,eid,fields)=>{updEvent(cid,eid,ev=>({...ev,...fields}));toast2("Updated ✓");};
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");
     const u=users.find(u=>u.id===uid);
     logAudit("usr.editGuest", `${me.nickname} set ${u?.nickname||uid}'s guest USR to ${usr}`, "user", uid);
@@ -6125,11 +6302,11 @@ export default function Matchkeeper() {
   // rating, so there's no seed/recalculate machinery like padel's USR to protect here.
   const setFootballSkill=(uid,skill)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,footballSkill:skill||null}:u));toast2("Football skill updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})})}));
+    updEvent(cid,eid,ev=>({...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}));
     const ev=getEv(cid,eid),u=users.find(u=>u.id===uid);
     logAudit("usr.editEventOverride", `${me.nickname} set ${u?.nickname||uid}'s USR to ${usr===""?"(cleared)":usr} for "${ev?.name||eid}" only`, "event", eid);
   };
-  const setBreakPrefOverride=(cid,eid,uid,pref)=>{updC(cid,c=>({...c,events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})})}));};
+  const setBreakPrefOverride=(cid,eid,uid,pref)=>{updEvent(cid,eid,ev=>({...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})}));};
 
   // CI
   const startCI=(cid,eid,n,dur)=>{
@@ -6159,15 +6336,15 @@ export default function Matchkeeper() {
   const setWinCI=(cid,eid,ri,mi,w,sA,sB)=>{
     const scoreA = w ? (sA ?? (w==="A"?1:0)) : 0;
     const scoreB = w ? (sB ?? (w==="B"?1:0)) : 0;
-    updC(cid,c=>({...c,events:c.events.map(ev=>{
-      if(ev.id!==eid||!ev.plan)return ev;
+    updEvent(cid,eid,ev=>{
+      if(!ev.plan)return ev;
       const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,matches:r.matches.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA,scoreB})});
       return{...ev,plan:{...ev.plan,rounds}};
-    })}));
+    });
   };
   const rebalanceCourtCI=(cid,eid,ri,mi)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>{
-      if(ev.id!==eid||!ev.plan)return ev;
+    updEvent(cid,eid,ev=>{
+      if(!ev.plan)return ev;
       const rounds=ev.plan.rounds.map((r,rr)=>{
         if(rr!==ri)return r;
         return {...r,matches:r.matches.map((m,mm)=>{
@@ -6190,12 +6367,12 @@ export default function Matchkeeper() {
         })};
       });
       return {...ev,plan:{...ev.plan,rounds}};
-    })}));
+    });
     toast2("Court re-balanced by USR ✓");
   };
   const swapCI=(cid,eid,ri,uidA,uidB)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>{
-      if(ev.id!==eid||!ev.plan)return ev;
+    updEvent(cid,eid,ev=>{
+      if(!ev.plan)return ev;
       const rounds=JSON.parse(JSON.stringify(ev.plan.rounds));const r=rounds[ri];
       function loc(uid){for(let mi=0;mi<r.matches.length;mi++)for(const t of["teamA","teamB"]){const pi=r.matches[mi][t].findIndex(p=>p.userId===uid);if(pi!==-1)return{w:"court",mi,t,pi};}const bi=r.onBreak.findIndex(p=>p.userId===uid);if(bi!==-1)return{w:"break",bi};return null;}
       function get(l){return l.w==="court"?r.matches[l.mi][l.t][l.pi]:r.onBreak[l.bi];}
@@ -6205,7 +6382,7 @@ export default function Matchkeeper() {
       // Sync breakPlan[ri] with the updated onBreakIds
       const newBreakPlan=ev.plan.breakPlan.map((bp,bri)=>bri===ri?[...r.onBreakIds]:bp);
       return{...ev,plan:{...ev.plan,rounds,breakPlan:newBreakPlan}};
-    })}));toast2("Swapped ✓ — tap Regenerate in Breaks tab to update future rounds");
+    });toast2("Swapped ✓ — tap Regenerate in Breaks tab to update future rounds");
   };
   const editBreakCI=(cid,eid,ri,uid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
@@ -6298,8 +6475,8 @@ export default function Matchkeeper() {
       const [pA,pB]=curTeam.players;
       setComboName(pA.userId||pA.id, pB.userId||pB.id, newName);
     }
-    updC(cid,c=>({...c,events:c.events.map(ev=>{
-      if(ev.id!==eid||!ev.plan)return ev;
+    updEvent(cid,eid,ev=>{
+      if(!ev.plan)return ev;
       const plan=ev.plan;
       const replaceTeam=t=>t?.id===tid?{...t,name:newName}:t;
       const newRounds=plan.rounds.map(r=>({...r,
@@ -6310,7 +6487,7 @@ export default function Matchkeeper() {
       return {...ev,plan:{...plan,teams:(plan.teams||[]).map(replaceTeam),
         groupA:plan.groupA?.map(replaceTeam),groupB:plan.groupB?.map(replaceTeam),sorted:plan.sorted?.map(replaceTeam),
         rounds:newRounds}};
-    })}));
+    });
     toast2("Team renamed ✓");
   };
   // Manual admin swap of two players between two teams (Teams tab, before Round 1 locks)
@@ -6318,8 +6495,8 @@ export default function Matchkeeper() {
   // value inside plan.teams, groupA/groupB, sorted, and every already-generated round's
   // matches, so every one of those needs the updated team object, not just plan.teams.
   const swapCTTeamPlayers=(cid,eid,teamIdA,userIdA,teamIdB,userIdB)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>{
-      if(ev.id!==eid||!ev.plan)return ev;
+    updEvent(cid,eid,ev=>{
+      if(!ev.plan)return ev;
       const plan=ev.plan;
       const teamA=plan.teams.find(t=>t.id===teamIdA), teamB=plan.teams.find(t=>t.id===teamIdB);
       if(!teamA||!teamB||teamA.id===teamB.id)return ev;
@@ -6358,7 +6535,7 @@ export default function Matchkeeper() {
       return {...ev,plan:{...plan,teams:newTeams,
         groupA:plan.groupA?.map(replaceTeam),groupB:plan.groupB?.map(replaceTeam),sorted:plan.sorted?.map(replaceTeam),
         rounds:newRounds}};
-    })}));
+    });
     toast2("Teams updated ✓");
   };
   const regenCTBreaks=(cid,eid)=>{
@@ -6428,7 +6605,7 @@ export default function Matchkeeper() {
   // which (among other things) confuses the "is this team live elsewhere" conflict check
   // on every other match involving that team, since it looks like the match matching
   // itself. Undo (w===null) leaves live untouched — it wasn't this action that set it.
-  const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB,live:w?false:m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  const setWinCT=(cid,eid,ri,mi,side,w,sA,sB)=>{updEvent(cid,eid,ev=>{if(!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,winner:w,scoreA:sA,scoreB:sB,live:w?false:m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};});};
   // Football-only, optional — who scored, tallied per match. scorers: [{userId,goals}], only
   // entries with goals>0 kept. Deliberately separate from setWinCT (its own explicit save) so
   // tagging scorers never has to happen in the same tap as recording the winner.
@@ -6436,16 +6613,16 @@ export default function Matchkeeper() {
   // ever be checked against that team's own score — mixing both teams into one list was the
   // actual bug (found live: a team-2 player showing more tagged goals than team 2 even scored,
   // with no way to catch it since the check summed both teams together).
-  const setCTScorers=(cid,eid,ri,mi,side,scorersA,scorersB)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,scorersA,scorersB});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  const setCTScorers=(cid,eid,ri,mi,side,scorersA,scorersB)=>{updEvent(cid,eid,ev=>{if(!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,scorersA,scorersB});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};});};
   // Toggles whether a League match shows on the Match Mode widget — display-only there
   // (no tap-to-record), so this doesn't touch winner/score at all, just the "live" flag.
-  const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updC(cid,c=>({...c,events:c.events.map(ev=>{if(ev.id!==eid||!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};})}));};
+  const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updEvent(cid,eid,ev=>{if(!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};});};
   const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan,ev.retiredIds||[]));toast2("Groups reshuffled ✓");};
   const nextFootballRound=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,nextFootballLeagueRound(ev.plan));toast2("Next round generated ✓");};
   const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan,ev.retiredIds||[]));toast2("Next match generated ✓");return true;};
   const swapCTLadder=(cid,eid,ri,tidA,tidB)=>{
-    updC(cid,c=>({...c,events:c.events.map(ev=>{
-      if(ev.id!==eid||!ev.plan)return ev;
+    updEvent(cid,eid,ev=>{
+      if(!ev.plan)return ev;
       const rounds=JSON.parse(JSON.stringify(ev.plan.rounds));
       const r=rounds[ri];
       // Find teams in matches or onBreak
@@ -6465,7 +6642,7 @@ export default function Matchkeeper() {
       const tA=getT(lA),tB=getT(lB);setT(lA,tB);setT(lB,tA);
       r.onBreakIds=r.onBreak.map(t=>t.id);
       return{...ev,plan:{...ev.plan,rounds}};
-    })}));
+    });
     toast2("Teams swapped ✓");
   };
 
@@ -6477,7 +6654,7 @@ export default function Matchkeeper() {
     return c.events.filter(ev=>!ev.deleted&&(ev.visibility!=="private"||amAdmin||ev.registrations.some(r=>r.userId===me.id))).map(ev=>({...ev,commName:c.name,communityId:c.id}));
   });
 
-  const dataDegraded = dataLoaded && ["comms","users","venues"].some(k=>!everRealRef.current[k]);
+  const dataDegraded = dataLoaded && ["communities","events","users","venues"].some(k=>!everRealRef.current[k]);
   const diagText = Object.entries(loadDiag).map(([k,v])=>`${k}: ${v}`).join(" · ");
   // Persistent "notifications are off" banner — checks the REAL OS/browser permission state
   // (not a one-time "seen it" flag), so it disappears on its own the moment the user actually

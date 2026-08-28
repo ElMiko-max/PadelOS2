@@ -49,6 +49,16 @@ exports.sendPushOnNotification = onDocumentWritten("padelos/notifications", asyn
   }
 });
 
+// Cutover tripwire (comms-split migration) — padelos/comms is abandoned once the app is fully
+// cut over to padelos_communities/padelos_events. This has nothing left that's supposed to write
+// to it; if anything ever does (a stale client that predates the migration, a forgotten code
+// path), this fires within a minute and logs loudly, turning what would otherwise be an
+// undetectable stale-write into something caught immediately. Never removes/reverts the write
+// itself — just alarms.
+exports.warnOnLegacyCommsWrite = onDocumentWritten("padelos/comms", async (event) => {
+  console.error(`[legacy-comms-tripwire] padelos/comms was written to after the comms-split migration cutover — this document should be completely abandoned. before.exists=${event.data.before.exists} after.exists=${event.data.after.exists}. Investigate which client/code path did this.`);
+});
+
 // Runs every minute. Checks padelos/matchModeSchedule for any round whose end time
 // has passed and hasn't been notified yet, then appends entries to padelos/notifications
 // (which sendPushOnNotification above already watches and sends pushes for — no duplicate
@@ -114,9 +124,6 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   }
   console.log(`[eventReminder] ${due.length} reminder(s) due, dispatching...`);
 
-  const commsSnap = await db.collection("padelos").doc("comms").get();
-  const comms = commsSnap.exists ? JSON.parse(commsSnap.data().value || "[]") : [];
-
   const notifRef = db.collection("padelos").doc("notifications");
   const notifSnap = await notifRef.get();
   const notifications = notifSnap.exists ? JSON.parse(notifSnap.data().value || "[]") : [];
@@ -126,8 +133,11 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   const stillValid = []; // reminders we could actually process (event found) — used to mark sent
 
   for (const s of due) {
-    const comm = comms.find(c => c.id === s.communityId);
-    const ev = comm?.events?.find(e => e.id === s.eventId);
+    // comms-split migration: each event is its own document now, looked up directly by id
+    // instead of scanning a whole-platform blob — communityId on the schedule entry isn't even
+    // needed for this lookup anymore.
+    const evSnap = await db.collection("padelos_events").doc(String(s.eventId)).get();
+    const ev = evSnap.exists ? evSnap.data() : null;
     if (!ev || ev.status === "cancelled") {
       console.log(`[eventReminder] skipping ${s.id}: event not found or cancelled`);
       stillValid.push(s);
@@ -303,17 +313,18 @@ const splitRegsByCapacity = (e, c) => {
   });
   return {active, waitlisted};
 };
-// Resolves {comms, commIdx, comm, ev} from the live comms blob inside an already-open
-// transaction, or throws the right HttpsError — shared lookup for all three functions below.
-const resolveCommEventTx = async (tx, commsRef, communityId, eventId) => {
-  const commsSnap = await tx.get(commsRef);
-  const comms = JSON.parse(commsSnap.data()?.value || "[]");
-  const commIdx = comms.findIndex(c => c.id === communityId);
-  if (commIdx === -1) throw new HttpsError("not-found", "Community not found.");
-  const comm = comms[commIdx];
-  const ev = comm.events.find(e => e.id === eventId);
-  if (!ev) throw new HttpsError("not-found", "Event not found.");
-  return {comms, commIdx, comm, ev};
+// Resolves {comm, ev, commRef, evRef} by reading the community's own document and the event's
+// own document directly, inside an already-open transaction — comms-split migration replaced
+// the old whole-platform-blob scan with two targeted single-document reads. Shared lookup for
+// all three functions below.
+const resolveCommEventTx = async (tx, communityId, eventId) => {
+  const db = getFirestore();
+  const commRef = db.collection("padelos_communities").doc(String(communityId));
+  const evRef = db.collection("padelos_events").doc(String(eventId));
+  const [commSnap, evSnap] = await Promise.all([tx.get(commRef), tx.get(evRef)]);
+  if (!commSnap.exists) throw new HttpsError("not-found", "Community not found.");
+  if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
+  return {comm: commSnap.data(), ev: evSnap.data(), commRef, evRef};
 };
 
 // registerForEvent — same "close the stale-client gap" reasoning as claimOrCreateProfile above,
@@ -344,14 +355,13 @@ exports.registerForEvent = onCall(async (request) => {
 
   const db = getFirestore();
   const linkRef = db.collection("padelos_links").doc(auth.uid);
-  const commsRef = db.collection("padelos").doc("comms");
 
   return db.runTransaction(async (tx) => {
     const linkSnap = await tx.get(linkRef);
     if (!linkSnap.exists) throw new HttpsError("failed-precondition", "No linked player profile for this account yet.");
     const userId = linkSnap.data().userId;
 
-    const {comms, commIdx, comm, ev} = await resolveCommEventTx(tx, commsRef, communityId, eventId);
+    const {comm, ev, commRef, evRef} = await resolveCommEventTx(tx, communityId, eventId);
 
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", via === "invite"
@@ -372,16 +382,15 @@ exports.registerForEvent = onCall(async (request) => {
     const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
     const isWaitlisted = waitlistArr.some(r => r.userId === userId);
 
-    const updatedEvents = comm.events.map(e => e.id === eventId ? {...e, registrations: [...e.registrations, newReg]} : e);
-    let updatedComm = {...comm, events: updatedEvents};
+    tx.set(evRef, {...ev, registrations: [...ev.registrations, newReg]});
     // Matches registerViaInvite's own side effect: an invite link also grants guest-tier
     // community membership, not just the event registration, if they aren't a member yet.
-    if (via === "invite" && !updatedComm.members.some(m => m.userId === userId)) {
-      updatedComm = {...updatedComm, members: [...updatedComm.members, {userId, role: "member", status: "guest", since: new Date().toISOString().slice(0, 10)}]};
+    // Two-document write in the same transaction, same reasoning as client-side
+    // updCommunityAndEvent — a crash between two separate writes can never leave a registration
+    // without its matching membership.
+    if (via === "invite" && !comm.members.some(m => m.userId === userId)) {
+      tx.set(commRef, {...comm, members: [...comm.members, {userId, role: "member", status: "guest", since: new Date().toISOString().slice(0, 10)}]});
     }
-    const updatedComms = [...comms];
-    updatedComms[commIdx] = updatedComm;
-    tx.set(commsRef, {value: JSON.stringify(updatedComms)});
 
     return {status: "ok", waitlisted: isWaitlisted, pos: isWaitlisted ? waitlistArr.length : 0, eventName: ev.name};
   });
@@ -407,11 +416,8 @@ exports.addMemberToEvent = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
   }
 
-  const db = getFirestore();
-  const commsRef = db.collection("padelos").doc("comms");
-
-  return db.runTransaction(async (tx) => {
-    const {comms, commIdx, comm, ev} = await resolveCommEventTx(tx, commsRef, communityId, eventId);
+  return getFirestore().runTransaction(async (tx) => {
+    const {comm, ev, evRef} = await resolveCommEventTx(tx, communityId, eventId);
 
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", "This event is closed — can't add players anymore.");
@@ -425,10 +431,7 @@ exports.addMemberToEvent = onCall(async (request) => {
     const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
     const isWaitlisted = waitlistArr.some(r => r.userId === targetUserId);
 
-    const updatedEvents = comm.events.map(e => e.id === eventId ? {...e, registrations: [...e.registrations, newReg]} : e);
-    const updatedComms = [...comms];
-    updatedComms[commIdx] = {...comm, events: updatedEvents};
-    tx.set(commsRef, {value: JSON.stringify(updatedComms)});
+    tx.set(evRef, {...ev, registrations: [...ev.registrations, newReg]});
 
     return {status: "ok", waitlisted: isWaitlisted, eventName: ev.name};
   });
@@ -441,11 +444,8 @@ exports.approveEventJoinRequest = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
   }
 
-  const db = getFirestore();
-  const commsRef = db.collection("padelos").doc("comms");
-
-  return db.runTransaction(async (tx) => {
-    const {comms, commIdx, comm, ev} = await resolveCommEventTx(tx, commsRef, communityId, eventId);
+  return getFirestore().runTransaction(async (tx) => {
+    const {comm, ev, evRef} = await resolveCommEventTx(tx, communityId, eventId);
 
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", "This event is closed — the request can't be approved anymore.");
@@ -460,10 +460,7 @@ exports.approveEventJoinRequest = onCall(async (request) => {
     const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
     const isWaitlisted = waitlistArr.some(r => r.userId === targetUserId);
 
-    const updatedEvents = comm.events.map(e => e.id === eventId ? {...e, joinRequests: newJoinRequests, registrations: newRegs} : e);
-    const updatedComms = [...comms];
-    updatedComms[commIdx] = {...comm, events: updatedEvents};
-    tx.set(commsRef, {value: JSON.stringify(updatedComms)});
+    tx.set(evRef, {...ev, joinRequests: newJoinRequests, registrations: newRegs});
 
     return {status: "ok", waitlisted: isWaitlisted, eventName: ev.name};
   });

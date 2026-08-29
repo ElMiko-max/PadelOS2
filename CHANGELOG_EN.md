@@ -4,7 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.11.51 — First step of a larger project: restructuring how community/event data is stored
+## V0.12.00 — Major release: every community and event now has its own Firestore document
+
+- **The project started in V0.11.51 is complete.** Instead of all community and event data living in one giant document (the root cause of every race-condition incident this app has had, including last week's), every community and every event now has its own document. Any action — registering, archiving, closing an event — only ever touches its own document, so it can never again collide with something happening on a different event or community, even during a rush.
+- **Genuinely tested before this touched production:** a full copy of real production data was moved into the DEV environment and put through the exact scenario that caused the original incident (a burst of simultaneous registrations while unrelated events got archived at the same moment) — passed cleanly, zero registrations lost.
+- **The admin-account lock and the real Firestore-level security rule from V0.11.49/50 now apply meaningfully to the new split data** (before, the rule could only say "anyone may write here"; now there are real per-document conditions).
+- **Zero visible change for regular users** — same screens, same buttons — but the foundation everything sits on changed completely underneath.
+- **The old data (the single giant document) was left completely untouched** — that's the rollback point if it's ever needed, kept for several days until everything's confirmed solid.
 
 - **Start of a longer-term project** (discussed with the admin after the V0.11.49/50 incident): the real root cause behind every race-condition bug this app has had, including this week's incident, is that all community and event data lives in one giant Firestore document — so anything happening anywhere in the app can collide with anything else happening at the same moment. The real fix is splitting that into separate documents (one per community, one per event) — a genuine project that will take time and ship in stages without taking the app down.
 - **Only the first step today (zero visible change for users):** three spots in the code that change a community's data and one specific event's data together in the same moment (closing an event, joining via an invite link, adding a guest) now go through their own dedicated channel instead of being buried in the general one — preparation for the next stage, which actually separates the data. Also removed old code that could, in theory, have blindly overwritten all community data unsafely if a future bug ever triggered it.

@@ -36,7 +36,14 @@ async function main() {
     db.collection("padelos_events").get(),
   ]);
   const communities = communitiesSnap.docs.map(d => d.data());
-  const events = eventsSnap.docs.map(d => d.data());
+  // `plan` is stored as an opaque JSON string on padelos_events documents (Firestore can't hold
+  // the bare array-of-arrays in ev.plan.breakPlan directly) — unpack it back to a real object,
+  // matching src/App.jsx's unpackEventFromFirestore exactly, since the old blob shape always had
+  // `plan` as an object.
+  const events = eventsSnap.docs.map(d => {
+    const data = d.data();
+    return { ...data, plan: typeof data.plan === "string" ? JSON.parse(data.plan) : data.plan };
+  });
   console.log(`Found ${communities.length} communities, ${events.length} events in the split collections.`);
 
   // Events already carry `communityId` in both the old and new shapes (createEvent always set it,

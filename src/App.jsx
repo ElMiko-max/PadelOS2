@@ -31,7 +31,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit, startAfter, runTransaction, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.11.51";
+const APP_VERSION = "V0.12.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4022,7 +4022,7 @@ export default function Matchkeeper() {
   useEffect(() => {
     if (!authUser) return;
     const unsub = onSnapshot(collection(db,"padelos_events"), snap => {
-      const remote = snap.docs.map(d => d.data());
+      const remote = snap.docs.map(d => unpackEventFromFirestore(d.data()));
       if (remote.length > 0) {
         const json = JSON.stringify(remote);
         if (json !== syncedRef.current.events) { syncedRef.current.events = json; setEvents(remote);
@@ -4849,7 +4849,7 @@ export default function Matchkeeper() {
       existingCommsSnap.docs.forEach(d=>resetBatch.delete(d.ref));
       existingEventsSnap.docs.forEach(d=>resetBatch.delete(d.ref));
       INIT_COMMUNITIES.forEach(c=>resetBatch.set(doc(db,"padelos_communities",String(c.id)), clean(c)));
-      INIT_EVENTS.forEach(e=>resetBatch.set(doc(db,"padelos_events",String(e.id)), clean(e)));
+      INIT_EVENTS.forEach(e=>resetBatch.set(doc(db,"padelos_events",String(e.id)), packEventForFirestore(e)));
       await resetBatch.commit();
       await Promise.all([
         setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)}),
@@ -4920,6 +4920,18 @@ export default function Matchkeeper() {
   // Firestore documents can't hold `undefined` (unlike the old JSON.stringify-based blob, which
   // silently dropped them) — every write below strips them via JSON.parse(JSON.stringify(...)).
   const clean = (x) => JSON.parse(JSON.stringify(x));
+  // Firestore documents can't hold a bare array-of-arrays (no wrapping object) — confirmed live
+  // running the migration script against a real copy of production data: ev.plan.breakPlan is
+  // exactly that shape (one array of user ids PER round), and Firestore rejected it outright
+  // ("Property plan contains an invalid nested entity"). This only ever worked before because
+  // the whole thing was one JSON string, which has no such restriction. Rather than restructure
+  // the match-planning engine's data shape (touches a huge amount of CI/CT code), `plan` is
+  // stored as an opaque JSON string field on the event document and parsed back into a real
+  // object the moment it's read — every other part of the app keeps treating `ev.plan` as a
+  // normal object; only the pack/unpack pair below and the sync listener know it's serialized on
+  // the wire.
+  const packEventForFirestore = (ev) => clean({...ev, plan: ev.plan ? JSON.stringify(ev.plan) : ev.plan});
+  const unpackEventFromFirestore = (data) => ({...data, plan: typeof data.plan === "string" ? JSON.parse(data.plan) : data.plan});
   const communitiesRef = useRef(communities);
   useEffect(() => { communitiesRef.current = communities; }, [communities]);
   const eventsRef = useRef(events);
@@ -4982,9 +4994,9 @@ export default function Matchkeeper() {
     const docRef = doc(db,"padelos_events",String(eid));
     runTransaction(db, async (tx) => {
       const snap = await tx.get(docRef);
-      const latest = snap.exists() ? snap.data() : optimistic.find(e=>e.id===eid);
+      const latest = snap.exists() ? unpackEventFromFirestore(snap.data()) : optimistic.find(e=>e.id===eid);
       const updated = fn(latest);
-      tx.set(docRef, clean(updated));
+      tx.set(docRef, packEventForFirestore(updated));
       return updated;
     }, {maxAttempts:30}).then(updated => {
       eventsRef.current = eventsRef.current.map(e=>e.id===eid?updated:e);
@@ -4996,7 +5008,7 @@ export default function Matchkeeper() {
       try {
         const snap = await getDoc(docRef);
         if (snap.exists()) {
-          const real = eventsRef.current.map(e=>e.id===eid?snap.data():e);
+          const real = eventsRef.current.map(e=>e.id===eid?unpackEventFromFirestore(snap.data()):e);
           eventsRef.current = real;
           syncedRef.current.events = JSON.stringify(real);
           setEvents(real);
@@ -5021,7 +5033,7 @@ export default function Matchkeeper() {
     eventsRef.current = optimistic;
     syncedRef.current.events = JSON.stringify(optimistic);
     setEvents(optimistic);
-    setDoc(doc(db,"padelos_events",String(eventObj.id)), clean(eventObj)).catch(e=>console.log("Firestore write error (createEventDoc)", e));
+    setDoc(doc(db,"padelos_events",String(eventObj.id)), packEventForFirestore(eventObj)).catch(e=>console.log("Firestore write error (createEventDoc)", e));
   };
   // For mutations that atomically touch BOTH a community-level field AND one specific event's
   // fields (registerViaInvite, addGuest — granting guest membership + the event registration
@@ -5054,10 +5066,10 @@ export default function Matchkeeper() {
     runTransaction(db, async (tx) => {
       const [cSnap, eSnap] = await Promise.all([tx.get(cDocRef), tx.get(eDocRef)]);
       const latestC = cSnap.exists() ? cSnap.data() : optC;
-      const latestE = eSnap.exists() ? eSnap.data() : optE;
+      const latestE = eSnap.exists() ? unpackEventFromFirestore(eSnap.data()) : optE;
       const {resultCommunity, updatedEvent} = splitResult(fn(buildVirtual(latestC, latestE)));
       tx.set(cDocRef, clean(resultCommunity));
-      if (updatedEvent) tx.set(eDocRef, clean(updatedEvent));
+      if (updatedEvent) tx.set(eDocRef, packEventForFirestore(updatedEvent));
       return {resultCommunity, updatedEvent};
     }, {maxAttempts:30}).then(({resultCommunity, updatedEvent}) => {
       communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
@@ -5071,7 +5083,7 @@ export default function Matchkeeper() {
       try {
         const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
         if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
-        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?eSnap.data():ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
+        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?unpackEventFromFirestore(eSnap.data()):ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
       } catch(e2) { console.log("updCommunityAndEvent resync-after-failure also failed", e2); }
     });
   };
@@ -5084,10 +5096,20 @@ export default function Matchkeeper() {
   // closeEvent needs every OTHER completed event in the community (not just the one being
   // closed) to recompute member promote/demote streaks — updCommunityAndEvent above only ever
   // gives `fn` a single event, so this gets its own bespoke transaction: reads the community doc
-  // plus every one of its event docs (a transactional query against live server data, not a
-  // guess from local state), applies the same promote/demote logic, but only ever WRITES the
-  // community doc and the one event actually being closed — every sibling event is read for
+  // plus every one of its event docs, applies the same promote/demote logic, but only ever WRITES
+  // the community doc and the one event actually being closed — every sibling event is read for
   // context only, never rewritten.
+  //
+  // Real bug, found live testing this migration in DEV: the first version of this read the
+  // sibling events via `tx.get(query(...))` (a transactional query) run concurrently with
+  // `tx.get(cDocRef)` via Promise.all — that combination failed the transaction outright, every
+  // single time, with no real contention involved (a lone tester in DEV, not a rush). Rewritten
+  // to only ever use `tx.get(docRef)` (the well-supported, standard form) in sequence: which
+  // sibling ids to read comes from local state (same as the reminder/poll-closure scanners
+  // already do elsewhere in this file) just to know WHICH documents exist — the actual DATA for
+  // each one is still read fresh from the server inside the transaction. A just-created/just-
+  // deleted sibling event missing from that local list for a moment only affects this one
+  // promote/demote calc, not correctness of anything actually written.
   const closeEventTx = (cid, eid, fn) => {
     if (!checkSubscriptionGuard() || !checkGodModeGuard(cid)) return;
     const buildVirtual = (c, evs) => ({...c, events: evs});
@@ -5106,14 +5128,17 @@ export default function Matchkeeper() {
 
     const cDocRef = doc(db,"padelos_communities",String(cid));
     const eDocRef = doc(db,"padelos_events",String(eid));
-    const eventsQuery = query(collection(db,"padelos_events"), where("communityId","==",cid));
+    const siblingIds = [...new Set([eid, ...siblingEvents.map(e=>e.id)])];
+    const siblingDocRefs = siblingIds.map(id=>doc(db,"padelos_events",String(id)));
     runTransaction(db, async (tx) => {
-      const [cSnap, evsSnap] = await Promise.all([tx.get(cDocRef), tx.get(eventsQuery)]);
+      const cSnap = await tx.get(cDocRef);
+      const eSnaps = [];
+      for (const ref of siblingDocRefs) { eSnaps.push(await tx.get(ref)); }
       const latestC = cSnap.exists() ? cSnap.data() : optC;
-      const latestEvents = evsSnap.docs.map(d=>d.data());
+      const latestEvents = eSnaps.filter(s=>s.exists()).map(s=>unpackEventFromFirestore(s.data()));
       const {resultCommunity, targetEvent} = splitResult(fn(buildVirtual(latestC, latestEvents)));
       tx.set(cDocRef, clean(resultCommunity));
-      if (targetEvent) tx.set(eDocRef, clean(targetEvent));
+      if (targetEvent) tx.set(eDocRef, packEventForFirestore(targetEvent));
       return {resultCommunity, targetEvent};
     }, {maxAttempts:30}).then(({resultCommunity, targetEvent}) => {
       communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
@@ -5127,7 +5152,7 @@ export default function Matchkeeper() {
       try {
         const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
         if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
-        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?eSnap.data():ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
+        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?unpackEventFromFirestore(eSnap.data()):ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
       } catch(e2) { console.log("closeEventTx resync-after-failure also failed", e2); }
     });
   };
@@ -5151,7 +5176,7 @@ export default function Matchkeeper() {
       const batch = writeBatch(db);
       chunk.forEach(u => {
         const ref = doc(db,u.col,String(u.id));
-        if (u.delete) batch.delete(ref); else batch.set(ref, clean(u.data));
+        if (u.delete) batch.delete(ref); else batch.set(ref, u.col==="padelos_events" ? packEventForFirestore(u.data) : clean(u.data));
       });
       await batch.commit();
     }

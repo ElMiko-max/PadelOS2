@@ -59,9 +59,14 @@ async function main() {
     return;
   }
 
+  // Firestore documents can't hold a bare array-of-arrays (no wrapping object) — ev.plan.breakPlan
+  // is exactly that shape (one array of user ids per round). Stored as an opaque JSON string on
+  // the event document instead; src/App.jsx's packEventForFirestore/unpackEventFromFirestore do
+  // the same pack/unpack at every read and write, so this must match exactly.
+  const packEvent = (e) => JSON.parse(JSON.stringify({ ...e, plan: e.plan ? JSON.stringify(e.plan) : e.plan }));
   const all = [
     ...communities.map(c => ({ col: "padelos_communities", id: c.id, data: c })),
-    ...events.map(e => ({ col: "padelos_events", id: e.id, data: e })),
+    ...events.map(e => ({ col: "padelos_events", id: e.id, data: packEvent(e) })),
   ];
   for (let i = 0; i < all.length; i += 450) {
     const chunk = all.slice(i, i + 450);

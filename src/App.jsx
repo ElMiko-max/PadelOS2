@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.12.00";
+const APP_VERSION = "V0.12.01";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6156,7 +6156,22 @@ export default function Matchkeeper() {
     const ev=getEv(cid,eid);
     logAudit("event.photo", `${me.nickname} uploaded a photo to "${ev?.name||eid}"`, "event", eid);
   };
-  const removeEventPhoto=(cid,eid,photoId)=>{updEvent(cid,eid,ev=>({...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)}));toast2("Photo removed");};
+  const removeEventPhoto=(cid,eid,photoId)=>{
+    const ev=getEv(cid,eid);
+    const photo=(ev?.photos||[]).find(p=>p.id===photoId);
+    const uploader=users.find(u=>u.id===photo?.uploadedBy);
+    updEvent(cid,eid,ev=>({...ev,photos:(ev.photos||[]).filter(p=>p.id!==photoId)}));
+    toast2("Photo removed");
+    logAudit("event.photoRemove", `${me.nickname} removed a photo${uploader?` (uploaded by ${uploader.nickname})`:""} from "${ev?.name||eid}"`, "event", eid);
+  };
+  const toggleEventPhotoLike=(cid,eid,photoId)=>{
+    updEvent(cid,eid,ev=>({...ev,photos:(ev.photos||[]).map(p=>{
+      if(p.id!==photoId) return p;
+      const likes=new Set(p.likes||[]);
+      likes.has(me.id)?likes.delete(me.id):likes.add(me.id);
+      return {...p, likes:[...likes]};
+    })}));
+  };
   const toggleExempt=(cid,eid,uid)=>{updEvent(cid,eid,ev=>{const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};});};
   // Retiring mid-event: from here on the player is skipped when future rounds/matches are
   // generated (genNextRoundCI / genNextCTLadder / applyPromoRelegation all filter
@@ -7022,6 +7037,7 @@ export default function Matchkeeper() {
             onRemoveFromEvent={uid=>removeFromEvent(comm.id,event.id,uid)}
             onAddEventPhoto={photo=>addEventPhoto(comm.id,event.id,photo)}
             onRemoveEventPhoto={photoId=>removeEventPhoto(comm.id,event.id,photoId)}
+            onToggleEventPhotoLike={photoId=>toggleEventPhotoLike(comm.id,event.id,photoId)}
             onEditGuestUsr={(uid,usr)=>editGuestUsr(uid,usr)}
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
             onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
@@ -7040,8 +7056,8 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
-        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt}/>;})()}
-        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt}/>}
+        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL}/>;})()}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -9407,7 +9423,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -10878,9 +10894,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           // it (undo an accidental upload) — after that window, only an admin can remove it.
           const uploadedRecently=p.uploadedBy===me.id&&(Date.now()-new Date(p.uploadedAt).getTime())<5*60*1000;
           const canRemove=isAdmin||uploadedRecently;
+          const liked=(p.likes||[]).includes(me.id);
           return <div key={p.id} style={{position:"relative",aspectRatio:"1",borderRadius:8,overflow:"hidden",background:"var(--po-inp)"}}>
             <img src={p.url} alt="" onClick={()=>window.open(p.url,"_blank")} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}}/>
             {canRemove&&<div onClick={()=>{if(window.confirm(`Remove this photo${uploader?` (uploaded by ${uploader.nickname})`:""}?`))onRemoveEventPhoto(p.id);}} style={{position:"absolute",top:3,right:3,width:20,height:20,borderRadius:"50%",background:"#00000099",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,cursor:"pointer"}}>🗑</div>}
+            <div style={{position:"absolute",left:0,right:0,bottom:0,padding:"3px 6px",background:"linear-gradient(transparent,#000000AA)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:4}}>
+              <div style={{fontSize:9,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{uploader?.nickname||"—"}</div>
+              <div onClick={()=>onToggleEventPhotoLike&&onToggleEventPhotoLike(p.id)} style={{fontSize:10,color:liked?"#F87171":"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:2,flexShrink:0}}>{liked?"❤️":"🤍"}{(p.likes||[]).length>0&&(p.likes||[]).length}</div>
+            </div>
           </div>;
         })}
         <label style={{aspectRatio:"1",borderRadius:8,border:"1.5px dashed var(--po-bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",cursor:photoUploading2?"default":"pointer",gap:2}}>
@@ -11440,7 +11461,7 @@ function ComboCard({combo, lv, eventsDesc, teamName, onRename}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5,egypt}){
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5,egypt,myGooglePhotoURL}){
   const isPlatformAdmin = me?.id===1;
   const showContact = !viewedByAdmin || isPlatformAdmin;
   // Full activity (USR History / Teams / Reports) is only for the owner, the real platform
@@ -11476,6 +11497,17 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     try{ const url = await uploadProfilePhoto(user.id, file); onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:url}); }
     catch(err){ console.log("Photo upload error", err); }
     setPhotoUploading(false);
+  };
+  // Self-service undo for "Change Photo" — until this existed, reverting a custom upload back to
+  // your real Google account picture had no in-app path at all (an admin had to fetch it and set
+  // it by hand). myGooglePhotoURL is exactly what Firebase Auth already has for the signed-in
+  // account (authUser.photoURL) — no extra permissions needed, it's already sitting in the
+  // client. Only offered for isMe (resetting someone ELSE's photo isn't this button's job) and
+  // only when a Google photo actually exists (email/password sign-ins have none to reset to).
+  const resetToGooglePhoto = () => {
+    if (!myGooglePhotoURL) return;
+    onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:myGooglePhotoURL});
+    toast2("Photo reset to your Google account picture ✓");
   };
   const lv=usrLv(user.usr),mine=comms.filter(c=>c.members.some(m=>m.userId===user.id));
   const ec=mine.reduce((s,c)=>s+c.events.filter(e=>!e.deleted&&e.registrations.some(r=>r.userId===user.id)).length,0);
@@ -11522,10 +11554,13 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   {(isMe||isPlatformAdmin)&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
       <Av u={user} size={48}/>
-      <label style={{cursor:photoUploading?"default":"pointer"}}>
-        <input type="file" accept="image/*" style={{display:"none"}} onChange={handlePhotoSelect} disabled={photoUploading}/>
-        <span style={{fontSize:13,fontWeight:600,color:photoUploading?"var(--po-dim)":"#6366F1"}}>{photoUploading?"Uploading…":"📷 Change Photo"}</span>
-      </label>
+      <div>
+        <label style={{cursor:photoUploading?"default":"pointer"}}>
+          <input type="file" accept="image/*" style={{display:"none"}} onChange={handlePhotoSelect} disabled={photoUploading}/>
+          <span style={{fontSize:13,fontWeight:600,color:photoUploading?"var(--po-dim)":"#6366F1"}}>{photoUploading?"Uploading…":"📷 Change Photo"}</span>
+        </label>
+        {isMe&&myGooglePhotoURL&&<div onClick={resetToGooglePhoto} style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>↺ Reset to Google Photo</div>}
+      </div>
     </div>
     <Inp label="Nickname" value={ef.nickname} onChange={v=>setEf(p=>({...p,nickname:v}))}/>
     <Inp label="Phone" value={ef.phone} onChange={v=>setEf(p=>({...p,phone:v}))}/>

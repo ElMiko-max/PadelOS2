@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.12.01 — Anyone can now reset their profile photo back to Google's, plus event photo improvements
+
+- **New: "↺ Reset to Google Photo"** — if someone uploaded a custom profile photo and wants it back to their real Google account picture, there's now a button on the profile edit screen that does it instantly, no admin help needed. Only shows on your own profile, and only when signed in with an actual Google account (not email/password).
+- **Event photos now show who uploaded them directly on the photo** (previously only visible when trying to delete one).
+- **New: likes on event photos** — any player can ❤️ a photo in the Photos tab, with the count shown next to it.
+- **Removing an event photo is now logged in the Audit Trail** (uploading one already was).
+
+---
+
 ## V0.12.00 — Major release: every community and event now has its own Firestore document
 
 - **The project started in V0.11.51 is complete.** Instead of all community and event data living in one giant document (the root cause of every race-condition incident this app has had, including last week's), every community and every event now has its own document. Any action — registering, archiving, closing an event — only ever touches its own document, so it can never again collide with something happening on a different event or community, even during a rush.

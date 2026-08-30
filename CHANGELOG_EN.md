@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.12.02 — Wider Audit Trail coverage: profile photos and likes
+
+- **Changing or resetting a profile photo** (uploading a new one, or "↺ Reset to Google Photo") is now logged in the Audit Trail — even when someone edits their own photo — and says exactly what happened (uploaded a new photo vs. reset to their Google photo).
+- **Likes on event photos are now logged in the Audit Trail too** (liking or unliking).
+- **The Android update gate is now actually enforced:** any old Android install is fully locked out until it updates to V0.12.00 or newer — this includes devices that were working fine before.
+
+---
+
 ## V0.12.01 — Anyone can now reset their profile photo back to Google's, plus event photo improvements
 
 - **New: "↺ Reset to Google Photo"** — if someone uploaded a custom profile photo and wants it back to their real Google account picture, there's now a button on the profile edit screen that does it instantly, no admin help needed. Only shows on your own profile, and only when signed in with an actual Google account (not email/password).

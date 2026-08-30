@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.12.01";
+const APP_VERSION = "V0.12.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4534,9 +4534,17 @@ export default function Matchkeeper() {
   const editUser = (id, data) => {
     if (nicknameTaken(data.nickname, id)) { toast2(`Nickname "${data.nickname}" is already used by another player`, "err"); return false; }
     if (phoneTaken(data.phone, id)) { toast2(`Phone ${data.phone} is already used by another player`, "err"); return false; }
+    const before = users.find(u=>u.id===id);
     setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, country:data.country??u.country, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref, instapayLink:data.instapayLink!==undefined?data.instapayLink:u.instapayLink} : u));
     toast2("Player updated ✓");
-    if (id!==me.id) { const u=users.find(u=>u.id===id); logAudit("user.edit", `${me.nickname} edited ${u?.nickname||id}'s profile`, "user", id); }
+    if (id!==me.id) { logAudit("user.edit", `${me.nickname} edited ${before?.nickname||id}'s profile`, "user", id); }
+    // Photo changes get their own explicit entry (distinct from the generic "edited profile"
+    // above, and logged even for a self-edit, unlike that one) — real incident this session: an
+    // account-takeover was only caught because the profile photo/name visibly changed, so this
+    // is exactly the kind of change worth a permanent record regardless of who made it.
+    if (data.photoURL && data.photoURL!==before?.photoURL) {
+      logAudit("user.photoChange", `${me.nickname} ${id===me.id?"changed their own":`changed ${before?.nickname||id}'s`} profile photo${data.photoChangeNote?` (${data.photoChangeNote})`:""}`, "user", id);
+    }
     return true;
   };
   // A player who has actually played (usrHistory.length>0) can never be fully deleted — their
@@ -6165,12 +6173,15 @@ export default function Matchkeeper() {
     logAudit("event.photoRemove", `${me.nickname} removed a photo${uploader?` (uploaded by ${uploader.nickname})`:""} from "${ev?.name||eid}"`, "event", eid);
   };
   const toggleEventPhotoLike=(cid,eid,photoId)=>{
+    const ev=getEv(cid,eid);
+    const wasLiked=(ev?.photos||[]).find(p=>p.id===photoId)?.likes?.includes(me.id);
     updEvent(cid,eid,ev=>({...ev,photos:(ev.photos||[]).map(p=>{
       if(p.id!==photoId) return p;
       const likes=new Set(p.likes||[]);
       likes.has(me.id)?likes.delete(me.id):likes.add(me.id);
       return {...p, likes:[...likes]};
     })}));
+    logAudit(wasLiked?"event.photoUnlike":"event.photoLike", `${me.nickname} ${wasLiked?"unliked":"liked ❤️"} a photo in "${ev?.name||eid}"`, "event", eid);
   };
   const toggleExempt=(cid,eid,uid)=>{updEvent(cid,eid,ev=>{const ex=new Set(ev.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...ev,exempted:[...ex]};});};
   // Retiring mid-event: from here on the player is skipped when future rounds/matches are
@@ -11494,7 +11505,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     const file = e.target.files[0]; e.target.value="";
     if (!file) return;
     setPhotoUploading(true);
-    try{ const url = await uploadProfilePhoto(user.id, file); onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:url}); }
+    try{ const url = await uploadProfilePhoto(user.id, file); onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:url,photoChangeNote:"uploaded new photo"}); }
     catch(err){ console.log("Photo upload error", err); }
     setPhotoUploading(false);
   };
@@ -11506,7 +11517,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   // only when a Google photo actually exists (email/password sign-ins have none to reset to).
   const resetToGooglePhoto = () => {
     if (!myGooglePhotoURL) return;
-    onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:myGooglePhotoURL});
+    onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:myGooglePhotoURL,photoChangeNote:"reset to Google photo"});
     toast2("Photo reset to your Google account picture ✓");
   };
   const lv=usrLv(user.usr),mine=comms.filter(c=>c.members.some(m=>m.userId===user.id));

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.12.02";
+const APP_VERSION = "V0.12.03";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4542,7 +4542,7 @@ export default function Matchkeeper() {
     // above, and logged even for a self-edit, unlike that one) — real incident this session: an
     // account-takeover was only caught because the profile photo/name visibly changed, so this
     // is exactly the kind of change worth a permanent record regardless of who made it.
-    if (data.photoURL && data.photoURL!==before?.photoURL) {
+    if (data.photoURL!==undefined && data.photoURL!==before?.photoURL) {
       logAudit("user.photoChange", `${me.nickname} ${id===me.id?"changed their own":`changed ${before?.nickname||id}'s`} profile photo${data.photoChangeNote?` (${data.photoChangeNote})`:""}`, "user", id);
     }
     return true;
@@ -11326,10 +11326,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,onBulkArchive,onBulkDelete}){
   const [sub,setSub]=useState("coming");
   const [showCommPicker,setShowCommPicker]=useState(false);
-  const [incompleteOpen,setIncompleteOpen]=useState(true);
-  const [completedOpen,setCompletedOpen]=useState(false);
-  const [selMode,setSelMode]=useState(false);
-  const [selected,setSelected]=useState(new Set());
   const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
   const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)||ev.createdBy===me.id).map(ev=>ev.id));
   const now=Date.now();
@@ -11340,12 +11336,26 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
   // they live under the community's own Archived section.
   const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
   const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
-  const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
+  const bySoonestFirst=(a,b)=>evTime(a)-evTime(b);
+  // Coming: soonest-first (ascending) — the event about to happen belongs at the top, not buried
+  // under everything further out. Past: newest-first (descending) — most recently finished on top.
+  const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(bySoonestFirst);
   const pastAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
   const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
   const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
   const past=pastAll;
-  const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&!myIds.has(ev.id)).sort(byNewestFirst);
+  const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&!myIds.has(ev.id)).sort(bySoonestFirst);
+  // Default open/closed state for the Past tab's two sections depends on whether there's actually
+  // anything incomplete: if there is, that's what needs attention, so it's expanded and Completed
+  // starts collapsed (same as before). If everything in the past is already completed, collapsing
+  // Completed by default would just hide the only thing there — so it starts expanded instead.
+  // Lazy useState initializers (not a plain useState(false)) so this reflects the REAL data on
+  // first render rather than a fixed guess — only evaluated once, so a user's own manual toggle
+  // afterward is never overridden by a later re-render.
+  const [incompleteOpen,setIncompleteOpen]=useState(true);
+  const [completedOpen,setCompletedOpen]=useState(()=>pastIncomplete.length===0);
+  const [selMode,setSelMode]=useState(false);
+  const [selected,setSelected]=useState(new Set());
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
   const isAdm=adminComms.length>0;
   const adminCommIds=new Set(adminComms.map(c=>c.id));
@@ -11520,6 +11530,14 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:myGooglePhotoURL,photoChangeNote:"reset to Google photo"});
     toast2("Photo reset to your Google account picture ✓");
   };
+  // Clears the photo entirely (falls back to the initials avatar) — the third option alongside
+  // Change/Reset, for anyone who just wants no photo at all rather than a specific replacement.
+  const removeMyPhoto = () => {
+    if (!user.photoURL) return;
+    if (!window.confirm("Remove your profile photo?")) return;
+    onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:"",photoChangeNote:"removed photo"});
+    toast2("Photo removed ✓");
+  };
   const lv=usrLv(user.usr),mine=comms.filter(c=>c.members.some(m=>m.userId===user.id));
   const ec=mine.reduce((s,c)=>s+c.events.filter(e=>!e.deleted&&e.registrations.some(r=>r.userId===user.id)).length,0);
   const usrHist=[...(user.usrHistory||[])].reverse();
@@ -11571,6 +11589,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
           <span style={{fontSize:13,fontWeight:600,color:photoUploading?"var(--po-dim)":"#6366F1"}}>{photoUploading?"Uploading…":"📷 Change Photo"}</span>
         </label>
         {isMe&&myGooglePhotoURL&&<div onClick={resetToGooglePhoto} style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>↺ Reset to Google Photo</div>}
+        {isMe&&user.photoURL&&<div onClick={removeMyPhoto} style={{fontSize:12,fontWeight:600,color:"#EF4444",cursor:"pointer",marginTop:4}}>🗑 Remove Photo</div>}
       </div>
     </div>
     <Inp label="Nickname" value={ef.nickname} onChange={v=>setEf(p=>({...p,nickname:v}))}/>

@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.12.03 — Better sorting on the Events tab, plus a "Remove Photo" option
+
+- **New: "🗑 Remove Photo"** — completes the photo-management set alongside "Reset to Google Photo": anyone can now clear their profile photo entirely (falls back to initials) with no admin help, logged in the Audit Trail like any other photo change.
+- **The "Coming" tab on the Events screen now sorts ascending** — the soonest event is on top, the furthest out is at the bottom (was reversed before).
+- **The "Past" tab now opens smartly:** if there are past events that never got closed (Incomplete), those stay expanded and Completed stays collapsed, same as before. But if everything in the past is already completed (no Incomplete events at all), Completed now opens automatically instead of staying needlessly collapsed.
+
+---
+
 ## V0.12.02 — Wider Audit Trail coverage: profile photos and likes
 
 - **Changing or resetting a profile photo** (uploading a new one, or "↺ Reset to Google Photo") is now logged in the Audit Trail — even when someone edits their own photo — and says exactly what happened (uploaded a new photo vs. reset to their Google photo).

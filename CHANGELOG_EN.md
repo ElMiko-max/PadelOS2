@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.12.04 — "I'm In" now waits for real confirmation before saying "Registered"
+
+- **Real bug fixed:** the registration button used to show "Registered ✓" instantly, without waiting for genuine server confirmation — if the write actually failed afterward (heavy contention), the user would be looking at a false success message with no idea anything was wrong. The button now shows "Registering…" and disables itself until the registration is actually confirmed saved, then shows "Registered ✓" or "You're #N on the waitlist" — and if it genuinely fails, says so plainly and asks to try again.
+- **Verified the underlying write path is sound:** 50 truly simultaneous registrations against an event capped at 15 — zero lost, and the active/waitlist split came out exactly right (15 / 35).
+
+---
+
 ## V0.12.03 — Better sorting on the Events tab, plus a "Remove Photo" option
 
 - **New: "🗑 Remove Photo"** — completes the photo-management set alongside "Reset to Google Photo": anyone can now clear their profile photo entirely (falls back to initials) with no admin help, logged in the Audit Trail like any other photo change.

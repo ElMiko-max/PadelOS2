@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.12.03";
+const APP_VERSION = "V0.12.04";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4993,14 +4993,18 @@ export default function Matchkeeper() {
     });
   };
 
+  // Returns the promise chain (resolves with the true, server-confirmed event; rejects if the
+  // transaction ultimately fails after all retries) so a caller that needs to know for CERTAIN
+  // whether something landed — not just fire-and-forget — can `await` it. opts.silent skips the
+  // generic failure toast for callers that want to show their own, more specific message.
   const updEvent = (cid, eid, fn, opts={}) => {
-    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return;
+    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
     const optimistic = eventsRef.current.map(e=>e.id===eid?fn(e):e);
     eventsRef.current = optimistic;
     syncedRef.current.events = JSON.stringify(optimistic);
     setEvents(optimistic);
     const docRef = doc(db,"padelos_events",String(eid));
-    runTransaction(db, async (tx) => {
+    return runTransaction(db, async (tx) => {
       const snap = await tx.get(docRef);
       const latest = snap.exists() ? unpackEventFromFirestore(snap.data()) : optimistic.find(e=>e.id===eid);
       const updated = fn(latest);
@@ -5010,9 +5014,10 @@ export default function Matchkeeper() {
       eventsRef.current = eventsRef.current.map(e=>e.id===eid?updated:e);
       syncedRef.current.events = JSON.stringify(eventsRef.current);
       setEvents(eventsRef.current);
+      return updated;
     }).catch(async e => {
       console.log("updEvent transaction failed", e);
-      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      if (!opts.silent) toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
       try {
         const snap = await getDoc(docRef);
         if (snap.exists()) {
@@ -5022,6 +5027,7 @@ export default function Matchkeeper() {
           setEvents(real);
         }
       } catch(e2) { console.log("updEvent resync-after-failure also failed", e2); }
+      throw e;
     });
   };
 
@@ -5873,6 +5879,11 @@ export default function Matchkeeper() {
     const onIt = waitlisted.some(r=>r.userId===uid);
     return {waitlisted:onIt, pos:onIt?waitlisted.length:0};
   };
+  // Tracks which event a registration is currently in flight for, so the "I'm In" button can show
+  // a real "Registering…" state and disable itself instead of looking clickable/unresponsive
+  // during the (possibly several-second, under load — see the concurrency test that confirmed a
+  // worst case near 40s under a genuine 50-at-once burst) wait for actual server confirmation.
+  const [registeringEventId, setRegisteringEventId] = useState(null);
   const registerEv=async (cid,eid)=>{
     const ev=getEv(cid,eid);
     // The "I'm In" button already hides itself once an event is completed/cancelled, but that's
@@ -5907,6 +5918,8 @@ export default function Matchkeeper() {
       }
       logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
     };
+    setRegisteringEventId(eid);
+    try {
     // Server-side gateway first — see registerForEvent's own comment in functions/index.js for
     // why this exists (it re-checks status/registrationOpen against LIVE server data, so it's
     // correct even if this client's own code is the stale thing). Falls back to the direct
@@ -5927,9 +5940,22 @@ export default function Matchkeeper() {
         console.log("registerForEvent unavailable, falling back to direct write", e);
       }
     }
-    const {waitlisted, pos:waitPos} = willLandWaitlisted(ev, me.id, comm, null);
-    updEvent(cid,eid,ev=>ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]});
-    afterRegistered(waitlisted, waitPos);
+    // Waits for the ACTUAL server-confirmed result before saying anything succeeded — the
+    // fallback used to guess the waitlist outcome client-side (willLandWaitlisted) and show
+    // "Registered ✓" instantly, before the write was even attempted, let alone confirmed. Under
+    // real concurrency the guess can be wrong (someone else's registration could land in
+    // between), so the true answer is recomputed from the confirmed data that comes back.
+    try {
+      const updated = await updEvent(cid,eid,ev=>ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]}, {silent:true});
+      const {waitlisted} = splitRegsByCapacity(updated, comm);
+      const isWaitlisted = waitlisted.some(r=>r.userId===me.id);
+      afterRegistered(isWaitlisted, isWaitlisted?waitlisted.length:0);
+    } catch (e) {
+      toast2("Registration didn't go through — too many people were registering at the same moment. Please try again.", "err");
+    }
+    } finally {
+      setRegisteringEventId(null);
+    }
   };
   const addMember=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -7035,6 +7061,7 @@ export default function Matchkeeper() {
             onCloseEvent={(scoringMethod)=>closeEvent(comm.id,event.id,scoringMethod)}
             onEditEvent={()=>go("editEvent",{cid:comm.id,eid:event.id})}
             onRegister={()=>registerEv(comm.id,event.id)}
+            registering={registeringEventId===event.id}
             onCheckIn={uid=>checkIn(comm.id,event.id,uid)}
             onAddMember={uid=>addMember(comm.id,event.id,uid)}
             onAddGuest={g=>addGuest(comm.id,event.id,g)}
@@ -9434,7 +9461,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -10448,7 +10475,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </div>
 
       {!isCompleted&&effEv.status==="registration_open"&&<>
-        {canReg&&<Btn label={myWouldWaitlist?"⏳ Join Waitlist":"I'm In ✓"} primary onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
+        {canReg&&<Btn label={registering?"Registering…":(myWouldWaitlist?"⏳ Join Waitlist":"I'm In ✓")} primary disabled={registering} onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
         {canReg&&myWouldWaitlist&&inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:-3,marginBottom:6,textAlign:"center"}}>Regular Members get priority for the first 24h — you'll move up automatically after {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})} if there's room.</div>}
         {regPaused&&!myReg&&<div style={{padding:"9px",textAlign:"center",background:"#94A3B822",border:"0.5px solid #94A3B844",borderRadius:8,fontSize:13,fontWeight:500,color:"var(--po-dim)",marginBottom:6}}>🔒 Registration hasn't opened yet — check back soon.</div>}
         {!canReg&&!myReg&&!regPaused&&(myEventJoinPending

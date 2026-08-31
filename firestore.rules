@@ -61,6 +61,12 @@ service cloud.firestore {
     match /padelos_audit/{document} {
       allow read, write: if request.auth != null;
     }
+    // Self-diagnosing sign-in hang (2026-08-31, see the effect in App.jsx near signInStuck) —
+    // written BEFORE the writer has a linked profile, so `request.auth != null` is genuinely the
+    // only thing that can be required here; append-only, no update/delete needed from clients.
+    match /padelos_signin_diag/{document} {
+      allow read, create: if request.auth != null;
+    }
     // Written ONLY by the claimOrCreateProfile/confirmEmailMatch Cloud Functions (Admin SDK
     // bypasses these rules entirely) — the whole point is a uniqueness guarantee no client,
     // stale or otherwise, can corrupt by writing here directly. Read-only for clients.

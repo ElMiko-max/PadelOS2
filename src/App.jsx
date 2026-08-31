@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.13.01";
+const APP_VERSION = "V0.13.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4454,6 +4454,27 @@ export default function Matchkeeper() {
     const t = setTimeout(() => setSignInStuck(true), 10000);
     return () => clearTimeout(t);
   }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
+  // Self-diagnosing (2026-08-31): a real user got stuck here with zero client-side error and zero
+  // trace in claimOrCreateProfile/confirmEmailMatch's Cloud Function logs — meaning whatever
+  // failed, failed before any network call, somewhere in the three pre-link effects above. With no
+  // way to see a stuck user's actual browser/device console, this writes the exact state of every
+  // relevant variable to Firestore the moment the 10s timeout fires, so the next occurrence is
+  // diagnosable from here instead of guessed at.
+  const signInDiagLoggedRef = useRef(false);
+  useEffect(() => {
+    if (!signInStuck || !authUser || signInDiagLoggedRef.current) return;
+    signInDiagLoggedRef.current = true;
+    setDoc(doc(db,"padelos_signin_diag", `${authUser.uid}_${Date.now()}`), {
+      uid: authUser.uid, email: authUser.email||null, displayName: authUser.displayName||null,
+      at: new Date().toISOString(), appVersion: APP_VERSION,
+      platform: Capacitor.isNativePlatform() ? "Android" : "Web",
+      dataLoaded, linkedMe: !!linkedMe,
+      pendingInviteConfirm: !!pendingInviteConfirm, pendingEmailMatchConfirm: !!pendingEmailMatchConfirm, pendingFreshProfileConfirm: !!pendingFreshProfileConfirm,
+      hasPendingInviteCode: !!readPendingInvite(),
+      loadDiag: JSON.stringify(loadDiag||{}),
+      invitesCount: invites?.length??null, usersCount: users?.length??null, uidLinksCount: Object.keys(uidLinks||{}).length,
+    }).catch(e=>console.log("signin diag write failed", e));
+  }, [signInStuck, authUser, dataLoaded, linkedMe, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
   // both a brand-new profile and a confirmed targeted claim of an existing one — join them to
   // the invited community/event. Deliberately re-checked on every render where these

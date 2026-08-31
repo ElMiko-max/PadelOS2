@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.13.02 — Self-diagnosing any future sign-in hang
+
+- **Follow-up to V0.13.01:** that fix is confirmed working (other users are signing in normally), but one user was still stuck — resolved in practice with a direct invite link to his profile. Checked the Cloud Function logs directly: `claimOrCreateProfile`/`confirmEmailMatch` were never invoked at all today, for anyone — meaning whatever went wrong for him happened before the request ever reached the server, somewhere in the client itself.
+- **The interim fix:** the app now automatically logs the full state of any sign-in attempt that's still stuck after 10 seconds (email, every relevant variable's state, how much data loaded) to Firestore — so if this happens again, there's real data to look at instead of more guessing.
+
+---
+
 ## V0.13.01 — Real bug: some users were stuck on "Setting up your profile…" forever
 
 - **Real bug fixed:** a real user reported being completely unable to sign in — stuck on "Setting up your profile…" with no way out, on both the APK and web. Cause: if a device had a locally-saved invite code that had gone stale (expired, deleted, or already claimed by someone else), that code never got cleared — and it silently blocked the OTHER sign-in path (creating a fresh profile or matching by email) from ever running at all, since it was waiting for the invite path to finish first.

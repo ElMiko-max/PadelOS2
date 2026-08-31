@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.13.04 — Fixed the "flickering" break lock toggle in Closed Teams Ladder
+
+- **Real bug fixed:** the lock/unlock-as-Firm toggle (Breaks tab, Closed Teams Ladder) saved its change based on a stale copy of the plan captured earlier — so if anything else touched the plan around the same time (a break swap, a regenerate, another lock toggle), this save could silently undo it, which showed up as the state "flickering" back on its own.
+- **The fix:** the save now always applies to whatever the plan actually is at the moment of saving, not a stale snapshot from before.
+- **Also improved:** the tiny icon that used to lock/unlock instantly on tap now opens a clear small menu (naming the team + round) with one explicit button — easier to hit and to confirm what's about to happen before it happens.
+
+---
+
 ## V0.13.03 — One unified modal for editing a player's info
 
 - **Real bug fixed:** in Platform Admin, tapping "✏️ Edit" on any player always opened the edit form at the very top of the list — not next to the row you tapped. On a long list, nothing visibly happened where you clicked, making it look broken, until you scrolled up and found the form there. There were also two genuinely different edit forms for the same player — one in Platform Admin, one on the profile screen itself — with different fields (the profile-screen one was missing Full Name, USR, and Football Skill; Platform Admin's was missing the InstaPay link and photo management).

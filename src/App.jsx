@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.13.03";
+const APP_VERSION = "V0.13.04";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6811,15 +6811,28 @@ export default function Matchkeeper() {
     setPlan(cid,eid,{...ev.plan,breakPlan});
     toast2("Break swapped ✓");
   };
+  // Real bug, confirmed 2026-08-31 ("flickering" toggle that "doesn't work well"): this used to
+  // compute the new firmBreaks map from `ev.plan` captured in this outer closure, then hand the
+  // whole precomputed plan to setPlan/updEvent — which defeats updEvent's own transactional
+  // safety (it re-reads the LATEST doc specifically so a concurrent write can't get clobbered,
+  // but a plain `{...ev,plan}` updater fn throws that fresh read away and overwrites `.plan` with
+  // the stale snapshot anyway). Any other plan change landing in the same window (a swap, a
+  // regenerate, another firm-toggle not yet round-tripped) could get silently reverted the moment
+  // this write's own optimistic-then-real cycle finished — which looks exactly like flicker.
+  // Now a real updater function, deriving firmBreaks from whatever `.plan` the transaction
+  // actually sees, so it can never stomp on a concurrent change.
   const toggleCTBreakFirm=(cid,eid,ri,tid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const firmBreaks=ev.plan.firmBreaks||{};
-    const isFirm=(firmBreaks[ri]||[]).includes(tid);
+    const wasFirm=(ev.plan.firmBreaks?.[ri]||[]).includes(tid);
     const onBreakNow=(ev.plan.breakPlan[ri]||[]).includes(tid);
-    if(!isFirm&&!onBreakNow){toast2("Team isn't on break this round","err");return;}
-    const newList=isFirm?(firmBreaks[ri]||[]).filter(id=>id!==tid):[...(firmBreaks[ri]||[]),tid];
-    setPlan(cid,eid,{...ev.plan,firmBreaks:{...firmBreaks,[ri]:newList}});
-    toast2(isFirm?"Break unlocked":"Break locked as Firm 🔐 — Regenerate will keep it ✓");
+    if(!wasFirm&&!onBreakNow){toast2("Team isn't on break this round","err");return;}
+    updEvent(cid,eid,e=>{
+      const firmBreaks=e.plan.firmBreaks||{};
+      const isFirm=(firmBreaks[ri]||[]).includes(tid);
+      const newList=isFirm?(firmBreaks[ri]||[]).filter(id=>id!==tid):[...(firmBreaks[ri]||[]),tid];
+      return {...e,plan:{...e.plan,firmBreaks:{...firmBreaks,[ri]:newList}}};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
+    toast2(wasFirm?"Break unlocked":"Break locked as Firm 🔐 — Regenerate will keep it ✓");
   };
   const setTeamBreakPref=(cid,eid,tid,pref)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
@@ -9205,6 +9218,12 @@ function ScorersModal({matchLabel,teamAName,teamBName,playersA,playersB,scorersA
 // ══════════════════════════════════════════════════════
 function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
   const [selSwap, setSelSwap] = useState(null); // {ri, tid} for pending swap
+  // Real complaint, 2026-08-31: the old lock/unlock control was a bare, always-live micro-icon
+  // (8px, in the corner of an already-small table cell) that toggled instantly on tap — easy to
+  // mis-tap, and with nothing to confirm what just happened, a fast repeat tap looked like the
+  // toggle was "flickering"/not registering. A real confirm menu instead: tap opens a clear popup
+  // naming the team + round, one deliberate action closes it.
+  const [firmMenuFor, setFirmMenuFor] = useState(null); // {ri, tid, isFirm, label} | null
   const teams = plan.sorted || plan.teams;
   const totalRounds = plan.maxRounds || plan.rounds.length;
   const breakPlan = plan.breakPlan || [];
@@ -9250,7 +9269,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
   return <>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,gap:8}}>
       <div style={{fontSize:11,color:"var(--po-dim)"}}>
-        {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap 🔐 to lock/unlock Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
+        {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap the small 🔐/🔓 for the lock menu)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
       {isAdmin&&onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
     </div>
@@ -9287,7 +9306,7 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
                   ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":isSel?"#6366F1":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
-                {onBreak&&!isGenerated&&isAdmin&&<span onClick={e=>{e.stopPropagation();onToggleFirm&&onToggleFirm(ri,t.id);}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
+                {onBreak&&!isGenerated&&isAdmin&&<span onClick={e=>{e.stopPropagation();setFirmMenuFor({ri,tid:t.id,isFirm,label:teamLabel(t)});}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
               </td>;
             })}
           </tr>)}
@@ -9295,6 +9314,14 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
       </table>
     </div>
     {isAdmin&&generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap ☕ then another team to swap</div>}
+    {firmMenuFor&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setFirmMenuFor(null)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:320,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+        <div style={{fontWeight:700,fontSize:14,marginBottom:6,color:"var(--po-text)"}}>R{firmMenuFor.ri+1} — {firmMenuFor.label}</div>
+        <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:16}}>{firmMenuFor.isFirm?"This break is locked as Firm — Regenerate Breaks won't move it.":"Lock this break as Firm so Regenerate Breaks never reassigns it."}</div>
+        <Btn label={firmMenuFor.isFirm?"🔓 Unlock":"🔐 Lock as Firm"} primary onClick={()=>{onToggleFirm&&onToggleFirm(firmMenuFor.ri,firmMenuFor.tid);setFirmMenuFor(null);}} style={{width:"100%",marginBottom:8}}/>
+        <Btn label="Cancel" onClick={()=>setFirmMenuFor(null)} style={{width:"100%"}}/>
+      </div>
+    </div>}
   </>;
 }
 

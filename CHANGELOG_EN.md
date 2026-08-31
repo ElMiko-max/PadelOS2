@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.13.03 — One unified modal for editing a player's info
+
+- **Real bug fixed:** in Platform Admin, tapping "✏️ Edit" on any player always opened the edit form at the very top of the list — not next to the row you tapped. On a long list, nothing visibly happened where you clicked, making it look broken, until you scrolled up and found the form there. There were also two genuinely different edit forms for the same player — one in Platform Admin, one on the profile screen itself — with different fields (the profile-screen one was missing Full Name, USR, and Football Skill; Platform Admin's was missing the InstaPay link and photo management).
+- **The fix:** one shared modal that always appears right where you triggered it, with the same fields in both places — only permissions differ (Full Name/USR/Football Skill are Platform-Admin-only; resetting to your Google photo is self-only).
+
+---
+
 ## V0.13.02 — Self-diagnosing any future sign-in hang
 
 - **Follow-up to V0.13.01:** that fix is confirmed working (other users are signing in normally), but one user was still stuck — resolved in practice with a direct invite link to his profile. Checked the Cloud Function logs directly: `claimOrCreateProfile`/`confirmEmailMatch` were never invoked at all today, for anyone — meaning whatever went wrong for him happened before the request ever reached the server, somewhere in the client itself.

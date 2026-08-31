@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.13.02";
+const APP_VERSION = "V0.13.03";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4620,21 +4620,37 @@ export default function Matchkeeper() {
   // guests included, since a guest today can become a real linked member tomorrow.
   const nicknameTaken = (nickname, excludeId=null) => users.some(u => u.id!==excludeId && u.nickname && u.nickname.trim().toLowerCase()===(nickname||"").trim().toLowerCase());
   const phoneTaken = (phone, excludeId=null) => !!(phone||"").trim() && users.some(u => u.id!==excludeId && u.phone && u.phone.trim()===phone.trim());
-  const editUser = (id, data) => {
-    if (nicknameTaken(data.nickname, id)) { toast2(`Nickname "${data.nickname}" is already used by another player`, "err"); return false; }
-    if (phoneTaken(data.phone, id)) { toast2(`Phone ${data.phone} is already used by another player`, "err"); return false; }
+  // Real bug, confirmed 2026-08-31: this used to overwrite specific fields unconditionally
+  // (nickname/name/gov/area/usr/phone) even when a caller only meant to change ONE thing (e.g. a
+  // photo-only update) — every caller had to defensively echo back every unchanged field or risk
+  // silently wiping it, and the two real callers (Platform Admin's own form, the Profile screen's
+  // own form) each echoed back a DIFFERENT subset, which is part of why they'd landed on
+  // genuinely different field sets. Now a plain, safe partial merge — a caller only ever needs to
+  // send what it's actually changing. Shared by both UserEditModal call sites (Profile screen,
+  // Platform Admin) — there is only ever one edit-user code path now.
+  const editUser = (id, updates) => {
+    if (updates.nickname!==undefined && nicknameTaken(updates.nickname, id)) { toast2(`Nickname "${updates.nickname}" is already used by another player`, "err"); return false; }
+    if (updates.phone!==undefined && phoneTaken(updates.phone, id)) { toast2(`Phone ${updates.phone} is already used by another player`, "err"); return false; }
     const before = users.find(u=>u.id===id);
-    setUsers(us => us.map(u => u.id===id ? {...u, nickname:data.nickname, name:data.name, country:data.country??u.country, gov:data.gov, area:data.area, usr:data.usr, phone:data.phone, photoURL:data.photoURL??u.photoURL, avatar:ini2(data.nickname), breakPref:data.breakPref??u.breakPref, instapayLink:data.instapayLink!==undefined?data.instapayLink:u.instapayLink} : u));
+    setUsers(us => us.map(u => u.id===id ? {...u, ...updates, avatar: updates.nickname!==undefined?ini2(updates.nickname):u.avatar} : u));
     toast2("Player updated ✓");
     if (id!==me.id) { logAudit("user.edit", `${me.nickname} edited ${before?.nickname||id}'s profile`, "user", id); }
     // Photo changes get their own explicit entry (distinct from the generic "edited profile"
     // above, and logged even for a self-edit, unlike that one) — real incident this session: an
     // account-takeover was only caught because the profile photo/name visibly changed, so this
     // is exactly the kind of change worth a permanent record regardless of who made it.
-    if (data.photoURL!==undefined && data.photoURL!==before?.photoURL) {
-      logAudit("user.photoChange", `${me.nickname} ${id===me.id?"changed their own":`changed ${before?.nickname||id}'s`} profile photo${data.photoChangeNote?` (${data.photoChangeNote})`:""}`, "user", id);
+    if (updates.photoURL!==undefined && updates.photoURL!==before?.photoURL) {
+      logAudit("user.photoChange", `${me.nickname} ${id===me.id?"changed their own":`changed ${before?.nickname||id}'s`} profile photo${updates.photoChangeNote?` (${updates.photoChangeNote})`:""}`, "user", id);
     }
     return true;
+  };
+  // Extracted so both UserEditModal call sites (Platform Admin's Users tab AND a Platform Admin
+  // editing someone's Seed USR from their Profile page) can offer the same recalculate-now
+  // confirmation — previously only the Users tab path could, since this used to be defined inline
+  // as one JSX prop, invisible to the Profile screen's separate edit form.
+  const recalcUsrFromSeed = (id) => {
+    setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr,usrWindowSize)}:u));
+    toast2("USR recalculated from seed ✓");
   };
   // A player who has actually played (usrHistory.length>0) can never be fully deleted — their
   // history line is permanent, per the admin's explicit rule. Suspend is the alternative:
@@ -7392,8 +7408,8 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
-        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL}/>;})()}
-        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL}/>}
+        {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>;})()}
+        {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -7403,24 +7419,12 @@ export default function Matchkeeper() {
           onAddUser={u=>{
             if (nicknameTaken(u.nickname)) { toast2(`Nickname "${u.nickname}" is already used by another player`, "err"); return false; }
             if (phoneTaken(u.phone)) { toast2(`Phone ${u.phone} is already used by another player`, "err"); return false; }
-            const id=_uid++;setUsers(us=>[...us,{id,...u,joined:today,avatar:ini2(u.nickname),isGuest:false,seedUsr:parseInt(u.usr)||50}]);toast2(`${u.nickname} added ✓`);return true;
+            // seedUsr and the live usr both start equal — the live value only ever diverges
+            // later, via a real event closing (usrHistory-driven) or an explicit recalculation.
+            const id=_uid++;setUsers(us=>[...us,{id,...u,usr:u.seedUsr,joined:today,avatar:ini2(u.nickname),isGuest:false}]);toast2(`${u.nickname} added ✓`);return true;
           }}
-          onEditUser={(id,updates)=>{
-            if (nicknameTaken(updates.nickname,id)) { toast2(`Nickname "${updates.nickname}" is already used by another player`, "err"); return false; }
-            if (phoneTaken(updates.phone,id)) { toast2(`Phone ${updates.phone} is already used by another player`, "err"); return false; }
-            // The form's "Initial/Seed USR" field edits the seed baseline, never the live
-            // .usr directly — otherwise the next event closure silently overwrites the edit
-            // (closeEvent-type functions always recompute .usr from usrHistory+seedUsr, so a
-            // stale seed just re-clobbers whatever was manually typed here). Recalculating the
-            // live .usr from the new seed is a separate, explicitly-confirmed step — see
-            // onRecalcUsr below.
-            const {usr:newSeed, ...rest} = updates;
-            setUsers(us=>us.map(u=>u.id===id?{...u,...rest,seedUsr:newSeed}:u));toast2("Updated ✓");return true;
-          }}
-          onRecalcUsr={id=>{
-            setUsers(us=>us.map(u=>u.id===id?{...u,usr:calcWeightedUSR(u.usrHistory||[],u.seedUsr??u.usr,usrWindowSize)}:u));
-            toast2("USR recalculated from seed ✓");
-          }}
+          onEditUser={editUser}
+          onRecalcUsr={recalcUsrFromSeed}
           onDeleteUser={uid=>deleteUser(uid)}
           onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}}
           onOpenCommunity={goComm} onOpenEvent={goEvent}
@@ -11807,7 +11811,87 @@ function ComboCard({combo, lv, eventsDesc, teamName, onRename}){
   </Card>;
 }
 
-function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5,egypt,myGooglePhotoURL}){
+// Unified edit-user modal (2026-08-31) — real bug fix: this used to be TWO separate forms (the
+// Profile screen's own inline edit block, and Platform Admin's Users-tab form) with genuinely
+// different field sets, and Platform Admin's rendered at a fixed position at the top of a
+// possibly-long list regardless of which row's "Edit" you clicked — nothing visibly happened near
+// the row, the actual form appeared scrolled off-screen above. One shared modal now: it always
+// appears right where you triggered it, and the field set is the same everywhere, gated only by
+// who's allowed to see what (a player can't set their own USR/football rating or full legal
+// name — those stay Platform-Admin-only; resetting to your Google photo only makes sense for your
+// own account). `isNew` (Platform Admin only) reuses the exact same fields for creating a user.
+function UserEditModal({user,isNew,isPlatformAdmin,isMe,egypt,myGooglePhotoURL,onSave,onRecalcUsr,onClose,toast}){
+  const [nf,setNf]=useState(()=>({
+    nickname:user?.nickname||"", name:user?.name||"", country:user?.country||"مصر", gov:user?.gov||"القاهرة",
+    area:user?.area||"", seedUsr:String(user?.seedUsr??user?.usr??50), phone:user?.phone||"",
+    breakPref:user?.breakPref||"none", footballSkill:user?.footballSkill||"", instapayLink:user?.instapayLink||"",
+  }));
+  const set=(k,v)=>setNf(p=>({...p,[k]:v}));
+  const [photoUploading,setPhotoUploading]=useState(false);
+  const handlePhotoSelect=async(e)=>{
+    const file=e.target.files[0]; e.target.value="";
+    if(!file||!user) return;
+    setPhotoUploading(true);
+    try{ const url=await uploadProfilePhoto(user.id,file); onSave({photoURL:url,photoChangeNote:"uploaded new photo"}); }
+    catch(err){ console.log("Photo upload error", err); }
+    setPhotoUploading(false);
+  };
+  const resetToGooglePhoto=()=>{ if(!myGooglePhotoURL) return; onSave({photoURL:myGooglePhotoURL,photoChangeNote:"reset to Google photo"}); toast?.("Photo reset to your Google account picture ✓"); };
+  const removeMyPhoto=()=>{ if(!user?.photoURL) return; if(!window.confirm("Remove your profile photo?")) return; onSave({photoURL:"",photoChangeNote:"removed photo"}); toast?.("Photo removed ✓"); };
+  const canSave=nf.nickname.trim()&&nf.gov&&nf.area;
+  return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:400,width:"100%",maxHeight:"86vh",overflowY:"auto",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+      <div style={{fontWeight:700,fontSize:15,marginBottom:14,color:"var(--po-text)"}}>{isNew?"New User":`Edit ${user.nickname}`}</div>
+      {!isNew&&<div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
+        <Av u={user} size={48}/>
+        <div>
+          <label style={{cursor:photoUploading?"default":"pointer"}}>
+            <input type="file" accept="image/*" style={{display:"none"}} onChange={handlePhotoSelect} disabled={photoUploading}/>
+            <span style={{fontSize:13,fontWeight:600,color:photoUploading?"var(--po-dim)":"#6366F1"}}>{photoUploading?"Uploading…":"📷 Change Photo"}</span>
+          </label>
+          {isMe&&myGooglePhotoURL&&<div onClick={resetToGooglePhoto} style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>↺ Reset to Google Photo</div>}
+          {isMe&&user.photoURL&&<div onClick={removeMyPhoto} style={{fontSize:12,fontWeight:600,color:"#EF4444",cursor:"pointer",marginTop:4}}>🗑 Remove Photo</div>}
+        </div>
+      </div>}
+      <Inp label="Nickname" value={nf.nickname} onChange={v=>set("nickname",v)}/>
+      {isPlatformAdmin&&<Inp label="Full Name" value={nf.name} onChange={v=>set("name",v)}/>}
+      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div>
+      <AreaSel country={nf.country} gov={nf.gov} area={nf.area} onChange={(k,v)=>set(k,v)} egypt={egypt}/>
+      <Inp label="Phone" value={nf.phone} onChange={v=>set("phone",v)}/>
+      {isPlatformAdmin&&<>
+        <Inp label="Seed USR (0–100) — Padel" value={nf.seedUsr} onChange={v=>set("seedUsr",v)}/>
+        {!isNew&&<div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>The baseline used in USR calculations — changing it won't move their current USR until you confirm a recalculation.</div>}
+        <Drp label="Football Skill Level" value={nf.footballSkill} onChange={v=>set("footballSkill",v)} options={[{v:"",l:"Not Rated"},{v:"A",l:"A — Elite"},{v:"B",l:"B"},{v:"C",l:"C"},{v:"D",l:"D"},{v:"E",l:"E — Beginner"}]}/>
+        <div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>Manually set, not computed — football has no match-result history to derive a rating from yet.</div>
+      </>}
+      <Drp label="Break Preference" value={nf.breakPref} onChange={v=>set("breakPref",v)} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Used as the default whenever they join an event — admins can override it per event.</div>
+      <Inp label="InstaPay Link (optional)" value={nf.instapayLink} onChange={v=>set("instapayLink",v)} placeholder="https://ipn.eg/S/yourname/instapay/..."/>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Shown when picked as an event's payment collector, so other players can pay straight from the app.</div>
+      <div style={{display:"flex",gap:8,marginTop:4}}>
+        <Btn label="Save" primary disabled={!canSave} onClick={()=>{
+          if(!canSave) return;
+          const payload={nickname:nf.nickname.trim(),phone:nf.phone,breakPref:nf.breakPref,country:nf.country,gov:nf.gov,area:nf.area,instapayLink:nf.instapayLink.trim()};
+          let seedChanged=false, newSeed=null;
+          if(isPlatformAdmin){
+            payload.name=nf.name;
+            newSeed=parseInt(nf.seedUsr)||50;
+            payload.seedUsr=newSeed;
+            payload.footballSkill=nf.footballSkill||null;
+            seedChanged=!isNew&&newSeed!==(user.seedUsr??user.usr);
+          }
+          const ok=onSave(payload);
+          if(ok===false) return;
+          if(seedChanged&&onRecalcUsr&&window.confirm(`Seed USR changed from ${user.seedUsr??user.usr} to ${newSeed}.\n\nRecalculate this player's current USR from their full history using the new seed now?`)) onRecalcUsr(user.id);
+          onClose();
+        }} style={{flex:1}}/>
+        <Btn label="Cancel" onClick={onClose} style={{flex:1}}/>
+      </div>
+    </div>
+  </div>;
+}
+
+function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpenCommunity,onOpenEvent,onExploreCommunities,onViewProfile,onSetComboName,usrWindowSize=5,egypt,myGooglePhotoURL,onToast,onRecalcUsr}){
   const isPlatformAdmin = me?.id===1;
   const showContact = !viewedByAdmin || isPlatformAdmin;
   // Full activity (USR History / Teams / Reports) is only for the owner, the real platform
@@ -11833,36 +11917,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
   const [expandedRow,setExpandedRow]=useState(null); // `${kind}-${userId}` for the open Partners/Opponents row, or null
   const [expandedSection,setExpandedSection]=useState(null); // "partner"|"opponent" for the open "Insufficient data" section, or null
   const [editing,setEditing]=useState(false);
-  const [ef,setEf]=useState({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none",country:user.country||"مصر",gov:user.gov||"",area:user.area||""});
-  const [photoUploading,setPhotoUploading]=useState(false);
   const isMe = me && user.id===me.id;
-  const handlePhotoSelect = async (e) => {
-    const file = e.target.files[0]; e.target.value="";
-    if (!file) return;
-    setPhotoUploading(true);
-    try{ const url = await uploadProfilePhoto(user.id, file); onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:url,photoChangeNote:"uploaded new photo"}); }
-    catch(err){ console.log("Photo upload error", err); }
-    setPhotoUploading(false);
-  };
-  // Self-service undo for "Change Photo" — until this existed, reverting a custom upload back to
-  // your real Google account picture had no in-app path at all (an admin had to fetch it and set
-  // it by hand). myGooglePhotoURL is exactly what Firebase Auth already has for the signed-in
-  // account (authUser.photoURL) — no extra permissions needed, it's already sitting in the
-  // client. Only offered for isMe (resetting someone ELSE's photo isn't this button's job) and
-  // only when a Google photo actually exists (email/password sign-ins have none to reset to).
-  const resetToGooglePhoto = () => {
-    if (!myGooglePhotoURL) return;
-    onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:myGooglePhotoURL,photoChangeNote:"reset to Google photo"});
-    toast2("Photo reset to your Google account picture ✓");
-  };
-  // Clears the photo entirely (falls back to the initials avatar) — the third option alongside
-  // Change/Reset, for anyone who just wants no photo at all rather than a specific replacement.
-  const removeMyPhoto = () => {
-    if (!user.photoURL) return;
-    if (!window.confirm("Remove your profile photo?")) return;
-    onEditUser(user.id,{nickname:user.nickname,name:user.name,country:user.country,gov:user.gov,area:user.area,usr:user.usr,phone:user.phone,photoURL:"",photoChangeNote:"removed photo"});
-    toast2("Photo removed ✓");
-  };
   const lv=usrLv(user.usr),mine=comms.filter(c=>c.members.some(m=>m.userId===user.id));
   const ec=mine.reduce((s,c)=>s+c.events.filter(e=>!e.deleted&&e.registrations.some(r=>r.userId===user.id)).length,0);
   const usrHist=[...(user.usrHistory||[])].reverse();
@@ -11903,33 +11958,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
-    {(isMe||isPlatformAdmin)&&!editing&&<SmBtn label="✏️ Edit" onClick={()=>{setEf({nickname:user.nickname,phone:user.phone||"",breakPref:user.breakPref||"none",instapayLink:user.instapayLink||"",country:user.country||"مصر",gov:user.gov||"",area:user.area||""});setEditing(true);}} color="#6366F1"/>}
+    {(isMe||isPlatformAdmin)&&<SmBtn label="✏️ Edit" onClick={()=>setEditing(true)} color="#6366F1"/>}
   </div>
-  {(isMe||isPlatformAdmin)&&editing&&<div style={{borderTop:"0.5px solid var(--po-bdr)",paddingTop:14,marginTop:2}}>
-    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
-      <Av u={user} size={48}/>
-      <div>
-        <label style={{cursor:photoUploading?"default":"pointer"}}>
-          <input type="file" accept="image/*" style={{display:"none"}} onChange={handlePhotoSelect} disabled={photoUploading}/>
-          <span style={{fontSize:13,fontWeight:600,color:photoUploading?"var(--po-dim)":"#6366F1"}}>{photoUploading?"Uploading…":"📷 Change Photo"}</span>
-        </label>
-        {isMe&&myGooglePhotoURL&&<div onClick={resetToGooglePhoto} style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>↺ Reset to Google Photo</div>}
-        {isMe&&user.photoURL&&<div onClick={removeMyPhoto} style={{fontSize:12,fontWeight:600,color:"#EF4444",cursor:"pointer",marginTop:4}}>🗑 Remove Photo</div>}
-      </div>
-    </div>
-    <Inp label="Nickname" value={ef.nickname} onChange={v=>setEf(p=>({...p,nickname:v}))}/>
-    <Inp label="Phone" value={ef.phone} onChange={v=>setEf(p=>({...p,phone:v}))}/>
-    <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Location</div>
-    <AreaSel country={ef.country} gov={ef.gov} area={ef.area} onChange={(k,v)=>setEf(p=>({...p,[k]:v}))} egypt={egypt}/>
-    <Drp label="Break Preference" value={ef.breakPref} onChange={v=>setEf(p=>({...p,breakPref:v}))} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
-    <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Used as your default whenever you join an event — admins can override it per event.</div>
-    <Inp label="InstaPay Link (optional)" value={ef.instapayLink} onChange={v=>setEf(p=>({...p,instapayLink:v}))} placeholder="https://ipn.eg/S/yourname/instapay/..."/>
-    <div style={{fontSize:11,color:"var(--po-dim)",marginTop:-4,marginBottom:12}}>Shown when you're picked as an event's payment collector, so other players can pay you straight from the app.</div>
-    <div style={{display:"flex",gap:8,marginTop:4}}>
-      <Btn label="Save" primary onClick={()=>{if(!ef.nickname.trim()||!ef.gov||!ef.area)return;if(onEditUser(user.id,{nickname:ef.nickname,name:user.name,country:ef.country,gov:ef.gov,area:ef.area,usr:user.usr,phone:ef.phone,breakPref:ef.breakPref,instapayLink:ef.instapayLink.trim()})!==false)setEditing(false);}} style={{flex:1}}/>
-      <Btn label="Cancel" onClick={()=>setEditing(false)} style={{flex:1}}/>
-    </div>
-  </div>}
+  {(isMe||isPlatformAdmin)&&editing&&<UserEditModal user={user} isPlatformAdmin={isPlatformAdmin} isMe={isMe} egypt={egypt} myGooglePhotoURL={myGooglePhotoURL} onSave={payload=>onEditUser(user.id,payload)} onRecalcUsr={onRecalcUsr} onClose={()=>setEditing(false)} toast={onToast}/>}
   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
     {[["Communities",mine.length],["Events",ec]].map(([l,v])=>
       <div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 4px",textAlign:"center"}}>
@@ -12302,10 +12333,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const toast2 = onToast || (()=>{});
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
-  const [editing,setEditing]=useState(null);
+  const [editing,setEditing]=useState(null); // null | "new" | <userId> — controls the UserEditModal
   const [inviteUrl,setInviteUrl]=useState(null);
-  const [nf,setNf]=useState({nickname:"",name:"",country:"مصر",gov:"القاهرة",area:"المعادي",usr:"50",breakPref:"none"});
-  const [showAdd,setShowAdd]=useState(false);
   const [userSearch,setUserSearch]=useState("");
   const [auditSearch,setAuditSearch]=useState("");
   const [auditActionFilter,setAuditActionFilter]=useState("");
@@ -12341,7 +12370,6 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [payingFor,setPayingFor]=useState(null); // userId currently confirming a payment for
   const [payPlan,setPayPlan]=useState("monthly");
   const [payMethod,setPayMethod]=useState("InstaPay");
-  const set=(k,v)=>setNf(p=>({...p,[k]:v}));
   const allEvents=comms.flatMap(c=>c.events.map(ev=>({...ev,commName:c.name,communityId:c.id})));
   const linkedUserIds=new Set(Object.values(uidLinks||{}));
   const linkedCount=users.filter(u=>linkedUserIds.has(u.id)).length;
@@ -12705,35 +12733,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <div onClick={()=>setLinkFilter(f=>f==="unlinked"?null:"unlinked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="unlinked"?0.4:1}}><Bdg label={`◌ ${users.length-linkedCount} unlinked${linkFilter==="unlinked"?" ✕":""}`} color="#F59E0B"/></div>
     </div>
     <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
-    <Btn label="+ Add User" primary onClick={()=>{setShowAdd(true);setEditing(null);setNf({nickname:"",name:"",country:"مصر",gov:"القاهرة",area:"المعادي",usr:"50",phone:"",breakPref:"none",footballSkill:""});}} style={{width:"100%",marginBottom:12}}/>
-    {showAdd&&<Card style={{marginBottom:12}}>
-      <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>{editing?"Edit User":"New User"}</div>
-      {[["Nickname","nickname"],["Full Name","name"]].map(([l,k])=>
-        <Inp key={k} label={l} value={nf[k]||""} onChange={v=>set(k,v)}/>
-      )}
-      <AreaSel country={nf.country} gov={nf.gov} area={nf.area} onChange={set} egypt={egypt}/>
-      <Inp label="Phone" value={nf.phone||""} onChange={v=>set("phone",v)}/>
-      <Inp label="Seed USR (0–100) — Padel" value={nf.usr} onChange={v=>set("usr",v)}/>
-      {editing&&<div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>The baseline used in USR calculations — changing it won't move their current USR until you confirm a recalculation.</div>}
-      <Drp label="Football Skill Level" value={nf.footballSkill||""} onChange={v=>set("footballSkill",v)} options={[{v:"",l:"Not Rated"},{v:"A",l:"A — Elite"},{v:"B",l:"B"},{v:"C",l:"C"},{v:"D",l:"D"},{v:"E",l:"E — Beginner"}]}/>
-      <div style={{fontSize:10,color:"var(--po-dim)",marginTop:-6,marginBottom:8}}>Manually set, not computed — football has no match-result history to derive a rating from yet.</div>
-      <Drp label="Break Preference" value={nf.breakPref||"none"} onChange={v=>set("breakPref",v)} options={[{v:"none",l:"No Preference"},{v:"early",l:"Prefer Early Break"},{v:"mid",l:"Prefer Mid-Event Break"},{v:"late",l:"Prefer Late Break"}]}/>
-      <div style={{display:"flex",gap:8,marginTop:8}}>
-        <Btn label="Save" primary onClick={()=>{
-          if(!nf.nickname.trim())return;
-          const newSeed = parseInt(nf.usr)||50;
-          const prevSeed = editing ? (users.find(u=>u.id===editing)?.seedUsr ?? users.find(u=>u.id===editing)?.usr) : null;
-          const ok = editing ? onEditUser(editing,{...nf,usr:newSeed}) : onAddUser({...nf,usr:newSeed});
-          if(ok!==false){
-            if(editing&&onRecalcUsr&&newSeed!==prevSeed&&window.confirm(`Seed USR changed from ${prevSeed} to ${newSeed}.\n\nRecalculate this player's current USR from their full history using the new seed now?`)){
-              onRecalcUsr(editing);
-            }
-            setShowAdd(false);setEditing(null);
-          }
-        }} style={{flex:1}}/>
-        <Btn label="Cancel" onClick={()=>{setShowAdd(false);setEditing(null);}} style={{flex:1}}/>
-      </div>
-    </Card>}
+    <Btn label="+ Add User" primary onClick={()=>setEditing("new")} style={{width:"100%",marginBottom:12}}/>
+    {editing!=null&&<UserEditModal user={editing==="new"?null:users.find(u=>u.id===editing)} isNew={editing==="new"} isPlatformAdmin egypt={egypt} onRecalcUsr={onRecalcUsr} onSave={payload=>editing==="new"?onAddUser(payload):onEditUser(editing,payload)} onClose={()=>setEditing(null)} toast={toast2}/>}
     {filteredUsers.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No players match "{userSearch}"</div></Card>}
     {filteredUsers.map(u=>{
       const isLinked = linkedUserIds.has(u.id);
@@ -12758,7 +12759,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           {openUserMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:160,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
             {onCreateInvite&&!isLinked&&<SmBtn label="🔗 Invite" onClick={()=>{setOpenUserMenu(null);const label=`Join Matchkeeper as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,label})}`,label});}} color="#34D399" style={{width:"100%"}}/>}
             {onUnlinkUser&&isLinked&&<SmBtn label="🔓 Unlink" onClick={()=>{setOpenUserMenu(null);if(window.confirm(`Unlink ${u.nickname} from their signed-in account?\n\nUse this if the wrong person got linked as this profile (e.g. a shared/forwarded invite link opened by someone else). This restores ${u.nickname} to unclaimed and clears the email/photo that got copied onto it — the account that was linked will be signed out of this profile and can claim/create their own next time they sign in.`))onUnlinkUser(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
-            <SmBtn label="✏️ Edit" onClick={()=>{setOpenUserMenu(null);setEditing(u.id);setNf({nickname:u.nickname,name:u.name||"",country:u.country||"مصر",gov:u.gov||"القاهرة",area:u.area||"",usr:String(u.seedUsr??u.usr??50),phone:u.phone||"",breakPref:u.breakPref||"none",footballSkill:u.footballSkill||""});setShowAdd(true);}} color="#F59E0B" style={{width:"100%"}}/>
+            <SmBtn label="✏️ Edit" onClick={()=>{setOpenUserMenu(null);setEditing(u.id);}} color="#F59E0B" style={{width:"100%"}}/>
             {/* A player who has actually played (usrHistory.length>0) can never be fully
                 deleted — their history line is permanent. Suspend is the only option for
                 them: reversible, blocks the account from being used, touches nothing else.

@@ -31,7 +31,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, deleteDoc, addDoc, query, orderBy, limit, startAfter, runTransaction, writeBatch } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, collectionGroup, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.12.04";
+const APP_VERSION = "V0.13.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2002,6 +2002,10 @@ const INIT_COMMS = [
 // whether real data exists yet (see the sync effects below), same role INIT_COMMS always played.
 const INIT_COMMUNITIES = INIT_COMMS.map(({events, ...c}) => c);
 const INIT_EVENTS = INIT_COMMS.flatMap(c => c.events.map(ev => ({...ev, communityId: c.id})));
+// Phase 2 (registrations split) local fallback: same seed registrations, pulled out into the
+// {eventId,userId,...} shape the live collectionGroup listener produces, so the fallback path
+// matches the real one exactly.
+const INIT_REGISTRATIONS = INIT_EVENTS.flatMap(ev => (ev.registrations||[]).map(r => ({...r, eventId: ev.id})));
 
 let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_invid=1;
 
@@ -3711,9 +3715,29 @@ export default function Matchkeeper() {
   // comm.events.filter/flatMap, etc.) need zero changes.
   const [communities, setCommunities] = useState(INIT_COMMUNITIES);
   const [events, setEvents] = useState(INIT_EVENTS);
+  // Phase 2 (registrations split): each registration lives at
+  // padelos_events/{eventId}/registrations/{userId}, synced in one collectionGroup listener below
+  // covering ALL events at once (not just "the open one") — closeEventTx's promote/demote calc,
+  // the Profile screen, EvList, community dashboards and Platform Admin all need registrations for
+  // many events simultaneously, not just one. `eventId` on each entry is always the Firestore
+  // path's parent doc id (never trusted from the stored field alone), so it can never drift.
+  const [registrations, setRegistrations] = useState(INIT_REGISTRATIONS);
+  const regsByEvent = useMemo(() => {
+    const m = new Map();
+    const sorted = [...registrations].sort((a,b) => {
+      if (a.registeredAt !== b.registeredAt) return a.registeredAt < b.registeredAt ? -1 : 1;
+      return String(a.userId).localeCompare(String(b.userId)); // stable tiebreak for same-millisecond registrations under a true burst
+    });
+    sorted.forEach(r => { const arr = m.get(r.eventId) ?? []; arr.push(r); m.set(r.eventId, arr); });
+    return m;
+  }, [registrations]);
+  // `comms` stays the single read shape every existing call site already consumes
+  // (comms.find/getEv/comm.events.filter/flatMap...) — registrations are merged in here, NOT into
+  // the raw `events` state itself, so packEventForFirestore/updEvent's optimistic path can never
+  // accidentally round-trip the merged array back onto the event document.
   const comms = useMemo(
-    () => communities.map(c => ({...c, events: events.filter(e => e.communityId === c.id)})),
-    [communities, events]
+    () => communities.map(c => ({...c, events: events.filter(e => e.communityId === c.id).map(e => ({...e, registrations: regsByEvent.get(e.id) ?? []}))})),
+    [communities, events, regsByEvent]
   );
   const [notifications, setNotifications] = useState([]);
   const [uidLinks, setUidLinks] = useState({}); // {firebaseUid: userId} — one Firestore doc per entry, see sync below
@@ -3982,7 +4006,7 @@ export default function Matchkeeper() {
   // syncedRef tracks, per key, the JSON of whatever we last received FROM Firestore or
   // sent TO it — this is what stops the listen-effect and write-effect from echoing
   // back and forth into an infinite loop.
-  const syncedRef = useRef({communities:null, events:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null, usrWindowSize:null});
+  const syncedRef = useRef({communities:null, events:null, registrations:null, users:null, venues:null, notifications:null, egypt:null, expenseCategories:null, usrWindowSize:null});
   // Tracks whether each collection has EVER returned real data this session. Firestore's
   // onSnapshot can occasionally misfire "not found" on a transient network blip even when
   // the document genuinely exists — this flag is what stops that from being mistaken for
@@ -3990,7 +4014,7 @@ export default function Matchkeeper() {
   const everRealRef = useRef({communities:false, events:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
-  const dataLoaded = ["communities","events","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings","subscriptionTransactions"].every(k => loadedKeys.includes(k));
+  const dataLoaded = ["communities","events","registrations","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings","subscriptionTransactions"].every(k => loadedKeys.includes(k));
   // Captures the real Firestore error (code + message) whenever a collection fails to load,
   // so it can be shown directly on-screen — no laptop or DevTools needed to diagnose it.
   const [loadDiag, setLoadDiag] = useState({});
@@ -4032,6 +4056,26 @@ export default function Matchkeeper() {
       } else if (!everRealRef.current.events) { syncedRef.current.events = JSON.stringify(INIT_EVENTS); setEvents(INIT_EVENTS); recordDiag("events","collection empty — showing local seed fallback"); }
       markLoaded("events");
     }, e => { console.log("Firestore events error", e); recordDiag("events", `${e.code||"error"}: ${e.message||e}`); markLoaded("events"); });
+    return unsub;
+  }, [authUser]);
+  // registrations (Phase 2 split) — one collectionGroup listener across every event's
+  // registrations subcollection at once. Unlike communities/events there's no "empty collection
+  // means show local seed fallback" concern: zero registration docs is always a genuinely valid
+  // state (a fresh community, or before the one-time migration script has run in this
+  // environment), never mistaken for a real-data-loss scenario, since nothing here ever bulk-
+  // rewrites this collection based on its own prior state the way users/communities/events do.
+  useEffect(() => {
+    if (!authUser) return;
+    const unsub = onSnapshot(collectionGroup(db,"registrations"), snap => {
+      // eventId MUST be a number here, matching every event's `.id` elsewhere in the app (event
+      // ids are always numbers) — a Firestore doc-path segment is always a string, and Map keys
+      // (regsByEvent below) don't coerce between the two, so leaving this as a string made every
+      // single regsByEvent.get(e.id) lookup silently fail. Real bug, confirmed live in DEV.
+      const remote = snap.docs.map(d => ({...d.data(), eventId: Number(d.ref.parent.parent.id)}));
+      const json = JSON.stringify(remote);
+      if (json !== syncedRef.current.registrations) { syncedRef.current.registrations = json; setRegistrations(remote); }
+      markLoaded("registrations");
+    }, e => { console.log("Firestore registrations error", e); recordDiag("registrations", `${e.code||"error"}: ${e.message||e}`); markLoaded("registrations"); });
     return unsub;
   }, [authUser]);
   // REMOVED (2026-08-28, comms-split migration prep): there used to be a second effect here that
@@ -4628,16 +4672,19 @@ export default function Matchkeeper() {
     const touchedCommunities = communitiesRef.current
       .filter(c => c.members.some(m=>m.userId===id))
       .map(c => ({id: c.id, data: {...c, members: c.members.filter(m => m.userId !== id)}}));
+    const touchedRegs = registrationsRef.current.filter(r=>r.userId===id);
     const touchedEvents = eventsRef.current
-      .filter(ev => ev.registrations.some(r=>r.userId===id) || (ev.checkedIn||[]).includes(id))
-      .map(ev => ({id: ev.id, data: {...ev, registrations: ev.registrations.filter(r => r.userId !== id), checkedIn: (ev.checkedIn||[]).filter(uid => uid !== id)}}));
+      .filter(ev => (ev.checkedIn||[]).includes(id))
+      .map(ev => ({id: ev.id, data: {...ev, checkedIn: (ev.checkedIn||[]).filter(uid => uid !== id)}}));
+    const registrationDeletes = touchedRegs.map(r => ({eventId: r.eventId, userId: id, delete:true}));
     const newCommunities = communitiesRef.current.map(c => touchedCommunities.find(t=>t.id===c.id)?.data ?? c);
     const newEvents = eventsRef.current.map(ev => touchedEvents.find(t=>t.id===ev.id)?.data ?? ev);
-    communitiesRef.current = newCommunities; eventsRef.current = newEvents;
+    const newRegistrations = registrationsRef.current.filter(r=>r.userId!==id);
+    communitiesRef.current = newCommunities; eventsRef.current = newEvents; registrationsRef.current = newRegistrations;
     syncedRef.current.communities = JSON.stringify(newCommunities);
     syncedRef.current.events = JSON.stringify(newEvents);
-    setCommunities(newCommunities); setEvents(newEvents);
-    batchWriteCommunitiesAndEvents(touchedCommunities, touchedEvents).catch(e=>console.log("deleteUser batch write failed", e));
+    setCommunities(newCommunities); setEvents(newEvents); setRegistrations(newRegistrations);
+    batchWriteCommunitiesAndEvents(touchedCommunities, touchedEvents, registrationDeletes).catch(e=>console.log("deleteUser batch write failed", e));
     // Also release any identity link to this user so their email/Google account is free to
     // sign in fresh again, instead of staying permanently claimed by a deleted profile — this
     // was previously left dangling (the exact "the system still remembers a deleted test user"
@@ -4794,11 +4841,22 @@ export default function Matchkeeper() {
         ...snapEvents.map(e => ({id:e.id, data:e})),
         ...eventsRef.current.filter(e=>!snapEventIds.has(e.id)).map(e=>({id:e.id, delete:true})),
       ];
-      communitiesRef.current = snapCommunities; eventsRef.current = snapEvents;
+      // Registrations (Phase 2): the old blob shape's snapEvents still nest `.registrations` per
+      // event — pull those out and diff against subcollection docs the same way communities/
+      // events are diffed above. This also correctly deletes every registration belonging to an
+      // event that's absent from the snapshot (Firestore doesn't cascade-delete subcollections
+      // when the parent doc is deleted, so that has to happen explicitly here).
+      const snapRegistrations = snapEvents.flatMap(e => (e.registrations||[]).map(r => ({...r, eventId:e.id})));
+      const snapRegKeys = new Set(snapRegistrations.map(r=>`${r.eventId}_${r.userId}`));
+      const registrationUpdates = [
+        ...snapRegistrations.map(r => ({eventId:r.eventId, userId:r.userId, data:r})),
+        ...registrationsRef.current.filter(r=>!snapRegKeys.has(`${r.eventId}_${r.userId}`)).map(r=>({eventId:r.eventId, userId:r.userId, delete:true})),
+      ];
+      communitiesRef.current = snapCommunities; eventsRef.current = snapEvents; registrationsRef.current = snapRegistrations;
       syncedRef.current.communities = JSON.stringify(snapCommunities);
       syncedRef.current.events = JSON.stringify(snapEvents);
-      setCommunities(snapCommunities); setEvents(snapEvents);
-      await batchWriteCommunitiesAndEvents(communityUpdates, eventUpdates);
+      setCommunities(snapCommunities); setEvents(snapEvents); setRegistrations(snapRegistrations);
+      await batchWriteCommunitiesAndEvents(communityUpdates, eventUpdates, registrationUpdates);
       toast2(`Restored backup from ${timeAgo(b.createdAt)} ✓`);
       logAudit("admin.restoreBackup", `${me.nickname} restored a backup from ${timeAgo(b.createdAt)}`, "backup", backupId);
     } catch(e) { console.log("Restore backup error", e); toast2("Restore failed — backup data unreadable","err"); }
@@ -4849,15 +4907,26 @@ export default function Matchkeeper() {
       // both be wrong and trip the tripwire watching for exactly that). Existing docs in both
       // collections are cleared first so a reset genuinely returns to ONLY the seed set, not
       // seed-plus-whatever-was-there-before.
-      const [existingCommsSnap, existingEventsSnap] = await Promise.all([
+      const [existingCommsSnap, existingEventsSnap, existingRegsSnap] = await Promise.all([
         getDocs(collection(db,"padelos_communities")),
         getDocs(collection(db,"padelos_events")),
+        getDocs(collectionGroup(db,"registrations")),
       ]);
+      // Registration deletes are chunked separately — unlike communities/events (small, bounded
+      // seed sets), there's no guarantee the existing registrations count stays under one batch's
+      // 500-write limit.
+      for (let i=0;i<existingRegsSnap.docs.length;i+=450) {
+        const chunk = existingRegsSnap.docs.slice(i,i+450);
+        const regDeleteBatch = writeBatch(db);
+        chunk.forEach(d=>regDeleteBatch.delete(d.ref));
+        await regDeleteBatch.commit();
+      }
       const resetBatch = writeBatch(db);
       existingCommsSnap.docs.forEach(d=>resetBatch.delete(d.ref));
       existingEventsSnap.docs.forEach(d=>resetBatch.delete(d.ref));
       INIT_COMMUNITIES.forEach(c=>resetBatch.set(doc(db,"padelos_communities",String(c.id)), clean(c)));
       INIT_EVENTS.forEach(e=>resetBatch.set(doc(db,"padelos_events",String(e.id)), packEventForFirestore(e)));
+      INIT_REGISTRATIONS.forEach(r=>resetBatch.set(doc(db,"padelos_events",String(r.eventId),"registrations",String(r.userId)), clean(r)));
       await resetBatch.commit();
       await Promise.all([
         setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)}),
@@ -4938,12 +5007,24 @@ export default function Matchkeeper() {
   // object the moment it's read — every other part of the app keeps treating `ev.plan` as a
   // normal object; only the pack/unpack pair below and the sync listener know it's serialized on
   // the wire.
-  const packEventForFirestore = (ev) => clean({...ev, plan: ev.plan ? JSON.stringify(ev.plan) : ev.plan});
+  // Defensive strip of `.registrations` (Phase 2: registrations live in their own subcollection,
+  // never as a field on the event doc). Raw `events`/`eventsRef` state never carries this field in
+  // normal operation, but restoreBackup's snapshot-derived event objects come from a heterogeneous
+  // backup blob that still nests `.registrations` per event — this is cheap, permanent insurance
+  // against ever resurrecting the old whole-array-field pattern this migration exists to remove.
+  const packEventForFirestore = (ev) => { const {registrations, ...rest} = ev; return clean({...rest, plan: rest.plan ? JSON.stringify(rest.plan) : rest.plan}); };
   const unpackEventFromFirestore = (data) => ({...data, plan: typeof data.plan === "string" ? JSON.parse(data.plan) : data.plan});
   const communitiesRef = useRef(communities);
   useEffect(() => { communitiesRef.current = communities; }, [communities]);
   const eventsRef = useRef(events);
   useEffect(() => { eventsRef.current = events; }, [events]);
+  // Phase 2 split: raw registration entries (NOT merged into `events`/`comms` here — regsByEvent/
+  // comms above already do that derivation). Any code that needs "this event's registrations"
+  // should read via comms/getEv like always; this ref exists only for the handful of admin/
+  // maintenance operations (deleteUser, backfillGuestMemberships, closeEventTx's sibling pre-
+  // fetch) that legitimately need direct access to the raw list across many/all events at once.
+  const registrationsRef = useRef(registrations);
+  useEffect(() => { registrationsRef.current = registrations; }, [registrations]);
   // Read-only enforcement (Enhancement #17) + the second (interactive) God Mode warning — shared
   // by all three funnels below, same reasoning as when this all lived inside one updC.
   const checkSubscriptionGuard = (opts={}) => {
@@ -5031,6 +5112,152 @@ export default function Matchkeeper() {
     });
   };
 
+  // Phase 2 (registrations split): each registration is its own document at
+  // padelos_events/{eid}/registrations/{uid} instead of an array entry on the event doc — see
+  // PLAN. Active-vs-waitlisted is never decided or stored here (splitRegsByCapacity always
+  // recomputes it live from whatever registration docs exist), so this only ever needs to durably
+  // record "this person registered" — no read of sibling registrations required at all.
+  const regDocRef = (eid, uid) => doc(db,"padelos_events",String(eid),"registrations",String(uid));
+  const regKey = (eid, uid) => `${eid}_${uid}`;
+  const setRegLocal = (eid, uid, reg) => {
+    const key = regKey(eid, uid);
+    const next = reg
+      ? [...registrationsRef.current.filter(r=>regKey(r.eventId,r.userId)!==key), reg]
+      : registrationsRef.current.filter(r=>regKey(r.eventId,r.userId)!==key);
+    registrationsRef.current = next;
+    setRegistrations(next);
+  };
+  // Registers `uid` into event `eid`. A lightweight transaction: reads the event doc (status
+  // guard) + this user's own registration doc (existence check, so a double-tap/retry can never
+  // reset their registeredAt), writes only that one new registration doc. Firestore transactions
+  // only conflict on documents BOTH read and written by another committed transaction — every
+  // concurrent registrant reads the same event doc (never writes it) and writes only their own
+  // distinct registration doc, so registrants never contend with each other; only a genuinely
+  // concurrent WRITE to the event doc itself (an admin closing/pausing it) can invalidate this —
+  // exactly the case that should be rejected. checkRegistrationOpen is only set true by the
+  // player-facing "I'm In" flow (registerEv) — admin-driven adds (addMember/addGuest/
+  // approveEventJoin) intentionally skip it, same as today's behavior.
+  const registerInEvent = (cid, eid, uid, regData, {checkRegistrationOpen=false, opts={}}={}) => {
+    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
+    const already = registrationsRef.current.some(r=>r.eventId===eid && r.userId===uid);
+    if (!already) setRegLocal(eid, uid, {...regData, userId:uid, eventId:eid});
+    const eDocRef = doc(db,"padelos_events",String(eid));
+    const rDocRef = regDocRef(eid, uid);
+    return runTransaction(db, async (tx) => {
+      const eSnap = await tx.get(eDocRef);
+      const rSnap = await tx.get(rDocRef);
+      if (!eSnap.exists()) throw new Error("This event no longer exists.");
+      const ev = eSnap.data();
+      if (ev.status==="completed" || ev.status==="cancelled") throw new Error("This event is closed.");
+      if (checkRegistrationOpen && ev.registrationOpen===false) throw new Error("Registration is closed for this event.");
+      if (rSnap.exists()) return {eventId:eid, ...rSnap.data()}; // already registered — no-op, keeps the original registeredAt
+      const newReg = {...regData, userId:uid, eventId:eid};
+      tx.set(rDocRef, clean(newReg));
+      return newReg;
+    }, {maxAttempts:30}).then(saved => {
+      setRegLocal(eid, uid, saved);
+      return saved;
+    }).catch(e => {
+      console.log("registerInEvent transaction failed", e);
+      if (!already) setRegLocal(eid, uid, null); // roll back the optimistic add
+      throw e;
+    });
+  };
+  const deleteRegistrationDoc = (eid, uid) => {
+    setRegLocal(eid, uid, null);
+    return deleteDoc(regDocRef(eid, uid)).catch(e => { console.log("Firestore write error (deleteRegistrationDoc)", e); throw e; });
+  };
+  const updateRegistrationDoc = (eid, uid, fields) => {
+    const existing = registrationsRef.current.find(r=>r.eventId===eid && r.userId===uid);
+    if (existing) setRegLocal(eid, uid, {...existing, ...fields});
+    return updateDoc(regDocRef(eid, uid), clean(fields)).catch(e => { console.log("Firestore write error (updateRegistrationDoc)", e); throw e; });
+  };
+  // registerViaInvite / addGuest: atomically grant community membership AND event registration —
+  // a crash between two separate writes could otherwise leave a registration with no membership,
+  // or vice versa. Both target documents are either brand-new (registration) or a small,
+  // already-optimistically-applied membership change, so — like updCommunityAndEvent — no
+  // sibling-query complexity is needed.
+  const registerWithMembership = (cid, eid, uid, memberFn, regData, opts={}) => {
+    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
+    const startingC = communitiesRef.current.find(c=>c.id===cid);
+    const optC = memberFn(startingC);
+    communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?optC:c);
+    syncedRef.current.communities = JSON.stringify(communitiesRef.current);
+    setCommunities(communitiesRef.current);
+    const already = registrationsRef.current.some(r=>r.eventId===eid && r.userId===uid);
+    if (!already) setRegLocal(eid, uid, {...regData, userId:uid, eventId:eid});
+
+    const cDocRef = doc(db,"padelos_communities",String(cid));
+    const rDocRef = regDocRef(eid, uid);
+    return runTransaction(db, async (tx) => {
+      const cSnap = await tx.get(cDocRef);
+      const rSnap = await tx.get(rDocRef);
+      const latestC = cSnap.exists() ? cSnap.data() : startingC;
+      const updatedC = memberFn(latestC);
+      tx.set(cDocRef, clean(updatedC));
+      if (rSnap.exists()) return {updatedC, savedReg:{eventId:eid, ...rSnap.data()}};
+      const newReg = {...regData, userId:uid, eventId:eid};
+      tx.set(rDocRef, clean(newReg));
+      return {updatedC, savedReg:newReg};
+    }, {maxAttempts:30}).then(({updatedC, savedReg}) => {
+      communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?updatedC:c);
+      syncedRef.current.communities = JSON.stringify(communitiesRef.current);
+      setCommunities(communitiesRef.current);
+      setRegLocal(eid, uid, savedReg);
+      return {updatedC, savedReg};
+    }).catch(async e => {
+      console.log("registerWithMembership transaction failed", e);
+      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+      try {
+        const cSnap = await getDoc(cDocRef);
+        if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
+      } catch(e2) { console.log("registerWithMembership resync-after-failure also failed", e2); }
+      if (!already) setRegLocal(eid, uid, null);
+      throw e;
+    });
+  };
+  // approveEventJoin: atomically clear the pending joinRequests entry AND create the
+  // registration — same "never leave one without the other" reasoning as
+  // registerWithMembership just above, against the event doc's `joinRequests` field instead of
+  // the community doc.
+  const approveJoinAndRegister = (cid, eid, uid, regData) => {
+    if (!checkSubscriptionGuard() || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
+    const already = registrationsRef.current.some(r=>r.eventId===eid && r.userId===uid);
+    if (!already) setRegLocal(eid, uid, {...regData, userId:uid, eventId:eid});
+    eventsRef.current = eventsRef.current.map(e=>e.id===eid?{...e, joinRequests:(e.joinRequests||[]).filter(r=>r.userId!==uid)}:e);
+    syncedRef.current.events = JSON.stringify(eventsRef.current);
+    setEvents(eventsRef.current);
+
+    const eDocRef = doc(db,"padelos_events",String(eid));
+    const rDocRef = regDocRef(eid, uid);
+    return runTransaction(db, async (tx) => {
+      const eSnap = await tx.get(eDocRef);
+      const rSnap = await tx.get(rDocRef);
+      if (!eSnap.exists()) throw new Error("This event no longer exists.");
+      const latestE = unpackEventFromFirestore(eSnap.data());
+      const updatedE = {...latestE, joinRequests:(latestE.joinRequests||[]).filter(r=>r.userId!==uid)};
+      tx.set(eDocRef, packEventForFirestore(updatedE));
+      if (rSnap.exists()) return {updatedE, savedReg:{eventId:eid, ...rSnap.data()}};
+      const newReg = {...regData, userId:uid, eventId:eid};
+      tx.set(rDocRef, clean(newReg));
+      return {updatedE, savedReg:newReg};
+    }, {maxAttempts:30}).then(({updatedE, savedReg}) => {
+      eventsRef.current = eventsRef.current.map(e=>e.id===eid?updatedE:e);
+      syncedRef.current.events = JSON.stringify(eventsRef.current);
+      setEvents(eventsRef.current);
+      setRegLocal(eid, uid, savedReg);
+      return {updatedE, savedReg};
+    }).catch(async e => {
+      console.log("approveJoinAndRegister transaction failed", e);
+      try {
+        const eSnap = await getDoc(eDocRef);
+        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?unpackEventFromFirestore(eSnap.data()):ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
+      } catch(e2) { console.log("approveJoinAndRegister resync-after-failure also failed", e2); }
+      if (!already) setRegLocal(eid, uid, null);
+      throw e;
+    });
+  };
+
   // Same reasoning as createEventDoc below, for a brand-new community.
   const createCommunityDoc = (communityObj) => {
     const optimistic = [...communitiesRef.current, communityObj];
@@ -5049,68 +5276,20 @@ export default function Matchkeeper() {
     setEvents(optimistic);
     setDoc(doc(db,"padelos_events",String(eventObj.id)), packEventForFirestore(eventObj)).catch(e=>console.log("Firestore write error (createEventDoc)", e));
   };
-  // For mutations that atomically touch BOTH a community-level field AND one specific event's
-  // fields (registerViaInvite, addGuest — granting guest membership + the event registration
-  // together, so a crash between two separate writes can never leave one without the other).
-  // `fn` receives {...community, events:[event]} (a "virtual community" with just the one
-  // relevant event) and must return the same shape — matches these functions' existing bodies
-  // exactly, since they only ever touch the single event matching `eid` despite structurally
-  // `.map`-ing over `.events`. (closeEvent needs every OTHER completed event in the community too,
-  // for its promote/demote streak calc — it has its own bespoke transaction, see closeEvent.)
-  const updCommunityAndEvent = (cid, eid, fn, opts={}) => {
-    if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return;
-    const buildVirtual = (c, e) => ({...c, events: e ? [e] : []});
-    const splitResult = (result) => {
-      const {events: resultEvents, ...resultCommunity} = result;
-      const updatedEvent = resultEvents?.find(e=>e.id===eid) ?? resultEvents?.[0] ?? null;
-      return {resultCommunity, updatedEvent};
-    };
-    const startingC = communitiesRef.current.find(c=>c.id===cid);
-    const startingE = eventsRef.current.find(e=>e.id===eid);
-    const {resultCommunity: optC, updatedEvent: optE} = splitResult(fn(buildVirtual(startingC, startingE)));
-    const optCommunities = communitiesRef.current.map(c=>c.id===cid?optC:c);
-    const optEvents = optE ? eventsRef.current.map(e=>e.id===eid?optE:e) : eventsRef.current;
-    communitiesRef.current = optCommunities; eventsRef.current = optEvents;
-    syncedRef.current.communities = JSON.stringify(optCommunities);
-    syncedRef.current.events = JSON.stringify(optEvents);
-    setCommunities(optCommunities); setEvents(optEvents);
-
-    const cDocRef = doc(db,"padelos_communities",String(cid));
-    const eDocRef = doc(db,"padelos_events",String(eid));
-    runTransaction(db, async (tx) => {
-      const [cSnap, eSnap] = await Promise.all([tx.get(cDocRef), tx.get(eDocRef)]);
-      const latestC = cSnap.exists() ? cSnap.data() : optC;
-      const latestE = eSnap.exists() ? unpackEventFromFirestore(eSnap.data()) : optE;
-      const {resultCommunity, updatedEvent} = splitResult(fn(buildVirtual(latestC, latestE)));
-      tx.set(cDocRef, clean(resultCommunity));
-      if (updatedEvent) tx.set(eDocRef, packEventForFirestore(updatedEvent));
-      return {resultCommunity, updatedEvent};
-    }, {maxAttempts:30}).then(({resultCommunity, updatedEvent}) => {
-      communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
-      if (updatedEvent) eventsRef.current = eventsRef.current.map(e=>e.id===eid?updatedEvent:e);
-      syncedRef.current.communities = JSON.stringify(communitiesRef.current);
-      syncedRef.current.events = JSON.stringify(eventsRef.current);
-      setCommunities(communitiesRef.current); setEvents(eventsRef.current);
-    }).catch(async e => {
-      console.log("updCommunityAndEvent transaction failed", e);
-      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
-      try {
-        const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
-        if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
-        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?unpackEventFromFirestore(eSnap.data()):ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
-      } catch(e2) { console.log("updCommunityAndEvent resync-after-failure also failed", e2); }
-    });
-  };
   // Back-compat alias: every call site below that never touches `.events` (members, ledger,
   // announcements, banners...) still calls `updC(cid, fn)` unchanged — safe, since updCommunity
   // has the exact same (id, fn, opts) signature and those fn bodies never reference events at
-  // all. Only call sites that actually mutate an event needed to change to updEvent/
-  // updCommunityAndEvent below.
+  // all. Only call sites that actually mutate an event needed to change to updEvent below.
   const updC = updCommunity;
+  // Phase 1's updCommunityAndEvent (atomically touching a community field + one event field —
+  // registerViaInvite, addGuest, closeEvent) was removed in Phase 2: registerViaInvite/addGuest
+  // now use registerWithMembership (community doc + the new registration doc, not an event-doc
+  // field), and closeEvent's own bespoke transaction below never used it in the first place.
+  //
   // closeEvent needs every OTHER completed event in the community (not just the one being
-  // closed) to recompute member promote/demote streaks — updCommunityAndEvent above only ever
-  // gives `fn` a single event, so this gets its own bespoke transaction: reads the community doc
-  // plus every one of its event docs, applies the same promote/demote logic, but only ever WRITES
+  // closed) to recompute member promote/demote streaks, so this gets its own bespoke transaction:
+  // reads the community doc plus every one of its event docs, applies the same promote/demote
+  // logic, but only ever WRITES
   // the community doc and the one event actually being closed — every sibling event is read for
   // context only, never rewritten.
   //
@@ -5131,8 +5310,11 @@ export default function Matchkeeper() {
       const {events: resultEvents, ...resultCommunity} = result;
       return {resultCommunity, targetEvent: resultEvents.find(e=>e.id===eid) ?? null};
     };
+    // Phase 2: raw events no longer carry `.registrations` (only the derived `comms` does), so the
+    // promote/demote calc's `fn` needs it stitched back on here explicitly for every sibling event.
+    const withRegs = (evs, regsList) => evs.map(e => ({...e, registrations: regsList.filter(r=>r.eventId===e.id)}));
     const siblingEvents = eventsRef.current.filter(e=>e.communityId===cid);
-    const {resultCommunity: optC, targetEvent: optE} = splitResult(fn(buildVirtual(communitiesRef.current.find(c=>c.id===cid), siblingEvents)));
+    const {resultCommunity: optC, targetEvent: optE} = splitResult(fn(buildVirtual(communitiesRef.current.find(c=>c.id===cid), withRegs(siblingEvents, registrationsRef.current))));
     const optCommunities = communitiesRef.current.map(c=>c.id===cid?optC:c);
     const optEvents = optE ? eventsRef.current.map(e=>e.id===eid?optE:e) : eventsRef.current;
     communitiesRef.current = optCommunities; eventsRef.current = optEvents;
@@ -5144,31 +5326,54 @@ export default function Matchkeeper() {
     const eDocRef = doc(db,"padelos_events",String(eid));
     const siblingIds = [...new Set([eid, ...siblingEvents.map(e=>e.id)])];
     const siblingDocRefs = siblingIds.map(id=>doc(db,"padelos_events",String(id)));
-    runTransaction(db, async (tx) => {
-      const cSnap = await tx.get(cDocRef);
-      const eSnaps = [];
-      for (const ref of siblingDocRefs) { eSnaps.push(await tx.get(ref)); }
-      const latestC = cSnap.exists() ? cSnap.data() : optC;
-      const latestEvents = eSnaps.filter(s=>s.exists()).map(s=>unpackEventFromFirestore(s.data()));
-      const {resultCommunity, targetEvent} = splitResult(fn(buildVirtual(latestC, latestEvents)));
-      tx.set(cDocRef, clean(resultCommunity));
-      if (targetEvent) tx.set(eDocRef, packEventForFirestore(targetEvent));
-      return {resultCommunity, targetEvent};
-    }, {maxAttempts:30}).then(({resultCommunity, targetEvent}) => {
-      communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
-      if (targetEvent) eventsRef.current = eventsRef.current.map(e=>e.id===eid?targetEvent:e);
-      syncedRef.current.communities = JSON.stringify(communitiesRef.current);
-      syncedRef.current.events = JSON.stringify(eventsRef.current);
-      setCommunities(communitiesRef.current); setEvents(eventsRef.current);
-    }).catch(async e => {
-      console.log("closeEventTx transaction failed", e);
-      toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
-      try {
-        const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
-        if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
-        if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?unpackEventFromFirestore(eSnap.data()):ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
-      } catch(e2) { console.log("closeEventTx resync-after-failure also failed", e2); }
-    });
+    // Sibling registrations, fetched ONCE, plainly — NOT via tx.get(query(...)) inside the
+    // transaction (that combination has a confirmed, reproducible failure in this codebase, see
+    // the note above). Safe to read non-transactionally here specifically because
+    // registerInEvent's status guard means a completed/cancelled event's registrations can never
+    // change again — no real staleness window for a promote/demote calc that only ever looks at
+    // already-completed sibling events.
+    // Deliberately no `where("eventId","in",...)` filter — a real bug, confirmed live in DEV: that
+    // combination needs an explicit Firestore COLLECTION_GROUP index that doesn't exist, and
+    // fails with FAILED_PRECONDITION every time. Fetching the whole collectionGroup (same as the
+    // live listener already does continuously) and filtering client-side avoids the index
+    // requirement entirely — this only runs once, on the rare admin action of closing an event.
+    const siblingIdSet = new Set(siblingIds);
+    const fetchSiblingRegs = async () => {
+      const snap = await getDocs(collectionGroup(db,"registrations"));
+      return snap.docs
+        .map(d => ({...d.data(), eventId: Number(d.ref.parent.parent.id)})) // must be a number — see the same fix on the live listener above
+        .filter(r => siblingIdSet.has(r.eventId));
+    };
+    (async () => {
+      let latestRegs;
+      try { latestRegs = await fetchSiblingRegs(); }
+      catch (e) { console.log("closeEventTx sibling-registrations pre-fetch failed", e); toast2("That didn't save — couldn't read registration data. Please try again.", "err"); return; }
+      runTransaction(db, async (tx) => {
+        const cSnap = await tx.get(cDocRef);
+        const eSnaps = [];
+        for (const ref of siblingDocRefs) { eSnaps.push(await tx.get(ref)); }
+        const latestC = cSnap.exists() ? cSnap.data() : optC;
+        const latestEvents = withRegs(eSnaps.filter(s=>s.exists()).map(s=>unpackEventFromFirestore(s.data())), latestRegs);
+        const {resultCommunity, targetEvent} = splitResult(fn(buildVirtual(latestC, latestEvents)));
+        tx.set(cDocRef, clean(resultCommunity));
+        if (targetEvent) tx.set(eDocRef, packEventForFirestore(targetEvent));
+        return {resultCommunity, targetEvent};
+      }, {maxAttempts:30}).then(({resultCommunity, targetEvent}) => {
+        communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?resultCommunity:c);
+        if (targetEvent) eventsRef.current = eventsRef.current.map(e=>e.id===eid?targetEvent:e);
+        syncedRef.current.communities = JSON.stringify(communitiesRef.current);
+        syncedRef.current.events = JSON.stringify(eventsRef.current);
+        setCommunities(communitiesRef.current); setEvents(eventsRef.current);
+      }).catch(async e => {
+        console.log("closeEventTx transaction failed", e);
+        toast2("That didn't save — too many people were saving changes at the same moment. Please try again.", "err");
+        try {
+          const [cSnap, eSnap] = await Promise.all([getDoc(cDocRef), getDoc(eDocRef)]);
+          if (cSnap.exists()) { communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?cSnap.data():c); syncedRef.current.communities = JSON.stringify(communitiesRef.current); setCommunities(communitiesRef.current); }
+          if (eSnap.exists()) { eventsRef.current = eventsRef.current.map(ev=>ev.id===eid?unpackEventFromFirestore(eSnap.data()):ev); syncedRef.current.events = JSON.stringify(eventsRef.current); setEvents(eventsRef.current); }
+        } catch(e2) { console.log("closeEventTx resync-after-failure also failed", e2); }
+      });
+    })();
   };
   // Shared by the handful of rare admin/maintenance tools that touch many communities and/or
   // events at once (deleteUser, restoreBackup, repairDuplicateIds, backfillGuestMemberships,
@@ -5180,16 +5385,20 @@ export default function Matchkeeper() {
   // specific known set of documents, not a hot path with realistic concurrent writers on the
   // very same doc, so the added retry machinery isn't buying anything real.
   // `communityUpdates`/`eventUpdates`: [{id, data}] to upsert, or [{id, delete:true}] to delete.
-  const batchWriteCommunitiesAndEvents = async (communityUpdates=[], eventUpdates=[]) => {
+  // `registrationUpdates`: [{eventId, userId, data}] to upsert a registration doc, or
+  // [{eventId, userId, delete:true}] to delete one — same chunked-batch reasoning as
+  // communities/events above, extended to the Phase 2 registrations subcollection.
+  const batchWriteCommunitiesAndEvents = async (communityUpdates=[], eventUpdates=[], registrationUpdates=[]) => {
     const all = [
       ...communityUpdates.map(u=>({...u, col:"padelos_communities"})),
       ...eventUpdates.map(u=>({...u, col:"padelos_events"})),
+      ...registrationUpdates.map(u=>({...u, col:"registrations"})),
     ];
     for (let i=0;i<all.length;i+=450) {
       const chunk = all.slice(i,i+450);
       const batch = writeBatch(db);
       chunk.forEach(u => {
-        const ref = doc(db,u.col,String(u.id));
+        const ref = u.col==="registrations" ? doc(db,"padelos_events",String(u.eventId),"registrations",String(u.userId)) : doc(db,u.col,String(u.id));
         if (u.delete) batch.delete(ref); else batch.set(ref, u.col==="padelos_events" ? packEventForFirestore(u.data) : clean(u.data));
       });
       await batch.commit();
@@ -5635,9 +5844,6 @@ export default function Matchkeeper() {
       closedAt:null,
       regOpenAt:new Date().toISOString(),
       regularUntil:new Date(Date.now()+24*3600000).toISOString(),
-      registrations: keepPlayers
-        ? liveRegs.map(r=>({...r, registeredAt:new Date().toISOString(), eventUsr:null}))
-        : [],
       checkedIn: keepPlayers ? liveRegs.map(r=>r.userId) : [],
       plan:null,
       exempted:[],
@@ -5646,6 +5852,14 @@ export default function Matchkeeper() {
       extraExpenses:0,
     };
     createEventDoc(copy);
+    // Registrations for a brand-new event are a batch of independent doc creates, not an atomic
+    // append — zero contention risk since nobody else knows this event id yet.
+    if (keepPlayers && liveRegs.length>0) {
+      const newRegs = liveRegs.map(r=>({...r, eventId:id, registeredAt:new Date().toISOString(), eventUsr:null}));
+      registrationsRef.current = [...registrationsRef.current, ...newRegs];
+      setRegistrations(registrationsRef.current);
+      batchWriteCommunitiesAndEvents([], [], newRegs.map(r=>({eventId:id, userId:r.userId, data:r}))).catch(e=>console.log("duplicateEvent registrations batch write failed", e));
+    }
     if(keepPlayers&&droppedCount>0){
       toast2(`Event duplicated — ${droppedCount} stale player(s) skipped`,"err");
     }else{
@@ -5844,7 +6058,14 @@ export default function Matchkeeper() {
     closeEventTx(cid,eid,c=>{
       const updatedEvents = c.events.map(e=>e.id!==eid?e:{...e,status:"completed",closedAt:new Date().toISOString()});
       const promoteAfter = c.promoteAfter||3, demoteAfter = c.demoteAfter||4;
-      const completedEvs = updatedEvents.filter(e=>e.status==="completed").sort((a,b)=>new Date(a.date)-new Date(b.date));
+      // Sort by full date+time, not just date — multiple events on the same calendar day (common
+      // in test data, and not impossible in real use) used to tie-break on whatever arbitrary
+      // order the events happened to arrive in from Firestore (unordered by default, not
+      // guaranteed stable), which could silently change a member's promote/demote streak from one
+      // close to the next with no data actually changing. `time` breaks same-day ties correctly;
+      // `id` is the final fallback for a genuinely identical date+time.
+      const eventTime = e => new Date(`${e.date}T${e.time||"00:00"}`).getTime();
+      const completedEvs = updatedEvents.filter(e=>e.status==="completed").sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
       const updatedMembers = c.members.map(m=>{
         if(m.role!=="member") return m; // owners/admins aren't auto-managed this way
         // A private event this member was never invited to (not registered in it) shouldn't
@@ -5946,12 +6167,18 @@ export default function Matchkeeper() {
     // real concurrency the guess can be wrong (someone else's registration could land in
     // between), so the true answer is recomputed from the confirmed data that comes back.
     try {
-      const updated = await updEvent(cid,eid,ev=>ev.registrations.find(r=>r.userId===me.id)?ev:{...ev,registrations:[...ev.registrations,{userId:me.id,registeredAt:new Date().toISOString(),status:"registered",addedBy:null,isGuest:false}]}, {silent:true});
-      const {waitlisted} = splitRegsByCapacity(updated, comm);
+      await registerInEvent(cid, eid, me.id, {registeredAt:new Date().toISOString(), status:"registered", addedBy:null, isGuest:false}, {checkRegistrationOpen:true});
+      // Waitlist position for the toast is a plain post-write read of this event's current
+      // registrations, fetched fresh from Firestore (not via comms — that's still on the closure
+      // from before this await) — informational only, never enforced, so it doesn't need to be
+      // atomic with the write that already landed.
+      const freshSnap = await getDocs(collection(db,"padelos_events",String(eid),"registrations"));
+      const freshEv = {...ev, registrations: freshSnap.docs.map(d=>({...d.data(), eventId:eid}))};
+      const {waitlisted} = splitRegsByCapacity(freshEv, comm);
       const isWaitlisted = waitlisted.some(r=>r.userId===me.id);
       afterRegistered(isWaitlisted, isWaitlisted?waitlisted.length:0);
     } catch (e) {
-      toast2("Registration didn't go through — too many people were registering at the same moment. Please try again.", "err");
+      toast2(e?.message && e.message!=="blocked" ? e.message : "Registration didn't go through — too many people were registering at the same moment. Please try again.", "err");
     }
     } finally {
       setRegisteringEventId(null);
@@ -5984,7 +6211,7 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
-    updEvent(cid,eid,ev=>ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]});
+    registerInEvent(cid, eid, uid, {registeredAt:new Date().toISOString(), status:"registered", addedBy:"admin", isGuest:false}).catch(e=>{ console.log("addMember registerInEvent failed", e); toast2("That didn't save — please try again.", "err"); });
     afterAdded(waitlisted);
   };
   // An invite link is deliberate access granted by an admin — it skips the regular-member
@@ -6028,9 +6255,10 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
-    updCommunityAndEvent(cid,eid,c=>({...c,
-      members:c.members.some(m=>m.userId===uid)?c.members:[...c.members,{userId:uid,role:"member",status:"guest",since:today}],
-      events:c.events.map(ev=>ev.id!==eid||ev.registrations.find(r=>r.userId===uid)?ev:{...ev,registrations:[...ev.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"invite",isGuest:false}]})}));
+    registerWithMembership(cid, eid, uid,
+      c => ({...c, members: c.members.some(m=>m.userId===uid) ? c.members : [...c.members,{userId:uid,role:"member",status:"guest",since:today}]}),
+      {registeredAt:new Date().toISOString(), status:"registered", addedBy:"invite", isGuest:false}
+    ).catch(e=>console.log("registerViaInvite registerWithMembership failed", e));
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
     logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
   };
@@ -6071,12 +6299,7 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
-    updEvent(cid,eid,e=>{
-      const newJoinRequests=(e.joinRequests||[]).filter(r=>r.userId!==uid);
-      const alreadyReg=e.registrations.find(r=>r.userId===uid);
-      const newRegs=alreadyReg?e.registrations:[...e.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"approved",isGuest:false}];
-      return {...e,joinRequests:newJoinRequests,registrations:newRegs};
-    });
+    approveJoinAndRegister(cid, eid, uid, {registeredAt:new Date().toISOString(), status:"registered", addedBy:"approved", isGuest:false}).catch(e=>console.log("approveEventJoin approveJoinAndRegister failed", e));
     afterApproved(waitlisted);
   };
   const rejectEventJoin=(cid,eid,uid)=>{
@@ -6091,9 +6314,10 @@ export default function Matchkeeper() {
     const id=_uid++;
     const newUser={id,nickname:g.n,name:g.name||g.n,phone:g.p,country:"—",gov:"—",area:"—",usr:parseInt(g.usr)||0,joined:today,avatar:ini2(g.n),isGuest:true};
     setUsers(us=>[...us,newUser]);
-    updCommunityAndEvent(cid,eid,c=>({...c,
-      members:[...c.members,{userId:id,role:"member",status:"guest",since:today}],
-      events:c.events.map(ev=>ev.id!==eid?ev:{...ev,registrations:[...ev.registrations,{userId:id,registeredAt:new Date().toISOString(),status:"registered",addedBy:me.nickname,isGuest:true}]})}));
+    registerWithMembership(cid, eid, id,
+      c => ({...c, members: [...c.members, {userId:id, role:"member", status:"guest", since:today}]}),
+      {registeredAt:new Date().toISOString(), status:"registered", addedBy:me.nickname, isGuest:true}
+    ).catch(e=>console.log("addGuest registerWithMembership failed", e));
     toast2(`${g.n} added ✓`);
     logAudit("event.register", `${me.nickname} added guest ${g.n} to "${ev.name}"`, "event", eid);
     return true;
@@ -6109,6 +6333,8 @@ export default function Matchkeeper() {
   // scans every event's registrations for isGuest players and adds any missing ones
   // to their community's member list (status: guest), without touching anyone already there.
   const backfillGuestMemberships = () => {
+    const regsByEventLocal = {};
+    registrationsRef.current.forEach(r => { (regsByEventLocal[r.eventId] = regsByEventLocal[r.eventId] || []).push(r); });
     const eventsByCommunity = {};
     eventsRef.current.forEach(ev => { (eventsByCommunity[ev.communityId] = eventsByCommunity[ev.communityId] || []).push(ev); });
     let added = 0;
@@ -6116,7 +6342,7 @@ export default function Matchkeeper() {
     communitiesRef.current.forEach(c => {
       const existingIds = new Set(c.members.map(m=>m.userId));
       const guestIdsInEvents = new Set();
-      (eventsByCommunity[c.id]||[]).forEach(ev => ev.registrations.forEach(r => {
+      (eventsByCommunity[c.id]||[]).forEach(ev => (regsByEventLocal[ev.id]||[]).forEach(r => {
         if (r.isGuest || users.find(u=>u.id===r.userId)?.isGuest) guestIdsInEvents.add(r.userId);
       }));
       const toAdd = [...guestIdsInEvents].filter(uid => !existingIds.has(uid));
@@ -6137,6 +6363,7 @@ export default function Matchkeeper() {
   const checkIn=(cid,eid,uid)=>{updEvent(cid,eid,ev=>ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]});toast2("Checked in ✓");};
   const setPlan=(cid,eid,plan)=>updEvent(cid,eid,ev=>({...ev,plan}));
   const removeFromEvent=(cid,eid,uid)=>{
+    if (!checkSubscriptionGuard({bypassSubscriptionLock:uid===me.id}) || !checkGodModeGuard(cid)) return;
     const ev=getEv(cid,eid);
     // If the person leaving held an active (non-waitlisted) spot and someone's waiting,
     // whoever is first in line is about to be pulled into the active range purely by the
@@ -6149,7 +6376,11 @@ export default function Matchkeeper() {
       if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
     }
     const hadReg = ev && ev.registrations.some(r=>r.userId===uid);
-    updEvent(cid,eid,ev=>({...ev,registrations:ev.registrations.filter(r=>r.userId!==uid),checkedIn:ev.checkedIn.filter(id=>id!==uid)}),{bypassSubscriptionLock:uid===me.id});
+    // Two independent writes, not one atomic transaction — deleting the registration doc and
+    // clearing checkedIn on the event doc have no correctness dependency on each other (a
+    // checkedIn entry with no matching registration is harmless, purely cosmetic).
+    deleteRegistrationDoc(eid, uid).catch(e=>console.log("removeFromEvent deleteRegistrationDoc failed", e));
+    updEvent(cid,eid,ev=>({...ev,checkedIn:ev.checkedIn.filter(id=>id!==uid)}),{silent:true});
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
@@ -6379,11 +6610,11 @@ export default function Matchkeeper() {
   // rating, so there's no seed/recalculate machinery like padel's USR to protect here.
   const setFootballSkill=(uid,skill)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,footballSkill:skill||null}:u));toast2("Football skill updated ✓");};
   const editEventUsr=(cid,eid,uid,usr)=>{
-    updEvent(cid,eid,ev=>({...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,eventUsr:usr===""?null:parseInt(usr)||0})}));
+    updateRegistrationDoc(eid, uid, {eventUsr: usr===""?null:parseInt(usr)||0}).catch(e=>console.log("editEventUsr failed", e));
     const ev=getEv(cid,eid),u=users.find(u=>u.id===uid);
     logAudit("usr.editEventOverride", `${me.nickname} set ${u?.nickname||uid}'s USR to ${usr===""?"(cleared)":usr} for "${ev?.name||eid}" only`, "event", eid);
   };
-  const setBreakPrefOverride=(cid,eid,uid,pref)=>{updEvent(cid,eid,ev=>({...ev,registrations:ev.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})}));};
+  const setBreakPrefOverride=(cid,eid,uid,pref)=>{ updateRegistrationDoc(eid, uid, {breakPrefOverride:pref}).catch(e=>console.log("setBreakPrefOverride failed", e)); };
 
   // CI
   const startCI=(cid,eid,n,dur)=>{
@@ -6891,6 +7122,7 @@ export default function Matchkeeper() {
         .po-dim{color:var(--po-dim)!important;}
         select.po-inp option{background:var(--po-card);color:var(--po-text);}
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
+        @keyframes mkSpin{to{transform:rotate(360deg);}}
       `}</style>
       <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onVersionUpdates={()=>{setShowVersionUpdates(true);setMenu(false);}} onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
         comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
@@ -6949,6 +7181,17 @@ export default function Matchkeeper() {
           latest CHANGELOG.md entry with a "Load more" to reveal the full history, so the admin
           can check what actually shipped without leaving the app or opening the repo. */}
       {showVersionUpdates&&me.id===1&&<VersionUpdatesModal onClose={()=>setShowVersionUpdates(false)}/>}
+      {/* Blocking "Registering…" overlay — not just the button's own disabled/label state,
+          because that was too easy to miss entirely (confirmed live: a tester never saw it, even
+          though the write itself was real and correctly waited for server confirmation). No
+          onClick-to-dismiss — this reflects a write genuinely in flight, not a dialog to cancel. */}
+      {registeringEventId!=null&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:400,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{background:"var(--po-card)",borderRadius:14,padding:"28px 32px",display:"flex",flexDirection:"column",alignItems:"center",gap:14,boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+          <div style={{width:34,height:34,borderRadius:"50%",border:"3px solid var(--po-bdr)",borderTopColor:"#6366F1",animation:"mkSpin 0.8s linear infinite"}}/>
+          <div style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>Registering…</div>
+          <div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",maxWidth:220}}>Confirming with the server — this only closes once your spot is guaranteed.</div>
+        </div>
+      </div>}
       {/* iOS "Add to Home Screen" walkthrough — full-screen the first time (can't be missed),
           then collapses to a small floating icon on close instead of dismissing forever, same
           interaction shape as the God Mode button above. Left corner so the two never collide. */}

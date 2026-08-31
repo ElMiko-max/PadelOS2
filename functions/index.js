@@ -143,7 +143,12 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
       stillValid.push(s);
       continue;
     }
-    const userIds = (ev.registrations || []).map(r => r.userId);
+    // Phase 2: registrations live in their own subcollection, not the `.registrations` array
+    // field — same "who's currently registered" semantics (respects late registrations and
+    // cancellations even though the reminder was scheduled earlier), just a query instead of a
+    // field read.
+    const regsSnap = await evSnap.ref.collection("registrations").get();
+    const userIds = regsSnap.docs.map(d => d.data().userId);
     for (const userId of userIds) {
       newNotifs.push({
         id: `evr-${s.id}-${userId}`,
@@ -313,18 +318,38 @@ const splitRegsByCapacity = (e, c) => {
   });
   return {active, waitlisted};
 };
-// Resolves {comm, ev, commRef, evRef} by reading the community's own document and the event's
-// own document directly, inside an already-open transaction — comms-split migration replaced
-// the old whole-platform-blob scan with two targeted single-document reads. Shared lookup for
-// all three functions below.
-const resolveCommEventTx = async (tx, communityId, eventId) => {
-  const db = getFirestore();
-  const commRef = db.collection("padelos_communities").doc(String(communityId));
-  const evRef = db.collection("padelos_events").doc(String(eventId));
-  const [commSnap, evSnap] = await Promise.all([tx.get(commRef), tx.get(evRef)]);
-  if (!commSnap.exists) throw new HttpsError("not-found", "Community not found.");
-  if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
-  return {comm: commSnap.data(), ev: evSnap.data(), commRef, evRef};
+// Phase 2 (registrations split): each registration is its own document at
+// padelos_events/{eventId}/registrations/{userId} instead of an array entry on the event doc —
+// see PLAN. Active-vs-waitlisted is never decided or stored here (splitRegsByCapacity above
+// always recomputes it live), so the write side below only ever needs to durably record "this
+// person registered" inside a LIGHTWEIGHT transaction that reads just the event doc (status/
+// pause guard) + this user's own registration doc — never any sibling registration. Concurrent
+// registrants to the same event read the same event doc (never write it) and each write only
+// their own distinct registration doc, so they never contend with each other; only a genuinely
+// concurrent WRITE to the event doc itself (an admin closing/pausing it) can invalidate one of
+// these transactions — exactly the case that should be rejected. This is what actually removes
+// the contention this function used to serialize on (it used to tx.set() the whole event doc on
+// every single registration).
+//
+// Waitlist position for the response (used only for the confirmation toast) is computed by a
+// SEPARATE, plain, non-transactional read done AFTER the write commits — informational only,
+// never enforced, so a race here only affects what number is displayed, never who's actually
+// active vs waitlisted (that's still purely derived, recomputed correctly everywhere, always).
+const computeWaitlistInfo = async (db, communityId, eventId, userId) => {
+  const [commSnap, evSnap, regsSnap] = await Promise.all([
+    db.collection("padelos_communities").doc(String(communityId)).get(),
+    db.collection("padelos_events").doc(String(eventId)).get(),
+    db.collection("padelos_events").doc(String(eventId)).collection("registrations").get(),
+  ]);
+  const comm = commSnap.exists ? commSnap.data() : null;
+  const ev = evSnap.exists ? evSnap.data() : {};
+  const registrations = regsSnap.docs.map(d => d.data()).sort((a, b) => {
+    if (a.registeredAt !== b.registeredAt) return a.registeredAt < b.registeredAt ? -1 : 1;
+    return String(a.userId).localeCompare(String(b.userId));
+  });
+  const {waitlisted: waitlistArr} = splitRegsByCapacity({...ev, registrations}, comm);
+  const onIt = waitlistArr.some(r => r.userId === userId);
+  return {waitlisted: onIt, pos: onIt ? waitlistArr.length : 0};
 };
 
 // registerForEvent — same "close the stale-client gap" reasoning as claimOrCreateProfile above,
@@ -355,14 +380,18 @@ exports.registerForEvent = onCall(async (request) => {
 
   const db = getFirestore();
   const linkRef = db.collection("padelos_links").doc(auth.uid);
+  const linkSnap = await linkRef.get();
+  if (!linkSnap.exists) throw new HttpsError("failed-precondition", "No linked player profile for this account yet.");
+  const userId = linkSnap.data().userId;
 
-  return db.runTransaction(async (tx) => {
-    const linkSnap = await tx.get(linkRef);
-    if (!linkSnap.exists) throw new HttpsError("failed-precondition", "No linked player profile for this account yet.");
-    const userId = linkSnap.data().userId;
+  const evRef = db.collection("padelos_events").doc(String(eventId));
+  const commRef = db.collection("padelos_communities").doc(String(communityId));
+  const regRef = evRef.collection("registrations").doc(String(userId));
 
-    const {comm, ev, commRef, evRef} = await resolveCommEventTx(tx, communityId, eventId);
-
+  const {alreadyRegistered, eventName} = await db.runTransaction(async (tx) => {
+    const evSnap = await tx.get(evRef);
+    if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
+    const ev = evSnap.data();
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", via === "invite"
         ? "This event has already ended — the invite link is no longer valid."
@@ -371,29 +400,34 @@ exports.registerForEvent = onCall(async (request) => {
     if (ev.registrationOpen === false) {
       throw new HttpsError("failed-precondition", "Registration is currently paused for this event — check back later.");
     }
+    const regSnap = await tx.get(regRef);
+    if (regSnap.exists) return {alreadyRegistered: true, eventName: ev.name};
 
-    if (ev.registrations.some(r => r.userId === userId)) {
-      return {status: "already-registered", waitlisted: false, eventName: ev.name};
+    // Matches registerViaInvite's own side effect: an invite link also grants guest-tier
+    // community membership, not just the event registration, if they aren't a member yet — read
+    // + written in this same transaction so a crash between the two can never leave a
+    // registration without its matching membership (same reasoning as the client's
+    // registerWithMembership).
+    let comm = null;
+    if (via === "invite") {
+      const commSnap = await tx.get(commRef);
+      if (!commSnap.exists) throw new HttpsError("not-found", "Community not found.");
+      comm = commSnap.data();
     }
 
     const addedBy = via === "invite" ? "invite" : null;
-    const newReg = {userId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
-    const simEv = {...ev, registrations: [...ev.registrations, newReg]};
-    const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
-    const isWaitlisted = waitlistArr.some(r => r.userId === userId);
-
-    tx.set(evRef, {...ev, registrations: [...ev.registrations, newReg]});
-    // Matches registerViaInvite's own side effect: an invite link also grants guest-tier
-    // community membership, not just the event registration, if they aren't a member yet.
-    // Two-document write in the same transaction, same reasoning as client-side
-    // updCommunityAndEvent — a crash between two separate writes can never leave a registration
-    // without its matching membership.
+    const newReg = {userId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
+    tx.set(regRef, newReg);
     if (via === "invite" && !comm.members.some(m => m.userId === userId)) {
       tx.set(commRef, {...comm, members: [...comm.members, {userId, role: "member", status: "guest", since: new Date().toISOString().slice(0, 10)}]});
     }
 
-    return {status: "ok", waitlisted: isWaitlisted, pos: isWaitlisted ? waitlistArr.length : 0, eventName: ev.name};
+    return {alreadyRegistered: false, eventName: ev.name};
   });
+
+  if (alreadyRegistered) return {status: "already-registered", waitlisted: false, eventName};
+  const {waitlisted, pos} = await computeWaitlistInfo(db, communityId, eventId, userId);
+  return {status: "ok", waitlisted, pos, eventName};
 });
 
 // addMemberToEvent / approveEventJoinRequest — same server-side backstop as registerForEvent,
@@ -416,25 +450,28 @@ exports.addMemberToEvent = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
   }
 
-  return getFirestore().runTransaction(async (tx) => {
-    const {comm, ev, evRef} = await resolveCommEventTx(tx, communityId, eventId);
+  const db = getFirestore();
+  const evRef = db.collection("padelos_events").doc(String(eventId));
+  const regRef = evRef.collection("registrations").doc(String(targetUserId));
 
+  const {alreadyRegistered, eventName} = await db.runTransaction(async (tx) => {
+    const evSnap = await tx.get(evRef);
+    if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
+    const ev = evSnap.data();
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", "This event is closed — can't add players anymore.");
     }
-    if (ev.registrations.some(r => r.userId === targetUserId)) {
-      return {status: "already-registered", waitlisted: false, eventName: ev.name};
-    }
+    const regSnap = await tx.get(regRef);
+    if (regSnap.exists) return {alreadyRegistered: true, eventName: ev.name};
 
-    const newReg = {userId: targetUserId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "admin", isGuest: false};
-    const simEv = {...ev, registrations: [...ev.registrations, newReg]};
-    const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
-    const isWaitlisted = waitlistArr.some(r => r.userId === targetUserId);
-
-    tx.set(evRef, {...ev, registrations: [...ev.registrations, newReg]});
-
-    return {status: "ok", waitlisted: isWaitlisted, eventName: ev.name};
+    const newReg = {userId: targetUserId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "admin", isGuest: false};
+    tx.set(regRef, newReg);
+    return {alreadyRegistered: false, eventName: ev.name};
   });
+
+  if (alreadyRegistered) return {status: "already-registered", waitlisted: false, eventName};
+  const {waitlisted} = await computeWaitlistInfo(db, communityId, eventId, targetUserId);
+  return {status: "ok", waitlisted, eventName};
 });
 exports.approveEventJoinRequest = onCall(async (request) => {
   const auth = request.auth;
@@ -444,24 +481,27 @@ exports.approveEventJoinRequest = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
   }
 
-  return getFirestore().runTransaction(async (tx) => {
-    const {comm, ev, evRef} = await resolveCommEventTx(tx, communityId, eventId);
+  const db = getFirestore();
+  const evRef = db.collection("padelos_events").doc(String(eventId));
+  const regRef = evRef.collection("registrations").doc(String(targetUserId));
 
+  const {eventName} = await db.runTransaction(async (tx) => {
+    const evSnap = await tx.get(evRef);
+    if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
+    const ev = evSnap.data();
     if (ev.status === "completed" || ev.status === "cancelled") {
       throw new HttpsError("failed-precondition", "This event is closed — the request can't be approved anymore.");
     }
-
+    const regSnap = await tx.get(regRef);
     const newJoinRequests = (ev.joinRequests || []).filter(r => r.userId !== targetUserId);
-    const alreadyReg = ev.registrations.find(r => r.userId === targetUserId);
-    const newReg = {userId: targetUserId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "approved", isGuest: false};
-    const newRegs = alreadyReg ? ev.registrations : [...ev.registrations, newReg];
-
-    const simEv = {...ev, registrations: newRegs};
-    const {waitlisted: waitlistArr} = splitRegsByCapacity(simEv, comm);
-    const isWaitlisted = waitlistArr.some(r => r.userId === targetUserId);
-
-    tx.set(evRef, {...ev, joinRequests: newJoinRequests, registrations: newRegs});
-
-    return {status: "ok", waitlisted: isWaitlisted, eventName: ev.name};
+    tx.set(evRef, {...ev, joinRequests: newJoinRequests});
+    if (!regSnap.exists) {
+      const newReg = {userId: targetUserId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "approved", isGuest: false};
+      tx.set(regRef, newReg);
+    }
+    return {eventName: ev.name};
   });
+
+  const {waitlisted} = await computeWaitlistInfo(db, communityId, eventId, targetUserId);
+  return {status: "ok", waitlisted, eventName};
 });

@@ -22,6 +22,25 @@ service cloud.firestore {
         && request.resource.data.communityId == resource.data.communityId;
       allow delete: if request.auth != null;
     }
+    // Phase 2 (registrations split) — one document per registration instead of an array field on
+    // the event doc, so concurrent registrants to the same event never contend on the same
+    // document. Same cheap structural-guard philosophy as the collections above: a write can
+    // never claim someone else's userId.
+    //
+    // Real bug, confirmed live in DEV: a rule nested INSIDE `match /padelos_events/{eventId}`
+    // (i.e. `match /registrations/{userId} {...}` directly under it) only ever covers direct-path
+    // access (a single doc get, or a query scoped to one specific event's subcollection) — it
+    // does NOT cover a `collectionGroup(db,"registrations")` query spanning every event at once,
+    // which is exactly what both the app's main registrations listener and closeEventTx's
+    // sibling-registrations pre-fetch use. Firestore requires the recursive wildcard form below
+    // (`{path=**}`) specifically to authorize collection-group-scoped reads — confirmed by
+    // reproducing the failure with the real client SDK + a genuine signed-in token (the admin SDK
+    // used for earlier testing bypasses rules entirely, which is why this wasn't caught sooner).
+    match /{path=**}/registrations/{userId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.resource.data.userId == int(userId);
+      allow delete: if request.auth != null;
+    }
     match /padelos_links/{document} {
       allow read: if request.auth != null;
       // Real incident, V0.11.49: a client-side race silently linked strangers' sign-ins to the

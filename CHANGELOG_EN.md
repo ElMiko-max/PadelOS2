@@ -4,6 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.13.00 — Another architectural release: every registration is now its own Firestore document
+
+- **The problem:** even after V0.12.00 split every event into its own document, every registration for that event still lived together as one array field on the event document — so 50 people registering at the exact same moment were still all contending for that one document. A real test confirmed it: worst case took ~39 seconds (zero lost, but painfully slow under a genuine rush).
+- **The fix:** each registration is now its own independent document (`padelos_events/{eventId}/registrations/{userId}`) — concurrent registrants to the same event no longer contend with each other at all. The same test (50 simultaneous registrations against a 15-person cap) now finishes in under 2 seconds instead of ~39 — zero lost, exact correct split every time.
+- **Thorough DEV testing before shipping** found and fixed 3 real bugs: (1) closing an event showed a "didn't save" error even though it actually closed (a query needed a Firestore index that didn't exist), (2) every screen was silently showing zero registrations for every event (a string-vs-number id mismatch), and (3) most importantly — Firestore permissions were blocking reads across all events' registrations at once, a bug only catchable by testing with a real signed-in user, not admin tooling.
+- **Extra fix while in there:** promoting a member (casual → regular) after closing events that happen to share the exact same date is now guaranteed to give the same answer every time (it could previously depend on Firestore's arbitrary fetch order).
+- The old array-based data is kept as a rollback source for now and will be cleaned up once this is confirmed stable for a few days.
+
+---
+
 ## V0.12.04 — "I'm In" now waits for real confirmation before saying "Registered"
 
 - **Real bug fixed:** the registration button used to show "Registered ✓" instantly, without waiting for genuine server confirmation — if the write actually failed afterward (heavy contention), the user would be looking at a false success message with no idea anything was wrong. The button now shows "Registering…" and disables itself until the registration is actually confirmed saved, then shows "Registered ✓" or "You're #N on the waitlist" — and if it genuinely fails, says so plainly and asks to try again.

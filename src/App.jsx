@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.13.04";
+const APP_VERSION = "V0.13.05";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2330,6 +2330,17 @@ async function shareImages(canvases, baseName, text){
   const files = canvases.map((c,i)=>canvasToFileSync(c,`${baseName}_${i+1}.png`));
   diag.push(`files ready: ${files.length}`);
 
+  // Real bug, confirmed 2026-08-31 (screenshot showed Matchkeeper's own "Shared ✓" toast next to
+  // WhatsApp's separate "Can't send empty message" toast — the app's share genuinely succeeded,
+  // WhatsApp rejected it independently): handleShareAfter deliberately passes text:"" (not
+  // omitted) to avoid WhatsApp duplicating a caption under every image in a multi-file share —
+  // but an empty STRING is still a present value, not a missing one, so it was still attached to
+  // the native Android intent as EXTRA_TEXT="" — which WhatsApp specifically treats as "trying to
+  // send a blank message" and refuses. Every Share.share() call below goes through this instead
+  // of calling the plugin directly, so an empty/falsy text (or an empty files array) is never
+  // even sent as a key at all, not just falsy.
+  const nativeShare = (opts) => Share.share(Object.fromEntries(Object.entries(opts).filter(([,v]) => v!=null && v!=="" && !(Array.isArray(v)&&v.length===0))));
+
   // Text-only calls (sharePaymentInfo) don't need any of the file-sharing machinery below —
   // navigator.canShare({files:[]}) is unreliable across browsers (some report false for an
   // empty file list, which used to fall all the way through to the "nothing to download"
@@ -2337,7 +2348,7 @@ async function shareImages(canvases, baseName, text){
   // would have worked fine). Handle it directly instead.
   if (files.length === 0) {
     if (Capacitor.isNativePlatform()) {
-      try { await Share.share({title:baseName, text}); return {status:"shared", diag:["shared natively (text)"]}; }
+      try { await nativeShare({title:baseName, text}); return {status:"shared", diag:["shared natively (text)"]}; }
       catch(e) { if (e && (e.message||"").toLowerCase().includes("cancel")) return {status:"shared", diag:["user cancelled"]}; diag.push(`native text share failed: ${e.message||e}`); }
     }
     if (navigator.share) {
@@ -2371,11 +2382,11 @@ async function shareImages(canvases, baseName, text){
         // attaches the same caption text to EVERY image individually instead of sending it once
         // — sharing the images on their own first, then the caption as its own follow-up share,
         // lands as one normal caption message instead of N duplicated ones.
-        await Share.share({title:baseName, files:savedUris});
-        try { await Share.share({title:baseName, text}); }
+        await nativeShare({title:baseName, files:savedUris});
+        try { await nativeShare({title:baseName, text}); }
         catch(e2) { if (!(e2 && (e2.message||"").toLowerCase().includes("cancel"))) throw e2; }
       } else {
-        await Share.share({title:baseName, text, files:savedUris});
+        await nativeShare({title:baseName, text, files:savedUris});
       }
       return {status:"shared", diag:["shared natively"]};
     } catch(e) {

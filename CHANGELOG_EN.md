@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.13.05 — Real bug: sharing event results to WhatsApp was failing on Android
+
+- **Real bug fixed:** the "Share Results" button after closing an event was failing specifically on WhatsApp, and specifically on the Android app (web worked fine) — WhatsApp showed its own "Can't send empty message" toast even though Matchkeeper's own toast said "Shared ✓" (the app's own share genuinely succeeded). Cause: the app deliberately sent an empty caption (to stop WhatsApp from duplicating the same caption under every image) — but an empty string is still a real, present value, not a missing one, and WhatsApp treats that as "trying to send a blank message" and refuses it.
+- **The fix:** an empty caption is now genuinely omitted instead of sent as empty — WhatsApp receives just the images with nothing to reject.
+
+---
+
 ## V0.13.04 — Fixed the "flickering" break lock toggle in Closed Teams Ladder
 
 - **Real bug fixed:** the lock/unlock-as-Firm toggle (Breaks tab, Closed Teams Ladder) saved its change based on a stale copy of the plan captured earlier — so if anything else touched the plan around the same time (a break swap, a regenerate, another lock toggle), this save could silently undo it, which showed up as the state "flickering" back on its own.

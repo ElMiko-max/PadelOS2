@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.13.00";
+const APP_VERSION = "V0.13.01";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4387,20 +4387,32 @@ export default function Matchkeeper() {
   // dismisses the prompt, leaving them signed in and browsing normally but not enrolled.
   const [pendingInviteAction, setPendingInviteAction] = useState(null); // {inv, kind:"event"|"community"} | null
   const [showVersionUpdates, setShowVersionUpdates] = useState(false); // platform-admin-only "Version Updates" modal, see TopBar
+  // Real bug, confirmed 2026-08-31 (a real user stuck forever on "Setting up your profile…" on
+  // both the APK and web): every dead-end below (invite not found/deleted, target profile no
+  // longer exists, invite already claimed by someone else) used to just silently `return` and do
+  // NOTHING — leaving the stale code sitting in storage. That alone would eventually self-heal
+  // after the 60-minute TTL in readPendingInvite(), except the OTHER effect (auto-fresh-profile,
+  // just below) explicitly defers to this one whenever ANY pending code exists ("the invite-claim
+  // effect above owns this case") — so a dead-end here blocked BOTH sign-in paths at once, for as
+  // long as the stale code remained. Every dead-end now actively falls through to the normal
+  // fresh-profile/email-match flow instead of hanging.
   useEffect(() => {
     if (!authUser || linkedMe || !dataLoaded || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
     const code = readPendingInvite();
     if (!code || autoInviteClaimRef.current===code) return;
     const inv = invites.find(i=>i.code===code);
-    if (!inv) return;
+    const bailToFreshProfile = () => { clearPendingInvite(); autoInviteClaimRef.current = code; setPendingFreshProfileConfirm(true); };
+    if (!inv) { bailToFreshProfile(); return; } // stale or deleted invite — don't hang, fall through to normal sign-in
     const alreadyClaimed = Object.values(uidLinks).includes(inv.targetUserId);
     if (inv.targetUserId!=null && !alreadyClaimed) {
       const target = users.find(u=>u.id===inv.targetUserId);
-      if (target) setPendingInviteConfirm({inv, target});
-    } else if (inv.targetUserId==null) {
-      autoInviteClaimRef.current = code;
-      setPendingFreshProfileConfirm(true);
+      if (target) { setPendingInviteConfirm({inv, target}); return; }
+      bailToFreshProfile(); // target profile no longer exists (deleted since the link was made)
+      return;
     }
+    if (inv.targetUserId!=null && alreadyClaimed) { bailToFreshProfile(); return; } // someone else already claimed this targeted invite
+    autoInviteClaimRef.current = code;
+    setPendingFreshProfileConfirm(true);
   }, [authUser, linkedMe, dataLoaded, invites, uidLinks, users, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
   // No generic "which one is you?" self-service claim screen anymore (see BUGS.md #17) —
   // anyone signing in with no pending targeted invite just gets a brand-new profile (after the
@@ -4429,6 +4441,18 @@ export default function Matchkeeper() {
     if (autoFreshProfileRef.current) return;
     autoFreshProfileRef.current = true;
     setPendingFreshProfileConfirm(true);
+  }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
+  // Defense in depth for the exact same class of bug just fixed above (a stuck sign-in with zero
+  // way out and zero diagnostic info) — if this pre-link "figuring out who you are" stretch ever
+  // takes more than 10s for ANY reason (a future bug, a genuine network problem), show a real way
+  // out instead of a silent infinite "Setting up your profile…". Timer resets whenever any of
+  // these actually change, so normal fast sign-ins never see it.
+  const [signInStuck, setSignInStuck] = useState(false);
+  useEffect(() => {
+    setSignInStuck(false);
+    if (!authUser || linkedMe || !dataLoaded || pendingInviteConfirm || pendingEmailMatchConfirm || pendingFreshProfileConfirm) return;
+    const t = setTimeout(() => setSignInStuck(true), 10000);
+    return () => clearTimeout(t);
   }, [authUser, linkedMe, dataLoaded, pendingInviteConfirm, pendingEmailMatchConfirm, pendingFreshProfileConfirm]);
   // Once the person opening an invite link is actually linked to a profile — instantly, for
   // both a brand-new profile and a confirmed targeted claim of an existing one — join them to
@@ -7093,9 +7117,19 @@ export default function Matchkeeper() {
     }
     // No pending invite to confirm — the auto-fresh-profile effect above (or the id===1
     // bootstrap it falls back to) handles this case within a render or two, nothing to show
-    // here beyond a brief loading state for that gap.
-    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{color:"#64748B",fontSize:14}}>Setting up your profile…</div>
+    // here beyond a brief loading state for that gap. If it's genuinely still stuck after 10s
+    // (signInStuck), show a real way out instead of hanging silently forever — see the effect
+    // that sets it, just above, for the real incident this closes.
+    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      {signInStuck ? (
+        <div style={{maxWidth:340,textAlign:"center"}}>
+          <div style={{fontSize:32,marginBottom:12}}>⏳</div>
+          <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Taking longer than expected</div>
+          <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>Setting up your profile is stuck — this is usually a connection issue. Try again, or sign out and back in.</div>
+          <button onClick={()=>window.location.reload()} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>🔄 Try Again</button>
+          <div onClick={()=>{clearPendingInvite();signOut(fbAuth);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>Sign out</div>
+        </div>
+      ) : <div style={{color:"#64748B",fontSize:14}}>Setting up your profile…</div>}
     </div>;
   }
 

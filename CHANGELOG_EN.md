@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.13.01 — Real bug: some users were stuck on "Setting up your profile…" forever
+
+- **Real bug fixed:** a real user reported being completely unable to sign in — stuck on "Setting up your profile…" with no way out, on both the APK and web. Cause: if a device had a locally-saved invite code that had gone stale (expired, deleted, or already claimed by someone else), that code never got cleared — and it silently blocked the OTHER sign-in path (creating a fresh profile or matching by email) from ever running at all, since it was waiting for the invite path to finish first.
+- **The fix:** every one of those dead-end cases (invite not found, target profile deleted, invite already claimed) now clears the stale code and falls through to the normal sign-in flow instead of hanging.
+- **Extra safety net:** if sign-in ever gets stuck for any other reason, the screen now shows a "🔄 Try Again" / "Sign out" option after 10 seconds instead of hanging with no way out at all.
+
+---
+
 ## V0.13.00 — Another architectural release: every registration is now its own Firestore document
 
 - **The problem:** even after V0.12.00 split every event into its own document, every registration for that event still lived together as one array field on the event document — so 50 people registering at the exact same moment were still all contending for that one document. A real test confirmed it: worst case took ~39 seconds (zero lost, but painfully slow under a genuine rush).

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.12";
+const APP_VERSION = "V0.14.13";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9328,26 +9328,32 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrat
           })}
           <th style={{fontSize:11,color:"var(--po-dim)",padding:"6px 8px",fontWeight:600,textAlign:"center"}}>Total</th>
         </tr></thead>
-        <tbody>{ev.registrations.map(r=>{
-          const u=users.find(u=>u.id===r.userId);if(!u)return null;
-          const totalB=(plan.breakPlan||[]).filter(b=>b.includes(u.id)).length;
-          return <tr key={u.id} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
+        {/* Was ev.registrations (every registration, including anyone still waitlisted over
+            capacity) — real complaint, 2026-09-02: a waitlisted person isn't part of the game at
+            all, so listing them here (even at 0 breaks) looked like they were wrongly excluded.
+            plan.sorted is the actual roster break/match generation runs against — it already
+            excludes anyone never folded in (waitlisted, or not yet synced — see
+            syncCIPlanRoster), and correctly keeps anyone who retired mid-event (they did play
+            before retiring, so still worth showing history for). */}
+        <tbody>{plan.sorted.map(p=>{
+          const totalB=(plan.breakPlan||[]).filter(b=>b.includes(p.userId)).length;
+          return <tr key={p.userId} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
             <td style={{padding:"6px 10px",whiteSpace:"nowrap"}}>
-              <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:6,cursor:onViewProfile?"pointer":"default"}}>
-                <Av u={u} size={22}/>
-                <span style={{fontSize:12,color:"var(--po-text)",fontWeight:500}}>{u.nickname}</span>
-                <BreakPrefTag pref={r.breakPrefOverride||u.breakPref||"none"}/>
-                {concentrateIds.includes(u.id)&&<ConcentrateTag/>}
+              <div onClick={()=>onViewProfile&&onViewProfile(p.userId)} style={{display:"flex",alignItems:"center",gap:6,cursor:onViewProfile?"pointer":"default"}}>
+                <Av u={p} size={22}/>
+                <span style={{fontSize:12,color:"var(--po-text)",fontWeight:500}}>{p.nickname}</span>
+                <BreakPrefTag pref={p.breakPref||"none"}/>
+                {concentrateIds.includes(p.userId)&&<ConcentrateTag/>}
               </div>
             </td>
             {Array.from({length:plan.totalRounds},(_,ri)=>{
-              const onB=(plan.breakPlan?.[ri]||[]).includes(u.id);
+              const onB=(plan.breakPlan?.[ri]||[]).includes(p.userId);
               const isFrozen=ri<completedRounds;
               const isPending=ri>=completedRounds&&ri<generatedRounds;
               const isOpen=ri>=generatedRounds;
               const canEdit=isOpen&&isAdmin; // only open rounds, and only admins, may edit from the Breaks tab
 
-              const isFirm = isOpen && (plan.firmBreaks?.[ri]||[]).includes(u.id);
+              const isFirm = isOpen && (plan.firmBreaks?.[ri]||[]).includes(p.userId);
               const bg   = isFirm ? "#8B5CF633" : onB ? (isFrozen?"#EF444422":isPending?"#F59E0B22":"#F59E0B33") : (isFrozen?"#33333322":isPending?"var(--po-bdr)":"#34D39911");
               const bdr  = isFirm ? "#8B5CF6AA" : onB ? (isFrozen?"#EF444455":isPending?"#F59E0B55":"#F59E0B44") : (isFrozen?"#33333344":isPending?"#1E293B44":"#34D39933");
               const icon = isFirm ? "🔐" : onB ? "🪑" : (isFrozen?"—":isPending?"·":"▶");
@@ -9355,7 +9361,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrat
               const cellState=isFirm?"firm":onB?"suggested":"none";
               return <td key={ri} style={{padding:"3px 4px",textAlign:"center"}}>
                 <div
-                  onClick={()=>canEdit&&setCellMenuFor({ri,uid:u.id,label:u.nickname,current:cellState})}
+                  onClick={()=>canEdit&&setCellMenuFor({ri,uid:p.userId,label:p.nickname,current:cellState})}
                   style={{width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
                   {icon}
                 </div>

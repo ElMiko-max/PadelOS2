@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.13 — Bug: waitlisted registrations were showing up in the Breaks tab
+
+- **Real bug fixed:** the CI Breaks tab table listed every registration for the event, including anyone still over capacity on the waiting list — showing them as a full row with 0 breaks, which looked like a bug even though they were never part of the play rotation at all.
+- **The fix:** the table now only shows who's actually in `plan.sorted` (the real roster match/break generation runs against) — this automatically excludes the waiting list, while still showing anyone who retired mid-event (they did play before retiring, so their history is worth keeping visible).
+
+---
+
 ## V0.14.12 — Real bug: the V0.14.11 fix itself broke "Regenerate Future"/"Next Round" entirely
 
 - **Real bug fixed (reported by the admin: the button became completely unresponsive):** V0.14.11's fix tried to read an event's registrations off `ev.registrations` — but inside the save transaction (`updEvent`), the event object doesn't have that field at all (since registrations moved to their own subcollection, `.registrations` only exists on the merged display version, not the raw write-path object). That threw an error immediately, before any toast could show — which is exactly why the button looked completely dead.

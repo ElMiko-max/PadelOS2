@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.07 — Real bug: Concentrate broke the break-balance rule + old timestamps are now clear
+
+- **Real bug fixed (reported by the admin on event #203 in DEV):** the V0.14.04 version of "Concentrate" removed the cap on how many breaks a concentrated player/team could take — letting them end up with 2 while everyone else had 1, silently breaking a rule that already existed in this app (max breaks minus min breaks must never exceed 1 — the same check the Breaks tab's own "Unequal breaks" warning enforces). **Fix:** Concentrate is back inside the same fair budget — it only decides who gets priority when more than one person is equally due for a break, never a bigger total share than anyone else. **If you have an event with unbalanced breaks from this, tap "Regenerate Breaks" again after this update and it'll settle correctly.**
+- **Old message timestamps are now clear:** it used to just keep counting up ("12d ago") past the point of being genuinely readable. Now, past 24 hours, it switches to a real date and time — "Yesterday, 2:30 PM" → "15 Aug, 2:30 PM" (this year) → "15 Aug 2025, 2:30 PM" (older years) — the same convention WhatsApp/iMessage use. Today still shows "5m ago"/"3h ago" as before.
+
+---
+
 ## V0.14.06 — Bug: collapsed old announcements couldn't be reopened + Add Guest is now a modal
 
 - **Real bug fixed:** the collapsed old-announcement row (V0.14.05) didn't respond to taps at all — the click handler was placed on the `Card` component, which doesn't accept/forward an `onClick` prop (silently dropped). Moved the handler onto an element inside the card instead.

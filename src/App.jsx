@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.06";
+const APP_VERSION = "V0.14.07";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -740,8 +740,20 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
   const base = Math.floor(totalSlots / players.length);
   const extras = totalSlots % players.length;
 
-  // Sort by who has fewest breaks so far (then by lowest USR) — unchanged fairness baseline.
+  // Sort by who has fewest breaks so far (then by lowest USR). Concentrated players (see
+  // setBreakConcentrateIds) get first claim on the round's "extra" (base+1) entitlement slot —
+  // corrected 2026-09-02 after a real regression report: an earlier version of this feature
+  // removed the entitlement cap entirely for concentrated players ("always eligible"), which
+  // let them pile up 2+ breaks while everyone else had 1 — silently violating this app's
+  // existing fairness invariant (max breaks minus min breaks must never exceed 1, the same
+  // check the Breaks tab's own "Unequal breaks" warning enforces). Concentrate must stay inside
+  // that same budget — it only ever decides WHO gets picked first among equally-eligible
+  // candidates (both for the entitlement's "extra" slot here, and for the per-round tie-break
+  // below), never a bigger total share.
+  const concSet = new Set(concentrateOn);
   const sortedByNeed = [...players].sort((a,b) => {
+    const ca = concSet.has(a.userId)?1:0, cb = concSet.has(b.userId)?1:0;
+    if (ca !== cb) return cb - ca;
     const needDiff = (breakCounts[b.userId]||0) - (breakCounts[a.userId]||0);
     if (needDiff !== 0) return needDiff; // more breaks = lower priority
     return a.usr - b.usr; // lower USR = higher priority for break
@@ -750,13 +762,6 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
   // Target entitlement for each player
   const ent = {};
   sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
-  // Concentrated players (see setBreakConcentrateIds) aren't capped by the normal fair-share
-  // quota — clarified 2026-09-01: not a one-time claim on a leftover "extra" slot, but "always
-  // try to start with these people, break after break" — they stay eligible for a break every
-  // round they're not on the anti-consecutive-round cooldown (see the per-round sort below,
-  // where they get top priority right after an exact break-preference/anchor match).
-  const concSet = new Set(concentrateOn);
-  concSet.forEach(uid => { if (ent[uid]!==undefined) ent[uid] = totalRounds; });
 
   // Remaining breaks needed per player (firm breaks already subtracted via breakCounts above)
   const remaining = {};
@@ -1367,16 +1372,21 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
   const N = teams.length, bpr = Math.max(0, N - courts*2);
   if (bpr <= 0) return Array.from({length:totalRounds}, ()=>[]);
   const totalSlots = bpr * totalRounds, base = Math.floor(totalSlots/N), extras = totalSlots % N;
+  // Concentrated teams (see setBreakConcentrateIds) get first claim on the round's "extra"
+  // (base+1) entitlement slot — corrected 2026-09-02 after a real regression report: an earlier
+  // version removed the entitlement cap entirely for concentrated teams, which let them pile up
+  // 2+ breaks while others had 1 — silently violating this app's existing fairness invariant
+  // (max breaks minus min breaks must never exceed 1). Concentrate must stay inside that same
+  // budget — it only decides WHO gets picked first among equally-eligible candidates, both for
+  // the entitlement's "extra" slot here and for the per-round tie-break below.
   const concSet = new Set(concentrateOn);
   const isConcTeam = t => (t.players||[]).some(p=>concSet.has(p.userId!=null?p.userId:p.id));
-  const sorted = [...teams].sort((a,b) => (b.histBreaks||0) - (a.histBreaks||0));
+  const sorted = [...teams].sort((a,b) => {
+    const ca = isConcTeam(a)?1:0, cb = isConcTeam(b)?1:0;
+    if (ca !== cb) return cb - ca;
+    return (b.histBreaks||0) - (a.histBreaks||0);
+  });
   const ent = {}; sorted.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
-  // Concentrated teams (see setBreakConcentrateIds) aren't capped by the normal fair-share
-  // quota — clarified 2026-09-01: the intent isn't a one-time claim on a leftover "extra"
-  // slot, it's "always try to start with these people, break after break" — so they stay
-  // eligible for a break every round they're not on the anti-consecutive-round cooldown (see
-  // the per-round sort below, where they get top priority right after firm/anchor handling).
-  sorted.forEach(t => { if (isConcTeam(t)) ent[t.id] = totalRounds; });
   const assigned={}, lastB={}; teams.forEach(t => { assigned[t.id]=0; lastB[t.id]=-99; });
 
   // Seed assigned counts from locked rounds (already happened), and from any Firm-locked
@@ -2057,12 +2067,25 @@ const calcEventAvgUsr = (ev, users, comm) => {
 const ini2   = s => s.substring(0,2).toUpperCase();
 const fmtD   = d => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
 const fmtT   = t => { if(!t) return t; const [h,m]=t.split(":").map(Number); if(isNaN(h)) return t; const ap=h>=12?"PM":"AM"; const h12=h%12||12; return `${h12}:${String(m).padStart(2,"0")} ${ap}`; };
+// Standard messaging-app convention (WhatsApp/iMessage/Slack): relative time is nice for
+// anything from today, but a bare "12d ago" stops being genuinely readable past a few days —
+// real bug report, 2026-09-02: old messages need an actual visible date+time, not an
+// ever-growing day count. So beyond 24h this switches to an absolute date, always paired with
+// the time: "Yesterday, 2:30 PM" → "15 Aug, 2:30 PM" (this year) → "15 Aug 2025, 2:30 PM"
+// (older years). Today stays relative ("5m ago", "3h ago") since that part was never the
+// complaint — the "8 days/8 minutes" style is kept exactly where it already worked.
 const timeAgo = (iso) => {
-  const s = Math.floor((Date.now()-new Date(iso).getTime())/1000);
+  const d = new Date(iso), now = new Date();
+  const s = Math.floor((now.getTime()-d.getTime())/1000);
   if (s<60) return "now";
   if (s<3600) return `${Math.floor(s/60)}m ago`;
   if (s<86400) return `${Math.floor(s/3600)}h ago`;
-  return `${Math.floor(s/86400)}d ago`;
+  const yesterday = new Date(now); yesterday.setDate(yesterday.getDate()-1);
+  const time = d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+  if (d.toDateString()===yesterday.toDateString()) return `Yesterday, ${time}`;
+  const sameYear = d.getFullYear()===now.getFullYear();
+  const datePart = d.toLocaleDateString([], sameYear ? {day:"numeric", month:"short"} : {day:"numeric", month:"short", year:"numeric"});
+  return `${datePart}, ${time}`;
 };
 const fmtBytes = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1048576).toFixed(1)} MB`;
 const addMinutesToTime = (t,mins) => {

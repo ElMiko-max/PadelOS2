@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.14";
+const APP_VERSION = "V0.14.15";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9245,17 +9245,28 @@ function ConcentrateBreaksModal({players,selectedIds,onSave,onClose}){
     </div>
   </div>;
 }
-function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrateIds,isAdmin,onViewProfile}){
+function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrateIds,isAdmin,onViewProfile}){
   const [cellMenuFor,setCellMenuFor]=useState(null); // {ri,uid,label,current} | null
   const [concOpen,setConcOpen]=useState(false);
   const concentrateIds=ev.breakConcentrateIds||[];
-  // Was splitRegsByCapacity(ev).active — raw registration count, which drifts from reality
-  // the moment anyone's retired/no-shown (still "registered", just not actually playing) or
-  // was excluded from Round 1 formation entirely (retired before Start CI ever ran). plan.sorted
-  // minus retiredIds is the actual player pool the break math itself is built against — see
-  // regenerateBreakPlan — so "needs N" here now matches what a regenerate would actually produce.
   const retiredIds=new Set(ev.retiredIds||[]);
-  const activeRegistrations=(plan.sorted||[]).filter(p=>!retiredIds.has(p.userId));
+  // plan.sorted only updates when the admin taps Next Round/Regenerate (see syncCIPlanRoster)
+  // — real complaint, 2026-09-02: displaying it as-is between those taps meant someone bumped
+  // back to the waiting list kept showing here (and skewing the break counts) until the admin
+  // remembered to tap something, which they reasonably didn't expect to have to do just to see
+  // an accurate list. So the DISPLAY roster is now computed live every render, straight from
+  // current registrations/capacity — same rule as syncCIPlanRoster's write-side pruning (active,
+  // OR retired, OR already has real history in a generated round), just never stale.
+  const liveActiveIds=new Set(splitRegsByCapacity(ev,comm).active.map(r=>r.userId));
+  const everAppeared=new Set();
+  plan.rounds.forEach(r=>{
+    (r.matches||[]).forEach(m=>{[...(m.teamA||[]),...(m.teamB||[])].forEach(p=>everAppeared.add(p.userId));});
+    (r.onBreakIds||[]).forEach(id=>everAppeared.add(id));
+  });
+  const displayRoster=(plan.sorted||[]).filter(p=>liveActiveIds.has(p.userId)||retiredIds.has(p.userId)||everAppeared.has(p.userId));
+  // "needs N" here matches what a regenerate would actually produce, based on the live roster
+  // above rather than whatever plan.sorted happened to hold last time it was written.
+  const activeRegistrations=displayRoster.filter(p=>!retiredIds.has(p.userId));
   const bpr=Math.max(0,activeRegistrations.length-tc*4);
 
   // Count completed rounds (all matches have winners)
@@ -9351,7 +9362,7 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrat
             excludes anyone never folded in (waitlisted, or not yet synced — see
             syncCIPlanRoster), and correctly keeps anyone who retired mid-event (they did play
             before retiring, so still worth showing history for). */}
-        <tbody>{plan.sorted.map(p=>{
+        <tbody>{displayRoster.map(p=>{
           const totalB=(plan.breakPlan||[]).filter(b=>b.includes(p.userId)).length;
           return <tr key={p.userId} style={{borderBottom:"0.5px solid var(--po-bdr)"}}>
             <td style={{padding:"6px 10px",whiteSpace:"nowrap"}}>
@@ -11608,7 +11619,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>}
 
     {/* CI BREAKS */}
-    {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} onSetConcentrateIds={act.setBreakConcentrateIds} isAdmin={isAdmin} onViewProfile={onViewProfile}/>}
+    {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} comm={comm} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} onSetConcentrateIds={act.setBreakConcentrateIds} isAdmin={isAdmin} onViewProfile={onViewProfile}/>}
 
     {/* CI ROUNDS */}
     {tab==="rounds"&&isCI&&<>

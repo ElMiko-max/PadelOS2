@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.15 — Breaks tab now computes the correct roster live, no button tap required first
+
+- **Change per admin report ("still not solved"):** V0.14.14's fix only corrected `plan.sorted` when the admin tapped "Next Round" or "Regenerate Future" — so if nobody had tapped that yet since the update, the screen would still show the old data. Confirmed against event #203's real data that this was exactly what happened.
+- **The fix:** the CI Breaks tab now computes who's actually "in the game" **live, every time the screen renders** — straight from current registrations and capacity — instead of relying on whenever `plan.sorted` was last saved. The count will now be correct immediately, no button tap needed.
+- **⚠️ Important note:** this fixes **who shows up** only — the actual stored break numbers (computed earlier while the roster kept changing) still need **one real tap of "🔄 Regenerate Future"** to get recomputed against the correct 15 players and restore balance (max−min ≤ 1).
+
+---
+
 ## V0.14.14 — Real bug: a player could get "stuck" in the active roster after being bumped to the waiting list
 
 - **Real bug fixed (confirmed by directly inspecting event #203's data, after the admin reported the previous fix wasn't enough):** V0.14.11/12 added anyone active to the real player roster, but nothing ever removed someone in the reverse case — added while briefly active, then moments later bumped to the waiting list by a higher-priority registration taking the last open slot. That player stayed "stuck" in the match/break math forever, even though they showed as waitlisted everywhere else in the app — which is exactly why the roster showed 16 instead of 15, and break counts looked unbalanced.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.03";
+const APP_VERSION = "V0.14.04";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -528,6 +528,19 @@ const applySubscriptionSuspension = (split, ev, users, subscriptionSettings) => 
 // ── CI scoring ────────────────────────────────────────
 const courtPts = (court, tc) => tc - court + 1;
 const BREAK_PREF_LABELS = {none:"No Preference", early:"Early", mid:"Mid", late:"Late"};
+// Small badges for the Breaks tab (2026-09-01, direct request: "next to the person/team's name
+// I want a symbol — Late/Early/Mid or whatever — so I can tell how the break generation is
+// working"). BreakPrefTag shows nothing for "none" (the common case) so the grid stays quiet
+// except where there's an actual signal to see.
+const BREAK_PREF_TAG = {early:{l:"E",c:"#F59E0B"}, mid:{l:"M",c:"#06B6D4"}, late:{l:"L",c:"#8B5CF6"}};
+function BreakPrefTag({pref}){
+  const b=BREAK_PREF_TAG[pref]; if(!b) return null;
+  return <span title={`Prefers ${BREAK_PREF_LABELS[pref]} break`} style={{fontSize:9,fontWeight:700,color:b.c,background:`${b.c}22`,border:`0.5px solid ${b.c}55`,borderRadius:4,padding:"1px 4px",marginLeft:5}}>{b.l}</span>;
+}
+// Separate color from BreakPrefTag on purpose so the two badge types never look confusable.
+function ConcentrateTag(){
+  return <span title="Concentrated: prioritized for a break every round" style={{fontSize:9,fontWeight:700,color:"#EC4899",background:"#EC489922",border:"0.5px solid #EC489955",borderRadius:4,padding:"1px 4px",marginLeft:5}}>C</span>;
+}
 const breakPts = (tc) => {
   const base = Math.floor((tc + 1) / 2);
   const topCourtWin = courtPts(1, tc); // always equals tc
@@ -727,15 +740,8 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
   const base = Math.floor(totalSlots / players.length);
   const extras = totalSlots % players.length;
 
-  // Sort by who has fewest breaks so far (then by lowest USR). Concentrated players (see
-  // setBreakConcentrateIds) get first claim on the round's "extra" (base+1) entitlement slot,
-  // ahead of the normal fairness order — this is what actually funnels the leftover breaks
-  // (totalSlots % players.length is rarely 0) onto the admin's chosen players instead of
-  // whoever happens to have the fewest breaks/lowest USR.
-  const concSet = new Set(concentrateOn);
+  // Sort by who has fewest breaks so far (then by lowest USR) — unchanged fairness baseline.
   const sortedByNeed = [...players].sort((a,b) => {
-    const ca = concSet.has(a.userId)?1:0, cb = concSet.has(b.userId)?1:0;
-    if (ca !== cb) return cb - ca;
     const needDiff = (breakCounts[b.userId]||0) - (breakCounts[a.userId]||0);
     if (needDiff !== 0) return needDiff; // more breaks = lower priority
     return a.usr - b.usr; // lower USR = higher priority for break
@@ -744,6 +750,13 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
   // Target entitlement for each player
   const ent = {};
   sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
+  // Concentrated players (see setBreakConcentrateIds) aren't capped by the normal fair-share
+  // quota — clarified 2026-09-01: not a one-time claim on a leftover "extra" slot, but "always
+  // try to start with these people, break after break" — they stay eligible for a break every
+  // round they're not on the anti-consecutive-round cooldown (see the per-round sort below,
+  // where they get top priority right after an exact break-preference/anchor match).
+  const concSet = new Set(concentrateOn);
+  concSet.forEach(uid => { if (ent[uid]!==undefined) ent[uid] = totalRounds; });
 
   // Remaining breaks needed per player (firm breaks already subtracted via breakCounts above)
   const remaining = {};
@@ -771,6 +784,8 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
       const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
       if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first
+      const ca = concSet.has(a.userId)?1:0, cb = concSet.has(b.userId)?1:0;
+      if (ca !== cb) return cb - ca; // concentrated players get first claim on a break, every round
       const remDiff = remaining[b.userId] - remaining[a.userId];
       if (remDiff !== 0) return remDiff;
       const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd;
@@ -1354,12 +1369,14 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
   const totalSlots = bpr * totalRounds, base = Math.floor(totalSlots/N), extras = totalSlots % N;
   const concSet = new Set(concentrateOn);
   const isConcTeam = t => (t.players||[]).some(p=>concSet.has(p.userId!=null?p.userId:p.id));
-  const sorted = [...teams].sort((a,b) => {
-    const ca = isConcTeam(a)?1:0, cb = isConcTeam(b)?1:0;
-    if (ca !== cb) return cb - ca;
-    return (b.histBreaks||0) - (a.histBreaks||0);
-  });
+  const sorted = [...teams].sort((a,b) => (b.histBreaks||0) - (a.histBreaks||0));
   const ent = {}; sorted.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
+  // Concentrated teams (see setBreakConcentrateIds) aren't capped by the normal fair-share
+  // quota — clarified 2026-09-01: the intent isn't a one-time claim on a leftover "extra"
+  // slot, it's "always try to start with these people, break after break" — so they stay
+  // eligible for a break every round they're not on the anti-consecutive-round cooldown (see
+  // the per-round sort below, where they get top priority right after firm/anchor handling).
+  sorted.forEach(t => { if (isConcTeam(t)) ent[t.id] = totalRounds; });
   const assigned={}, lastB={}; teams.forEach(t => { assigned[t.id]=0; lastB[t.id]=-99; });
 
   // Seed assigned counts from locked rounds (already happened), and from any Firm-locked
@@ -1378,6 +1395,7 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
     const slotsLeft = Math.max(0, bpr - firmHere.length);
     const eligible = teams.filter(t => assigned[t.id] < ent[t.id] && !firmHere.includes(t.id));
     eligible.sort((a,b) => {
+      const ca=isConcTeam(a)?1:0, cb=isConcTeam(b)?1:0; if(ca!==cb) return cb-ca; // concentrated teams get first claim on a break, every round
       const rd=(ent[b.id]-assigned[b.id])-(ent[a.id]-assigned[a.id]); if(rd!==0)return rd;
       const spacing=(r-lastB[b.id])-(r-lastB[a.id]); if(spacing!==0)return spacing;
       return prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); // team break preference: last-resort tiebreak
@@ -9198,6 +9216,8 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrat
               <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:6,cursor:onViewProfile?"pointer":"default"}}>
                 <Av u={u} size={22}/>
                 <span style={{fontSize:12,color:"var(--po-text)",fontWeight:500}}>{u.nickname}</span>
+                <BreakPrefTag pref={r.breakPrefOverride||u.breakPref||"none"}/>
+                {concentrateIds.includes(u.id)&&<ConcentrateTag/>}
               </div>
             </td>
             {Array.from({length:plan.totalRounds},(_,ri)=>{
@@ -9413,7 +9433,7 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
         <tbody>
           {teams.map((t,i)=><tr key={t.id} style={{background:i%2===0?"transparent":"var(--po-bdr)11"}}>
             <td style={{position:"sticky",left:0,background:i%2===0?"var(--po-card)":"var(--po-cardAlt,var(--po-card))",padding:"6px 10px",fontSize:11,fontWeight:600,color:"var(--po-text)",borderBottom:"0.5px solid var(--po-bdr)"}}>
-              <div>{t.name}</div>
+              <div style={{display:"flex",alignItems:"center"}}>{t.name}<BreakPrefTag pref={t.breakPref||"none"}/>{(t.players||[]).some(p=>concentrateIds.includes(p.userId??p.id))&&<ConcentrateTag/>}</div>
               <div style={{fontWeight:400,fontSize:10,color:"var(--po-dim)"}}>{(t.players||[]).map(p=>p.nickname).join(" & ")}</div>
             </td>
             {Array.from({length:totalRounds},(_,ri)=>{
@@ -10986,7 +11006,20 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>;})}
       </Card>}
       {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>{const label=`Join ${effEv.name}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label})}`,label});}} color="#34D399" style={{flex:1}}/>}<Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
-      {showAddM&&(()=>{const candidates=comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).map(m=>users.find(u=>u.id===m.userId)).filter(Boolean);const amQ=addMemberSearch.trim().toLowerCase();const shownCandidates=amQ?candidates.filter(u=>u.nickname?.toLowerCase().includes(amQ)||u.name?.toLowerCase().includes(amQ)):candidates;return <Card style={{marginBottom:10}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Select member to add:</div>{candidates.length>6&&<input value={addMemberSearch} onChange={e=>setAddMemberSearch(e.target.value)} placeholder="🔍 Search members..." className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:8}}/>}{shownCandidates.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}><Av u={u} size={30}/><div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><SmBtn label="Add" onClick={()=>act.addMember(u.id)} color="#6366F1"/></div>)}{candidates.length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>All community members are registered ✓</div>}{candidates.length>0&&shownCandidates.length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>No members match "{addMemberSearch}"</div>}<SmBtn label="✓ Done" onClick={()=>{setSAM(false);setAddMemberSearch("");}} color="#34D399" style={{width:"100%",marginTop:8}}/></Card>;})()}
+      {showAddM&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>{setSAM(false);setAddMemberSearch("");}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:380,width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+          <div style={{fontWeight:700,fontSize:14,marginBottom:10,color:"var(--po-text)"}}>Add Member</div>
+          {(()=>{const candidates=comm.members.filter(m=>!new Set(effEv.registrations.map(r=>r.userId)).has(m.userId)).map(m=>users.find(u=>u.id===m.userId)).filter(Boolean);const amQ=addMemberSearch.trim().toLowerCase();const shownCandidates=amQ?candidates.filter(u=>u.nickname?.toLowerCase().includes(amQ)||u.name?.toLowerCase().includes(amQ)):candidates;return <>
+            {candidates.length>6&&<input autoFocus value={addMemberSearch} onChange={e=>setAddMemberSearch(e.target.value)} placeholder="🔍 Search members..." className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:8}}/>}
+            <div style={{overflowY:"auto",flex:1,marginBottom:10}}>
+              {shownCandidates.map(u=><div key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}><Av u={u} size={30}/><div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><SmBtn label="Add" onClick={()=>act.addMember(u.id)} color="#6366F1"/></div>)}
+              {candidates.length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>All community members are registered ✓</div>}
+              {candidates.length>0&&shownCandidates.length===0&&<div style={{fontSize:12,color:"var(--po-dim)",textAlign:"center",padding:"8px 0"}}>No members match "{addMemberSearch}"</div>}
+            </div>
+          </>;})()}
+          <SmBtn label="✓ Done" onClick={()=>{setSAM(false);setAddMemberSearch("");}} color="#34D399" style={{width:"100%"}}/>
+        </div>
+      </div>}
       {showAddG&&<Card style={{marginBottom:10}}>
         <div style={{fontSize:12,color:"#F59E0B",marginBottom:8}}>⚠️ Nickname and phone required for guests</div>
         {[["Nickname *","n","text"],["Full Name","name","text"],["Phone *","p","tel"]].map(([l,k,t])=><input key={k} type={t} value={gf[k]} onChange={e=>setGf(p=>({...p,[k]:e.target.value}))} placeholder={l} className="po-inp" style={{width:"100%",background:"var(--po-inp)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:6,boxSizing:"border-box",border:`0.5px solid ${(k==="n"||k==="p")&&!gf[k]?"#EF444466":"var(--po-bdr)"}`}}/>)}

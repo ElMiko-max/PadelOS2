@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.04 — Clarified "Concentrate", break-preference tags in the grid, Add Member is now a modal
+
+- **Corrected the "Concentrate" idea** (per direct clarification): it used to only give selected players/teams one leftover "extra" break if one existed. Now: a concentrated player/team is **always the first pick for a break, every round** (still respecting the no-two-rounds-in-a-row rule) — so they visibly end up with more breaks than everyone else across the event, not just a single extra one.
+- **New tags in the Breaks tab (CI and CT):** next to any player/team with a break-time preference (Early/Mid/Late), a small tag (E/M/L) now shows it, so you can visually confirm break generation is respecting it. Next to any player/team set to Concentrate, a small "C" tag shows too.
+- **"+ Add Member" in the Players tab is now a modal box** instead of expanding a long section in the page — opens a compact popup, search and add, tap "✓ Done" to close, same as every other modal in the app.
+
+---
+
 ## V0.14.03 — New feature: concentrate extra breaks on selected players per event
 
 - **New feature (item 2 of the break-engine rework request):** when the break count doesn't split evenly across players/teams, the leftover "extra" breaks used to go to whoever happened to be next in the default order (fewest breaks so far, then lowest USR). The Breaks tab (both CI and CT) now has a "🎯 Concentrate" button — the admin picks specific players, and any extra break (if there is one) goes to them first instead of the default order.

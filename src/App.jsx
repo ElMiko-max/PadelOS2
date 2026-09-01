@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.07";
+const APP_VERSION = "V0.14.08";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -577,10 +577,18 @@ function xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h}) {
 }
 // Distance from a player's preferred break window to round r — lower is more preferred.
 // Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
+// Real bug, confirmed 2026-09-02 from a live grid (an "M" player's break landing wherever
+// fairness put it, never actually anchored to a middle round): "early"/"late" always have an
+// exact-integer anchor round (r=0 or r=totalRounds-1), but "mid"'s un-rounded midpoint
+// ((totalRounds-1)/2) is only an integer for an ODD totalRounds — for the far more common even
+// round count, prefDist(...)===0 (isAnchor's exact-match check, used by every break-generation
+// function below) was never true for "mid" at all, silently downgrading it to "no preference"
+// with zero anchor priority. Rounding to the nearest round gives "mid" the same one-exact-round
+// anchor guarantee early/late already have.
 function prefDist(pref, r, totalRounds) {
   if (pref==="early") return r;
   if (pref==="late") return (totalRounds-1-r);
-  if (pref==="mid") return Math.abs(r-(totalRounds-1)/2);
+  if (pref==="mid") return Math.abs(r-Math.round((totalRounds-1)/2));
   return 0;
 }
 

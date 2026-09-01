@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.08 — Real bug: "Mid" break preference didn't work at all on even-round events
+
+- **Real bug fixed (spotted via the new "M" tag on the grid):** anyone with "Mid" break preference — the internal math was looking for an exact middle round like 2.5 out of 6, which isn't a whole number, so no round ever matched it. That silently made "Mid" behave like "no preference" on any event with an even number of rounds (the common case). "Early" and "Late" never had this problem since the first/last round is always a whole number.
+- **The fix:** the midpoint now rounds to the nearest real round — "Mid" now has exactly one target round it anchors to, same as Early and Late.
+- Note: even after this fix, a match still isn't 100% guaranteed — if several people share the same preference and there aren't enough slots for all of them in that round, whoever the overall fairness balance favors gets it, not everyone with that preference.
+
+---
+
 ## V0.14.07 — Real bug: Concentrate broke the break-balance rule + old timestamps are now clear
 
 - **Real bug fixed (reported by the admin on event #203 in DEV):** the V0.14.04 version of "Concentrate" removed the cap on how many breaks a concentrated player/team could take — letting them end up with 2 while everyone else had 1, silently breaking a rule that already existed in this app (max breaks minus min breaks must never exceed 1 — the same check the Breaks tab's own "Unequal breaks" warning enforces). **Fix:** Concentrate is back inside the same fair budget — it only decides who gets priority when more than one person is equally due for a break, never a bigger total share than anyone else. **If you have an event with unbalanced breaks from this, tap "Regenerate Breaks" again after this update and it'll settle correctly.**

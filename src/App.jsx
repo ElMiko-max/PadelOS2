@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.04";
+const APP_VERSION = "V0.14.05";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8037,6 +8037,13 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   };
   const [replyingTo,setReplyingTo]=useState(null); // announcement id whose reply box is open
   const [replyText,setReplyText]=useState("");
+  // Announcements tab, 2026-09-01: the 3 most recent stay open by default; everything older
+  // starts collapsed to a single-row hint (author, date, snippet, reply/voter count) — this Set
+  // holds ids whose expanded/collapsed state has been manually flipped away from that default,
+  // so tapping a collapsed hint opens it and tapping "▲ Collapse" on a manually-opened old one
+  // closes it again, without losing track of which items are "recent" as new ones get posted.
+  const [annToggled,setAnnToggled]=useState(new Set());
+  const toggleAnn=id=>setAnnToggled(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
   const myMember=comm.members.find(m=>m.userId===me.id);
   const myRole=myMember?.role;
   const meIsPlatformAdmin=me?.id===1;
@@ -8285,12 +8292,33 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </Card>}
       {(comm.announcements?.length||0)===0
         ? <Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>No announcements yet.</div></Card>
-        : [...comm.announcements].reverse().map(a=>
-            <Card key={a.id} id={`ann-${a.id}`} style={{marginBottom:8,...(a.id===highlightAid?{border:"1.5px solid #6366F1"}:{})}}>
+        : (()=>{
+            const sortedDesc=[...comm.announcements].reverse(); // newest first
+            // The 3 most recent stay open by default — everything older starts collapsed.
+            const recentIds=new Set(sortedDesc.slice(0,3).map(a=>a.id));
+            return sortedDesc.map(a=>{
+              const defaultOpen=recentIds.has(a.id)||a.id===highlightAid;
+              const expanded=defaultOpen!==annToggled.has(a.id); // manual toggle flips the default
+              if(!expanded){
+                const replyCount=a.replies?.length||0;
+                const voterCount=a.poll?Object.keys(a.poll.votes||{}).length:0;
+                const snippetText=(a.message||"").slice(0,70)+((a.message||"").length>70?"…":"");
+                return <Card key={a.id} id={`ann-${a.id}`} onClick={()=>toggleAnn(a.id)} style={{marginBottom:6,padding:"9px 12px",cursor:"pointer"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    {a.poll&&<span style={{fontSize:13,flexShrink:0}}>🗳</span>}
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:10,color:"var(--po-dim)"}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
+                      <div style={{fontSize:12,color:"var(--po-text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{snippetText}</div>
+                    </div>
+                    <div style={{fontSize:10,color:"var(--po-dim)",flexShrink:0}}>{a.poll?`${voterCount} voter${voterCount!==1?"s":""}`:`${replyCount} repl${replyCount===1?"y":"ies"}`}</div>
+                  </div>
+                </Card>;
+              }
+              return <Card key={a.id} id={`ann-${a.id}`} style={{marginBottom:8,...(a.id===highlightAid?{border:"1.5px solid #6366F1"}:{})}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
-                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}{!defaultOpen&&<span onClick={()=>toggleAnn(a.id)} style={{color:"#6366F1",cursor:"pointer",marginLeft:8}}>▲ Collapse</span>}</div>
                 </div>
                 {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteAnnouncement&&onDeleteAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
               </div>
@@ -8362,8 +8390,9 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                     </div>
                   : <div onClick={()=>{setReplyingTo(a.id);setReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
               </div>
-            </Card>
-          )}
+            </Card>;
+            });
+          })()}
     </>}
     {tab==="stats"&&(canViewPrivate?<><CommOverview comm={comm} venues={venues}/><CommStatsTab comm={comm} users={users} onViewProfile={onViewProfile}/></>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>🔒 This is a private community — request to join to see reports.</div></Card>)}
     {tab==="ledger"&&<LedgerTab comm={comm} users={users} me={me} isAdmin={isAdmin} regs={regs} onViewProfile={onViewProfile} onOpenEvent={onOpenEv} onSetBookkeeping={onSetBookkeeping} onAddLedgerEntry={onAddLedgerEntry} onAddLedgerEntries={onAddLedgerEntries} onDeleteLedgerEntry={onDeleteLedgerEntry} expenseCategories={expenseCategories}/>}

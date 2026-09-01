@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.05 — Old Community Announcements now auto-collapse with a small preview
+
+- **New feature:** in the Community's Announcements tab, only the 3 most recent messages/polls stay open like today — anything older now **auto-collapses** into a single-row hint: author name, date, the start of the text, and either a reply count (plain message) or a voter count (poll).
+- **Tap the collapsed row to open it** and see the full content, same as before — a "▲ Collapse" link next to the date collapses it again.
+- **Order is unchanged** — newest still on top, oldest still on the bottom — it's just collapsed now instead of taking up a lot of page space.
+
+---
+
 ## V0.14.04 — Clarified "Concentrate", break-preference tags in the grid, Add Member is now a modal
 
 - **Corrected the "Concentrate" idea** (per direct clarification): it used to only give selected players/teams one leftover "extra" break if one existed. Now: a concentrated player/team is **always the first pick for a break, every round** (still respecting the no-two-rounds-in-a-row rule) — so they visibly end up with more breaks than everyone else across the event, not just a single extra one.

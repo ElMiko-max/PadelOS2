@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.11 — Real bug: registering after Start CI made you vanish from the whole event, not just breaks
+
+- **Real bug fixed (found by inspecting event #203's actual data on DEV):** what looked like "2 breaks vs 0" wasn't a break-fairness bug at all — inspecting the data showed `plan.sorted` (the player pool matches/breaks are computed against) had only 15 players, while the event actually had 17 registrations. Two of them ("Abdo Alaa" and "A Hassan") registered at 7:21 AM, hours after everyone else (3:13 AM) — after "Start CI" had already run. Nothing in the code folded a post-Start-CI registration into `plan.sorted`, so those two players were **never in a single match or break for the rest of the event** — Regenerate could run a hundred times and it wouldn't matter, with nothing in the UI explaining why.
+- **The fix:** every time an admin taps "Next Round" or "Regenerate Future" on a CI event, the app first checks that every currently-active registration (within capacity, not retired) is present in `plan.sorted`, adding anyone missing before computing. The next generated round places them in the nearest open court (same as anyone returning from a break), and any Regenerate after that correctly folds them into the break-fairness math.
+- Note: already-generated rounds (locked or pending) aren't rewritten retroactively — this only affects anything not yet generated.
+
+---
+
 ## V0.14.10 — "Mid" on even-round events now accepts both straddling rounds
 
 - **Change per direct clarification:** V0.14.08's fix rounded "Mid" to a single round (e.g. R4 on a 6-round event). Now it accepts **both rounds straddling the true midpoint** as an equally valid match — a 6-round event's Mid matches R3 or R4, an 8-round event's matches R4 or R5 — whenever the exact midpoint isn't a whole number (i.e. the round count is even).

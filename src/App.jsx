@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.10";
+const APP_VERSION = "V0.14.11";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -651,6 +651,25 @@ function diversePair(cp, ph, lastRoundPairs) {
   const best = pool[0];
   return { teamA:[cp[best.a[0]],cp[best.a[1]]], teamB:[cp[best.b[0]],cp[best.b[1]]] };
 }
+// Real bug, confirmed 2026-09-02 by comparing a live event's plan.sorted (15) against its actual
+// registrations (17): a registration created after Start CI already ran (a late joiner added via
+// Add Member/Add Guest, or a genuine late self-registration) was never folded into plan.sorted —
+// the two late registrants got zero matches AND zero breaks for the rest of the event, with
+// nothing in the UI indicating why. Called before every genNextRoundCI/regenerateBreakPlan call
+// so a late joiner gets picked up the next time the admin advances or regenerates the event —
+// genNextRoundCI's own "late joiner" handling (see below) then actually places them in a court.
+// Deliberately NOT done at registration-write time: that would reintroduce the exact event-doc
+// read/write contention the Phase 2 registrations-split was built to eliminate.
+function syncCIPlanRoster(plan, ev, comm, users) {
+  if (!plan?.sorted) return plan;
+  const retired = new Set(ev.retiredIds||[]);
+  const active = splitRegsByCapacity(ev, comm).active.filter(r=>!retired.has(r.userId));
+  const known = new Set(plan.sorted.map(p=>p.userId));
+  const newcomers = active.filter(r=>!known.has(r.userId))
+    .map(r=>{ const u=users.find(u=>u.id===r.userId); if(!u) return null; return {...u, usr:r.eventUsr??u.usr, userId:r.userId, histBreaks:0, breakPref:r.breakPrefOverride||u.breakPref||"none"}; })
+    .filter(Boolean);
+  return newcomers.length ? {...plan, sorted:[...plan.sorted, ...newcomers]} : plan;
+}
 function genRound1(players, courts, totalRounds) {
   const sorted = [...players].sort((a,b)=>b.usr-a.usr), breakPlan = buildBreakPlan(sorted,courts,totalRounds), onBreakIds=breakPlan[0]||[];
   const playing=sorted.filter(p=>!onBreakIds.includes(p.userId));
@@ -697,6 +716,15 @@ function genNextRoundCI(plan, retiredIds=[]) {
     if(sameCourtHasRoom){ buckets[targetCourt].push(rp); return; }
     const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
     if(needy)buckets[parseInt(needy[0])].push(rp);
+  });
+  // Late joiners: registered after Start CI (see syncCIPlanRoster), so they have no history in
+  // lastRound.matches/onBreakIds at all — buckets/onBreak/returning above have no record of
+  // them. Treated the same as a "returning" player: dropped into whichever court has room.
+  const accountedIds=new Set([...Object.values(buckets).flat().map(p=>p.userId), ...onBreak.map(p=>p.userId)]);
+  const lateJoiners=sorted.filter(p=>!accountedIds.has(p.userId)&&!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
+  lateJoiners.forEach(lp=>{
+    const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
+    if(needy)buckets[parseInt(needy[0])].push(lp);
   });
   if(retiredIds.length){
     const breakCountSoFar={};
@@ -6785,7 +6813,18 @@ export default function Matchkeeper() {
     }
     setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
   };
-  const nextRoundCI=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextRoundCI(ev.plan,ev.retiredIds||[]));toast2("Next round generated ✓");return true;};
+  const nextRoundCI=(cid,eid,silent)=>{
+    const ev=getEv(cid,eid);if(!ev?.plan)return false;
+    const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];
+    if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}
+    updEvent(cid,eid,e=>{
+      if(!e.plan)return e;
+      const plan=syncCIPlanRoster(e.plan,e,comms.find(c=>c.id===cid),users);
+      return {...e,plan:genNextRoundCI(plan,e.retiredIds||[])};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
+    toast2("Next round generated ✓");
+    return true;
+  };
   // sA/sB default to an implied 1-0/0-1 when omitted (native widget taps, which only ever
   // declare a winner, no real score) — same pattern CT Ladder's widget already uses.
   const setWinCI=(cid,eid,ri,mi,w,sA,sB)=>{
@@ -6892,11 +6931,13 @@ export default function Matchkeeper() {
   const regenerateBreaksCI=(cid,eid)=>{
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
+      // Fold in any late joiner before recomputing — see syncCIPlanRoster.
+      const plan=syncCIPlanRoster(e.plan,e,comms.find(c=>c.id===cid),users);
       // generatedRounds = how many rounds exist (including pending ones not played yet)
       // We lock all generated rounds (their breaks are fixed) and only recompute open ones
-      const generatedRounds=e.plan.rounds.length;
-      const newBreakPlan=regenerateBreakPlan(e.plan,generatedRounds,e.retiredIds||[],e.breakConcentrateIds||[]);
-      return {...e,plan:{...e.plan,breakPlan:newBreakPlan}};
+      const generatedRounds=plan.rounds.length;
+      const newBreakPlan=regenerateBreakPlan(plan,generatedRounds,e.retiredIds||[],e.breakConcentrateIds||[]);
+      return {...e,plan:{...plan,breakPlan:newBreakPlan}};
     },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Break plan regenerated ✓");
   };

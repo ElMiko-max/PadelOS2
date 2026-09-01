@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.14 — Real bug: a player could get "stuck" in the active roster after being bumped to the waiting list
+
+- **Real bug fixed (confirmed by directly inspecting event #203's data, after the admin reported the previous fix wasn't enough):** V0.14.11/12 added anyone active to the real player roster, but nothing ever removed someone in the reverse case — added while briefly active, then moments later bumped to the waiting list by a higher-priority registration taking the last open slot. That player stayed "stuck" in the match/break math forever, even though they showed as waitlisted everywhere else in the app — which is exactly why the roster showed 16 instead of 15, and break counts looked unbalanced.
+- **The fix:** every time "Next Round" or "Regenerate Future" runs, anyone previously added who is now on the waiting list **and has zero real history** (never actually played a match or took a break) gets automatically removed. Anyone who did play before being bumped keeps their history.
+- **Verified directly against event #203's real data** before shipping — the result came out to exactly 15 players.
+
+---
+
 ## V0.14.13 — Bug: waitlisted registrations were showing up in the Breaks tab
 
 - **Real bug fixed:** the CI Breaks tab table listed every registration for the event, including anyone still over capacity on the waiting list — showing them as a full row with 0 breaks, which looked like a bug even though they were never part of the play rotation at all.

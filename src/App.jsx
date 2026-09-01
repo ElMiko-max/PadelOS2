@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.13";
+const APP_VERSION = "V0.14.14";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -673,11 +673,27 @@ function syncCIPlanRoster(plan, ev, regsForEvent, comm, users) {
   if (!plan?.sorted) return plan;
   const retired = new Set(ev.retiredIds||[]);
   const active = splitRegsByCapacity({...ev, registrations:regsForEvent}, comm).active.filter(r=>!retired.has(r.userId));
+  const activeIds = new Set(active.map(r=>r.userId));
   const known = new Set(plan.sorted.map(p=>p.userId));
   const newcomers = active.filter(r=>!known.has(r.userId))
     .map(r=>{ const u=users.find(u=>u.id===r.userId); if(!u) return null; return {...u, usr:r.eventUsr??u.usr, userId:r.userId, histBreaks:0, breakPref:r.breakPrefOverride||u.breakPref||"none"}; })
     .filter(Boolean);
-  return newcomers.length ? {...plan, sorted:[...plan.sorted, ...newcomers]} : plan;
+  // Prune anyone previously merged in who's no longer active AND has zero real footprint (never
+  // appeared in any actual round's matches or break list) — real bug, confirmed 2026-09-02: two
+  // near-simultaneous Add Member/Add Guest calls can transiently make someone "active" (filling
+  // the last capacity slot) right as this sync runs, merging them in — then a moment later a
+  // second, earlier-priority registration bumps them back to the waiting list, but nothing ever
+  // removed the phantom entry, so they kept eating a real match/break slot forever despite
+  // showing as waitlisted everywhere else in the app. Retired players are exempt — they did
+  // play before retiring, so they keep their history regardless of current active status.
+  const everAppeared = new Set();
+  plan.rounds.forEach(r => {
+    (r.matches||[]).forEach(m => { [...(m.teamA||[]), ...(m.teamB||[])].forEach(p=>everAppeared.add(p.userId)); });
+    (r.onBreakIds||[]).forEach(id=>everAppeared.add(id));
+  });
+  const prunedSorted = plan.sorted.filter(p => activeIds.has(p.userId) || retired.has(p.userId) || everAppeared.has(p.userId));
+  if (!newcomers.length && prunedSorted.length===plan.sorted.length) return plan;
+  return {...plan, sorted:[...prunedSorted, ...newcomers]};
 }
 function genRound1(players, courts, totalRounds) {
   const sorted = [...players].sort((a,b)=>b.usr-a.usr), breakPlan = buildBreakPlan(sorted,courts,totalRounds), onBreakIds=breakPlan[0]||[];

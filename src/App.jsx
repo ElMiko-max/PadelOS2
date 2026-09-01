@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.11";
+const APP_VERSION = "V0.14.12";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -660,10 +660,19 @@ function diversePair(cp, ph, lastRoundPairs) {
 // genNextRoundCI's own "late joiner" handling (see below) then actually places them in a court.
 // Deliberately NOT done at registration-write time: that would reintroduce the exact event-doc
 // read/write contention the Phase 2 registrations-split was built to eliminate.
-function syncCIPlanRoster(plan, ev, comm, users) {
+// regsForEvent must be passed in explicitly (this event's registrations, already filtered) —
+// real bug, confirmed 2026-09-02: this originally called splitRegsByCapacity(ev, comm) reading
+// ev.registrations directly, but `ev` here is the RAW event doc from inside updEvent's updater
+// (see nextRoundCI/regenerateBreaksCI below), which — since the Phase 2 registrations-split —
+// has no `.registrations` field at all (that only exists on the comms-merged display object).
+// Calling .slice/.forEach on that undefined field threw synchronously inside updEvent's
+// synchronous optimistic-apply step, before any promise/catch could see it — which is exactly
+// why "Regenerate Future"/"Next Round" looked completely unresponsive rather than failing with
+// a toast.
+function syncCIPlanRoster(plan, ev, regsForEvent, comm, users) {
   if (!plan?.sorted) return plan;
   const retired = new Set(ev.retiredIds||[]);
-  const active = splitRegsByCapacity(ev, comm).active.filter(r=>!retired.has(r.userId));
+  const active = splitRegsByCapacity({...ev, registrations:regsForEvent}, comm).active.filter(r=>!retired.has(r.userId));
   const known = new Set(plan.sorted.map(p=>p.userId));
   const newcomers = active.filter(r=>!known.has(r.userId))
     .map(r=>{ const u=users.find(u=>u.id===r.userId); if(!u) return null; return {...u, usr:r.eventUsr??u.usr, userId:r.userId, histBreaks:0, breakPref:r.breakPrefOverride||u.breakPref||"none"}; })
@@ -6819,7 +6828,7 @@ export default function Matchkeeper() {
     if(!lastRound?.matches?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
-      const plan=syncCIPlanRoster(e.plan,e,comms.find(c=>c.id===cid),users);
+      const plan=syncCIPlanRoster(e.plan,e,registrationsRef.current.filter(r=>r.eventId===eid),comms.find(c=>c.id===cid),users);
       return {...e,plan:genNextRoundCI(plan,e.retiredIds||[])};
     },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Next round generated ✓");
@@ -6932,7 +6941,7 @@ export default function Matchkeeper() {
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
       // Fold in any late joiner before recomputing — see syncCIPlanRoster.
-      const plan=syncCIPlanRoster(e.plan,e,comms.find(c=>c.id===cid),users);
+      const plan=syncCIPlanRoster(e.plan,e,registrationsRef.current.filter(r=>r.eventId===eid),comms.find(c=>c.id===cid),users);
       // generatedRounds = how many rounds exist (including pending ones not played yet)
       // We lock all generated rounds (their breaks are fixed) and only recompute open ones
       const generatedRounds=plan.rounds.length;

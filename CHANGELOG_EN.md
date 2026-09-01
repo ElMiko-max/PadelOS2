@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.12 — Real bug: the V0.14.11 fix itself broke "Regenerate Future"/"Next Round" entirely
+
+- **Real bug fixed (reported by the admin: the button became completely unresponsive):** V0.14.11's fix tried to read an event's registrations off `ev.registrations` — but inside the save transaction (`updEvent`), the event object doesn't have that field at all (since registrations moved to their own subcollection, `.registrations` only exists on the merged display version, not the raw write-path object). That threw an error immediately, before any toast could show — which is exactly why the button looked completely dead.
+- **The fix:** registrations are now passed in explicitly from the correct source instead of being read off the wrong object.
+- **Clarification:** the two players you removed genuinely were on the waiting list (over capacity) — not a bug, they were correctly excluded from the play rotation.
+
+---
+
 ## V0.14.11 — Real bug: registering after Start CI made you vanish from the whole event, not just breaks
 
 - **Real bug fixed (found by inspecting event #203's actual data on DEV):** what looked like "2 breaks vs 0" wasn't a break-fairness bug at all — inspecting the data showed `plan.sorted` (the player pool matches/breaks are computed against) had only 15 players, while the event actually had 17 registrations. Two of them ("Abdo Alaa" and "A Hassan") registered at 7:21 AM, hours after everyone else (3:13 AM) — after "Start CI" had already run. Nothing in the code folded a post-Start-CI registration into `plan.sorted`, so those two players were **never in a single match or break for the rest of the event** — Regenerate could run a hundred times and it wouldn't matter, with nothing in the UI explaining why.

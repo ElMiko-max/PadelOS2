@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.10 — "Mid" on even-round events now accepts both straddling rounds
+
+- **Change per direct clarification:** V0.14.08's fix rounded "Mid" to a single round (e.g. R4 on a 6-round event). Now it accepts **both rounds straddling the true midpoint** as an equally valid match — a 6-round event's Mid matches R3 or R4, an 8-round event's matches R4 or R5 — whenever the exact midpoint isn't a whole number (i.e. the round count is even).
+- **Odd-round-count events** (e.g. 7 rounds) are unchanged — there's exactly one true middle round, no ambiguity.
+
+---
+
 ## V0.14.09 — 3-letter weekday now shown on every date
 
 - **Improvement per direct request:** every date shown in the app (event dates, and the absolute dates now shown for old messages since V0.14.07) now includes a short weekday abbreviation — e.g. "Fri, 15 Aug 2026" instead of "15 Aug 2026".

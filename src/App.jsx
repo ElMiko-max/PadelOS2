@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.09";
+const APP_VERSION = "V0.14.10";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -579,16 +579,17 @@ function xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h}) {
 // Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
 // Real bug, confirmed 2026-09-02 from a live grid (an "M" player's break landing wherever
 // fairness put it, never actually anchored to a middle round): "early"/"late" always have an
-// exact-integer anchor round (r=0 or r=totalRounds-1), but "mid"'s un-rounded midpoint
-// ((totalRounds-1)/2) is only an integer for an ODD totalRounds — for the far more common even
-// round count, prefDist(...)===0 (isAnchor's exact-match check, used by every break-generation
-// function below) was never true for "mid" at all, silently downgrading it to "no preference"
-// with zero anchor priority. Rounding to the nearest round gives "mid" the same one-exact-round
-// anchor guarantee early/late already have.
+// exact-integer anchor round (r=0 or r=totalRounds-1), but "mid"'s midpoint ((totalRounds-1)/2)
+// is only an integer for an ODD totalRounds — for the far more common even round count, the
+// midpoint sits exactly BETWEEN two rounds (e.g. 2.5 for 6 rounds, 3.5 for 8), so isAnchor's
+// old exact-match check (===0) was never true for "mid" at all. Per direct clarification, an
+// even-round "mid" should treat BOTH of those two straddling rounds as equally valid — R3 OR R4
+// for 6 rounds, R4 OR R5 for 8 — not force a pick toward one side. Left un-rounded on purpose so
+// isAnchor's tolerance (see below) can express "either of the two nearest rounds is fine."
 function prefDist(pref, r, totalRounds) {
   if (pref==="early") return r;
   if (pref==="late") return (totalRounds-1-r);
-  if (pref==="mid") return Math.abs(r-Math.round((totalRounds-1)/2));
+  if (pref==="mid") return Math.abs(r-(totalRounds-1)/2);
   return 0;
 }
 
@@ -608,7 +609,10 @@ function buildBreakPlan(players, courts, totalRounds) {
   const plan = [];
   for (let r = 0; r < totalRounds; r++) {
     const eligible = players.filter(p => assigned[p.userId] < ent[p.userId]);
-    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
+    // <=0.5 (not ===0): early/late's distance is always a whole number so this only ever
+    // matches an exact 0 for them, but "mid" on an even totalRounds sits at distance 0.5 from
+    // its two nearest rounds — both count as an anchor match, see prefDist's comment above.
+    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)<=0.5;
     eligible.sort((a, b) => {
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
       if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first, regardless of entitlement
@@ -794,7 +798,10 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
 
     const eligible = players.filter(p => remaining[p.userId] > 0 && !firmHere.includes(p.userId));
     eligible.sort((a,b) => {
-      const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)===0;
+      // <=0.5 (not ===0): early/late's distance is always a whole number so this only ever
+    // matches an exact 0 for them, but "mid" on an even totalRounds sits at distance 0.5 from
+    // its two nearest rounds — both count as an anchor match, see prefDist's comment above.
+    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)<=0.5;
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
       if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first
       const ca = concSet.has(a.userId)?1:0, cb = concSet.has(b.userId)?1:0;

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.01";
+const APP_VERSION = "V0.14.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6764,42 +6764,45 @@ export default function Matchkeeper() {
       return{...ev,plan:{...ev.plan,rounds,breakPlan:newBreakPlan}};
     });toast2("Swapped ✓ — tap Regenerate in Breaks tab to update future rounds");
   };
-  // Same stale-plan bug class as the CT Breaks tab (swapCTBreak/regenCTBreaks/toggleCTBreakFirm,
-  // fixed V0.13.04/V0.14.00) was live here too — CI's break editing just never got reported
-  // because its UI is one-cell-at-a-time rather than CT's swap/regenerate/lock interactions.
-  // Toast text below is still computed from the click-time read (same as toggleCTBreakFirm) —
-  // informational only; the actual write always derives from the transaction's own fresh plan.
-  const editBreakCI=(cid,eid,ri,uid)=>{
+  // Unified 3-state break editor (2026-09-01): was a tap-to-cycle (none -> suggested -> firm ->
+  // none) — replaced with an explicit target state chosen from a modal, same redesign as CT's
+  // setCTBreakState above and for the same reason ("the toggle is not stable... change it to a
+  // modal box where I pick one of the three values"). The stale-plan write-safety fix from
+  // V0.14.01 is preserved unchanged — only the interaction/API shape changed, not the write path.
+  const editBreakCI=(cid,eid,ri,uid,target)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
     const bpr=Math.max(0,splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.length-ev.courts*4);
     const firmBreaks=ev.plan.firmBreaks||{};
     const isFirm=(firmBreaks[ri]||[]).includes(uid);
     const isSuggested=(ev.plan.breakPlan[ri]||[]).includes(uid)&&!isFirm;
+    const current=isFirm?"firm":isSuggested?"suggested":"none";
+    if(current===target)return;
 
-    if(!isFirm&&!isSuggested){
-      // none -> suggested: same lenient toggle as before, just a proposal
-      const newCount=(ev.plan.breakPlan[ri]||[]).length+1;
+    if(target==="suggested"){
+      const newCount=(ev.plan.breakPlan[ri]||[]).filter(id=>id!==uid).length+1;
       if(newCount!==bpr)toast2(`Warning: R${ri+1} has ${newCount} breaks (needs ${bpr})`,"err");
-      else toast2("Break suggested — tap again to lock it Firm");
+      else toast2(current==="firm"?"Break unlocked":"Break set ✓");
       updEvent(cid,eid,e=>{
         if(!e.plan)return e;
-        const breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:[...round,uid]);
+        const fb=e.plan.firmBreaks||{};
+        const newFb={...fb,[ri]:(fb[ri]||[]).filter(id=>id!==uid)};
+        const breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:(round.includes(uid)?round:[...round,uid]));
         const rounds=e.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:e.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
-        return {...e,plan:{...e.plan,breakPlan,rounds}};
+        return {...e,plan:{...e.plan,breakPlan,firmBreaks:newFb,rounds}};
       },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
-    }else if(isSuggested){
-      // suggested -> firm: hard validation, only as many Firm slots as the round has break slots
-      const currentFirmCount=(firmBreaks[ri]||[]).length;
+    }else if(target==="firm"){
+      const currentFirmCount=(firmBreaks[ri]||[]).filter(id=>id!==uid).length;
       if(currentFirmCount+1>bpr){toast2(`Can't lock — R${ri+1} only has ${bpr} break slot(s) total`,"err");return;}
       toast2("Break locked as Firm 🔐 — Regenerate will keep it ✓");
       updEvent(cid,eid,e=>{
         if(!e.plan)return e;
         const fb=e.plan.firmBreaks||{};
-        if((fb[ri]||[]).includes(uid))return e;
-        return {...e,plan:{...e.plan,firmBreaks:{...fb,[ri]:[...(fb[ri]||[]),uid]}}};
+        const breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:(round.includes(uid)?round:[...round,uid]));
+        const newFb={...fb,[ri]:(fb[ri]||[]).includes(uid)?fb[ri]:[...(fb[ri]||[]),uid]};
+        const rounds=e.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:e.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
+        return {...e,plan:{...e.plan,breakPlan,firmBreaks:newFb,rounds}};
       },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     }else{
-      // firm -> none: clear from both breakPlan and firmBreaks
       toast2("Break cleared");
       updEvent(cid,eid,e=>{
         if(!e.plan)return e;
@@ -6824,56 +6827,50 @@ export default function Matchkeeper() {
   };
 
   // CT
-  const swapCTBreak=(cid,eid,ri,tidA,tidB)=>{
-    // Swap break assignment between two teams in an ungenerated round.
-    // Same stale-plan bug class as toggleCTBreakFirm above (fixed V0.13.04) — this one was
-    // missed at the time, confirmed still causing "flicker" reports on V0.13.05. Pre-check
-    // via a snapshot read for the fast-fail toast, but the actual write always derives from
-    // the transaction's own fresh read so it can never stomp a concurrent change.
+  // Unified 3-state break editor (2026-09-01): replaces the old two-step tap-to-swap
+  // (swapCTBreak) + separate tiny lock-icon toggle (toggleCTBreakFirm) with a single explicit
+  // choice made in a modal — "the toggle is not stable, change it to a modal box where I pick
+  // one of the three values" was the direct ask, after the underlying stale-plan bug (fixed
+  // V0.13.04/V0.14.00) turned out not to be the whole story: the tap-tap swap/cycle interaction
+  // itself was the actual UX complaint. Setting one team's own state never needs to know or
+  // adjust any other team's state — same lenient, warn-not-block philosophy as editBreakCI
+  // (CI's equivalent) — so no swap/pairing invariant to maintain here either.
+  const setCTBreakState=(cid,eid,ri,tid,target)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const firmHere=(ev.plan.firmBreaks||{})[ri]||[];
-    if(firmHere.includes(tidA)||firmHere.includes(tidB)){toast2("That team's break is Firm-locked — unlock it first","err");return;}
+    const firmBreaks=ev.plan.firmBreaks||{};
+    const onBreakNow=(ev.plan.breakPlan[ri]||[]).includes(tid);
+    const isFirmNow=(firmBreaks[ri]||[]).includes(tid);
+    const current=isFirmNow?"firm":onBreakNow?"suggested":"none";
+    if(current===target)return;
+    if(target==="firm"){
+      const bpr=Math.max(0,(ev.plan.teams||ev.plan.sorted||[]).length-(ev.plan.courts||0)*2);
+      const currentFirmCount=(firmBreaks[ri]||[]).filter(id=>id!==tid).length;
+      if(currentFirmCount+1>bpr){toast2(`Can't lock — R${ri+1} only has ${bpr} break slot(s) total`,"err");return;}
+      toast2("Break locked as Firm 🔐 — Regenerate will keep it ✓");
+    }else if(target==="suggested"){
+      toast2(current==="firm"?"Break unlocked":"Break set ✓");
+    }else{
+      toast2("Break cleared");
+    }
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
-      const firmNow=(e.plan.firmBreaks||{})[ri]||[];
-      if(firmNow.includes(tidA)||firmNow.includes(tidB))return e;
-      const breakPlan=e.plan.breakPlan.map((round,i)=>{
-        if(i!==ri)return round;
-        const hasA=round.includes(tidA), hasB=round.includes(tidB);
-        let next=[...round];
-        if(hasA&&!hasB){next=next.filter(id=>id!==tidA);next.push(tidB);}
-        else if(hasB&&!hasA){next=next.filter(id=>id!==tidB);next.push(tidA);}
-        return next;
-      });
-      return {...e,plan:{...e.plan,breakPlan}};
+      const fb=e.plan.firmBreaks||{};
+      let breakPlan=e.plan.breakPlan, newFb=fb;
+      if(target==="none"){
+        breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:round.filter(id=>id!==tid));
+        newFb={...fb,[ri]:(fb[ri]||[]).filter(id=>id!==tid)};
+      }else if(target==="suggested"){
+        breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:(round.includes(tid)?round:[...round,tid]));
+        newFb={...fb,[ri]:(fb[ri]||[]).filter(id=>id!==tid)};
+      }else{
+        breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:(round.includes(tid)?round:[...round,tid]));
+        newFb={...fb,[ri]:(fb[ri]||[]).includes(tid)?fb[ri]:[...(fb[ri]||[]),tid]};
+      }
+      return {...e,plan:{...e.plan,breakPlan,firmBreaks:newFb}};
     },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
-    toast2("Break swapped ✓");
-  };
-  // Real bug, confirmed 2026-08-31 ("flickering" toggle that "doesn't work well"): this used to
-  // compute the new firmBreaks map from `ev.plan` captured in this outer closure, then hand the
-  // whole precomputed plan to setPlan/updEvent — which defeats updEvent's own transactional
-  // safety (it re-reads the LATEST doc specifically so a concurrent write can't get clobbered,
-  // but a plain `{...ev,plan}` updater fn throws that fresh read away and overwrites `.plan` with
-  // the stale snapshot anyway). Any other plan change landing in the same window (a swap, a
-  // regenerate, another firm-toggle not yet round-tripped) could get silently reverted the moment
-  // this write's own optimistic-then-real cycle finished — which looks exactly like flicker.
-  // Now a real updater function, deriving firmBreaks from whatever `.plan` the transaction
-  // actually sees, so it can never stomp on a concurrent change.
-  const toggleCTBreakFirm=(cid,eid,ri,tid)=>{
-    const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const wasFirm=(ev.plan.firmBreaks?.[ri]||[]).includes(tid);
-    const onBreakNow=(ev.plan.breakPlan[ri]||[]).includes(tid);
-    if(!wasFirm&&!onBreakNow){toast2("Team isn't on break this round","err");return;}
-    updEvent(cid,eid,e=>{
-      const firmBreaks=e.plan.firmBreaks||{};
-      const isFirm=(firmBreaks[ri]||[]).includes(tid);
-      const newList=isFirm?(firmBreaks[ri]||[]).filter(id=>id!==tid):[...(firmBreaks[ri]||[]),tid];
-      return {...e,plan:{...e.plan,firmBreaks:{...firmBreaks,[ri]:newList}}};
-    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
-    toast2(wasFirm?"Break unlocked":"Break locked as Firm 🔐 — Regenerate will keep it ✓");
   };
   const setTeamBreakPref=(cid,eid,tid,pref)=>{
-    // Same stale-plan bug class as swapCTBreak/toggleCTBreakFirm above — always derive from
+    // Same stale-plan bug class as setCTBreakState above — always derive from
     // the transaction's own fresh read, never a snapshot captured at click-time.
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
@@ -6963,7 +6960,7 @@ export default function Matchkeeper() {
     toast2("Teams updated ✓");
   };
   const regenCTBreaks=(cid,eid)=>{
-    // Same stale-plan bug class as swapCTBreak/toggleCTBreakFirm above — build the whole
+    // Same stale-plan bug class as setCTBreakState above — build the whole
     // regenerated plan from the transaction's own fresh read, not a snapshot from getEv().
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
@@ -7426,8 +7423,7 @@ export default function Matchkeeper() {
             onDeleteEventAnnouncement={aid=>deleteEventAnnouncement(comm.id,event.id,aid)}
             onReplyEventAnnouncement={(aid,message)=>postEventAnnouncementReply(comm.id,event.id,aid,message)}
             onDeleteEventAnnouncementReply={(aid,rid)=>deleteEventAnnouncementReply(comm.id,event.id,aid,rid)}
-            onSwapCTBreak={(ri,tA,tB)=>swapCTBreak(comm.id,event.id,ri,tA,tB)}
-            onToggleCTBreakFirm={(ri,tid)=>toggleCTBreakFirm(comm.id,event.id,ri,tid)}
+            onSetCTBreakState={(ri,tid,target)=>setCTBreakState(comm.id,event.id,ri,tid,target)}
             onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
             onRegenCTBreaks={()=>regenCTBreaks(comm.id,event.id)}
             onBack={goBack}
@@ -9013,7 +9009,39 @@ function OutputPESTable({rows,compare}){
     <div style={{fontSize:10,color:"var(--po-dim)",marginTop:4,padding:"0 4px",lineHeight:1.5}}>🧪 PES = Entry USR + (Δ × {OUTPUT_PES_K}%) — <b>not</b> a plain sum of the two numbers above (Δ above is the raw %, only {OUTPUT_PES_K}% of it actually feeds into PES — e.g. Δ +13% adds {Math.round(0.13*OUTPUT_PES_K*10)/10} points, not 13). Computed live, not stored, not official — only becomes real if this event is closed with Output PES below.</div>
   </div>;
 }
+// Shared 3-state break picker — used by both CI's BreaksTab and CT's CTBreaksTab (2026-09-01
+// redesign, replacing tap-to-cycle in CI and tap-to-swap+separate-lock-icon in CT with the same
+// explicit modal in both places, per direct request: "change it to a modal box... select one of
+// the three values... this is the fix I'm expecting in any ladder").
+const BREAK_STATE_OPTIONS = [
+  {key:"none", icon:"▶️", label:"Playing", desc:"No break this round"},
+  {key:"suggested", icon:"🪑", label:"On Break", desc:"Suggested — Regenerate may move it"},
+  {key:"firm", icon:"🔐", label:"On Break — Firm", desc:"Locked — Regenerate won't move it"},
+];
+function BreakStateModal({title,subtitle,current,onPick,onClose}){
+  return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:320,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+      <div style={{fontWeight:700,fontSize:14,marginBottom:2,color:"var(--po-text)"}}>{title}</div>
+      {subtitle&&<div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14}}>{subtitle}</div>}
+      {BREAK_STATE_OPTIONS.map(opt=>
+        <button key={opt.key} disabled={opt.key===current} onClick={()=>onPick(opt.key)}
+          style={{display:"flex",alignItems:"center",gap:10,width:"100%",textAlign:"left",padding:"10px 12px",marginBottom:8,borderRadius:9,
+            border:opt.key===current?"1.5px solid #6366F1":"0.5px solid var(--po-bdr)",
+            background:opt.key===current?"#6366F122":"var(--po-inp)",
+            cursor:opt.key===current?"default":"pointer",opacity:opt.key===current?0.7:1}}>
+          <span style={{fontSize:18}}>{opt.icon}</span>
+          <span style={{flex:1}}>
+            <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{opt.label}{opt.key===current?" · current":""}</div>
+            <div style={{fontSize:11,color:"var(--po-dim)"}}>{opt.desc}</div>
+          </span>
+        </button>
+      )}
+      <button onClick={onClose} style={{width:"100%",padding:"9px 12px",borderRadius:9,border:"0.5px solid var(--po-bdr)",background:"transparent",color:"var(--po-dim)",fontSize:12,cursor:"pointer",marginTop:2}}>Cancel</button>
+    </div>
+  </div>;
+}
 function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewProfile}){
+  const [cellMenuFor,setCellMenuFor]=useState(null); // {ri,uid,label,current} | null
   // Was splitRegsByCapacity(ev).active — raw registration count, which drifts from reality
   // the moment anyone's retired/no-shown (still "registered", just not actually playing) or
   // was excluded from Round 1 formation entirely (retired before Start CI ever ran). plan.sorted
@@ -9125,9 +9153,10 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewP
               const bdr  = isFirm ? "#8B5CF6AA" : onB ? (isFrozen?"#EF444455":isPending?"#F59E0B55":"#F59E0B44") : (isFrozen?"#33333344":isPending?"#1E293B44":"#34D39933");
               const icon = isFirm ? "🔐" : onB ? "🪑" : (isFrozen?"—":isPending?"·":"▶");
 
+              const cellState=isFirm?"firm":onB?"suggested":"none";
               return <td key={ri} style={{padding:"3px 4px",textAlign:"center"}}>
                 <div
-                  onClick={()=>canEdit&&onEditBreak(ri,u.id)}
+                  onClick={()=>canEdit&&setCellMenuFor({ri,uid:u.id,label:u.nickname,current:cellState})}
                   style={{width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
                   {icon}
                 </div>
@@ -9140,7 +9169,13 @@ function BreaksTab({plan,ev,users,bp,tc,onEditBreak,onRegenerate,isAdmin,onViewP
         })}</tbody>
       </table>
     </div>
-    {isAdmin&&<div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to cycle: ▶ none → 🪑 suggested → 🔐 firm (locked — survives Regenerate) → back to none</div>}
+    {isAdmin&&<div style={{marginTop:10,fontSize:11,color:"var(--po-dim)"}}>Tap an open cell to choose: ▶️ Playing · 🪑 On Break · 🔐 Firm (locked — survives Regenerate)</div>}
+    {cellMenuFor&&<BreakStateModal
+      title={`R${cellMenuFor.ri+1} — ${cellMenuFor.label}`}
+      current={cellMenuFor.current}
+      onPick={target=>{onEditBreak(cellMenuFor.ri,cellMenuFor.uid,target);setCellMenuFor(null);}}
+      onClose={()=>setCellMenuFor(null)}
+    />}
   </Card>;
 }
 
@@ -9262,14 +9297,11 @@ function ScorersModal({matchLabel,teamAName,teamBName,playersA,playersB,scorersA
 // ══════════════════════════════════════════════════════
 //  CT MATCHES TAB
 // ══════════════════════════════════════════════════════
-function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
-  const [selSwap, setSelSwap] = useState(null); // {ri, tid} for pending swap
-  // Real complaint, 2026-08-31: the old lock/unlock control was a bare, always-live micro-icon
-  // (8px, in the corner of an already-small table cell) that toggled instantly on tap — easy to
-  // mis-tap, and with nothing to confirm what just happened, a fast repeat tap looked like the
-  // toggle was "flickering"/not registering. A real confirm menu instead: tap opens a clear popup
-  // naming the team + round, one deliberate action closes it.
-  const [firmMenuFor, setFirmMenuFor] = useState(null); // {ri, tid, isFirm, label} | null
+function CTBreaksTab({plan,tc,onRegenBreaks,onSetBreakState,isAdmin}){
+  // 2026-09-01 redesign: the old tap-to-select-then-tap-another-team-to-swap interaction, plus
+  // a separate tiny always-live lock icon, are both gone — replaced by the same explicit 3-state
+  // modal as CI's BreaksTab (see BreakStateModal above). One tap on any open cell opens it.
+  const [cellMenuFor, setCellMenuFor] = useState(null); // {ri, tid, label, current} | null
   const teams = plan.sorted || plan.teams;
   const totalRounds = plan.maxRounds || plan.rounds.length;
   const breakPlan = plan.breakPlan || [];
@@ -9277,34 +9309,6 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
   const generatedCount = plan.rounds.length;
   // Teams that are currently on break in each round (from breakPlan)
   const breakSet = (ri) => new Set(breakPlan[ri]||[]);
-
-  function handleCellTap(ri, t){
-    if(!isAdmin) return;
-    if(ri < generatedCount) return; // locked/generated — can't swap
-    if(!selSwap){
-      // First tap: only meaningful to tap a break slot
-      if(breakSet(ri).has(t.id)) setSelSwap({ri, tid:t.id});
-      return;
-    }
-    if(selSwap.ri !== ri){setSelSwap(null); return;} // different round — cancel
-    if(selSwap.tid === t.id){setSelSwap(null); return;} // same team — deselect
-    // Two different teams in same ungenerated round — swap break
-    onSwapBreak&&onSwapBreak(ri, selSwap.tid, t.id);
-    setSelSwap(null);
-  }
-
-  function cellStyle(ri, t){
-    const onBreak = breakSet(ri).has(t.id);
-    const isGenerated = ri < generatedCount;
-    const isSel = selSwap&&selSwap.ri===ri&&selSwap.tid===t.id;
-    const canInteract = !isGenerated&&isAdmin;
-    return {
-      padding:"6px 4px", textAlign:"center",
-      borderBottom:"0.5px solid var(--po-bdr)",
-      cursor:canInteract?"pointer":"default",
-      background: isSel?"#6366F133":onBreak&&!isGenerated?"#F59E0B11":"transparent",
-    };
-  }
 
   const teamLabel = (t) => {
     const players = t.players||[];
@@ -9315,13 +9319,10 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
   return <>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,gap:8}}>
       <div style={{fontSize:11,color:"var(--po-dim)"}}>
-        {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap ☕ to swap · tap the small 🔐/🔓 for the lock menu)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
+        {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap a cell to set Playing/Break/Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
       {isAdmin&&onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
     </div>
-    {selSwap&&<div style={{marginBottom:8,padding:"8px 12px",background:"#6366F111",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>
-      ✋ {teams.find(t=>t.id===selSwap.tid)?.name} selected — tap another team in R{selSwap.ri+1} to swap break
-    </div>}
     <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
       <table style={{borderCollapse:"collapse",tableLayout:"fixed",minWidth:Math.max(280, 140+totalRounds*42)}}>
         <colgroup>
@@ -9345,29 +9346,29 @@ function CTBreaksTab({plan,tc,onRegenBreaks,onSwapBreak,onToggleFirm,isAdmin}){
             {Array.from({length:totalRounds},(_,ri)=>{
               const onBreak=breakSet(ri).has(t.id);
               const isGenerated=ri<generatedCount;
-              const isSel=selSwap&&selSwap.ri===ri&&selSwap.tid===t.id;
               const isFirm=!isGenerated&&(firmBreaks[ri]||[]).includes(t.id);
-              return <td key={ri} onClick={()=>handleCellTap(ri,t)} style={{...cellStyle(ri,t),position:"relative",background:isFirm?"#8B5CF622":cellStyle(ri,t).background}}>
+              const canInteract=!isGenerated&&isAdmin;
+              const cellState=isFirm?"firm":onBreak?"suggested":"none";
+              return <td key={ri}
+                onClick={()=>canInteract&&setCellMenuFor({ri,tid:t.id,label:teamLabel(t),current:cellState})}
+                style={{padding:"6px 4px",textAlign:"center",borderBottom:"0.5px solid var(--po-bdr)",cursor:canInteract?"pointer":"default",background:isFirm?"#8B5CF622":onBreak&&!isGenerated?"#F59E0B11":"transparent"}}>
                 {onBreak
-                  ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":isSel?"#6366F1":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
+                  ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
-                {onBreak&&!isGenerated&&isAdmin&&<span onClick={e=>{e.stopPropagation();setFirmMenuFor({ri,tid:t.id,isFirm,label:teamLabel(t)});}} title={isFirm?"Unlock":"Lock as Firm"} style={{position:"absolute",top:0,right:1,fontSize:8,cursor:"pointer",opacity:0.6}}>{isFirm?"🔓":"🔐"}</span>}
               </td>;
             })}
           </tr>)}
         </tbody>
       </table>
     </div>
-    {isAdmin&&generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap ☕ then another team to swap</div>}
-    {firmMenuFor&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setFirmMenuFor(null)}>
-      <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:320,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
-        <div style={{fontWeight:700,fontSize:14,marginBottom:6,color:"var(--po-text)"}}>R{firmMenuFor.ri+1} — {firmMenuFor.label}</div>
-        <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:16}}>{firmMenuFor.isFirm?"This break is locked as Firm — Regenerate Breaks won't move it.":"Lock this break as Firm so Regenerate Breaks never reassigns it."}</div>
-        <Btn label={firmMenuFor.isFirm?"🔓 Unlock":"🔐 Lock as Firm"} primary onClick={()=>{onToggleFirm&&onToggleFirm(firmMenuFor.ri,firmMenuFor.tid);setFirmMenuFor(null);}} style={{width:"100%",marginBottom:8}}/>
-        <Btn label="Cancel" onClick={()=>setFirmMenuFor(null)} style={{width:"100%"}}/>
-      </div>
-    </div>}
+    {isAdmin&&generatedCount<totalRounds&&<div style={{marginTop:8,fontSize:10,color:"var(--po-dim)"}}>Rounds {generatedCount+1}–{totalRounds}: planned · not yet generated · tap a cell to set Playing/Break/Firm</div>}
+    {cellMenuFor&&<BreakStateModal
+      title={`R${cellMenuFor.ri+1} — ${cellMenuFor.label}`}
+      current={cellMenuFor.current}
+      onPick={target=>{onSetBreakState&&onSetBreakState(cellMenuFor.ri,cellMenuFor.tid,target);setCellMenuFor(null);}}
+      onClose={()=>setCellMenuFor(null)}
+    />}
   </>;
 }
 
@@ -9836,7 +9837,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSwapCTBreak,onToggleCTBreakFirm,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -10016,29 +10017,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       : onRebalanceCourt(ri,mi),
     editBreak: (ri,uid,v) => sim ? null /* break editing not mirrored in sim — exit sim to make this change for real */ : onEditBreak(ri,uid,v),
     regenerateBreaks: () => sim ? null : onRegenerateBreaks(),
-    swapCTBreak: (ri,tA,tB) => sim
-      ? simMutate(e => {
-          if(!e.plan) return e;
-          const breakPlan = e.plan.breakPlan.map((round,i)=>{
-            if(i!==ri) return round;
-            const hasA=round.includes(tA), hasB=round.includes(tB);
-            let next=[...round];
-            if(hasA&&!hasB){next=next.filter(id=>id!==tA);next.push(tB);}
-            else if(hasB&&!hasA){next=next.filter(id=>id!==tB);next.push(tA);}
-            return next;
-          });
-          return {...e, plan:{...e.plan, breakPlan}};
-        })
-      : onSwapCTBreak&&onSwapCTBreak(ri,tA,tB),
-    toggleCTBreakFirm: (ri,tid) => sim
-      ? simMutate(e => {
-          if(!e.plan) return e;
-          const firmBreaks = e.plan.firmBreaks||{};
-          const isFirm = (firmBreaks[ri]||[]).includes(tid);
-          const newList = isFirm ? (firmBreaks[ri]||[]).filter(id=>id!==tid) : [...(firmBreaks[ri]||[]), tid];
-          return {...e, plan:{...e.plan, firmBreaks:{...firmBreaks,[ri]:newList}}};
-        })
-      : onToggleCTBreakFirm&&onToggleCTBreakFirm(ri,tid),
+    // Not mirrored in sim — same documented choice as editBreak above (CI's equivalent):
+    // exit sim to make this change for real.
+    setCTBreakState: (ri,tid,target) => sim ? null : onSetCTBreakState&&onSetCTBreakState(ri,tid,target),
     setTeamBreakPref: (tid,pref) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -11595,7 +11576,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>}
 
     {/* CT BREAKS (Ladder only) */}
-    {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSwapBreak={act.swapCTBreak} onToggleFirm={act.toggleCTBreakFirm} isAdmin={isAdmin}/>}
+    {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} tc={tc} onRegenBreaks={act.regenCTBreaks} onSetBreakState={act.setCTBreakState} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
     {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onSetCTScorers={act.setCTScorers} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}

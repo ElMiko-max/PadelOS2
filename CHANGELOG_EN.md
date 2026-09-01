@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.03 — New feature: concentrate extra breaks on selected players per event
+
+- **New feature (item 2 of the break-engine rework request):** when the break count doesn't split evenly across players/teams, the leftover "extra" breaks used to go to whoever happened to be next in the default order (fewest breaks so far, then lowest USR). The Breaks tab (both CI and CT) now has a "🎯 Concentrate" button — the admin picks specific players, and any extra break (if there is one) goes to them first instead of the default order.
+- **This is a per-event setting** (not global) — it stays off (unset) until an admin actually picks someone.
+- **Same rule as every other Breaks tab edit:** it only affects rounds not yet generated — tap Regenerate after saving to apply it.
+
+---
+
 ## V0.14.02 — Break Matrix: from an unstable toggle/swap to a modal with 3 clear choices
 
 - **Real UX change:** after the underlying technical bug was fixed (V0.14.00/V0.14.01), it turned out the interaction itself — not just the bug — was the real complaint. The manual tap-to-swap (CT) and tap-to-cycle (CI) interactions felt unstable. Replaced entirely, in **both CI (Closed Individuals) and CT (Closed Teams) Ladder**: tapping any open (not-yet-generated) cell now opens a clear modal with 3 choices — ▶️ Playing (no break) · 🪑 On Break (suggested) · 🔐 On Break — Firm (locked, survives Regenerate) — pick one and you're done.

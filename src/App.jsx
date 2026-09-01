@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.08";
+const APP_VERSION = "V0.14.09";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2073,7 +2073,9 @@ const calcEventAvgUsr = (ev, users, comm) => {
   return ratings.length ? Math.round(ratings.reduce((s,v)=>s+v,0) / ratings.length) : null;
 };
 const ini2   = s => s.substring(0,2).toUpperCase();
-const fmtD   = d => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+// weekday included per direct request, 2026-09-02: "Fri, 15 Aug 2026" — knowing the day of
+// the week at a glance is genuinely useful, not just the calendar date.
+const fmtD   = d => new Date(d).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short",year:"numeric"});
 const fmtT   = t => { if(!t) return t; const [h,m]=t.split(":").map(Number); if(isNaN(h)) return t; const ap=h>=12?"PM":"AM"; const h12=h%12||12; return `${h12}:${String(m).padStart(2,"0")} ${ap}`; };
 // Standard messaging-app convention (WhatsApp/iMessage/Slack): relative time is nice for
 // anything from today, but a bare "12d ago" stops being genuinely readable past a few days —
@@ -2092,7 +2094,8 @@ const timeAgo = (iso) => {
   const time = d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
   if (d.toDateString()===yesterday.toDateString()) return `Yesterday, ${time}`;
   const sameYear = d.getFullYear()===now.getFullYear();
-  const datePart = d.toLocaleDateString([], sameYear ? {day:"numeric", month:"short"} : {day:"numeric", month:"short", year:"numeric"});
+  // Weekday included per direct request, 2026-09-02 — same reasoning as fmtD.
+  const datePart = d.toLocaleDateString([], sameYear ? {weekday:"short", day:"numeric", month:"short"} : {weekday:"short", day:"numeric", month:"short", year:"numeric"});
   return `${datePart}, ${time}`;
 };
 const fmtBytes = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1048576).toFixed(1)} MB`;

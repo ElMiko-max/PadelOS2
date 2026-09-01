@@ -4,6 +4,12 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.09 — 3-letter weekday now shown on every date
+
+- **Improvement per direct request:** every date shown in the app (event dates, and the absolute dates now shown for old messages since V0.14.07) now includes a short weekday abbreviation — e.g. "Fri, 15 Aug 2026" instead of "15 Aug 2026".
+
+---
+
 ## V0.14.08 — Real bug: "Mid" break preference didn't work at all on even-round events
 
 - **Real bug fixed (spotted via the new "M" tag on the grid):** anyone with "Mid" break preference — the internal math was looking for an exact middle round like 2.5 out of 6, which isn't a whole number, so no round ever matched it. That silently made "Mid" behave like "no preference" on any event with an even number of rounds (the common case). "Early" and "Late" never had this problem since the first/last round is always a whole number.

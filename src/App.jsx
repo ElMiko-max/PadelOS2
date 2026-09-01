@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.05";
+const APP_VERSION = "V0.14.06";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8303,8 +8303,8 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                 const replyCount=a.replies?.length||0;
                 const voterCount=a.poll?Object.keys(a.poll.votes||{}).length:0;
                 const snippetText=(a.message||"").slice(0,70)+((a.message||"").length>70?"…":"");
-                return <Card key={a.id} id={`ann-${a.id}`} onClick={()=>toggleAnn(a.id)} style={{marginBottom:6,padding:"9px 12px",cursor:"pointer"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                return <Card key={a.id} id={`ann-${a.id}`} style={{marginBottom:6,padding:"9px 12px"}}>
+                  <div onClick={()=>toggleAnn(a.id)} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
                     {a.poll&&<span style={{fontSize:13,flexShrink:0}}>🗳</span>}
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:10,color:"var(--po-dim)"}}>{a.authorName} · {timeAgo(a.createdAt)}</div>
@@ -11049,19 +11049,22 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <SmBtn label="✓ Done" onClick={()=>{setSAM(false);setAddMemberSearch("");}} color="#34D399" style={{width:"100%"}}/>
         </div>
       </div>}
-      {showAddG&&<Card style={{marginBottom:10}}>
-        <div style={{fontSize:12,color:"#F59E0B",marginBottom:8}}>⚠️ Nickname and phone required for guests</div>
-        {[["Nickname *","n","text"],["Full Name","name","text"],["Phone *","p","tel"]].map(([l,k,t])=><input key={k} type={t} value={gf[k]} onChange={e=>setGf(p=>({...p,[k]:e.target.value}))} placeholder={l} className="po-inp" style={{width:"100%",background:"var(--po-inp)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:6,boxSizing:"border-box",border:`0.5px solid ${(k==="n"||k==="p")&&!gf[k]?"#EF444466":"var(--po-bdr)"}`}}/>)}
-        <div style={{marginBottom:8}}>
-          <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Initial USR (editable)</div>
-          <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <input type="range" min="0" max="100" value={gf.usr} onChange={e=>setGf(p=>({...p,usr:e.target.value}))} style={{flex:1}}/>
-            <span style={{fontSize:14,fontWeight:700,color:"#6366F1",minWidth:32}}>{gf.usr}</span>
+      {showAddG&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setSAG(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:380,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+          <div style={{fontWeight:700,fontSize:14,marginBottom:10,color:"var(--po-text)"}}>Add Guest</div>
+          <div style={{fontSize:12,color:"#F59E0B",marginBottom:8}}>⚠️ Nickname and phone required for guests</div>
+          {[["Nickname *","n","text"],["Full Name","name","text"],["Phone *","p","tel"]].map(([l,k,t])=><input key={k} autoFocus={k==="n"} type={t} value={gf[k]} onChange={e=>setGf(p=>({...p,[k]:e.target.value}))} placeholder={l} className="po-inp" style={{width:"100%",background:"var(--po-inp)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:6,boxSizing:"border-box",border:`0.5px solid ${(k==="n"||k==="p")&&!gf[k]?"#EF444466":"var(--po-bdr)"}`}}/>)}
+          <div style={{marginBottom:8}}>
+            <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Initial USR (editable)</div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input type="range" min="0" max="100" value={gf.usr} onChange={e=>setGf(p=>({...p,usr:e.target.value}))} style={{flex:1}}/>
+              <span style={{fontSize:14,fontWeight:700,color:"#6366F1",minWidth:32}}>{gf.usr}</span>
+            </div>
           </div>
+          <Btn label="Add Guest" primary onClick={()=>{if(gf.n&&gf.p&&act.addGuest(gf)){setGf({n:"",name:"",p:"",usr:"50"});}}} style={{width:"100%"}}/>
+          <SmBtn label="✓ Done" onClick={()=>setSAG(false)} color="#34D399" style={{width:"100%",marginTop:8}}/>
         </div>
-        <Btn label="Add Guest" primary onClick={()=>{if(gf.n&&gf.p&&act.addGuest(gf)){setGf({n:"",name:"",p:"",usr:"50"});}}} style={{width:"100%"}}/>
-        <SmBtn label="✓ Done" onClick={()=>setSAG(false)} color="#34D399" style={{width:"100%",marginTop:8}}/>
-      </Card>}</>}
+      </div>}</>}
       {isOpen&&cinCnt>0&&<><ST>Checked In ({cinCnt})</ST>{effEv.checkedIn.map(uid=>{const u=users.find(u=>u.id===uid);if(!u)return null;return <Card key={uid} style={{cursor:onViewProfile?"pointer":"default"}}><div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}><Av u={u} size={34}/><div style={{flex:1}}><div style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{u.nickname}</div><div style={{fontSize:11,color:"var(--po-dim)"}}>USR {u.usr}</div></div><Bdg label="✓ In" color="#34D399"/></div></Card>;})}</>}
       {isCT&&plan?.waitlisted?.length>0&&<>
         <ST>⏳ Waiting List (odd player count)</ST>

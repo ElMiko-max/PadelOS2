@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.06 — Bug: collapsed old announcements couldn't be reopened + Add Guest is now a modal
+
+- **Real bug fixed:** the collapsed old-announcement row (V0.14.05) didn't respond to taps at all — the click handler was placed on the `Card` component, which doesn't accept/forward an `onClick` prop (silently dropped). Moved the handler onto an element inside the card instead.
+- **"+ Add Guest" in the Players tab is now a modal box** instead of a long inline section, same treatment as "+ Add Member" in V0.14.04.
+
+---
+
 ## V0.14.05 — Old Community Announcements now auto-collapse with a small preview
 
 - **New feature:** in the Community's Announcements tab, only the 3 most recent messages/polls stay open like today — anything older now **auto-collapses** into a single-row hint: author name, date, the start of the text, and either a reply count (plain message) or a voter count (poll).

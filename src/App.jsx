@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.13.05";
+const APP_VERSION = "V0.14.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6807,19 +6807,28 @@ export default function Matchkeeper() {
 
   // CT
   const swapCTBreak=(cid,eid,ri,tidA,tidB)=>{
-    // Swap break assignment between two teams in an ungenerated round
+    // Swap break assignment between two teams in an ungenerated round.
+    // Same stale-plan bug class as toggleCTBreakFirm above (fixed V0.13.04) — this one was
+    // missed at the time, confirmed still causing "flicker" reports on V0.13.05. Pre-check
+    // via a snapshot read for the fast-fail toast, but the actual write always derives from
+    // the transaction's own fresh read so it can never stomp a concurrent change.
     const ev=getEv(cid,eid);if(!ev?.plan)return;
     const firmHere=(ev.plan.firmBreaks||{})[ri]||[];
     if(firmHere.includes(tidA)||firmHere.includes(tidB)){toast2("That team's break is Firm-locked — unlock it first","err");return;}
-    const breakPlan=ev.plan.breakPlan.map((round,i)=>{
-      if(i!==ri)return round;
-      const hasA=round.includes(tidA), hasB=round.includes(tidB);
-      let next=[...round];
-      if(hasA&&!hasB){next=next.filter(id=>id!==tidA);next.push(tidB);}
-      else if(hasB&&!hasA){next=next.filter(id=>id!==tidB);next.push(tidA);}
-      return next;
-    });
-    setPlan(cid,eid,{...ev.plan,breakPlan});
+    updEvent(cid,eid,e=>{
+      if(!e.plan)return e;
+      const firmNow=(e.plan.firmBreaks||{})[ri]||[];
+      if(firmNow.includes(tidA)||firmNow.includes(tidB))return e;
+      const breakPlan=e.plan.breakPlan.map((round,i)=>{
+        if(i!==ri)return round;
+        const hasA=round.includes(tidA), hasB=round.includes(tidB);
+        let next=[...round];
+        if(hasA&&!hasB){next=next.filter(id=>id!==tidA);next.push(tidB);}
+        else if(hasB&&!hasA){next=next.filter(id=>id!==tidB);next.push(tidA);}
+        return next;
+      });
+      return {...e,plan:{...e.plan,breakPlan}};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Break swapped ✓");
   };
   // Real bug, confirmed 2026-08-31 ("flickering" toggle that "doesn't work well"): this used to
@@ -6846,9 +6855,13 @@ export default function Matchkeeper() {
     toast2(wasFirm?"Break unlocked":"Break locked as Firm 🔐 — Regenerate will keep it ✓");
   };
   const setTeamBreakPref=(cid,eid,tid,pref)=>{
-    const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const bump=t=>t.id===tid?{...t,breakPref:pref}:t;
-    setPlan(cid,eid,{...ev.plan,teams:(ev.plan.teams||[]).map(bump),sorted:(ev.plan.sorted||[]).map(bump),groupA:(ev.plan.groupA||[]).map(bump),groupB:(ev.plan.groupB||[]).map(bump)});
+    // Same stale-plan bug class as swapCTBreak/toggleCTBreakFirm above — always derive from
+    // the transaction's own fresh read, never a snapshot captured at click-time.
+    updEvent(cid,eid,e=>{
+      if(!e.plan)return e;
+      const bump=t=>t.id===tid?{...t,breakPref:pref}:t;
+      return {...e,plan:{...e.plan,teams:(e.plan.teams||[]).map(bump),sorted:(e.plan.sorted||[]).map(bump),groupA:(e.plan.groupA||[]).map(bump),groupB:(e.plan.groupB||[]).map(bump)}};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Team break preference updated ✓");
   };
   // Recorded per player-combo (not per-event) so the same two players get their chosen
@@ -6932,28 +6945,32 @@ export default function Matchkeeper() {
     toast2("Teams updated ✓");
   };
   const regenCTBreaks=(cid,eid)=>{
-    const ev=getEv(cid,eid);if(!ev?.plan)return;
-    const plan=ev.plan;
-    const generatedRounds=plan.rounds.length;
-    const teams=plan.sorted||plan.teams;
-    const tc=plan.courts;
-    const total=plan.maxRounds||plan.breakPlan.length;
-    const newBreakPlan=[...plan.breakPlan];
+    // Same stale-plan bug class as swapCTBreak/toggleCTBreakFirm above — build the whole
+    // regenerated plan from the transaction's own fresh read, not a snapshot from getEv().
+    updEvent(cid,eid,e=>{
+      if(!e.plan)return e;
+      const plan=e.plan;
+      const generatedRounds=plan.rounds.length;
+      const teams=plan.sorted||plan.teams;
+      const tc=plan.courts;
+      const total=plan.maxRounds||plan.breakPlan.length;
+      const newBreakPlan=[...plan.breakPlan];
 
-    // Preserve manually-set breaks from already-generated rounds
-    // (the last generated round's onBreak may have been manually swapped from Matches tab)
-    for(let i=0;i<generatedRounds;i++){
-      const r=plan.rounds[i];
-      if(r.onBreak&&r.onBreak.length>0){
-        newBreakPlan[i]=(r.onBreakIds||r.onBreak.map(t=>t.id||t.teamId));
+      // Preserve manually-set breaks from already-generated rounds
+      // (the last generated round's onBreak may have been manually swapped from Matches tab)
+      for(let i=0;i<generatedRounds;i++){
+        const r=plan.rounds[i];
+        if(r.onBreak&&r.onBreak.length>0){
+          newBreakPlan[i]=(r.onBreakIds||r.onBreak.map(t=>t.id||t.teamId));
+        }
       }
-    }
 
-    // Regenerate only the ungenerated rounds, starting fresh from where we left off
-    // Pass the current state (including manually-set breaks) as the seed for fair distribution
-    const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds),plan.firmBreaks||{});
-    for(let i=generatedRounds;i<total;i++) newBreakPlan[i]=fresh[i];
-    setPlan(cid,eid,{...plan,breakPlan:newBreakPlan});
+      // Regenerate only the ungenerated rounds, starting fresh from where we left off
+      // Pass the current state (including manually-set breaks) as the seed for fair distribution
+      const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds),plan.firmBreaks||{});
+      for(let i=generatedRounds;i<total;i++) newBreakPlan[i]=fresh[i];
+      return {...e,plan:{...plan,breakPlan:newBreakPlan}};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Break schedule regenerated ✓");
   };
 

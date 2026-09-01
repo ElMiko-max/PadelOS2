@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.00 — Real bug (round 2): break swap/regenerate in Closed Teams Ladder were still flickering
+
+- **Real bug fixed:** the V0.13.04 fix only covered the Firm-lock toggle button — the exact same bug was still live in three other spots on the Closed Teams Ladder Breaks tab: the manual break swap between two teams, the "Regenerate Breaks" button, and team break preference. All three were saving based on a stale copy of the plan instead of the live one at save-time — the same root cause that shows up as "flickering."
+- **The fix:** all three now always save against the actual current plan, the same way the Firm-lock toggle was fixed in V0.13.04.
+
+---
+
 ## V0.13.05 — Real bug: sharing event results to WhatsApp was failing on Android
 
 - **Real bug fixed:** the "Share Results" button after closing an event was failing specifically on WhatsApp, and specifically on the Android app (web worked fine) — WhatsApp showed its own "Can't send empty message" toast even though Matchkeeper's own toast said "Shared ✓" (the app's own share genuinely succeeded). Cause: the app deliberately sent an empty caption (to stop WhatsApp from duplicating the same caption under every image) — but an empty string is still a real, present value, not a missing one, and WhatsApp treats that as "trying to send a blank message" and refuses it.

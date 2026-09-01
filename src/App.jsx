@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.00";
+const APP_VERSION = "V0.14.01";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6764,6 +6764,11 @@ export default function Matchkeeper() {
       return{...ev,plan:{...ev.plan,rounds,breakPlan:newBreakPlan}};
     });toast2("Swapped ✓ — tap Regenerate in Breaks tab to update future rounds");
   };
+  // Same stale-plan bug class as the CT Breaks tab (swapCTBreak/regenCTBreaks/toggleCTBreakFirm,
+  // fixed V0.13.04/V0.14.00) was live here too — CI's break editing just never got reported
+  // because its UI is one-cell-at-a-time rather than CT's swap/regenerate/lock interactions.
+  // Toast text below is still computed from the click-time read (same as toggleCTBreakFirm) —
+  // informational only; the actual write always derives from the transaction's own fresh plan.
   const editBreakCI=(cid,eid,ri,uid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return;
     const bpr=Math.max(0,splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.length-ev.courts*4);
@@ -6773,35 +6778,48 @@ export default function Matchkeeper() {
 
     if(!isFirm&&!isSuggested){
       // none -> suggested: same lenient toggle as before, just a proposal
-      const breakPlan=ev.plan.breakPlan.map((round,i)=>i!==ri?round:[...round,uid]);
-      const newCount=breakPlan[ri].length;
+      const newCount=(ev.plan.breakPlan[ri]||[]).length+1;
       if(newCount!==bpr)toast2(`Warning: R${ri+1} has ${newCount} breaks (needs ${bpr})`,"err");
       else toast2("Break suggested — tap again to lock it Firm");
-      const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:ev.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
-      setPlan(cid,eid,{...ev.plan,breakPlan,rounds});
+      updEvent(cid,eid,e=>{
+        if(!e.plan)return e;
+        const breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:[...round,uid]);
+        const rounds=e.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:e.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
+        return {...e,plan:{...e.plan,breakPlan,rounds}};
+      },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     }else if(isSuggested){
       // suggested -> firm: hard validation, only as many Firm slots as the round has break slots
       const currentFirmCount=(firmBreaks[ri]||[]).length;
       if(currentFirmCount+1>bpr){toast2(`Can't lock — R${ri+1} only has ${bpr} break slot(s) total`,"err");return;}
-      const newFirmBreaks={...firmBreaks,[ri]:[...(firmBreaks[ri]||[]),uid]};
-      setPlan(cid,eid,{...ev.plan,firmBreaks:newFirmBreaks});
       toast2("Break locked as Firm 🔐 — Regenerate will keep it ✓");
+      updEvent(cid,eid,e=>{
+        if(!e.plan)return e;
+        const fb=e.plan.firmBreaks||{};
+        if((fb[ri]||[]).includes(uid))return e;
+        return {...e,plan:{...e.plan,firmBreaks:{...fb,[ri]:[...(fb[ri]||[]),uid]}}};
+      },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     }else{
       // firm -> none: clear from both breakPlan and firmBreaks
-      const newFirmBreaks={...firmBreaks,[ri]:(firmBreaks[ri]||[]).filter(id=>id!==uid)};
-      const breakPlan=ev.plan.breakPlan.map((round,i)=>i!==ri?round:round.filter(id=>id!==uid));
-      const rounds=ev.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:ev.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
-      setPlan(cid,eid,{...ev.plan,breakPlan,firmBreaks:newFirmBreaks,rounds});
       toast2("Break cleared");
+      updEvent(cid,eid,e=>{
+        if(!e.plan)return e;
+        const fb=e.plan.firmBreaks||{};
+        const newFirmBreaks={...fb,[ri]:(fb[ri]||[]).filter(id=>id!==uid)};
+        const breakPlan=e.plan.breakPlan.map((round,i)=>i!==ri?round:round.filter(id=>id!==uid));
+        const rounds=e.plan.rounds.map((r,rr)=>rr!==ri?r:{...r,onBreak:e.plan.sorted.filter(p=>breakPlan[ri].includes(p.userId)),onBreakIds:breakPlan[ri]});
+        return {...e,plan:{...e.plan,breakPlan,firmBreaks:newFirmBreaks,rounds}};
+      },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     }
   };
   const regenerateBreaksCI=(cid,eid)=>{
-    const ev=getEv(cid,eid);if(!ev?.plan)return;
-    // generatedRounds = how many rounds exist (including pending ones not played yet)
-    // We lock all generated rounds (their breaks are fixed) and only recompute open ones
-    const generatedRounds=ev.plan.rounds.length;
-    const newBreakPlan=regenerateBreakPlan(ev.plan,generatedRounds,ev.retiredIds||[]);
-    setPlan(cid,eid,{...ev.plan,breakPlan:newBreakPlan});
+    updEvent(cid,eid,e=>{
+      if(!e.plan)return e;
+      // generatedRounds = how many rounds exist (including pending ones not played yet)
+      // We lock all generated rounds (their breaks are fixed) and only recompute open ones
+      const generatedRounds=e.plan.rounds.length;
+      const newBreakPlan=regenerateBreakPlan(e.plan,generatedRounds,e.retiredIds||[]);
+      return {...e,plan:{...e.plan,breakPlan:newBreakPlan}};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Break plan regenerated ✓");
   };
 

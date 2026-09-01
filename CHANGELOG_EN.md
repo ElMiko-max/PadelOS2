@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.01 — Same flicker bug existed in CI (Round Robin) too, not just CT
+
+- **Real bug fixed:** after fixing V0.14.00 for the Closed Teams Ladder Breaks tab, the natural question was "what about CI?" — confirmed the exact same bug was live in CI's manual break editing (`editBreakCI`, the regular Round Robin Breaks tab) and its "Regenerate" button (`regenerateBreaksCI`). Never reported because CI's break UI is one-cell-at-a-time rather than CT's swap/lock interactions, but the same root cause.
+- **The fix:** identical fix — always saves against the actual current plan.
+
+---
+
 ## V0.14.00 — Real bug (round 2): break swap/regenerate in Closed Teams Ladder were still flickering
 
 - **Real bug fixed:** the V0.13.04 fix only covered the Firm-lock toggle button — the exact same bug was still live in three other spots on the Closed Teams Ladder Breaks tab: the manual break swap between two teams, the "Regenerate Breaks" button, and team break preference. All three were saving based on a stale copy of the plan instead of the live one at save-time — the same root cause that shows up as "flickering."

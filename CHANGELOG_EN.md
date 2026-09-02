@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.17 — Real bug: deleted events still counted toward "played before" (head-to-head)
+
+- **Real bug fixed (confirmed directly against real production data):** deleting an event in the app doesn't actually remove it from the database — it just sets a `deleted` flag and keeps its full history (rounds, matches) intact. Every other place in the app explicitly excludes deleted events except the "played before" (head-to-head) calculation — that one ignored the flag entirely. Found a real case on production: a deleted test event had the exact same match results as a real, active event, which could have shown an incorrect "played before" badge sourced from data that was supposed to be gone.
+- **The fix:** a deleted event no longer counts toward head-to-head history at all — for both CI and CT.
+- **Checked real production data after the fix:** out of 168 decided matches across all real completed events, no genuine repeat has happened yet — so it's not that the badge doesn't work, it just hasn't had a real case to show yet.
+
+---
+
 ## V0.14.16 — Real bug: Match Mode's whistle was playing on the wrong volume stream (not Alarm)
 
 - **Real bug fixed (confirmed via a live logcat capture during an actual test):** the whistle alarm was firing exactly on schedule (the alarm itself, the notification, and the vibration all worked correctly) — but this line showed up in the log at the exact firing moment: `trying to set audio attributes called in state 8`. Cause: the code used `MediaPlayer.create()` (which prepares the sound file to play immediately as part of creating it), then tried to mark it as "Alarm" audio afterward — by then it was too late, and Android silently rejected the request, so the sound played at the app's regular (Media) volume instead of the Alarm volume. If media volume was low or muted, the whistle wouldn't be heard even though the vibration fired normally.

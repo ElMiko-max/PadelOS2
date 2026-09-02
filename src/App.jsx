@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.16";
+const APP_VERSION = "V0.14.17";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1187,7 +1187,13 @@ function calcExactHeadToHeadCI(comms, sideAIds, sideBIds, opts){
   const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_ind"||!ev.plan) return;
+    // Real bug, confirmed 2026-09-03 via direct DB inspection: deleteEvent is a soft delete
+    // (sets ev.deleted, keeps the doc and its full plan/rounds intact) — every other consumer
+    // in this file filters !ev.deleted explicitly (event lists, stats, counts), but this
+    // function never did, so a deleted event's matches still silently counted as real prior
+    // meetings. Archived events are deliberately NOT excluded here — they're still genuine
+    // history (same reasoning as the event-count stat at ~12246), only deleted ones aren't.
+    if(ev.type!=="closed_ind"||!ev.plan||ev.deleted) return;
     const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
     if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
     ev.plan.rounds.forEach((r,ri)=>{
@@ -1216,7 +1222,8 @@ function calcExactHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
   const sameSet = (arr, set) => arr.length===set.size && arr.every(id=>set.has(id));
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
-    if(ev.type!=="closed_teams"||!ev.plan) return;
+    // Same fix as calcExactHeadToHeadCI above — deleted events must not count as history.
+    if(ev.type!=="closed_teams"||!ev.plan||ev.deleted) return;
     const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
     if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
     ev.plan.rounds.forEach((r,ri)=>{

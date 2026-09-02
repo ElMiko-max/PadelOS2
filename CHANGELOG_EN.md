@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.14.16 — Real bug: Match Mode's whistle was playing on the wrong volume stream (not Alarm)
+
+- **Real bug fixed (confirmed via a live logcat capture during an actual test):** the whistle alarm was firing exactly on schedule (the alarm itself, the notification, and the vibration all worked correctly) — but this line showed up in the log at the exact firing moment: `trying to set audio attributes called in state 8`. Cause: the code used `MediaPlayer.create()` (which prepares the sound file to play immediately as part of creating it), then tried to mark it as "Alarm" audio afterward — by then it was too late, and Android silently rejected the request, so the sound played at the app's regular (Media) volume instead of the Alarm volume. If media volume was low or muted, the whistle wouldn't be heard even though the vibration fired normally.
+- **The fix:** the sound is now set up in the correct order (marked as "Alarm" before it's prepared to play), so it actually plays at alarm volume now — should be noticeably louder and clearer.
+- **Also checked the sound file itself** (`mm_whistle.wav`) — it's already mastered close to the maximum possible level (no real headroom left to gain), so the volume issue was entirely about which stream it played on, not the file itself.
+
+---
+
 ## V0.14.15 — Breaks tab now computes the correct roster live, no button tap required first
 
 - **Change per admin report ("still not solved"):** V0.14.14's fix only corrected `plan.sorted` when the admin tapped "Next Round" or "Regenerate Future" — so if nobody had tapped that yet since the update, the screen would still show the old data. Confirmed against event #203's real data that this was exactly what happened.

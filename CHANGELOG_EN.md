@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.01 — Real bugs: 5 people shown on break in a 3-court event, and the notification banner covering the event name
+
+- **Real bug: more players marked "on break" than the event should ever have.** Confirmed via a direct database query that `plan.sorted` had picked up extra players who briefly registered and then got bumped back to the waiting list right around the moment "Next Round" was tapped — and were still wrongly counted as "real" roster members (`everAppeared`) because the check treated any generated round, even one that hadn't been played yet, as proof someone belonged. The check now only counts rounds that have actually been *played* (every match has a recorded winner) as real history, which stops a burst of near-simultaneous registrations from inflating who's owed a break.
+- **The "new version" / "notifications are off" banner now collapses into a small floating icon on the left edge once you scroll**, instead of staying pinned over the event name and page content below it. Tapping the icon still does exactly what it did before (refresh the app / open Settings) — it just no longer blocks the view.
+
+---
+
 ## V0.15.00 — Big new feature: the "Dynamic Break" system for CI and CT Ladder
 
 - **A brand-new, opt-in break engine called "⚡ Dynamic"** — an alternative to today's system (now called "Classic"), available in the Breaks tab for any CI or CT Ladder event.

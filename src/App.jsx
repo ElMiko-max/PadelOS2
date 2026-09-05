@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.00";
+const APP_VERSION = "V0.15.01";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -713,8 +713,19 @@ function syncCIPlanRoster(plan, ev, regsForEvent, comm, users) {
   // removed the phantom entry, so they kept eating a real match/break slot forever despite
   // showing as waitlisted everywhere else in the app. Retired players are exempt — they did
   // play before retiring, so they keep their history regardless of current active status.
+  // Only PLAYED (completed, every match has a winner) rounds count as real footprint — real bug,
+  // confirmed 2026-09-05 on a live Dynamic-engine event: a burst of near-simultaneous admin
+  // registrations landing in the same moment "Next Round" was tapped let 2 people who were only
+  // transiently active get placed into that PENDING round (no results recorded yet) before
+  // being bumped back to the waiting list a moment later. Counting a still-unplayed round as
+  // "real history" made them permanently sticky in plan.sorted, inflating bpr for every round
+  // after (5 breaks shown on a 15-player/3-court event instead of 3) even though they'd already
+  // reverted to waitlisted. A round's roster isn't truly immutable fact until it's actually been
+  // played — until then, this sync is free to correct itself on the next call.
   const everAppeared = new Set();
   plan.rounds.forEach(r => {
+    const played = (r.matches||[]).length>0 && r.matches.every(m=>m.winner!=null);
+    if (!played) return;
     (r.matches||[]).forEach(m => { [...(m.teamA||[]), ...(m.teamB||[])].forEach(p=>everAppeared.add(p.userId)); });
     (r.onBreakIds||[]).forEach(id=>everAppeared.add(id));
   });
@@ -7440,6 +7451,20 @@ export default function Matchkeeper() {
     ro.observe(el);
     return () => ro.disconnect();
   }, [newVersion, notifDisabled]);
+  // Real complaint, 2026-09-05: being sticky right under the TopBar meant this banner group
+  // stayed pinned over the event name / page header while everything else scrolled underneath
+  // — it doesn't actually leave any room to scroll away from, unlike the TopBar itself. Past a
+  // small scroll threshold it now collapses to a small floating coin instead (left edge, away
+  // from the existing ⚡ quick-action button which already lives bottom-right) — same
+  // collapse-to-icon idea already used for the iOS install overlay elsewhere in this file.
+  const [bannersCollapsed, setBannersCollapsed] = useState(false);
+  useEffect(() => {
+    if (!newVersion && !notifDisabled) return;
+    const onScroll = () => setBannersCollapsed(window.scrollY > 60);
+    window.addEventListener("scroll", onScroll, {passive:true});
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [newVersion, notifDisabled]);
 
   if (authLoading || (authUser && !dataLoaded)) {
     return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -7669,21 +7694,29 @@ export default function Matchkeeper() {
             already uses, so it pins directly under the (also sticky) TopBar instead of
             scrolling away with the rest of the content. An opaque background is load-bearing
             here: without it, whatever scrolls underneath would show through the translucent
-            green while pinned. */}
-        {(newVersion||notifDisabled)&&<div ref={stickyBannerRef} style={{position:"sticky",top:60,zIndex:41,background:"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:12,marginBottom:0}}>
-          {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D399DD",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-            <span style={{fontSize:16}}>🆕</span>
-            <span style={{flex:1,color:"#0E1117",fontWeight:600}}>New version {newVersion} is available — tap to refresh.</span>
-            <span style={{fontWeight:700,color:"#0E1117"}}>↻</span>
-          </div>}
-          {/* Persistent until the OS/browser permission is actually granted — see the
-              notifDisabled effect above. Tapping it goes straight to Settings, where the
-              existing Enable-notifications flow already lives. */}
-          {notifDisabled&&<div onClick={()=>{setNav("settings");setNotifMenu(false);}} style={{fontSize:12,color:"#78350F",background:"#FBBF24DD",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-            <span style={{fontSize:16}}>🔔</span>
-            <span style={{flex:1,fontWeight:600}}>Notifications are off — tap to enable them in Settings.</span>
-            <span style={{fontWeight:700}}>›</span>
-          </div>}
+            green while pinned. Once scrolled (bannersCollapsed), the sticky slot itself
+            collapses to ~0 height and the same content re-appears as small floating coins on
+            the left edge instead — see the effect above for why. */}
+        {(newVersion||notifDisabled)&&<div ref={stickyBannerRef} style={{position:"sticky",top:60,zIndex:41,background:bannersCollapsed?"transparent":"var(--po-bg)",marginLeft:-12,marginRight:-12,paddingLeft:12,paddingRight:12,paddingTop:bannersCollapsed?0:12,marginBottom:0}}>
+          {!bannersCollapsed&&<>
+            {newVersion&&<div onClick={()=>window.location.reload()} style={{fontSize:12,color:"#34D399",background:"#34D399DD",border:"0.5px solid #34D39944",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+              <span style={{fontSize:16}}>🆕</span>
+              <span style={{flex:1,color:"#0E1117",fontWeight:600}}>New version {newVersion} is available — tap to refresh.</span>
+              <span style={{fontWeight:700,color:"#0E1117"}}>↻</span>
+            </div>}
+            {/* Persistent until the OS/browser permission is actually granted — see the
+                notifDisabled effect above. Tapping it goes straight to Settings, where the
+                existing Enable-notifications flow already lives. */}
+            {notifDisabled&&<div onClick={()=>{setNav("settings");setNotifMenu(false);}} style={{fontSize:12,color:"#78350F",background:"#FBBF24DD",border:"0.5px solid #F59E0B44",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+              <span style={{fontSize:16}}>🔔</span>
+              <span style={{flex:1,fontWeight:600}}>Notifications are off — tap to enable them in Settings.</span>
+              <span style={{fontWeight:700}}>›</span>
+            </div>}
+          </>}
+        </div>}
+        {bannersCollapsed&&<div style={{position:"fixed",left:10,top:70,zIndex:42,display:"flex",flexDirection:"column",gap:8}}>
+          {newVersion&&<div onClick={()=>window.location.reload()} title={`New version ${newVersion} available — tap to refresh`} style={{width:38,height:38,borderRadius:"50%",background:"#34D399",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,cursor:"pointer",boxShadow:"0 2px 10px rgba(0,0,0,0.35)"}}>🆕</div>}
+          {notifDisabled&&<div onClick={()=>{setNav("settings");setNotifMenu(false);}} title="Notifications are off — tap to enable them" style={{width:38,height:38,borderRadius:"50%",background:"#FBBF24",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17,cursor:"pointer",boxShadow:"0 2px 10px rgba(0,0,0,0.35)"}}>🔔</div>}
         </div>}
         {dataDegraded&&<div style={{fontSize:12,color:"#FBBF24",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,padding:"10px 12px",marginBottom:12}}>⚠️ Some data didn't load fully this session (connection issue). Please close and reopen the app before adding or editing anything — changes made now may not be saved.{diagText&&<div style={{marginTop:6,fontSize:10,fontFamily:"monospace",color:"#FDE68A",wordBreak:"break-word"}}>{diagText}</div>}</div>}
         {nav==="communities"&&view.screen==="list"&&<CommList comms={comms} me={me} dark={dark} TH={TH} onOpen={id=>go("comm",{cid:id})} onCreate={()=>go("createComm")}/>}

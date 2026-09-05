@@ -4,6 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.00 — Big new feature: the "Dynamic Break" system for CI and CT Ladder
+
+- **A brand-new, opt-in break engine called "⚡ Dynamic"** — an alternative to today's system (now called "Classic"), available in the Breaks tab for any CI or CT Ladder event.
+- **The idea:** builds the initial schedule exactly like today (time preferences, locks, everything) — but from Round 2 onward, decides who actually takes a break based on who just lost, starting from the top court. If none of that court's losers still qualify for another break (already used their quota, or just came off a break last round), it moves to the next court down, and so on. If literally no eligible losers remain anywhere, it falls back to winners, again starting from the top court.
+- **Core rules confirmed with the admin:** locked (🔐 Firm) breaks always win in both engines. "No break two rounds in a row" is an absolute rule with no exception. Overall fairness (max breaks minus min breaks never more than 1) stays exactly as strict as the Classic engine. "Concentrate" now means systematically choosing who gets the "extra" break instead of it being arbitrary — both in the base allocation and in any tie within the dynamic engine.
+- **The engine can be switched at any time during play** — not a one-time choice made only at the start — via the "⚡ Engine" button in the Breaks tab, including as a safety fallback if needed.
+- **"Regenerate Future" keeps working exactly as before** for both engines — it still computes a full prediction for every round not yet generated; Dynamic only overrides who actually takes the break the moment the next round is really generated (unless that round is locked).
+- Cells showing a prediction that could still change (not locked) now carry a small ⚡ marker in the grid.
+- **The algorithm was verified with an actual simulation** before shipping — overall fairness and the no-consecutive-break rule both held correctly across a full test scenario.
+
+---
+
 ## V0.14.17 — Real bug: deleted events still counted toward "played before" (head-to-head)
 
 - **Real bug fixed (confirmed directly against real production data):** deleting an event in the app doesn't actually remove it from the database — it just sets a `deleted` flag and keeps its full history (rounds, matches) intact. Every other place in the app explicitly excludes deleted events except the "played before" (head-to-head) calculation — that one ignored the flag entirely. Found a real case on production: a deleted test event had the exact same match results as a real, active event, which could have shown an incorrect "played before" badge sourced from data that was supposed to be gone.

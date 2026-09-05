@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.14.17";
+const APP_VERSION = "V0.15.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -593,6 +593,33 @@ function prefDist(pref, r, totalRounds) {
   return 0;
 }
 
+// Shared cascade primitive for the Dynamic Break Engine (2026-09-05, CI + CT ladder): given an
+// ordered list of candidate tiers (e.g. [court1Losers, court2Losers, ..., court1Winners, ...]),
+// pick up to `needed` of them, tier by tier — a tier is only drawn from once filtered down to
+// currently-eligible members (remaining entitlement > 0 AND not on break last round — the
+// anti-consecutive rule is absolute, never bypassed), falling through to the next tier only
+// once the current one is exhausted. Within a tier, concentrated members go first (this is
+// what makes picking "the excess break player" systematic instead of random), then an exact
+// break-preference match for this round (same anchor idea as the Classic engine), then lowest
+// USR. Pure/stateless — callers own how tiers and eligibility inputs are built (CI: players by
+// userId; CT: teams by id).
+function pickFromTiers(tiers, needed, {getId, remaining, lastBreak, ri, concentrateSet, isAnchor}) {
+  const chosen = [];
+  for (const tier of tiers) {
+    if (chosen.length >= needed) break;
+    const eligible = tier.filter(x => (remaining[getId(x)]||0) > 0 && ri - (lastBreak[getId(x)] ?? -99) > 1);
+    eligible.sort((a,b) => {
+      const ca = concentrateSet.has(getId(a))?1:0, cb = concentrateSet.has(getId(b))?1:0;
+      if (ca !== cb) return cb - ca;
+      const pa = isAnchor(a)?1:0, pb = isAnchor(b)?1:0;
+      if (pa !== pb) return pb - pa;
+      return (a.usr ?? a.avgUsr ?? 0) - (b.usr ?? b.avgUsr ?? 0);
+    });
+    for (const x of eligible) { if (chosen.length >= needed) break; chosen.push(x); }
+  }
+  return chosen;
+}
+
 // ── CI Break Plan ─────────────────────────────────────
 function buildBreakPlan(players, courts, totalRounds) {
   const N = players.length, bpr = N - courts * 4;
@@ -707,12 +734,59 @@ function genRound1(players, courts, totalRounds) {
 // points, the instant they retire). If dropping one from a court's win/loss bucket leaves it
 // short, backfill from this round's own break pool (fewest breaks-so-far called up first, same
 // priority order buildBreakPlan itself uses) rather than leaving a court empty.
-function genNextRoundCI(plan, retiredIds=[]) {
+function genNextRoundCI(plan, retiredIds=[], concentrateOn=[]) {
   const {rounds,courts,breakPlan,sorted}=plan, ri=rounds.length, lastRound=rounds[ri-1];
   const ph=JSON.parse(JSON.stringify(plan.partnerHistory||{}));
   const lastRoundPairs=new Set();
   lastRound.matches.forEach(m=>{[m.teamA,m.teamB].forEach(team=>{const[a,b]=team;if(!a||!b)return;if(!ph[a.userId])ph[a.userId]={};if(!ph[b.userId])ph[b.userId]={};ph[a.userId][b.userId]=(ph[a.userId][b.userId]||0)+1;ph[b.userId][a.userId]=(ph[b.userId][a.userId]||0)+1;lastRoundPairs.add(pairKey(a.userId,b.userId));});});
-  const newBreakIds=breakPlan[ri]||[], buckets={};
+  // Dynamic Break Engine (2026-09-05): decide THIS round's break list live from who just lost,
+  // cascading top court downward, instead of the stored prediction breakPlan[ri] — firm locks
+  // always win regardless of engine. Entitlement math below is a deliberate, self-contained
+  // duplicate of regenerateBreakPlan's (not a shared refactor) — that function is Classic-only,
+  // already hardened through several real production bugs this session, and is left untouched
+  // on purpose. See pickFromTiers above and the Dynamic Break Engine plan for the full design.
+  const firmHere = (plan.firmBreaks||{})[ri] || [];
+  let newBreakIds;
+  if (plan.breakEngine === "dynamic") {
+    const activePlayers = sorted.filter(p=>!retiredIds.includes(p.userId));
+    const bpr = Math.max(0, activePlayers.length - courts*4);
+    const totalRounds = plan.totalRounds;
+    const breakCounts = {}, lastBreak = {};
+    activePlayers.forEach(p => { breakCounts[p.userId]=0; lastBreak[p.userId]=-99; });
+    rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(uid => { if(breakCounts[uid]!==undefined){ breakCounts[uid]++; lastBreak[uid]=rr; } }));
+    for (let r=ri; r<totalRounds; r++) (plan.firmBreaks?.[r]||[]).forEach(uid => { if(breakCounts[uid]!==undefined) breakCounts[uid]++; });
+    const totalSlots = bpr*totalRounds;
+    const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
+    const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
+    const concSet = new Set(concentrateOn);
+    const sortedByNeed = [...activePlayers].sort((a,b) => {
+      const ca=concSet.has(a.userId)?1:0, cb=concSet.has(b.userId)?1:0; if(ca!==cb) return cb-ca;
+      const needDiff=(breakCounts[b.userId]||0)-(breakCounts[a.userId]||0); if(needDiff!==0) return needDiff;
+      return a.usr-b.usr;
+    });
+    const ent = {};
+    sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
+    const remaining = {};
+    activePlayers.forEach(p => { remaining[p.userId] = Math.max(0, ent[p.userId]-(breakCounts[p.userId]||0)); });
+
+    const losersByCourt={}, winnersByCourt={};
+    lastRound.matches.forEach(m=>{
+      if(!m.winner) return;
+      const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+      losersByCourt[m.court]=L; winnersByCourt[m.court]=W;
+    });
+    const excludeIds = new Set([...firmHere, ...retiredIds]);
+    const tiers=[];
+    for(let c=1;c<=courts;c++) if(losersByCourt[c]) tiers.push(losersByCourt[c].filter(p=>!excludeIds.has(p.userId)));
+    for(let c=1;c<=courts;c++) if(winnersByCourt[c]) tiers.push(winnersByCourt[c].filter(p=>!excludeIds.has(p.userId)));
+    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,ri,totalRounds)<=0.5;
+    const needed = Math.max(0, bpr-firmHere.length);
+    const dynamicPicks = pickFromTiers(tiers, needed, {getId:p=>p.userId, remaining, lastBreak, ri, concentrateSet:concSet, isAnchor});
+    newBreakIds = [...firmHere, ...dynamicPicks.map(p=>p.userId)];
+  } else {
+    newBreakIds = breakPlan[ri]||[];
+  }
+  const buckets={};
   for(let c=1;c<=courts;c++) buckets[c]=[];
   lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
   for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
@@ -1498,12 +1572,57 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
 // retiring one player retires their whole team (fixed doubles, no "continue short-handed"
 // mode), so the whole team is dropped from every future round, with a break-pool backfill if a
 // court runs short — same approach as genNextRoundCI's individual-player version.
-function genNextCTLadder(plan, retiredIds=[]) {
+function genNextCTLadder(plan, retiredIds=[], concentrateOn=[]) {
   const { rounds, courts, sorted, breakPlan, teams } = plan;
   const retiredTeamIds = retiredIds.length ? (teams||[]).filter(t=>t.players?.some(p=>retiredIds.includes(p.userId))).map(t=>t.id) : [];
   const ri = rounds.length;
   const lastRound = rounds[ri-1];
-  const newBreakIds = breakPlan[ri] || [];
+  // Dynamic Break Engine (2026-09-05) — same design as genNextRoundCI, at team granularity.
+  // Entitlement math below is a deliberate self-contained duplicate of buildCTBreakPlan's
+  // regenerate path (not a shared refactor) — that function is Classic-only, already hardened
+  // through real production bugs this session, and is left untouched on purpose.
+  const firmHere = (plan.firmBreaks||{})[ri] || [];
+  let newBreakIds;
+  if (plan.breakEngine === "dynamic") {
+    const activeTeams = (sorted||teams).filter(t=>!retiredTeamIds.includes(t.id));
+    const bpr = Math.max(0, activeTeams.length - courts*2);
+    const totalRounds = plan.maxRounds || plan.totalRounds || breakPlan.length;
+    const breakCounts = {}, lastBreak = {};
+    activeTeams.forEach(t => { breakCounts[t.id]=0; lastBreak[t.id]=-99; });
+    rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(id => { if(breakCounts[id]!==undefined){ breakCounts[id]++; lastBreak[id]=rr; } }));
+    for (let r=ri; r<totalRounds; r++) (plan.firmBreaks?.[r]||[]).forEach(id => { if(breakCounts[id]!==undefined) breakCounts[id]++; });
+    const totalSlots = bpr*totalRounds;
+    const base = activeTeams.length ? Math.floor(totalSlots/activeTeams.length) : 0;
+    const extras = activeTeams.length ? totalSlots%activeTeams.length : 0;
+    const concSet = new Set(concentrateOn);
+    const isConcTeam = t => (t.players||[]).some(p=>concSet.has(p.userId!=null?p.userId:p.id));
+    const sortedByNeed = [...activeTeams].sort((a,b) => {
+      const ca=isConcTeam(a)?1:0, cb=isConcTeam(b)?1:0; if(ca!==cb) return cb-ca;
+      const needDiff=(breakCounts[b.id]||0)-(breakCounts[a.id]||0); if(needDiff!==0) return needDiff;
+      return (a.avgUsr||0)-(b.avgUsr||0);
+    });
+    const ent = {};
+    sortedByNeed.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
+    const remaining = {};
+    activeTeams.forEach(t => { remaining[t.id] = Math.max(0, ent[t.id]-(breakCounts[t.id]||0)); });
+
+    const losersByCourt={}, winnersByCourt={};
+    lastRound.matchesA.forEach(m=>{
+      if(!m.winner) return;
+      const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+      losersByCourt[m.court]=[L]; winnersByCourt[m.court]=[W];
+    });
+    const excludeIds = new Set([...firmHere, ...retiredTeamIds]);
+    const tiers=[];
+    for(let c=1;c<=courts;c++) if(losersByCourt[c]) tiers.push(losersByCourt[c].filter(t=>!excludeIds.has(t.id)));
+    for(let c=1;c<=courts;c++) if(winnersByCourt[c]) tiers.push(winnersByCourt[c].filter(t=>!excludeIds.has(t.id)));
+    const isAnchor = t => t.breakPref && t.breakPref!=="none" && prefDist(t.breakPref,ri,totalRounds)<=0.5;
+    const needed = Math.max(0, bpr-firmHere.length);
+    const dynamicPicks = pickFromTiers(tiers, needed, {getId:t=>t.id, remaining, lastBreak, ri, concentrateSet:concSet, isAnchor});
+    newBreakIds = [...firmHere, ...dynamicPicks.map(t=>t.id)];
+  } else {
+    newBreakIds = breakPlan[ri] || [];
+  }
   const onBreak = sorted.filter(t => newBreakIds.includes(t.id) && !retiredTeamIds.includes(t.id));
 
   // Court ladder: winners up, losers down
@@ -6824,7 +6943,7 @@ export default function Matchkeeper() {
   const setBreakPrefOverride=(cid,eid,uid,pref)=>{ updateRegistrationDoc(eid, uid, {breakPrefOverride:pref}).catch(e=>console.log("setBreakPrefOverride failed", e)); };
 
   // CI
-  const startCI=(cid,eid,n,dur)=>{
+  const startCI=(cid,eid,n,dur,breakEngine)=>{
     const ev=getEv(cid,eid);if(!ev)return;
     // Excludes anyone already marked retired/no-show (see retirePlayer) before Round 1 even
     // exists — otherwise marking someone no-show before Start CI had no actual effect, since
@@ -6843,7 +6962,7 @@ export default function Matchkeeper() {
       toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Start again`,"err");
       return;
     }
-    setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur});
+    setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur,breakEngine:breakEngine||"classic"});
   };
   const nextRoundCI=(cid,eid,silent)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return false;
@@ -6852,7 +6971,7 @@ export default function Matchkeeper() {
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
       const plan=syncCIPlanRoster(e.plan,e,registrationsRef.current.filter(r=>r.eventId===eid),comms.find(c=>c.id===cid),users);
-      return {...e,plan:genNextRoundCI(plan,e.retiredIds||[])};
+      return {...e,plan:genNextRoundCI(plan,e.retiredIds||[],e.breakConcentrateIds||[])};
     },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Next round generated ✓");
     return true;
@@ -6982,6 +7101,16 @@ export default function Matchkeeper() {
   const setBreakConcentrateIds=(cid,eid,ids)=>{
     updEvent(cid,eid,e=>({...e,breakConcentrateIds:ids}),{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2(ids.length?`Concentrating extra breaks on ${ids.length} player${ids.length>1?"s":""} — tap Regenerate to apply ✓`:"Concentrate breaks turned off — tap Regenerate to apply ✓");
+  };
+  // Dynamic Break Engine (2026-09-05), shared by CI and CT: a live, switchable per-event
+  // setting, not a one-time lock — the admin can flip Classic<->Dynamic at any point during
+  // play, including as a safety fallback if Dynamic ever misbehaves. Absent/undefined ==
+  // "classic" (zero behavior change for every existing event). Only affects which round gets
+  // generated NEXT (see genNextRoundCI/genNextCTLadder) — never rewrites an already-generated
+  // round, and "Regenerate Future" keeps working identically regardless of this setting.
+  const setBreakEngine=(cid,eid,engine)=>{
+    updEvent(cid,eid,e=>({...e,plan:{...e.plan,breakEngine:engine}}),{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
+    toast2(engine==="dynamic"?"Dynamic Break Engine on — next generated round picks breaks from who's losing ✓":"Classic Break Engine ✓");
   };
 
   // CT
@@ -7147,7 +7276,7 @@ export default function Matchkeeper() {
     toast2("Break schedule regenerated ✓");
   };
 
-  const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride)=>{
+  const startCT=(cid,eid,courts,fmt,dur,topPoolSizeOverride,breakEngine)=>{
     const ev=getEv(cid,eid);if(!ev)return;
     const comm=comms.find(c=>c.id===cid);
     const isFootballEv=ev.sport==="Football";
@@ -7179,7 +7308,7 @@ export default function Matchkeeper() {
     // Football's pitches are fixed at event creation (ev.pitchNames), not admin-selectable at
     // formation time the way padel's court count is — ignore whatever `courts` the caller passed.
     const effCourts=isFootballEv?Math.max(1,ev.pitchNames?.length||ev.courts||1):courts;
-    const newPlan={...generateCTPlan(players,effCourts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[]};
+    const newPlan={...generateCTPlan(players,effCourts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[],breakEngine:breakEngine||"classic"};
     setPlan(cid,eid,newPlan);
     toast2(isFootballEv?`Teams formed ✓ — ${ev.numTeams||newPlan.teams.length} teams`:`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
@@ -7202,7 +7331,21 @@ export default function Matchkeeper() {
   const toggleCTLeagueLive=(cid,eid,ri,mi,side)=>{updEvent(cid,eid,ev=>{if(!ev.plan)return ev;const rounds=ev.plan.rounds.map((r,rr)=>{if(rr!==ri)return r;const up=arr=>arr.map((m,mm)=>mm!==mi?m:{...m,live:!m.live});return{...r,matchesA:side==="A"?up(r.matchesA):r.matchesA,matchesB:side==="B"?up(r.matchesB):r.matchesB};});return{...ev,plan:{...ev.plan,rounds}};});};
   const applyPromo=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,applyPromoRelegation(ev.plan,ev.retiredIds||[]));toast2("Groups reshuffled ✓");};
   const nextFootballRound=(cid,eid)=>{const ev=getEv(cid,eid);if(!ev?.plan)return;setPlan(cid,eid,nextFootballLeagueRound(ev.plan));toast2("Next round generated ✓");};
-  const nextCTLadder=(cid,eid,silent)=>{const ev=getEv(cid,eid);if(!ev?.plan)return false;const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}setPlan(cid,eid,genNextCTLadder(ev.plan,ev.retiredIds||[]));toast2("Next match generated ✓");return true;};
+  const nextCTLadder=(cid,eid,silent)=>{
+    const ev=getEv(cid,eid);if(!ev?.plan)return false;
+    const lastRound=ev.plan.rounds[ev.plan.rounds.length-1];
+    if(!lastRound?.matchesA?.every(m=>m.winner!=null)){if(!silent)toast2("⚠️ Can't generate — some courts don't have a result yet");return false;}
+    // Same stale-plan-snapshot fix as nextRoundCI — matters here specifically because the
+    // Dynamic Break Engine toggle (and Concentrate) must be switchable live, mid-play, and take
+    // effect on the very next round generated, not whatever plan setPlan(getEv(...)) snapshotted
+    // at click-time.
+    updEvent(cid,eid,e=>{
+      if(!e.plan)return e;
+      return {...e,plan:genNextCTLadder(e.plan,e.retiredIds||[],e.breakConcentrateIds||[])};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
+    toast2("Next match generated ✓");
+    return true;
+  };
   const swapCTLadder=(cid,eid,ri,tidA,tidB)=>{
     updEvent(cid,eid,ev=>{
       if(!ev.plan)return ev;
@@ -7585,6 +7728,7 @@ export default function Matchkeeper() {
             onSetTeamBreakPref={(tid,pref)=>setTeamBreakPref(comm.id,event.id,tid,pref)}
             onRegenCTBreaks={()=>regenCTBreaks(comm.id,event.id)}
             onSetBreakConcentrateIds={ids=>setBreakConcentrateIds(comm.id,event.id,ids)}
+            onSetBreakEngine={engine=>setBreakEngine(comm.id,event.id,engine)}
             onBack={goBack}
             onCloseEvent={(scoringMethod)=>closeEvent(comm.id,event.id,scoringMethod)}
             onEditEvent={()=>go("editEvent",{cid:comm.id,eid:event.id})}
@@ -7593,7 +7737,7 @@ export default function Matchkeeper() {
             onCheckIn={uid=>checkIn(comm.id,event.id,uid)}
             onAddMember={uid=>addMember(comm.id,event.id,uid)}
             onAddGuest={g=>addGuest(comm.id,event.id,g)}
-            onStartCI={(n,dur)=>startCI(comm.id,event.id,n,dur)}
+            onStartCI={(n,dur,breakEngine)=>startCI(comm.id,event.id,n,dur,breakEngine)}
             onSetWinCI={(ri,mi,w,sA,sB)=>setWinCI(comm.id,event.id,ri,mi,w,sA,sB)}
             onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
@@ -7606,7 +7750,7 @@ export default function Matchkeeper() {
             onToggleEventPhotoLike={photoId=>toggleEventPhotoLike(comm.id,event.id,photoId)}
             onEditGuestUsr={(uid,usr)=>editGuestUsr(uid,usr)}
             onEditEventUsr={(uid,usr)=>editEventUsr(comm.id,event.id,uid,usr)}
-            onStartCT={(c,f,dur,topPoolSizeOverride)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride)}
+            onStartCT={(c,f,dur,topPoolSizeOverride,breakEngine)=>startCT(comm.id,event.id,c,f,dur,topPoolSizeOverride,breakEngine)}
             onSetWinCT={(ri,mi,side,w,sA,sB)=>setWinCT(comm.id,event.id,ri,mi,side,w,sA,sB)}
             onSetCTScorers={(ri,mi,side,scorersA,scorersB)=>setCTScorers(comm.id,event.id,ri,mi,side,scorersA,scorersB)}
             onToggleCTLeagueLive={(ri,mi,side)=>toggleCTLeagueLive(comm.id,event.id,ri,mi,side)}
@@ -9252,10 +9396,13 @@ function ConcentrateBreaksModal({players,selectedIds,onSave,onClose}){
     </div>
   </div>;
 }
-function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrateIds,isAdmin,onViewProfile}){
+function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConcentrateIds,onSetBreakEngine,isAdmin,onViewProfile}){
   const [cellMenuFor,setCellMenuFor]=useState(null); // {ri,uid,label,current} | null
   const [concOpen,setConcOpen]=useState(false);
   const concentrateIds=ev.breakConcentrateIds||[];
+  // Dynamic Break Engine (2026-09-05) — a live, switchable-any-time setting, not a one-time
+  // lock (see the Dynamic Break Engine plan). Absent == "classic", zero behavior change.
+  const breakEngine=plan.breakEngine||"classic";
   const retiredIds=new Set(ev.retiredIds||[]);
   // plan.sorted only updates when the admin taps Next Round/Regenerate (see syncCIPlanRoster)
   // — real complaint, 2026-09-02: displaying it as-is between those taps meant someone bumped
@@ -9305,7 +9452,12 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
   return <Card>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Break Schedule</div>
-      {isAdmin&&ev.status!=="completed"&&<div style={{display:"flex",gap:6}}>
+      {isAdmin&&ev.status!=="completed"&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="dynamic"?"classic":"dynamic")}
+          title="Switchable any time during play — takes effect on the next round generated"
+          style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #F59E0B44",background:breakEngine==="dynamic"?"#F59E0B22":"#F59E0B11",color:"#FBBF24",fontSize:12,fontWeight:500,cursor:"pointer"}}>
+          ⚡ Engine: {breakEngine==="dynamic"?"Dynamic":"Classic"}
+        </button>
         <button onClick={()=>setConcOpen(true)}
           style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #8B5CF644",background:concentrateIds.length?"#8B5CF622":"#8B5CF611",color:"#A78BFA",fontSize:12,fontWeight:500,cursor:"pointer"}}>
           🎯 Concentrate{concentrateIds.length?` (${concentrateIds.length})`:""}
@@ -9318,6 +9470,7 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
     </div>
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>
       {plan.totalRounds} rounds · {tc} courts · {bpr} on break/round · Break = {bp} pts
+      {breakEngine==="dynamic"&&<span style={{color:"#FBBF24"}}> · ⚡ Dynamic: not-yet-generated breaks below are a live prediction, decided for real once each round's results are in</span>}
     </div>
 
     {/* Legend */}
@@ -9393,11 +9546,16 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
               const icon = isFirm ? "🔐" : onB ? "🪑" : (isFrozen?"—":isPending?"·":"▶");
 
               const cellState=isFirm?"firm":onB?"suggested":"none";
+              // Not a lock — just a "this is a live prediction, may change" marker (see the
+              // Dynamic Break Engine plan). Firm cells are exempt since a lock always wins.
+              const isLivePrediction = isOpen && !isFirm && breakEngine==="dynamic";
               return <td key={ri} style={{padding:"3px 4px",textAlign:"center"}}>
                 <div
                   onClick={()=>canEdit&&setCellMenuFor({ri,uid:p.userId,label:p.nickname,current:cellState})}
-                  style={{width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
+                  title={isLivePrediction?"Live prediction — decided for real once this round is generated":undefined}
+                  style={{position:"relative",width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
                   {icon}
+                  {isLivePrediction&&<span style={{position:"absolute",top:-2,right:-2,fontSize:9}}>⚡</span>}
                 </div>
               </td>;
             })}
@@ -9542,13 +9700,15 @@ function ScorersModal({matchLabel,teamAName,teamBName,playersA,playersB,scorersA
 // ══════════════════════════════════════════════════════
 //  CT MATCHES TAB
 // ══════════════════════════════════════════════════════
-function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateIds,isAdmin}){
+function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateIds,onSetBreakEngine,isAdmin}){
   // 2026-09-01 redesign: the old tap-to-select-then-tap-another-team-to-swap interaction, plus
   // a separate tiny always-live lock icon, are both gone — replaced by the same explicit 3-state
   // modal as CI's BreaksTab (see BreakStateModal above). One tap on any open cell opens it.
   const [cellMenuFor, setCellMenuFor] = useState(null); // {ri, tid, label, current} | null
   const [concOpen, setConcOpen] = useState(false);
   const concentrateIds = ev?.breakConcentrateIds||[];
+  // Dynamic Break Engine (2026-09-05) — live, switchable any time (see the plan).
+  const breakEngine = plan.breakEngine||"classic";
   const teams = plan.sorted || plan.teams;
   // Flattened roster for the concentrate picker — concentration is chosen per-player (teams
   // don't exist before Start CT at every call site — see buildCTBreakPlan), keyed by userId.
@@ -9571,7 +9731,12 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
       <div style={{fontSize:11,color:"var(--po-dim)"}}>
         {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap a cell to set Playing/Break/Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
-      {isAdmin&&<div style={{display:"flex",gap:6}}>
+      {isAdmin&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="dynamic"?"classic":"dynamic")}
+          title="Switchable any time during play — takes effect on the next match generated"
+          style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:breakEngine==="dynamic"?"#F59E0B22":"#F59E0B11",color:"#FBBF24",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+          ⚡ Engine: {breakEngine==="dynamic"?"Dynamic":"Classic"}
+        </button>
         <button onClick={()=>setConcOpen(true)} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #8B5CF644",background:concentrateIds.length?"#8B5CF622":"#8B5CF611",color:"#A78BFA",fontSize:11,fontWeight:600,cursor:"pointer"}}>🎯 Concentrate{concentrateIds.length?` (${concentrateIds.length})`:""}</button>
         {onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
       </div>}
@@ -9602,13 +9767,16 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
               const isFirm=!isGenerated&&(firmBreaks[ri]||[]).includes(t.id);
               const canInteract=!isGenerated&&isAdmin;
               const cellState=isFirm?"firm":onBreak?"suggested":"none";
+              const isLivePrediction=!isGenerated&&!isFirm&&breakEngine==="dynamic";
               return <td key={ri}
                 onClick={()=>canInteract&&setCellMenuFor({ri,tid:t.id,label:teamLabel(t),current:cellState})}
-                style={{padding:"6px 4px",textAlign:"center",borderBottom:"0.5px solid var(--po-bdr)",cursor:canInteract?"pointer":"default",background:isFirm?"#8B5CF622":onBreak&&!isGenerated?"#F59E0B11":"transparent"}}>
+                title={isLivePrediction?"Live prediction — decided for real once this round is generated":undefined}
+                style={{position:"relative",padding:"6px 4px",textAlign:"center",borderBottom:"0.5px solid var(--po-bdr)",cursor:canInteract?"pointer":"default",background:isFirm?"#8B5CF622":onBreak&&!isGenerated?"#F59E0B11":"transparent"}}>
                 {onBreak
                   ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
+                {isLivePrediction&&<span style={{position:"absolute",top:0,right:1,fontSize:8}}>⚡</span>}
               </td>;
             })}
           </tr>)}
@@ -10096,7 +10264,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -10118,6 +10286,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     return mins;
   })();
   const [roundDur,setRDur] = useState(suggestedRoundDur);
+  const [startBreakEngine,setStartBreakEngine] = useState("classic"); // pre-start default only — see the live toggle in the Breaks tab
   // Total rounds is fully derived from the event's real booking window ÷ round duration —
   // no manual round-count picker; changing the duration recomputes this automatically.
   const totalR = Math.max(1, Math.round(eventBookingMins/(roundDur||20)));
@@ -10226,12 +10395,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setBreakPrefOverride: (uid,pref) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.map(r=>r.userId!==uid?r:{...r,breakPrefOverride:pref})}))
       : onSetBreakPrefOverride(uid,pref),
-    startCI: (n,dur) => sim
+    startCI: (n,dur,breakEngine) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
-          return {...e, plan:{...genRound1(players, e.courts, n), roundDuration:dur}};
+          return {...e, plan:{...genRound1(players, e.courts, n), roundDuration:dur, breakEngine:breakEngine||"classic"}};
         })
-      : onStartCI(n,dur),
+      : onStartCI(n,dur,breakEngine),
     setWinCI: (ri,mi,w,sA,sB) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -10242,7 +10411,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         })
       : onSetWinCI(ri,mi,w,sA,sB),
     nextRound: () => sim
-      ? simMutate(e => e.plan ? {...e, plan: genNextRoundCI(e.plan,e.retiredIds||[])} : e)
+      ? simMutate(e => e.plan ? {...e, plan: genNextRoundCI(e.plan,e.retiredIds||[],e.breakConcentrateIds||[])} : e)
       : onNextRound(),
     swap: (ri,a,b) => sim
       ? simMutate(e => {
@@ -10281,6 +10450,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setCTBreakState: (ri,tid,target) => sim ? null : onSetCTBreakState&&onSetCTBreakState(ri,tid,target),
     // Not mirrored in sim — same documented choice as editBreak/setCTBreakState above.
     setBreakConcentrateIds: ids => sim ? null : onSetBreakConcentrateIds&&onSetBreakConcentrateIds(ids),
+    setBreakEngine: engine => sim ? null : onSetBreakEngine&&onSetBreakEngine(engine),
     setTeamBreakPref: (tid,pref) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -10308,12 +10478,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       : onRegenCTBreaks&&onRegenCTBreaks(),
     swapCTTeamPlayers: (teamIdA,userIdA,teamIdB,userIdB) => onSwapCTTeamPlayers&&onSwapCTTeamPlayers(teamIdA,userIdA,teamIdB,userIdB),
     renameCTTeam: (tid,newName) => onRenameTeam&&onRenameTeam(tid,newName),
-    startCT: (c,f,dur,topPoolSizeOverride) => sim
+    startCT: (c,f,dur,topPoolSizeOverride,breakEngine) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,e),userId:r.userId};}).filter(Boolean);
-          return {...e, plan: generateCTPlan(players, c, f, e, dur, topPoolSizeOverride)};
+          return {...e, plan: {...generateCTPlan(players, c, f, e, dur, topPoolSizeOverride), breakEngine:breakEngine||"classic"}};
         })
-      : onStartCT(c,f,dur,topPoolSizeOverride),
+      : onStartCT(c,f,dur,topPoolSizeOverride,breakEngine),
     setWinCT: (ri,mi,side,w,sA,sB) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -10354,7 +10524,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       ? simMutate(e => e.plan ? {...e, plan: nextFootballLeagueRound(e.plan)} : e)
       : onNextFootballRound(),
     nextCTLadder: () => sim
-      ? simMutate(e => e.plan ? {...e, plan: genNextCTLadder(e.plan,e.retiredIds||[])} : e)
+      ? simMutate(e => e.plan ? {...e, plan: genNextCTLadder(e.plan,e.retiredIds||[],e.breakConcentrateIds||[])} : e)
       : onNextCTLadder(),
     swapCTLadder: (ri,tidA,tidB) => sim
       ? simMutate(e => {
@@ -11626,7 +11796,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>}
 
     {/* CI BREAKS */}
-    {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} comm={comm} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} onSetConcentrateIds={act.setBreakConcentrateIds} isAdmin={isAdmin} onViewProfile={onViewProfile}/>}
+    {tab==="breaks"&&isCI&&plan&&<BreaksTab plan={plan} ev={effEv} comm={comm} users={users} bp={bp} tc={tc} onEditBreak={act.editBreak} onRegenerate={act.regenerateBreaks} onSetConcentrateIds={act.setBreakConcentrateIds} onSetBreakEngine={act.setBreakEngine} isAdmin={isAdmin} onViewProfile={onViewProfile}/>}
 
     {/* CI ROUNDS */}
     {tab==="rounds"&&isCI&&<>
@@ -11635,8 +11805,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{activeRegCount} players · {tc} courts · {Math.max(0,activeRegCount-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
-        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:16}}>💡 {totalR} rounds fit this event's booking window automatically ({roundDur}m each)</div>
-        {activeRegCount<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur)} style={{width:"100%"}}/>}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <span style={{fontSize:12,color:"var(--po-dim)"}}>Break engine:</span>
+          <SmBtn label="Classic" onClick={()=>setStartBreakEngine("classic")} active={startBreakEngine==="classic"} color="#6366F1"/>
+          <SmBtn label="⚡ Dynamic" onClick={()=>setStartBreakEngine("dynamic")} active={startBreakEngine==="dynamic"} color="#F59E0B"/>
+        </div>
+        <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:16}}>💡 {totalR} rounds fit this event's booking window automatically ({roundDur}m each) · just a starting default — switchable any time from the Breaks tab</div>
+        {activeRegCount<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur,startBreakEngine)} style={{width:"100%"}}/>}
       </Card>}
       {plan&&<>
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -11795,6 +11970,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <div style={{display:"flex",gap:8}}>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setCtDur(n)} active={ctDur===n} color="#6366F1"/>)}</div>
           <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>💡 {Math.max(1,Math.round(durationHrs*60/(ctDur||20)))} match rounds fit this event's booking window automatically ({ctDur}m each)</div>
         </div>
+        {ctF==="ladder"&&<div style={{marginBottom:16}}>
+          <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Break engine:</div>
+          <div style={{display:"flex",gap:8}}>
+            <SmBtn label="Classic" onClick={()=>setStartBreakEngine("classic")} active={startBreakEngine==="classic"} color="#6366F1"/>
+            <SmBtn label="⚡ Dynamic" onClick={()=>setStartBreakEngine("dynamic")} active={startBreakEngine==="dynamic"} color="#F59E0B"/>
+          </div>
+          <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>Just a starting default — switchable any time from the Breaks tab</div>
+        </div>}
         {!isFootballEv&&(()=>{
           const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:teamFormationRating(u,effEv)}:null;}).filter(Boolean);
           const autoPools=segmentPools(cur), alt=altTopPoolSize(cur);
@@ -11809,7 +11992,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{ctTopPoolSize?`Top ${alt} players → smaller elite group of ${alt} · remaining ${autoTop} → the other group`:`Top ${autoTop} players → the bigger group of ${autoTop} · remaining ${autoBottom} → the other group`}. The bigger group gets priority on courts each round.</div>
           </div>;
         })()}
-        <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur,ctTopPoolSize)} style={{width:"100%"}}/>
+        <Btn label="🎯 Form Teams & Start" primary onClick={()=>act.startCT(selCtC,ctF,ctDur,ctTopPoolSize,startBreakEngine)} style={{width:"100%"}}/>
       </Card>}
       {plan&&<>
         {!isFootballEv&&isAdmin&&!ctR1Locked&&(()=>{
@@ -11853,7 +12036,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     </>}
 
     {/* CT BREAKS (Ladder only) */}
-    {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} ev={effEv} tc={tc} onRegenBreaks={act.regenCTBreaks} onSetBreakState={act.setCTBreakState} onSetConcentrateIds={act.setBreakConcentrateIds} isAdmin={isAdmin}/>}
+    {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} ev={effEv} tc={tc} onRegenBreaks={act.regenCTBreaks} onSetBreakState={act.setCTBreakState} onSetConcentrateIds={act.setBreakConcentrateIds} onSetBreakEngine={act.setBreakEngine} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
     {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onSetCTScorers={act.setCTScorers} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}

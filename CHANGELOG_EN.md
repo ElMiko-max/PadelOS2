@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.02 — Real bug: Start CI / Form Teams & Start could permanently drop a registered player from the roster
+
+- **Real bug, confirmed with an actual case on DEV (event #207):** "Dodo" was registered and confirmed as a "Regular" community member, but disappeared entirely from the break schedule after Start CI ran (13 players shown instead of 15), and the next rounds showed odd "breaks (needs N)" warnings. Root cause: `startCI` (and CT's "Form Teams & Start") computed who counted as active and built the entire plan *before* the actual database write — if a registration landed right around the moment the button was tapped and hadn't fully reached this screen's local state yet, that stale snapshot got baked in permanently, with no later correction pass (unlike rounds after the first, where `syncCIPlanRoster` catches and fixes this automatically).
+- **Fix:** the roster is now computed fresh at the exact moment of the write, from the latest registration data — the same protection already in place for every round after the first.
+- Note: event #207 on DEV has been reset again so Start CI can be retried cleanly with the fix in place.
+
+---
+
 ## V0.15.01 — Real bugs: 5 people shown on break in a 3-court event, and the notification banner covering the event name
 
 - **Real bug: more players marked "on break" than the event should ever have.** Confirmed via a direct database query that `plan.sorted` had picked up extra players who briefly registered and then got bumped back to the waiting list right around the moment "Next Round" was tapped — and were still wrongly counted as "real" roster members (`everAppeared`) because the check treated any generated round, even one that hadn't been played yet, as proof someone belonged. The check now only counts rounds that have actually been *played* (every match has a recorded winner) as real history, which stops a burst of near-simultaneous registrations from inflating who's owed a break.

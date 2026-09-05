@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.01";
+const APP_VERSION = "V0.15.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6956,12 +6956,27 @@ export default function Matchkeeper() {
   // CI
   const startCI=(cid,eid,n,dur,breakEngine)=>{
     const ev=getEv(cid,eid);if(!ev)return;
-    // Excludes anyone already marked retired/no-show (see retirePlayer) before Round 1 even
-    // exists — otherwise marking someone no-show before Start CI had no actual effect, since
-    // nothing else filters `active` by retiredIds until genNextRoundCI runs for round 2+.
-    const retired=new Set(ev.retiredIds||[]);
-    const active=splitRegsByCapacity(ev,comms.find(c=>c.id===cid)).active.filter(r=>!retired.has(r.userId));
-    const players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+    const comm=comms.find(c=>c.id===cid);
+    // Recomputed from registrationsRef.current (always current, unlike the `registrations` state
+    // closure which can lag a tick behind on a fast register-then-Start-CI sequence) both for the
+    // pre-flight check below AND again fresh inside updEvent's write — real bug, confirmed
+    // 2026-09-05: Start CI used to build `players` once outside updEvent and hand the finished
+    // plan to setPlan, so a registration that existed in Firestore but hadn't yet landed in this
+    // closure's `registrations` snapshot silently lost its spot in plan.sorted forever (the write
+    // never re-derived the roster, just stamped the stale precomputed plan) — same bug class as
+    // nextRoundCI/regenerateBreaksCI's syncCIPlanRoster fix, just never applied here since Start
+    // CI runs before syncCIPlanRoster ever gets a chance to run.
+    const buildPlayers=(e)=>{
+      const regsForEvent=registrationsRef.current.filter(r=>r.eventId===eid);
+      // Excludes anyone already marked retired/no-show (see retirePlayer) before Round 1 even
+      // exists — otherwise marking someone no-show before Start CI had no actual effect, since
+      // nothing else filters `active` by retiredIds until genNextRoundCI runs for round 2+.
+      const retired=new Set(e.retiredIds||[]);
+      const active=splitRegsByCapacity({...e,registrations:regsForEvent},comm).active.filter(r=>!retired.has(r.userId));
+      const players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+      return {active,players};
+    };
+    const {active,players}=buildPlayers(ev);
     // A registered player whose user record couldn't be resolved used to just silently vanish
     // from the plan (filter(Boolean) above swallowing it) — no toast, no error, nothing to tell
     // the admin someone registered actually didn't make it into round 1 (found live: a player
@@ -6973,7 +6988,7 @@ export default function Matchkeeper() {
       toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Start again`,"err");
       return;
     }
-    setPlan(cid,eid,{...genRound1(players,ev.courts,n),roundDuration:dur,breakEngine:breakEngine||"classic"});
+    updEvent(cid,eid,e=>({...e,plan:{...genRound1(buildPlayers(e).players,e.courts,n),roundDuration:dur,breakEngine:breakEngine||"classic"}}));
   };
   const nextRoundCI=(cid,eid,silent)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return false;
@@ -7291,10 +7306,32 @@ export default function Matchkeeper() {
     const ev=getEv(cid,eid);if(!ev)return;
     const comm=comms.find(c=>c.id===cid);
     const isFootballEv=ev.sport==="Football";
-    // Same exclusion as startCI — see the comment there.
-    const retired=new Set(ev.retiredIds||[]);
-    const active=splitRegsByCapacity(ev,comm).active.filter(r=>!retired.has(r.userId));
-    let players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,ev),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+    // Recomputed from registrationsRef.current inside buildTeams (always current, unlike the
+    // `registrations` state closure), both for the pre-flight checks below AND again fresh at
+    // write time inside updEvent — same startCI bug class fixed 2026-09-05: Form Teams & Start
+    // used to build the plan once outside updEvent and hand it to setPlan, so a registration
+    // that existed in Firestore but hadn't yet landed in this closure's snapshot could silently
+    // lose its spot forever, with no later sync pass (unlike round-by-round CI) to catch it.
+    const buildTeams=(e)=>{
+      const regsForEvent=registrationsRef.current.filter(r=>r.eventId===eid);
+      const effE={...e,registrations:regsForEvent};
+      // Same exclusion as startCI — see the comment there.
+      const retired=new Set(e.retiredIds||[]);
+      const active=splitRegsByCapacity(effE,comm).active.filter(r=>!retired.has(r.userId));
+      let players=active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,e),userId:r.userId,breakPref:u.breakPref||"none"};}).filter(Boolean);
+      let waitlisted=null;
+      // Football teams don't need to pair off 2-by-2 — team size comes from ev.teamSize/numTeams,
+      // set at event creation, not derived from player count parity the way padel's doubles are.
+      if(!isFootballEv && players.length%2!==0){
+        // Odd count — last player in registrations array goes to waiting list
+        const lastReg=active[active.length-1];
+        const lastPlayer=players.find(p=>(p.userId||p.id)===lastReg?.userId);
+        waitlisted=lastPlayer||players[players.length-1];
+        players=players.filter(p=>(p.userId||p.id)!==(waitlisted.userId||waitlisted.id));
+      }
+      return {active,players,waitlisted};
+    };
+    const {active,players}=buildTeams(ev);
     // Same silent-drop risk as startCI — a registered player whose user record didn't resolve
     // (most likely a stale-state race right after they registered) used to just vanish with no
     // warning, and could even slip past the odd/even waitlist check below since it operates on
@@ -7304,24 +7341,21 @@ export default function Matchkeeper() {
       toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Form Teams again`,"err");
       return;
     }
-    let waitlisted=null;
-    // Football teams don't need to pair off 2-by-2 — team size comes from ev.teamSize/numTeams,
-    // set at event creation, not derived from player count parity the way padel's doubles are.
-    if(!isFootballEv && players.length%2!==0){
-      // Odd count — last player in registrations array goes to waiting list
-      const regs=splitRegsByCapacity(ev,comm).active;
-      const lastReg=regs[regs.length-1];
-      const lastPlayer=players.find(p=>(p.userId||p.id)===lastReg?.userId);
-      waitlisted=lastPlayer||players[players.length-1];
-      players=players.filter(p=>(p.userId||p.id)!==(waitlisted.userId||waitlisted.id));
+    if(!isFootballEv && (active.length%2!==0)){
+      const {waitlisted}=buildTeams(ev);
       toast2(`${waitlisted.nickname} moved to waiting list — need even number for team formation`,"err");
     }
     // Football's pitches are fixed at event creation (ev.pitchNames), not admin-selectable at
     // formation time the way padel's court count is — ignore whatever `courts` the caller passed.
     const effCourts=isFootballEv?Math.max(1,ev.pitchNames?.length||ev.courts||1):courts;
-    const newPlan={...generateCTPlan(players,effCourts,fmt,ev,dur||20,topPoolSizeOverride),waitlisted:waitlisted?[{userId:waitlisted.userId,nickname:waitlisted.nickname,usr:waitlisted.usr}]:[],breakEngine:breakEngine||"classic"};
-    setPlan(cid,eid,newPlan);
-    toast2(isFootballEv?`Teams formed ✓ — ${ev.numTeams||newPlan.teams.length} teams`:`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
+    // Only used for the confirmation toast's team count — the actual write below always
+    // recomputes its own fresh plan from buildTeams(e) inside updEvent.
+    const previewPlan=generateCTPlan(players,effCourts,fmt,ev,dur||20,topPoolSizeOverride);
+    updEvent(cid,eid,e=>{
+      const {players:freshPlayers,waitlisted:freshWaitlisted}=buildTeams(e);
+      return {...e,plan:{...generateCTPlan(freshPlayers,effCourts,fmt,e,dur||20,topPoolSizeOverride),waitlisted:freshWaitlisted?[{userId:freshWaitlisted.userId,nickname:freshWaitlisted.nickname,usr:freshWaitlisted.usr}]:[],breakEngine:breakEngine||"classic"}};
+    });
+    toast2(isFootballEv?`Teams formed ✓ — ${ev.numTeams||previewPlan.teams.length} teams`:`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
   // Clears the League "live" flag the moment a winner gets recorded — otherwise a
   // completed match can go on carrying a stale live:true from before it was decided,

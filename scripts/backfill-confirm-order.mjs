@@ -6,9 +6,16 @@
 // Writes a full pre-write backup of every registration doc it's about to touch to backups/
 // BEFORE making any changes — that file is the rollback point. Restore with --restore.
 //
+// --repair fixes an over-capacity confirmation (BUGS.md #18, found live 2026-09-06 hours after
+// this shipped): a short-lived gap in splitRegsByCapacity let an admin-added registrant get
+// confirmed even when an event was already at maxPlayers. For any event where confirmed count >
+// maxPlayers, clears confirmOrder on the excess (highest confirmOrder values, kept dense for
+// the rest) so they fall back to waitlisted — same pre-write backup/rollback convention.
+//
 // Usage:
 //   node scripts/backfill-confirm-order.mjs --project dev
 //   node scripts/backfill-confirm-order.mjs --project prod
+//   node scripts/backfill-confirm-order.mjs --repair --project dev
 //   node scripts/backfill-confirm-order.mjs --restore backups/confirm-order-backfill-dev-2026-09-06T12-00-00-000Z.json --project dev
 //
 // Safety: hard-refuses to run if the loaded service-account key's project_id doesn't exactly
@@ -27,6 +34,7 @@ const backupsDir = join(__dirname, "..", "backups");
 const args = process.argv.slice(2);
 const projectArg = args[args.indexOf("--project")+1];
 const restoreArg = args.includes("--restore") ? args[args.indexOf("--restore")+1] : null;
+const repairMode = args.includes("--repair");
 
 if (!projectArg || !["dev","prod"].includes(projectArg)) {
   console.error("Usage: node scripts/backfill-confirm-order.mjs --project dev|prod [--restore <backup-file>]");
@@ -156,6 +164,55 @@ async function backfill() {
   console.log(`Done — ${n} registration(s) numbered ✓`);
 }
 
+async function repair() {
+  if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
+
+  const eventsSnap = await db.collection("padelos_events").get();
+  console.log(`Scanning ${eventsSnap.size} event(s) in ${expectedProjectId} for over-capacity confirmations...`);
+
+  const backupEntries = [];
+  const plannedWrites = []; // {eventId, userId, data} — data is the full doc with confirmOrder cleared
+
+  for (const evDoc of eventsSnap.docs) {
+    const ev = evDoc.data();
+    const eid = evDoc.id;
+    const maxPlayers = getMaxPlayers(ev);
+    if (maxPlayers == null) continue;
+    const regsSnap = await db.collection("padelos_events").doc(eid).collection("registrations").get();
+    const confirmed = regsSnap.docs.map(d => d.data()).filter(r => r.confirmOrder != null).sort((a,b)=>a.confirmOrder-b.confirmOrder);
+    if (confirmed.length <= maxPlayers) continue;
+    const excess = confirmed.slice(maxPlayers); // highest confirmOrder values beyond the cap
+    console.log(`event ${eid}: ${confirmed.length} confirmed, max ${maxPlayers} — clearing confirmOrder on ${excess.length}: ${excess.map(r=>`userId=${r.userId} #${r.confirmOrder}`).join(", ")}`);
+    excess.forEach(r => {
+      backupEntries.push({ eventId: eid, userId: r.userId, data: r });
+      const { confirmOrder, ...rest } = r;
+      plannedWrites.push({ eventId: eid, userId: r.userId, data: rest });
+    });
+  }
+
+  if (plannedWrites.length === 0) {
+    console.log("Nothing to repair — no event has more confirmed registrations than its maxPlayers.");
+    return;
+  }
+
+  const ts = new Date().toISOString().replace(/[:.]/g,"-");
+  const backupPath = join(backupsDir, `confirm-order-repair-${projectArg}-${ts}.json`);
+  writeFileSync(backupPath, JSON.stringify({ createdAt: new Date().toISOString(), purpose: "confirmOrder over-capacity repair pre-write snapshot", project: expectedProjectId, registrations: backupEntries }, null, 2));
+  console.log(`Backup written (rollback point): ${backupPath}`);
+
+  let batch = db.batch(), n = 0;
+  for (const { eventId, userId, data } of plannedWrites) {
+    // Full overwrite (not update) so the confirmOrder field is actually removed, not left as
+    // undefined-and-ignored — Firestore's admin SDK `set` drops keys that aren't present.
+    batch.set(db.collection("padelos_events").doc(String(eventId)).collection("registrations").doc(String(userId)), data);
+    n++;
+    if (n % 450 === 0) { await batch.commit(); batch = db.batch(); }
+  }
+  await batch.commit();
+  console.log(`Done — cleared confirmOrder on ${n} over-capacity registration(s) ✓`);
+}
+
 if (restoreArg) await restore(restoreArg);
+else if (repairMode) await repair();
 else await backfill();
 process.exit(0);

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.06";
+const APP_VERSION = "V0.15.07";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5581,12 +5581,26 @@ export default function Matchkeeper() {
         const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data());
         const active = splitRegsByCapacity({...ev, registrations:freshRegs}, comm).active;
         let maxExisting = freshRegs.reduce((m,r)=>Math.max(m, r.confirmOrder||0), 0);
+        // Hard capacity ceiling, independent of whatever splitRegsByCapacity computes — real
+        // corruption found live 2026-09-06, hours after shipping: the version of
+        // splitRegsByCapacity in place for the first few hours didn't count already-confirmed
+        // Casual/Guest members toward its priority-grandfather cap, so a newly admin-added
+        // "priority" registrant could still get waved in as active (and then permanently
+        // numbered here) even when the event was already at maxPlayers. That specific gap is
+        // fixed now, but this ceiling stays anyway as a second, independent guarantee that this
+        // function itself can never hand out more confirmed seats than the event allows, no
+        // matter what any future bug in the split logic does.
+        const maxPlayers = getMaxPlayers(ev);
+        const alreadyConfirmed = freshRegs.filter(r=>r.confirmOrder!=null).length;
+        let capRemaining = maxPlayers!=null ? Math.max(0, maxPlayers-alreadyConfirmed) : Infinity;
         active.forEach(r => {
           if (r.confirmOrder != null) return;
+          if (capRemaining<=0) return;
           const ref = refs.find(rf=>rf.id===String(r.userId));
           const snap = snaps.find(s=>s.id===String(r.userId));
           if (!ref || !snap?.exists()) return;
           tx.set(ref, clean({...snap.data(), confirmOrder: ++maxExisting}));
+          capRemaining--;
         });
       }, {maxAttempts:10});
     } catch(e) { console.log("syncConfirmOrder failed", e); }

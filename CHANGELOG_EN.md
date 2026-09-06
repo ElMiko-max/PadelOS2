@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.07 — Another quick fix: the waitlist got merged into the active list on a test event
+
+- **Another bug caught by direct DEV testing**, from the same short window V0.15.05 was live before V0.15.06's fix: the old "who's active" calculation didn't correctly count already-confirmed non-priority (Casual/Guest) members against the event's capacity ceiling — so 3 extra players got a permanent confirm number on a test event (#207) even though it was already full (18 instead of 15), which showed up as "the waitlist merged into the active list."
+- **Fix:** added a completely independent hard capacity ceiling directly inside the number-assignment step itself — no matter what any other calculation says, it will never hand out more confirmed seats than an event's max allows. A repair pass has already run (came back empty — that one test event was the only one affected anywhere in DEV).
+- **Production remains completely untouched** — this feature hasn't shipped there yet.
+
+---
+
 ## V0.15.06 — Quick fix: confirmed players could vanish from the list even though their number was still saved
 
 - **Caught by direct testing on DEV, hours after V0.15.05 shipped:** some confirmed players (with a real saved number) were disappearing from the "Registered" list, leaving gaps in the sequence (e.g. 6, 8, 9 with 7 missing) — even though their number was still sitting in the database. Root cause: the number was only ever used to sort who's shown, not to decide who's shown — that decision was still recomputed fresh every time from current membership status and the priority window, so anyone whose status changed (e.g. Regular → Casual) after being confirmed could vanish again despite already having a number.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.05";
+const APP_VERSION = "V0.15.06";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -492,11 +492,26 @@ const isPriorityReg = (r, comm) => {
 const splitRegsByCapacity = (ev, comm) => {
   const max = getMaxPlayers(ev);
   if (!max) return { active: ev.registrations, waitlisted: [] };
-  if (!comm) return { active: ev.registrations.slice(0, max), waitlisted: ev.registrations.slice(max) };
+  // Anyone already holding a permanent confirmOrder (BUGS.md #18 follow-up, 2026-09-06) is
+  // unconditionally active, full stop — real bug, found live the same day the feature shipped:
+  // confirmOrder was only being used to SORT whatever this function decided was active, not to
+  // decide it. So the very first time a confirmed Casual/Guest member's status stopped counting
+  // as "priority" (which for anyone confirmed before the window closed is everyone, since only
+  // priority regs get in during the window at all), the very next render's fresh grandfather
+  // recompute below silently dropped them from `active` again — the exact "confirmation isn't
+  // actually permanent" bug this whole feature exists to prevent, just one layer deeper than the
+  // first fix caught. Confirmation must be a one-way, persisted fact from here on: only
+  // registrations WITHOUT a confirmOrder yet are subject to the window/priority logic below, to
+  // decide who gets the remaining open slots (and, via the sync effect elsewhere, their own
+  // permanent number).
+  const confirmed = ev.registrations.filter(r => r.confirmOrder != null);
+  const unconfirmed = ev.registrations.filter(r => r.confirmOrder == null);
+  const remainingMax = Math.max(0, max - confirmed.length);
+  if (!comm) return { active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax) };
   const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
   if (windowActive) {
-    const active=[], waitlisted=[];
-    ev.registrations.forEach(r=>{
+    const active=[...confirmed], waitlisted=[];
+    unconfirmed.forEach(r=>{
       if (isPriorityReg(r,comm) && active.length<max) active.push(r);
       else waitlisted.push(r);
     });
@@ -504,22 +519,21 @@ const splitRegsByCapacity = (ev, comm) => {
   }
   // Window closed — real bug, confirmed on production 2026-09-06 (event #76): this used to fall
   // straight back to pure chronological order (ev.registrations.slice(0,max)) the instant the
-  // window passed, with zero regard for who the priority split above had already put in an
-  // active slot. Since regularUntil is a fixed 24h-from-creation timer with no relation to the
-  // event date, it can (and did) expire days before the event while registration was still
-  // actively filling up — and the very next chronological recompute silently evicted a Regular
-  // member who'd held a confirmed active spot for hours, to make room for an earlier-registered
-  // Casual member sweeping in, with no notice to anyone. The sweep-in behavior itself (a Casual
-  // member no longer held back once the window ends) is intentional and stays — but it must only
-  // ever fill genuinely open capacity, never bump someone already active. So: whoever the
-  // priority split above would have put active (in registration order, capped at max) is
-  // grandfathered in unconditionally; only the remaining open slots get swept from the rest, in
-  // their original registration order.
+  // window passed, with zero regard for who was already active. Since regularUntil is a fixed
+  // 24h-from-creation timer with no relation to the event date, it can (and did) expire days
+  // before the event while registration was still actively filling up — and the very next
+  // chronological recompute silently evicted a Regular member who'd held an active spot for
+  // hours, to make room for an earlier-registered Casual member sweeping in, with no notice to
+  // anyone. The sweep-in behavior itself (a Casual member no longer held back once the window
+  // ends) is intentional and stays — but it must only ever fill genuinely open capacity, never
+  // bump someone already active. So: whoever the priority split above would have put active
+  // (in registration order, capped at the remaining slots) is grandfathered in unconditionally;
+  // only whatever's left over gets swept from the rest, in original registration order.
   const grandfathered = new Set();
-  { let n=0; ev.registrations.forEach(r => { if (isPriorityReg(r,comm) && n<max) { grandfathered.add(r.userId); n++; } }); }
-  let slotsLeft = max - grandfathered.size;
-  const active=[], waitlisted=[];
-  ev.registrations.forEach(r=>{
+  { let n=confirmed.length; unconfirmed.forEach(r => { if (isPriorityReg(r,comm) && n<max) { grandfathered.add(r.userId); n++; } }); }
+  let slotsLeft = max - confirmed.length - grandfathered.size;
+  const active=[...confirmed], waitlisted=[];
+  unconfirmed.forEach(r=>{
     if (grandfathered.has(r.userId)) { active.push(r); return; }
     if (slotsLeft>0) { active.push(r); slotsLeft--; }
     else waitlisted.push(r);

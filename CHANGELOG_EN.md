@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.06 — Quick fix: confirmed players could vanish from the list even though their number was still saved
+
+- **Caught by direct testing on DEV, hours after V0.15.05 shipped:** some confirmed players (with a real saved number) were disappearing from the "Registered" list, leaving gaps in the sequence (e.g. 6, 8, 9 with 7 missing) — even though their number was still sitting in the database. Root cause: the number was only ever used to sort who's shown, not to decide who's shown — that decision was still recomputed fresh every time from current membership status and the priority window, so anyone whose status changed (e.g. Regular → Casual) after being confirmed could vanish again despite already having a number.
+- **Fix:** a registration with a permanent confirm number is now unconditionally, permanently confirmed — it can never be re-evaluated back out. The priority/window rules now only govern who still needs a number in the first place.
+
+---
+
 ## V0.15.05 — Permanent seat number for every confirmed player in the Players tab
 
 - **A small number now shows to the left of each name in the Players tab** — a player's actual confirmed seat (e.g. "player #13").

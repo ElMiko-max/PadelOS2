@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.04 — Real production bug: a confirmed active player could be silently evicted from the roster (event #76)
+
+- **Real bug, confirmed on live production** (event #76, "Sunday 6 September" — see BUGS.md #18 for the full writeup): an event's "priority window" (`regularUntil`, which gives Regular members first claim on active slots over Casual ones) is set to a fixed 24 hours from event creation, with no relation to the actual event date — so it can close days before the event while registration is still actively filling up. Once it closed, the roster fell back to pure chronological order with no regard for who already held an active spot during the window — silently evicting a Regular member who'd secured an active slot, to make room for an earlier-registered Casual member, with no notice to anyone.
+- **Fix:** anyone who was genuinely active during the priority window is now grandfathered in once the window closes — they can no longer be bumped back out. Only genuinely open slots get filled from the rest, in registration order.
+
+---
+
 ## V0.15.03 — Real bug: the Breaks tab table didn't update after the Dynamic engine's actual pick
 
 - **Real bug, confirmed by direct testing:** the admin tried the "⚡ Dynamic" engine going from Round 2 to Round 3, and the engine correctly picked who took a break (based on who lost) — but **the Breaks tab table kept showing the old prediction** (what Classic would have picked) instead of reflecting what actually happened.

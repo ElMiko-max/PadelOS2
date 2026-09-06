@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.04";
+const APP_VERSION = "V0.15.05";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5546,6 +5546,54 @@ export default function Matchkeeper() {
     if (existing) setRegLocal(eid, uid, {...existing, ...fields});
     return updateDoc(regDocRef(eid, uid), clean(fields)).catch(e => { console.log("Firestore write error (updateRegistrationDoc)", e); throw e; });
   };
+  // confirmOrder: a permanent, dense, per-event seat number stamped once a registration is
+  // actually confirmed (active per splitRegsByCapacity) — requested 2026-09-06 so the Players
+  // tab order stops being silently recomputable from registeredAt/priority on every render (the
+  // exact class of surprise behind BUGS.md #18). Once stamped it's never reassigned by this sync
+  // — it only moves via closeConfirmOrderGap below, when someone ABOVE a player cancels.
+  // Runs as a real transaction (not a plain batch) because this session's whole thread has been
+  // exactly this class of race — two admins opening the Players tab at once must never hand out
+  // the same number twice.
+  const syncConfirmOrder = async (cid, eid) => {
+    const ev = getEv(cid, eid); const comm = comms.find(c=>c.id===cid);
+    if (!ev || !comm) return;
+    const colRef = collection(db,"padelos_events",String(eid),"registrations");
+    const preSnap = await getDocs(colRef);
+    if (preSnap.empty) return;
+    const refs = preSnap.docs.map(d=>d.ref);
+    try {
+      await runTransaction(db, async (tx) => {
+        const snaps = await Promise.all(refs.map(r=>tx.get(r)));
+        const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data());
+        const active = splitRegsByCapacity({...ev, registrations:freshRegs}, comm).active;
+        let maxExisting = freshRegs.reduce((m,r)=>Math.max(m, r.confirmOrder||0), 0);
+        active.forEach(r => {
+          if (r.confirmOrder != null) return;
+          const ref = refs.find(rf=>rf.id===String(r.userId));
+          const snap = snaps.find(s=>s.id===String(r.userId));
+          if (!ref || !snap?.exists()) return;
+          tx.set(ref, clean({...snap.data(), confirmOrder: ++maxExisting}));
+        });
+      }, {maxAttempts:10});
+    } catch(e) { console.log("syncConfirmOrder failed", e); }
+  };
+  const closeConfirmOrderGap = async (eid, removedOrder) => {
+    if (removedOrder == null) return;
+    const colRef = collection(db,"padelos_events",String(eid),"registrations");
+    const preSnap = await getDocs(colRef);
+    if (preSnap.empty) return;
+    const refs = preSnap.docs.map(d=>d.ref);
+    try {
+      await runTransaction(db, async (tx) => {
+        const snaps = await Promise.all(refs.map(r=>tx.get(r)));
+        snaps.forEach(snap => {
+          if (!snap.exists()) return;
+          const data = snap.data();
+          if ((data.confirmOrder||0) > removedOrder) tx.set(snap.ref, clean({...data, confirmOrder: data.confirmOrder-1}));
+        });
+      }, {maxAttempts:10});
+    } catch(e) { console.log("closeConfirmOrderGap failed", e); }
+  };
   // registerViaInvite / addGuest: atomically grant community membership AND event registration —
   // a crash between two separate writes could otherwise leave a registration with no membership,
   // or vice versa. Both target documents are either brand-new (registration) or a small,
@@ -6750,11 +6798,14 @@ export default function Matchkeeper() {
       if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
     }
     const hadReg = ev && ev.registrations.some(r=>r.userId===uid);
-    // Two independent writes, not one atomic transaction — deleting the registration doc and
-    // clearing checkedIn on the event doc have no correctness dependency on each other (a
-    // checkedIn entry with no matching registration is harmless, purely cosmetic).
+    const removedConfirmOrder = ev?.registrations.find(r=>r.userId===uid)?.confirmOrder;
+    // Three independent writes, not one atomic transaction — deleting the registration doc,
+    // clearing checkedIn on the event doc, and closing the confirmOrder gap have no correctness
+    // dependency on each other (a checkedIn entry with no matching registration is harmless,
+    // purely cosmetic; a not-yet-closed gap self-heals the moment this runs again).
     deleteRegistrationDoc(eid, uid).catch(e=>console.log("removeFromEvent deleteRegistrationDoc failed", e));
     updEvent(cid,eid,ev=>({...ev,checkedIn:ev.checkedIn.filter(id=>id!==uid)}),{silent:true});
+    if (removedConfirmOrder != null) closeConfirmOrderGap(eid, removedConfirmOrder).catch(e=>console.log("removeFromEvent closeConfirmOrderGap failed", e));
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
@@ -7803,6 +7854,7 @@ export default function Matchkeeper() {
             onArchive={()=>archiveEvent(comm.id,event.id)}
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
             onSetRegistrationOpen={open=>setEventRegistrationOpen(comm.id,event.id,open)}
+            onSyncConfirmOrder={()=>syncConfirmOrder(comm.id,event.id)}
             onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
@@ -10368,7 +10420,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -10443,6 +10495,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // While sim is active, ALL reads/writes happen against simEv (a local, throwaway copy).
   // The real `ev` prop (and therefore global app state) is never touched during a sim session.
   const effEv = sim && simEv ? simEv : ev;
+  // Lazy catch-up sync for confirmOrder (the permanent per-event seat number, see BUGS.md #18) —
+  // "becoming active" isn't a single action (it can happen purely because the priority window
+  // closed, or someone else cancelled), so there's no one write-path to hook; whoever has the
+  // Players tab open just triggers the catch-up next render, same lazy-sync convention as
+  // syncCIPlanRoster. Skipped in Simulation Mode (sim is local-only, never touches Firestore)
+  // and for closed events (nothing left to confirm).
+  useEffect(() => {
+    if (sim || effEv.status==="completed" || effEv.status==="cancelled" || !onSyncConfirmOrder) return;
+    const {active} = splitRegsByCapacity(effEv, comm);
+    if (active.some(r=>r.confirmOrder==null)) onSyncConfirmOrder();
+  }, [sim, effEv, comm, onSyncConfirmOrder]);
   const startSim = () => {
     const snap = JSON.parse(JSON.stringify(ev));
     setSimSnapshot(snap);
@@ -11492,7 +11555,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const {active:capActiveRegs,waitlisted:capWaitlistedRegs,suspendedIds}=effEv.status!=="completed"&&effEv.status!=="cancelled"
           ? applySubscriptionSuspension(rawSplit,effEv,users,subscriptionSettings)
           : {...rawSplit,suspendedIds:new Set()};
-        const activeRegs=capActiveRegs.filter(r=>!ctOddWaitlistedIds.has(r.userId));
+        // Sorted by the permanent confirmOrder (BUGS.md #18) rather than however splitRegsByCapacity
+        // happened to order `active` this render — that's only ever the source for a NEW number,
+        // never the display order itself once numbers are stamped. Anyone not yet numbered (a brief
+        // window before the sync effect above catches up) falls back to array order, at the end.
+        const activeRegs=capActiveRegs.filter(r=>!ctOddWaitlistedIds.has(r.userId)).sort((a,b)=>(a.confirmOrder??Infinity)-(b.confirmOrder??Infinity));
         return <><ST>Registered ({activeRegs.length})</ST>
         {activeRegs.map(r=>{
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
@@ -11533,6 +11600,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const addedByLabel = canSeeAddedBy ? (r.addedBy==="admin"?"Added by Admin":r.addedBy==="invite"?"via Invite":r.addedBy==="approved"?"Approved":r.addedBy?`by ${r.addedBy}`:null) : null;
         return <Card key={r.userId} style={{opacity:isRetired?0.6:1}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {r.confirmOrder!=null&&<div title={`Confirmed #${r.confirmOrder}`} style={{width:22,height:22,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,background:"var(--po-bdr)",color:"var(--po-dim)"}}>{r.confirmOrder}</div>}
             <Av u={u} size={34}/>
             <div style={{flex:1}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>

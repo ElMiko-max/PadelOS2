@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.05 — Permanent seat number for every confirmed player in the Players tab
+
+- **A small number now shows to the left of each name in the Players tab** — a player's actual confirmed seat (e.g. "player #13").
+- **That number is now genuinely permanent, not recomputed from registration timestamps every render.** Once a player is confirmed (enters the active roster), they get a fixed number that never changes. If someone above them cancels, everyone below shifts down by exactly one (closing the gap) — relative order is preserved, and nobody takes over the cancelled person's old number. A brand-new confirmation always gets the next number at the end, never backfilled into a freed slot.
+- **Every existing event was backfilled in one pass** so nobody is left unnumbered until something changes for them.
+- Waitlisted players still show no number (only confirmed players get one, same as today's split).
+
+---
+
 ## V0.15.04 — Real production bug: a confirmed active player could be silently evicted from the roster (event #76)
 
 - **Real bug, confirmed on live production** (event #76, "Sunday 6 September" — see BUGS.md #18 for the full writeup): an event's "priority window" (`regularUntil`, which gives Regular members first claim on active slots over Casual ones) is set to a fixed 24 hours from event creation, with no relation to the actual event date — so it can close days before the event while registration is still actively filling up. Once it closed, the roster fell back to pure chronological order with no regard for who already held an active spot during the window — silently evicting a Regular member who'd secured an active slot, to make room for an earlier-registered Casual member, with no notice to anyone.

@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.03 — Real bug: the Breaks tab table didn't update after the Dynamic engine's actual pick
+
+- **Real bug, confirmed by direct testing:** the admin tried the "⚡ Dynamic" engine going from Round 2 to Round 3, and the engine correctly picked who took a break (based on who lost) — but **the Breaks tab table kept showing the old prediction** (what Classic would have picked) instead of reflecting what actually happened.
+- **Root cause:** the real round (matches, who's actually on break) was recorded correctly, but the separate prediction array (`breakPlan`) that the Breaks tab table — and its Total column — reads for every column, including already-generated ones, was never updated to match the Dynamic engine's real pick.
+- **Fix:** whenever a round is generated under the Dynamic engine, the prediction array is now synced immediately with the real pick, so the Breaks tab table and Total column always reflect reality.
+
+---
+
 ## V0.15.02 — Real bug: Start CI / Form Teams & Start could permanently drop a registered player from the roster
 
 - **Real bug, confirmed with an actual case on DEV (event #207):** "Dodo" was registered and confirmed as a "Regular" community member, but disappeared entirely from the break schedule after Start CI ran (13 players shown instead of 15), and the next rounds showed odd "breaks (needs N)" warnings. Root cause: `startCI` (and CT's "Form Teams & Start") computed who counted as active and built the entire plan *before* the actual database write — if a registration landed right around the moment the button was tapped and hadn't fully reached this screen's local state yet, that stale snapshot got baked in permanently, with no later correction pass (unlike rounds after the first, where `syncCIPlanRoster` catches and fixes this automatically).

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.02";
+const APP_VERSION = "V0.15.03";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -849,7 +849,16 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[]) {
     }
   }
   const matches=[]; for(let c=1;c<=courts;c++){const cp=buckets[c].slice(0,4);if(cp.length<4)continue;const pair=diversePair(cp,ph,lastRoundPairs);matches.push({court:c,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
-  return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds.filter(id=>!retiredIds.includes(id))}],partnerHistory:ph};
+  // Real bug, confirmed 2026-09-06: the Dynamic engine's loser-cascade pick was only ever
+  // written into this round's onBreakIds (the actual generated match/break data) — the separate
+  // breakPlan[ri] "prediction" array was left holding whatever Classic would have picked, and
+  // the Breaks tab table (plus its Total column) reads breakPlan exclusively for every column,
+  // even already-generated ones — see BreaksTab. So a round that dynamically broke different
+  // players than predicted still displayed the stale prediction as if it were reality. Keeping
+  // breakPlan[ri] in sync with the real pick here is a no-op for Classic (newBreakIds already
+  // equals breakPlan[ri] in that branch) and fixes Dynamic.
+  const breakPlanOut=(plan.breakPlan||[]).map((b,i)=>i===ri?newBreakIds:b);
+  return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds.filter(id=>!retiredIds.includes(id))}],partnerHistory:ph,breakPlan:breakPlanOut};
 }
 function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]) {
   // Keep breaks for played rounds as-is
@@ -1683,7 +1692,10 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[]) {
     const cp=buckets[c].slice(0,2);
     if(cp.length>=2) matches.push({court:c,teamA:cp[0],teamB:cp[1],winner:null,scoreA:0,scoreB:0});
   }
-  return {...plan, rounds:[...rounds,{roundNum:ri+1,type:"ladder",matchesA:matches,matchesB:[],onBreak,onBreakIds:newBreakIds.filter(id=>!retiredTeamIds.includes(id))}]};
+  // Keep breakPlan[ri] in sync with the real pick — see the matching comment in genNextRoundCI
+  // (same bug, same fix, CT side).
+  const breakPlanOut=(breakPlan||[]).map((b,i)=>i===ri?newBreakIds:b);
+  return {...plan, rounds:[...rounds,{roundNum:ri+1,type:"ladder",matchesA:matches,matchesB:[],onBreak,onBreakIds:newBreakIds.filter(id=>!retiredTeamIds.includes(id))}], breakPlan:breakPlanOut};
 }
 
 // CT Ladder scoring

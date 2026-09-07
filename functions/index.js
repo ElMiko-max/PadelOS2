@@ -297,19 +297,31 @@ exports.confirmEmailMatch = onCall(async (request) => {
 });
 
 // Shared by registerForEvent/addMemberToEvent/approveEventJoinRequest below — a deliberate
-// line-for-line port of getMaxPlayers/splitRegsByCapacity from src/App.jsx (isPriorityReg was
-// retired 2026-09-07 along with the tier-based priority window it supported — see the matching
-// comment in src/App.jsx). Keep this in sync if that logic ever changes there. Duplicated rather
+// line-for-line port of getMaxPlayers/splitRegsByCapacity from src/App.jsx (reinstated
+// 2026-09-07 in corrected form: a genuine Regular community member gets first claim on active
+// seats for the event's first 24h, ev.regularUntil — nothing else, addedBy/invite/admin/
+// approved grant no bypass anymore, only real comm.members[].status==="regular", and only
+// during the window; a Casual self-registrant always lands on the waitlist during the window
+// regardless of room). Keep this in sync if that logic ever changes there. Duplicated rather
 // than shared because this runs in a separate Node/CommonJS runtime from the client's Vite/JSX
 // bundle; a real shared-module setup is more invasive than these fixes warranted.
 const getMaxPlayers = e => (e?.maxPlayers > 0 ? e.maxPlayers : null);
-const splitRegsByCapacity = (e) => {
+const splitRegsByCapacity = (e, c) => {
   const max = getMaxPlayers(e);
   if (!max) return {active: e.registrations, waitlisted: []};
   const confirmed = e.registrations.filter(r => r.confirmOrder != null);
-  const unconfirmed = e.registrations.filter(r => r.confirmOrder == null);
+  const rest = e.registrations.filter(r => r.confirmOrder == null);
   const remainingMax = Math.max(0, max - confirmed.length);
-  return {active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax)};
+  const windowActive = e?.regularUntil && Date.now() < new Date(e.regularUntil).getTime();
+  if (windowActive && c) {
+    const active = [...confirmed], waitlisted = [];
+    rest.forEach(r => {
+      const isRegular = c.members?.find(m => m.userId === r.userId)?.status === "regular";
+      if (isRegular && active.length < max) active.push(r); else waitlisted.push(r);
+    });
+    return {active, waitlisted};
+  }
+  return {active: [...confirmed, ...rest.slice(0, remainingMax)], waitlisted: rest.slice(remainingMax)};
 };
 // Phase 2 (registrations split): each registration is its own document at
 // padelos_events/{eventId}/registrations/{userId} instead of an array entry on the event doc —

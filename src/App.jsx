@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.10";
+const APP_VERSION = "V0.15.11";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -471,24 +471,40 @@ function mmBuildCTLeaguePayload(round, comms, excludeEventId){
 // state transition. Not to be confused with plan.waitlisted, an unrelated pre-existing concept
 // (the single leftover player when Closed Teams has an odd headcount for pairing purposes).
 const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
-// Registration priority window (2026-08-18 through 2026-09-06): used to give Regular members
-// (and anyone admin-added/invited/approved) an early-access window ahead of Casual/Guest
-// self-registrants. RETIRED 2026-09-07 per explicit admin direction — real concern, stated
-// directly: a registration should behave like a cinema seat or a doctor's queue — first come,
-// first served, permanently. A tier ever jumping the line (e.g. a Regular member registering
-// late still landing at confirm-order #3 ahead of someone who signed up days earlier) was
-// flagged as a serious, unacceptable surprise, confirmed live on production event #72. Anyone
-// already confirmed (BUGS.md #18) still stays active unconditionally, forever — that part is
-// unchanged — but who fills each REMAINING open slot is now decided by pure chronological
-// registration order only, no exceptions. `ev.regularUntil` itself is left in the data model
-// (harmless, unused) rather than migrated away — nothing reads it anymore.
+// Registration priority window (2026-08-18, retired 2026-09-07, reinstated 2026-09-07 in this
+// corrected form): the earlier tier system was retired for good reason — it let ANYTHING
+// admin-added/invited/approved bypass the queue regardless of true arrival time, and once
+// confirm-order became a permanent, visible number, that bypass produced an indefensible,
+// user-visible unfairness (production event #72). But the underlying business need was real
+// and is explicitly wanted back, precisely scoped: for the first 24h after an event opens
+// (ev.regularUntil), a genuine Regular community member gets first claim on active seats —
+// nothing else (addedBy/invite/admin/approved) grants any bypass anymore, only actual
+// comm.members[].status==="regular", and only during the window. A Casual self-registrant
+// during the window always lands on the waitlist, never an active seat, regardless of room —
+// but is never blocked from registering, and gets a permanent waitlist position (see
+// waitlistOrder below) exactly like anyone else. Once the window closes, there is no more
+// tier distinction at all: everyone (already-waitlisted or brand new) competes purely by
+// arrival order for whatever seats are open. A Guest still always needs admin approval before
+// any of this applies to them at all (unchanged, see registerViaInvite/approveEventJoin) —
+// once approved, their registration is a plain doc that flows through this exact same logic.
+// Anyone already confirmed (BUGS.md #18) stays active unconditionally, forever, regardless of
+// window state — that permanence guarantee is untouched by any of this.
 const splitRegsByCapacity = (ev, comm) => {
   const max = getMaxPlayers(ev);
   if (!max) return { active: ev.registrations, waitlisted: [] };
   const confirmed = ev.registrations.filter(r => r.confirmOrder != null);
-  const unconfirmed = ev.registrations.filter(r => r.confirmOrder == null); // already chronological (regsByEvent's sort)
+  const rest = ev.registrations.filter(r => r.confirmOrder == null); // already chronological (regsByEvent's sort)
   const remainingMax = Math.max(0, max - confirmed.length);
-  return { active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax) };
+  const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
+  if (windowActive && comm) {
+    const active = [...confirmed], waitlisted = [];
+    rest.forEach(r => {
+      const isRegular = comm.members?.find(m=>m.userId===r.userId)?.status==="regular";
+      if (isRegular && active.length<max) active.push(r); else waitlisted.push(r);
+    });
+    return { active, waitlisted };
+  }
+  return { active: [...confirmed, ...rest.slice(0, remainingMax)], waitlisted: rest.slice(remainingMax) };
 };
 const isRegWaitlisted = (ev, uid, comm) => splitRegsByCapacity(ev, comm).waitlisted.some(r=>r.userId===uid);
 // Subscription suspension on top of the capacity split (Enhancement #17, item 2): a locked
@@ -5522,17 +5538,50 @@ export default function Matchkeeper() {
     if (existing) setRegLocal(eid, uid, {...existing, ...fields});
     return updateDoc(regDocRef(eid, uid), clean(fields)).catch(e => { console.log("Firestore write error (updateRegistrationDoc)", e); throw e; });
   };
-  // confirmOrder: a permanent, dense, per-event seat number stamped once a registration is
-  // actually confirmed (active per splitRegsByCapacity) — requested 2026-09-06 so the Players
-  // tab order stops being silently recomputable from registeredAt/priority on every render (the
-  // exact class of surprise behind BUGS.md #18). Once stamped it's never reassigned by this sync
-  // — it only moves via closeConfirmOrderGap below, when someone ABOVE a player cancels.
-  // Runs as a real transaction (not a plain batch) because this session's whole thread has been
-  // exactly this class of race — two admins opening the Players tab at once must never hand out
-  // the same number twice.
-  const syncConfirmOrder = async (cid, eid) => {
+  // confirmOrder / waitlistOrder: two permanent, dense, per-event position numbers (one for the
+  // active list, one for the waitlist) — see splitRegsByCapacity's comment for the full design.
+  // Unified into one sync because a single event (someone getting promoted from waitlist to
+  // active, or someone above either list cancelling) affects both sequences at once. Both use
+  // the exact same rule: renumber whoever's CURRENTLY in the list from their existing relative
+  // order (never re-derived from registeredAt/tier) — which is a no-op when nothing changed,
+  // and closes the gap automatically for anyone below whoever just left — then append anyone
+  // newly in the list at the end. Runs as a real transaction (not a plain batch) because this
+  // session's whole thread has been exactly this class of race — two admins opening the Players
+  // tab at once must never hand out the same number twice.
+  const renumberSequence = (items, field) => {
+    const numbered = items.filter(r=>r[field]!=null).sort((a,b)=>a[field]-b[field]);
+    const unnumbered = items.filter(r=>r[field]==null);
+    const result = new Map(); let n = 0;
+    [...numbered, ...unnumbered].forEach(r => { result.set(r.userId, ++n); });
+    return result;
+  };
+  const computeOrderingUpdates = (freshRegs, ev, comm) => {
+    const maxPlayers = getMaxPlayers(ev);
+    const { active, waitlisted } = splitRegsByCapacity({...ev, registrations:freshRegs}, comm);
+    // Defensive cap, independent of whatever splitRegsByCapacity computes — real corruption
+    // found live 2026-09-06: a bug in an earlier version of that function let more than
+    // maxPlayers people through as "active", which this sync then happily numbered as
+    // permanently confirmed. Keeping this ceiling here too means a future regression there can
+    // never hand out more confirmed seats than the event actually allows.
+    const cappedActive = maxPlayers!=null ? active.slice(0, maxPlayers) : active;
+    const overflow = active.slice(cappedActive.length); // pushed back to the waitlist if the cap ever bites
+    const confirmNums = renumberSequence(cappedActive, "confirmOrder");
+    const waitlistNums = renumberSequence([...waitlisted, ...overflow], "waitlistOrder");
+    const patches = new Map(); // userId -> partial patch (confirmOrder and/or waitlistOrder:null-or-number)
+    const byId = new Map(freshRegs.map(r=>[r.userId, r]));
+    byId.forEach((r, uid) => {
+      const patch = {};
+      const newConfirm = confirmNums.get(uid) ?? null;
+      const newWaitlist = waitlistNums.get(uid) ?? null;
+      if ((r.confirmOrder ?? null) !== newConfirm) patch.confirmOrder = newConfirm;
+      if ((r.waitlistOrder ?? null) !== newWaitlist) patch.waitlistOrder = newWaitlist;
+      if (Object.keys(patch).length) patches.set(uid, patch);
+    });
+    return patches;
+  };
+  const syncOrdering = async (cid, eid) => {
     const ev = getEv(cid, eid); const comm = comms.find(c=>c.id===cid);
-    if (!ev || !comm) return;
+    if (!ev) return;
     const colRef = collection(db,"padelos_events",String(eid),"registrations");
     const preSnap = await getDocs(colRef);
     if (preSnap.empty) return;
@@ -5541,48 +5590,18 @@ export default function Matchkeeper() {
       await runTransaction(db, async (tx) => {
         const snaps = await Promise.all(refs.map(r=>tx.get(r)));
         const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data());
-        const active = splitRegsByCapacity({...ev, registrations:freshRegs}, comm).active;
-        let maxExisting = freshRegs.reduce((m,r)=>Math.max(m, r.confirmOrder||0), 0);
-        // Hard capacity ceiling, independent of whatever splitRegsByCapacity computes — real
-        // corruption found live 2026-09-06, hours after shipping: the version of
-        // splitRegsByCapacity in place for the first few hours didn't count already-confirmed
-        // Casual/Guest members toward its priority-grandfather cap, so a newly admin-added
-        // "priority" registrant could still get waved in as active (and then permanently
-        // numbered here) even when the event was already at maxPlayers. That specific gap is
-        // fixed now, but this ceiling stays anyway as a second, independent guarantee that this
-        // function itself can never hand out more confirmed seats than the event allows, no
-        // matter what any future bug in the split logic does.
-        const maxPlayers = getMaxPlayers(ev);
-        const alreadyConfirmed = freshRegs.filter(r=>r.confirmOrder!=null).length;
-        let capRemaining = maxPlayers!=null ? Math.max(0, maxPlayers-alreadyConfirmed) : Infinity;
-        active.forEach(r => {
-          if (r.confirmOrder != null) return;
-          if (capRemaining<=0) return;
-          const ref = refs.find(rf=>rf.id===String(r.userId));
-          const snap = snaps.find(s=>s.id===String(r.userId));
+        const patches = computeOrderingUpdates(freshRegs, ev, comm);
+        patches.forEach((patch, userId) => {
+          const ref = refs.find(rf=>rf.id===String(userId));
+          const snap = snaps.find(s=>s.id===String(userId));
           if (!ref || !snap?.exists()) return;
-          tx.set(ref, clean({...snap.data(), confirmOrder: ++maxExisting}));
-          capRemaining--;
+          const data = {...snap.data(), ...patch};
+          if (patch.confirmOrder === null) delete data.confirmOrder;
+          if (patch.waitlistOrder === null) delete data.waitlistOrder;
+          tx.set(ref, clean(data));
         });
       }, {maxAttempts:10});
-    } catch(e) { console.log("syncConfirmOrder failed", e); }
-  };
-  const closeConfirmOrderGap = async (eid, removedOrder) => {
-    if (removedOrder == null) return;
-    const colRef = collection(db,"padelos_events",String(eid),"registrations");
-    const preSnap = await getDocs(colRef);
-    if (preSnap.empty) return;
-    const refs = preSnap.docs.map(d=>d.ref);
-    try {
-      await runTransaction(db, async (tx) => {
-        const snaps = await Promise.all(refs.map(r=>tx.get(r)));
-        snaps.forEach(snap => {
-          if (!snap.exists()) return;
-          const data = snap.data();
-          if ((data.confirmOrder||0) > removedOrder) tx.set(snap.ref, clean({...data, confirmOrder: data.confirmOrder-1}));
-        });
-      }, {maxAttempts:10});
-    } catch(e) { console.log("closeConfirmOrderGap failed", e); }
+    } catch(e) { console.log("syncOrdering failed", e); }
   };
   // registerViaInvite / addGuest: atomically grant community membership AND event registration —
   // a crash between two separate writes could otherwise leave a registration with no membership,
@@ -6800,14 +6819,13 @@ export default function Matchkeeper() {
       if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
     }
     const hadReg = ev && ev.registrations.some(r=>r.userId===uid);
-    const removedConfirmOrder = ev?.registrations.find(r=>r.userId===uid)?.confirmOrder;
     // Three independent writes, not one atomic transaction — deleting the registration doc,
-    // clearing checkedIn on the event doc, and closing the confirmOrder gap have no correctness
-    // dependency on each other (a checkedIn entry with no matching registration is harmless,
-    // purely cosmetic; a not-yet-closed gap self-heals the moment this runs again).
+    // clearing checkedIn on the event doc, and closing the confirmOrder/waitlistOrder gap have
+    // no correctness dependency on each other (a checkedIn entry with no matching registration
+    // is harmless, purely cosmetic; a not-yet-closed gap self-heals the moment this runs again).
     deleteRegistrationDoc(eid, uid).catch(e=>console.log("removeFromEvent deleteRegistrationDoc failed", e));
     updEvent(cid,eid,ev=>({...ev,checkedIn:ev.checkedIn.filter(id=>id!==uid)}),{silent:true});
-    if (removedConfirmOrder != null) closeConfirmOrderGap(eid, removedConfirmOrder).catch(e=>console.log("removeFromEvent closeConfirmOrderGap failed", e));
+    syncOrdering(cid,eid).catch(e=>console.log("removeFromEvent syncOrdering failed", e));
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
     const u=users.find(u=>u.id===uid);
@@ -7883,7 +7901,7 @@ export default function Matchkeeper() {
             onArchive={()=>archiveEvent(comm.id,event.id)}
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
             onSetRegistrationOpen={open=>setEventRegistrationOpen(comm.id,event.id,open)}
-            onSyncConfirmOrder={()=>syncConfirmOrder(comm.id,event.id)}
+            onSyncConfirmOrder={()=>syncOrdering(comm.id,event.id)}
             onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
@@ -10524,16 +10542,24 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // While sim is active, ALL reads/writes happen against simEv (a local, throwaway copy).
   // The real `ev` prop (and therefore global app state) is never touched during a sim session.
   const effEv = sim && simEv ? simEv : ev;
-  // Lazy catch-up sync for confirmOrder (the permanent per-event seat number, see BUGS.md #18) —
-  // "becoming active" isn't a single action (it can happen purely because the priority window
-  // closed, or someone else cancelled), so there's no one write-path to hook; whoever has the
-  // Players tab open just triggers the catch-up next render, same lazy-sync convention as
-  // syncCIPlanRoster. Skipped in Simulation Mode (sim is local-only, never touches Firestore)
-  // and for closed events (nothing left to confirm).
+  // Lazy catch-up sync for confirmOrder/waitlistOrder (the permanent per-event position numbers,
+  // see splitRegsByCapacity's comment) — "becoming active" or "landing on/leaving the waitlist"
+  // isn't a single action (it can happen purely because the priority window closed, or someone
+  // else cancelled/got promoted), so there's no one write-path to hook; whoever has the Players
+  // tab open just triggers the catch-up next render, same lazy-sync convention as
+  // syncCIPlanRoster. `isDense` catches both "missing a number" and "needs its gap closed"
+  // (someone above them left) — a dense, already-correctly-ordered list is a true no-op.
+  // Skipped in Simulation Mode (sim is local-only, never touches Firestore) and for closed
+  // events (nothing left to confirm).
   useEffect(() => {
     if (sim || effEv.status==="completed" || effEv.status==="cancelled" || !onSyncConfirmOrder) return;
-    const {active} = splitRegsByCapacity(effEv, comm);
-    if (active.some(r=>r.confirmOrder==null)) onSyncConfirmOrder();
+    const isDense = (items, field) => {
+      const nums = items.filter(r=>r[field]!=null).map(r=>r[field]);
+      if (nums.length !== items.length) return false;
+      return [...nums].sort((a,b)=>a-b).every((n,i)=>n===i+1);
+    };
+    const {active, waitlisted} = splitRegsByCapacity(effEv, comm);
+    if (!isDense(active,"confirmOrder") || !isDense(waitlisted,"waitlistOrder")) onSyncConfirmOrder();
   }, [sim, effEv, comm, onSyncConfirmOrder]);
   const startSim = () => {
     const snap = JSON.parse(JSON.stringify(ev));
@@ -11723,11 +11749,15 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       })}
       {capWaitlistedRegs.length>0&&<>
         <ST>⏳ Waitlist ({capWaitlistedRegs.length}) — event full</ST>
-        {capWaitlistedRegs.map((r,wi)=>{
+        {/* Sorted by the permanent waitlistOrder (not a recomputed array index) — same
+            permanence rule as the active list's confirmOrder: fixed once assigned, only shifts
+            down when someone ABOVE them leaves the waitlist (cancels, or gets promoted). */}
+        {[...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
           const u=users.find(u=>u.id===r.userId); if(!u) return null;
           const wMStatus=comm.members?.find(m=>m.userId===u.id)?.status;
           return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08",cursor:onViewProfile?"pointer":"default"}}>
             <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
+              {r.waitlistOrder!=null&&<div title={`Waitlist #${r.waitlistOrder}`} style={{width:22,height:22,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,background:"#F59E0B22",color:"#F59E0B"}}>{r.waitlistOrder}</div>}
               <Av u={u} size={34}/>
               <div style={{flex:1}}>
                 <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
@@ -11736,7 +11766,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   {u.isGuest&&<span style={{fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
                   {suspendedIds.has(u.id)&&<span style={{fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 </div>
-                <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${wi+1} on the waitlist — joins automatically if a spot opens`}</div>
+                <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>

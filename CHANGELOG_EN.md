@@ -4,6 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.11 — Regular-member priority window is back, correctly scoped this time, and the waitlist now has permanent numbering
+
+- **After a detailed discussion with the admin, it turned out the "Regular members get first dibs for the first 24h" idea was genuinely intended — the problem was never that the priority existed, it was how it was implemented.** The window is back, precisely respecified:
+  - **Regular** registering within the first 24h → immediate active seat, permanent number, forever. If capacity is already full even for Regular, falls to the waitlist instead.
+  - **Casual** registering within the same 24h → always goes straight to the waitlist (even with room), gets a permanent waitlist position.
+  - **Once the 24h window closes:** no tier distinction at all — every new registration, and everyone already on the waitlist, competes purely by arrival order, and gets pulled into the active list automatically as seats open.
+  - **Guests:** unchanged from V0.15.10 — always need admin approval. The moment of approval now decides whether they land on the waitlist (window still open) or try for an active seat directly (window closed).
+- **The waitlist now has its own permanent position number**, same as the active list — no longer a freshly-recomputed index every render. Fixed once assigned, only shifts down when someone above them leaves the waitlist (cancels, or gets promoted to active).
+- Verified end-to-end with a full simulation before shipping (registering during the window, after it closes, cancellations, waitlist-to-active promotion) — every case checked out.
+
+---
+
 ## V0.15.10 — Registration order is now pure first-come-first-served — no tier ever jumps the queue
 
 - **Removed the "priority window" entirely** (it used to let Regular members, and anyone admin-added/invited/approved, skip ahead of earlier-registered Casual members during the first 24h). This is exactly why Khalid showed up as #3 on event #72 despite registering late — a real bug, confirmed by the admin, described as "a very serious concern."

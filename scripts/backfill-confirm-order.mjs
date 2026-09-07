@@ -64,16 +64,27 @@ if (serviceAccount.project_id !== expectedProjectId) {
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-// ── Exact copy of App.jsx's splitRegsByCapacity (App.jsx:473-490) — pure chronological FIFO,
-// tier-based priority retired 2026-09-07. `comm` is accepted for call-site compatibility only. ──
+// ── Exact copy of App.jsx's splitRegsByCapacity (App.jsx:485) — reinstated 2026-09-07 in
+// corrected form: a genuine Regular community member gets first claim on active seats during
+// the event's first 24h (ev.regularUntil); nothing else (addedBy/invite/admin/approved) grants
+// any bypass. Everyone/everything else fills remaining slots in pure chronological order. ──
 const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
-const splitRegsByCapacity = (ev) => {
+const splitRegsByCapacity = (ev, comm) => {
   const max = getMaxPlayers(ev);
   if (!max) return { active: ev.registrations, waitlisted: [] };
   const confirmed = ev.registrations.filter(r => r.confirmOrder != null);
-  const unconfirmed = ev.registrations.filter(r => r.confirmOrder == null);
+  const rest = ev.registrations.filter(r => r.confirmOrder == null);
   const remainingMax = Math.max(0, max - confirmed.length);
-  return { active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax) };
+  const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
+  if (windowActive && comm) {
+    const active = [...confirmed], waitlisted = [];
+    rest.forEach(r => {
+      const isRegular = comm.members?.find(m=>m.userId===r.userId)?.status==="regular";
+      if (isRegular && active.length<max) active.push(r); else waitlisted.push(r);
+    });
+    return { active, waitlisted };
+  }
+  return { active: [...confirmed, ...rest.slice(0, remainingMax)], waitlisted: rest.slice(remainingMax) };
 };
 async function restore(backupFile) {
   const backup = JSON.parse(readFileSync(backupFile, "utf8"));
@@ -227,6 +238,14 @@ async function reorderFifo() {
 
   const backupEntries = [];
   const plannedWrites = []; // {eventId, userId, data}
+  const commsCache = new Map();
+  const getComm = async (cid) => {
+    if (commsCache.has(cid)) return commsCache.get(cid);
+    const snap = await db.collection("padelos_communities").doc(String(cid)).get();
+    const c = snap.exists ? snap.data() : null;
+    commsCache.set(cid, c);
+    return c;
+  };
 
   for (const evDoc of eventsSnap.docs) {
     const ev = evDoc.data();
@@ -239,8 +258,9 @@ async function reorderFifo() {
 
     regs.forEach(r => backupEntries.push({ eventId: eid, userId: r.userId, data: r }));
 
+    const comm = ev.communityId != null ? await getComm(ev.communityId) : null;
     const cleared = regs.map(r => { const { confirmOrder, ...rest } = r; return rest; });
-    const { active } = splitRegsByCapacity({ ...ev, registrations: cleared });
+    const { active } = splitRegsByCapacity({ ...ev, registrations: cleared }, comm);
     const finalById = new Map(cleared.map(r => [String(r.userId), r]));
     let n = 0;
     active.forEach(r => { finalById.set(String(r.userId), { ...r, confirmOrder: ++n }); });

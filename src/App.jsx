@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.09";
+const APP_VERSION = "V0.15.10";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -471,74 +471,24 @@ function mmBuildCTLeaguePayload(round, comms, excludeEventId){
 // state transition. Not to be confused with plan.waitlisted, an unrelated pre-existing concept
 // (the single leftover player when Closed Teams has an odd headcount for pairing purposes).
 const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
-// Registration priority window (2026-08-18): for the first 24h after an event opens
-// (ev.regularUntil), only "priority" registrations — Regular members, or anyone the admin
-// added/invited/approved directly — can hold an active (non-waitlisted) spot. Casual members
-// and guests who self-register during the window go straight onto the waitlist regardless of
-// capacity/position (no admin approval needed to register at all, just held back from an active
-// spot). Once the window passes, everyone reverts to plain chronological order (registration
-// position vs maxPlayers), so anyone waitlisted purely for tier reasons is automatically swept
-// into the active list in their original order — no separate "promotion" step needed.
-const isPriorityReg = (r, comm) => {
-  // addedBy is null for genuine self-service registration (registerEv/sim). "approved" is a
-  // guest's join-request being let through by an admin — that only grants them a spot in the
-  // QUEUE (guests can't self-register at all, see canReg), it's deliberately NOT priority: they
-  // still land on the waitlist during the window and sweep to active after it passes, same as a
-  // self-registering Casual member — admin approval isn't the same thing as an admin directly
-  // placing someone (Add Member/Add Guest/Invite accept), which DOES bypass the window entirely.
-  if (r.addedBy != null && r.addedBy !== "approved") return true;
-  return comm?.members?.find(m=>m.userId===r.userId)?.status==="regular";
-};
+// Registration priority window (2026-08-18 through 2026-09-06): used to give Regular members
+// (and anyone admin-added/invited/approved) an early-access window ahead of Casual/Guest
+// self-registrants. RETIRED 2026-09-07 per explicit admin direction — real concern, stated
+// directly: a registration should behave like a cinema seat or a doctor's queue — first come,
+// first served, permanently. A tier ever jumping the line (e.g. a Regular member registering
+// late still landing at confirm-order #3 ahead of someone who signed up days earlier) was
+// flagged as a serious, unacceptable surprise, confirmed live on production event #72. Anyone
+// already confirmed (BUGS.md #18) still stays active unconditionally, forever — that part is
+// unchanged — but who fills each REMAINING open slot is now decided by pure chronological
+// registration order only, no exceptions. `ev.regularUntil` itself is left in the data model
+// (harmless, unused) rather than migrated away — nothing reads it anymore.
 const splitRegsByCapacity = (ev, comm) => {
   const max = getMaxPlayers(ev);
   if (!max) return { active: ev.registrations, waitlisted: [] };
-  // Anyone already holding a permanent confirmOrder (BUGS.md #18 follow-up, 2026-09-06) is
-  // unconditionally active, full stop — real bug, found live the same day the feature shipped:
-  // confirmOrder was only being used to SORT whatever this function decided was active, not to
-  // decide it. So the very first time a confirmed Casual/Guest member's status stopped counting
-  // as "priority" (which for anyone confirmed before the window closed is everyone, since only
-  // priority regs get in during the window at all), the very next render's fresh grandfather
-  // recompute below silently dropped them from `active` again — the exact "confirmation isn't
-  // actually permanent" bug this whole feature exists to prevent, just one layer deeper than the
-  // first fix caught. Confirmation must be a one-way, persisted fact from here on: only
-  // registrations WITHOUT a confirmOrder yet are subject to the window/priority logic below, to
-  // decide who gets the remaining open slots (and, via the sync effect elsewhere, their own
-  // permanent number).
   const confirmed = ev.registrations.filter(r => r.confirmOrder != null);
-  const unconfirmed = ev.registrations.filter(r => r.confirmOrder == null);
+  const unconfirmed = ev.registrations.filter(r => r.confirmOrder == null); // already chronological (regsByEvent's sort)
   const remainingMax = Math.max(0, max - confirmed.length);
-  if (!comm) return { active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax) };
-  const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
-  if (windowActive) {
-    const active=[...confirmed], waitlisted=[];
-    unconfirmed.forEach(r=>{
-      if (isPriorityReg(r,comm) && active.length<max) active.push(r);
-      else waitlisted.push(r);
-    });
-    return { active, waitlisted };
-  }
-  // Window closed — real bug, confirmed on production 2026-09-06 (event #76): this used to fall
-  // straight back to pure chronological order (ev.registrations.slice(0,max)) the instant the
-  // window passed, with zero regard for who was already active. Since regularUntil is a fixed
-  // 24h-from-creation timer with no relation to the event date, it can (and did) expire days
-  // before the event while registration was still actively filling up — and the very next
-  // chronological recompute silently evicted a Regular member who'd held an active spot for
-  // hours, to make room for an earlier-registered Casual member sweeping in, with no notice to
-  // anyone. The sweep-in behavior itself (a Casual member no longer held back once the window
-  // ends) is intentional and stays — but it must only ever fill genuinely open capacity, never
-  // bump someone already active. So: whoever the priority split above would have put active
-  // (in registration order, capped at the remaining slots) is grandfathered in unconditionally;
-  // only whatever's left over gets swept from the rest, in original registration order.
-  const grandfathered = new Set();
-  { let n=confirmed.length; unconfirmed.forEach(r => { if (isPriorityReg(r,comm) && n<max) { grandfathered.add(r.userId); n++; } }); }
-  let slotsLeft = max - confirmed.length - grandfathered.size;
-  const active=[...confirmed], waitlisted=[];
-  unconfirmed.forEach(r=>{
-    if (grandfathered.has(r.userId)) { active.push(r); return; }
-    if (slotsLeft>0) { active.push(r); slotsLeft--; }
-    else waitlisted.push(r);
-  });
-  return { active, waitlisted };
+  return { active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax) };
 };
 const isRegWaitlisted = (ev, uid, comm) => splitRegsByCapacity(ev, comm).waitlisted.some(r=>r.userId===uid);
 // Subscription suspension on top of the capacity split (Enhancement #17, item 2): a locked
@@ -6698,6 +6648,14 @@ export default function Matchkeeper() {
     if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
+    // Guest-tier (no community membership yet, or explicit "guest" status) never registers
+    // directly via an invite link — same admin-approval gate the normal "I'm In" button already
+    // enforces for them (canReg's isGuestTier, ~line 10838). Real gap, found live 2026-09-07:
+    // this function had no tier check at all, so a Guest clicking an invite link skipped the
+    // approval gate entirely and registered immediately, unlike every other self-service path.
+    // Mirrored server-side in functions/index.js's registerForEvent for the same reason.
+    const existingMem = comm?.members?.find(m=>m.userId===uid);
+    if (!existingMem || existingMem.status==="guest") { requestEventJoin(cid,eid); return; }
     // Only ever called with uid===me.id (see the sole call site) — registerForEvent always
     // registers whoever is actually signed in (resolved server-side from their own auth token),
     // so it can't stand in for a hypothetical admin-on-behalf-of-someone-else call. Skips
@@ -6708,6 +6666,10 @@ export default function Matchkeeper() {
         const res = await withTimeout(fn({communityId:cid, eventId:eid, via:"invite"}), 8000);
         const {status, waitlisted} = res.data || {};
         if (status === "already-registered") return;
+        // Server-side agreed this account is guest-tier for this community (stale local comm
+        // data, or a client that predates the client-side check above) — same outcome as the
+        // early-return branch: a request, not a registration.
+        if (status === "needs-approval") { toast2("Request sent ✓"); return; }
         if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
         logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
         return;
@@ -10878,13 +10840,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const paidCnt     = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&uid!==payerId&&!directIds.has(uid)&&paidIds.has(uid)).length;
   const owingCnt    = Math.max(0, payingCnt - (attendeeIds.includes(payerId)&&!exemptedIds.has(payerId)?1:0) - directCnt); // everyone paying except the collector themself and anyone who paid direct
   const collectedSoFar = payingCnt>0 ? Math.round((totC/payingCnt)*paidCnt) : 0;
-  const inRW   = new Date()<new Date(effEv.regularUntil);
-  // Casual members can self-register directly (they just land on the waitlist during the
-  // window — enforced by splitRegsByCapacity's tier-aware split). Guests (and anyone not yet a
-  // community member at all) still need admin approval to even queue up — they get the
-  // "Request to Join" flow instead; once approved they follow the exact same waitlist/sweep
-  // rule as a self-registering Casual (see isPriorityReg — "approved" is deliberately not
-  // priority), just gated behind an admin saying yes first.
+  // Casual AND Regular members can self-register directly and land wherever pure chronological
+  // order puts them (no tier ever jumps the queue, see splitRegsByCapacity). Guests (and anyone
+  // not yet a community member at all) still need admin approval to even queue up — they get
+  // the "Request to Join" flow instead (also enforced for guests clicking an invite link, see
+  // registerViaInvite); once approved they land in the queue at the moment of approval, same as
+  // everyone else — just gated behind an admin saying yes first.
   const isGuestTier = !myMem || myMem.status==="guest";
   // Admin-controlled pause, independent of the event's date/status — lets an admin create the
   // event ahead of time (so it exists, has a venue/plan set up) without registration actually
@@ -11483,7 +11444,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <div style={{position:"absolute",right:0,textAlign:"right"}}><div style={{fontSize:11,fontWeight:800,color:"var(--po-text)"}}>{shownCap}</div>Max</div>
           </div>
           {waitlistedRegsForBar.length>0&&<div style={{marginTop:10,display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#F59E0B",background:"#F59E0B22",padding:"8px 10px",borderRadius:8}}>⏳ {waitlistedRegsForBar.length} on the waitlist — first in line joins automatically if a spot opens</div>}
-          {inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:6}}>⏳ Priority for Regular Members until {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})}</div>}
         </div>;
       })()}
 
@@ -11497,7 +11457,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
       {!isCompleted&&effEv.status==="registration_open"&&<>
         {canReg&&<Btn label={registering?"Registering…":(myWouldWaitlist?"⏳ Join Waitlist":"I'm In ✓")} primary disabled={registering} onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
-        {canReg&&myWouldWaitlist&&inRW&&!isReg&&!isAdmin&&<div style={{fontSize:11,color:"#FBBF24",marginTop:-3,marginBottom:6,textAlign:"center"}}>Regular Members get priority for the first 24h — you'll move up automatically after {new Date(effEv.regularUntil).toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true})} if there's room.</div>}
         {regPaused&&!myReg&&<div style={{padding:"9px",textAlign:"center",background:"#94A3B822",border:"0.5px solid #94A3B844",borderRadius:8,fontSize:13,fontWeight:500,color:"var(--po-dim)",marginBottom:6}}>🔒 Registration hasn't opened yet — check back soon.</div>}
         {!canReg&&!myReg&&!regPaused&&(myEventJoinPending
           ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
@@ -11541,7 +11500,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         ["Type",ev.type?(getEventTypesForSport(effEv.sport).find(t=>t.key===ev.type)?.label||tl[ev.type]):"Pending Poll"],
         ["Date & Time",`${fmtD(ev.date)} · ${fmtT(ev.time)}${ev.timeTo?" → "+fmtT(ev.timeTo):""}`],
         ["Duration",durationLabel(ev.time, ev.timeTo)],
-        ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation",isFootballEv?"Snake Draft (Football Skill)":"Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":isFootballEv?"League":"League + Promotion/Relegation"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`${isFootballEv?"Pitch":"Court"} ${tc}=1pt ... ${isFootballEv?"Pitch":"Court"} 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:(isFootballEv?"Wins → Score Diff":"Group A first · Wins → Score Diff")],["Match Duration",`${plan?.matchDuration||20} min`]]:[]),["Priority Reg.","Regular Members: 24h early access"]].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>
+        ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation",isFootballEv?"Snake Draft (Football Skill)":"Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":isFootballEv?"League":"League + Promotion/Relegation"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`${isFootballEv?"Pitch":"Court"} ${tc}=1pt ... ${isFootballEv?"Pitch":"Court"} 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:(isFootballEv?"Wins → Score Diff":"Group A first · Wins → Score Diff")],["Match Duration",`${plan?.matchDuration||20} min`]]:[])].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>
     </CollapsibleSection>
 
     <VenueMapCard venue={venue}/>

@@ -13,10 +13,17 @@
 // maxPlayers, clears confirmOrder on the excess (highest confirmOrder values, kept dense for
 // the rest) so they fall back to waitlisted — same pre-write backup/rollback convention.
 //
+// --reorder-fifo (2026-09-07): tier-based priority was retired — clears confirmOrder on every
+// still-open event that has any assigned, then reassigns fresh via the now tier-free
+// splitRegsByCapacity, producing pure chronological (first-come-first-served) order. Can change
+// who's currently confirmed vs. waitlisted, not just reorder the same people — see the comment
+// above the reorderFifo() function for why that's intended.
+//
 // Usage:
 //   node scripts/backfill-confirm-order.mjs --project dev
 //   node scripts/backfill-confirm-order.mjs --project prod
 //   node scripts/backfill-confirm-order.mjs --repair --project dev
+//   node scripts/backfill-confirm-order.mjs --reorder-fifo --project dev
 //   node scripts/backfill-confirm-order.mjs --restore backups/confirm-order-backfill-dev-2026-09-06T12-00-00-000Z.json --project dev
 //
 // Safety: hard-refuses to run if the loaded service-account key's project_id doesn't exactly
@@ -36,6 +43,7 @@ const args = process.argv.slice(2);
 const projectArg = args[args.indexOf("--project")+1];
 const restoreArg = args.includes("--restore") ? args[args.indexOf("--restore")+1] : null;
 const repairMode = args.includes("--repair");
+const reorderFifoMode = args.includes("--reorder-fifo");
 
 if (!projectArg || !["dev","prod"].includes(projectArg)) {
   console.error("Usage: node scripts/backfill-confirm-order.mjs --project dev|prod [--restore <backup-file>]");
@@ -56,37 +64,17 @@ if (serviceAccount.project_id !== expectedProjectId) {
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-// ── Exact copies of App.jsx's isPriorityReg / splitRegsByCapacity (App.jsx:482-528) ──
+// ── Exact copy of App.jsx's splitRegsByCapacity (App.jsx:473-490) — pure chronological FIFO,
+// tier-based priority retired 2026-09-07. `comm` is accepted for call-site compatibility only. ──
 const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
-const isPriorityReg = (r, comm) => {
-  if (r.addedBy != null && r.addedBy !== "approved") return true;
-  return comm?.members?.find(m=>m.userId===r.userId)?.status==="regular";
-};
-const splitRegsByCapacity = (ev, comm) => {
+const splitRegsByCapacity = (ev) => {
   const max = getMaxPlayers(ev);
   if (!max) return { active: ev.registrations, waitlisted: [] };
-  if (!comm) return { active: ev.registrations.slice(0, max), waitlisted: ev.registrations.slice(max) };
-  const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
-  if (windowActive) {
-    const active=[], waitlisted=[];
-    ev.registrations.forEach(r=>{
-      if (isPriorityReg(r,comm) && active.length<max) active.push(r);
-      else waitlisted.push(r);
-    });
-    return { active, waitlisted };
-  }
-  const grandfathered = new Set();
-  { let n=0; ev.registrations.forEach(r => { if (isPriorityReg(r,comm) && n<max) { grandfathered.add(r.userId); n++; } }); }
-  let slotsLeft = max - grandfathered.size;
-  const active=[], waitlisted=[];
-  ev.registrations.forEach(r=>{
-    if (grandfathered.has(r.userId)) { active.push(r); return; }
-    if (slotsLeft>0) { active.push(r); slotsLeft--; }
-    else waitlisted.push(r);
-  });
-  return { active, waitlisted };
+  const confirmed = ev.registrations.filter(r => r.confirmOrder != null);
+  const unconfirmed = ev.registrations.filter(r => r.confirmOrder == null);
+  const remainingMax = Math.max(0, max - confirmed.length);
+  return { active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax) };
 };
-
 async function restore(backupFile) {
   const backup = JSON.parse(readFileSync(backupFile, "utf8"));
   if (backup.project !== expectedProjectId) {
@@ -220,7 +208,69 @@ async function repair() {
   console.log(`Done — cleared confirmOrder on ${n} over-capacity registration(s) ✓`);
 }
 
+// --reorder-fifo (2026-09-07): tier-based priority was retired from splitRegsByCapacity — a
+// registration should behave like a cinema seat or a doctor's queue, first come first served,
+// permanently. Every already-assigned confirmOrder on a still-open event was computed under the
+// OLD tier-aware rule, so it can be wrong (e.g. a Regular member who registered late still
+// landing ahead of an earlier Casual/Guest self-registrant — the real incident that prompted
+// this). Since the fixed splitRegsByCapacity already produces pure chronological order for any
+// registration with no confirmOrder yet, the fix is just: clear every confirmOrder on the
+// event, then reassign fresh — no bespoke reordering math needed. This can change who's
+// currently confirmed vs. waitlisted on a live event, not just reorder the same people —
+// that's the intended correction, not a side effect.
+async function reorderFifo() {
+  if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
+
+  const allEventsSnap = await db.collection("padelos_events").get();
+  const eventsSnap = { docs: allEventsSnap.docs.filter(d => !isClosedEvent(d.data())) };
+  console.log(`Scanning ${eventsSnap.docs.length} event(s) in ${expectedProjectId} for FIFO reorder (skipped ${allEventsSnap.size - eventsSnap.docs.length} completed/archived/deleted)...`);
+
+  const backupEntries = [];
+  const plannedWrites = []; // {eventId, userId, data}
+
+  for (const evDoc of eventsSnap.docs) {
+    const ev = evDoc.data();
+    const eid = evDoc.id;
+    const regsSnap = await db.collection("padelos_events").doc(eid).collection("registrations").get();
+    if (regsSnap.empty) continue;
+    const regs = regsSnap.docs.map(d => d.data());
+    if (!regs.some(r => r.confirmOrder != null)) continue; // nothing assigned yet — nothing to reorder
+    regs.sort((a,b) => (a.registeredAt < b.registeredAt ? -1 : a.registeredAt > b.registeredAt ? 1 : String(a.userId).localeCompare(String(b.userId))));
+
+    regs.forEach(r => backupEntries.push({ eventId: eid, userId: r.userId, data: r }));
+
+    const cleared = regs.map(r => { const { confirmOrder, ...rest } = r; return rest; });
+    const { active } = splitRegsByCapacity({ ...ev, registrations: cleared });
+    const finalById = new Map(cleared.map(r => [String(r.userId), r]));
+    let n = 0;
+    active.forEach(r => { finalById.set(String(r.userId), { ...r, confirmOrder: ++n }); });
+    console.log(`event ${eid} "${ev.name}": ${n} confirmed in true chronological order (${regs.length - n} waitlisted)`);
+    for (const r of cleared) plannedWrites.push({ eventId: eid, userId: r.userId, data: finalById.get(String(r.userId)) });
+  }
+
+  if (plannedWrites.length === 0) {
+    console.log("Nothing to reorder — no open event has any confirmOrder assigned yet.");
+    return;
+  }
+
+  const ts = new Date().toISOString().replace(/[:.]/g,"-");
+  const backupPath = join(backupsDir, `confirm-order-reorder-fifo-${projectArg}-${ts}.json`);
+  writeFileSync(backupPath, JSON.stringify({ createdAt: new Date().toISOString(), purpose: "confirmOrder FIFO reorder pre-write snapshot (tier-based priority retired 2026-09-07)", project: expectedProjectId, registrations: backupEntries }, null, 2));
+  console.log(`Backup written (rollback point): ${backupPath}`);
+  console.log(`Rewriting ${plannedWrites.length} registration(s) across ${new Set(plannedWrites.map(w=>w.eventId)).size} event(s)...`);
+
+  let batch = db.batch(), n = 0;
+  for (const { eventId, userId, data } of plannedWrites) {
+    batch.set(db.collection("padelos_events").doc(String(eventId)).collection("registrations").doc(String(userId)), data);
+    n++;
+    if (n % 450 === 0) { await batch.commit(); batch = db.batch(); }
+  }
+  await batch.commit();
+  console.log(`Done — ${n} registration(s) rewritten in pure chronological order ✓`);
+}
+
 if (restoreArg) await restore(restoreArg);
 else if (repairMode) await repair();
+else if (reorderFifoMode) await reorderFifo();
 else await backfill();
 process.exit(0);

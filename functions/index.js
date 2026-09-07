@@ -297,26 +297,19 @@ exports.confirmEmailMatch = onCall(async (request) => {
 });
 
 // Shared by registerForEvent/addMemberToEvent/approveEventJoinRequest below — a deliberate
-// line-for-line port of getMaxPlayers/isPriorityReg/splitRegsByCapacity from src/App.jsx. Keep
-// them in sync if that logic ever changes there. Duplicated rather than shared because this
-// runs in a separate Node/CommonJS runtime from the client's Vite/JSX bundle; a real
-// shared-module setup is more invasive than these fixes warranted.
+// line-for-line port of getMaxPlayers/splitRegsByCapacity from src/App.jsx (isPriorityReg was
+// retired 2026-09-07 along with the tier-based priority window it supported — see the matching
+// comment in src/App.jsx). Keep this in sync if that logic ever changes there. Duplicated rather
+// than shared because this runs in a separate Node/CommonJS runtime from the client's Vite/JSX
+// bundle; a real shared-module setup is more invasive than these fixes warranted.
 const getMaxPlayers = e => (e?.maxPlayers > 0 ? e.maxPlayers : null);
-const isPriorityReg = (r, c) => {
-  if (r.addedBy != null && r.addedBy !== "approved") return true;
-  return c?.members?.find(m => m.userId === r.userId)?.status === "regular";
-};
-const splitRegsByCapacity = (e, c) => {
+const splitRegsByCapacity = (e) => {
   const max = getMaxPlayers(e);
   if (!max) return {active: e.registrations, waitlisted: []};
-  const windowActive = e?.regularUntil && Date.now() < new Date(e.regularUntil).getTime();
-  if (!windowActive || !c) return {active: e.registrations.slice(0, max), waitlisted: e.registrations.slice(max)};
-  const active = [], waitlisted = [];
-  e.registrations.forEach(r => {
-    if (isPriorityReg(r, c) && active.length < max) active.push(r);
-    else waitlisted.push(r);
-  });
-  return {active, waitlisted};
+  const confirmed = e.registrations.filter(r => r.confirmOrder != null);
+  const unconfirmed = e.registrations.filter(r => r.confirmOrder == null);
+  const remainingMax = Math.max(0, max - confirmed.length);
+  return {active: [...confirmed, ...unconfirmed.slice(0, remainingMax)], waitlisted: unconfirmed.slice(remainingMax)};
 };
 // Phase 2 (registrations split): each registration is its own document at
 // padelos_events/{eventId}/registrations/{userId} instead of an array entry on the event doc —
@@ -388,7 +381,7 @@ exports.registerForEvent = onCall(async (request) => {
   const commRef = db.collection("padelos_communities").doc(String(communityId));
   const regRef = evRef.collection("registrations").doc(String(userId));
 
-  const {alreadyRegistered, eventName} = await db.runTransaction(async (tx) => {
+  const {alreadyRegistered, needsApproval, eventName} = await db.runTransaction(async (tx) => {
     const evSnap = await tx.get(evRef);
     if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
     const ev = evSnap.data();
@@ -415,6 +408,20 @@ exports.registerForEvent = onCall(async (request) => {
       comm = commSnap.data();
     }
 
+    // Guest-tier (no membership yet, or explicit "guest" status) never registers directly via
+    // an invite link — same admin-approval gate the app's normal "I'm In" button already
+    // enforces for them. Real gap, found live 2026-09-07: this function had no tier check at
+    // all, so a Guest clicking an invite link registered immediately with no admin involvement.
+    // Mirrored client-side in src/App.jsx's registerViaInvite for the same reason.
+    if (via === "invite") {
+      const existingMem = comm.members.find(m => m.userId === userId);
+      if (!existingMem || existingMem.status === "guest") {
+        const already = (ev.joinRequests || []).some(r => r.userId === userId);
+        if (!already) tx.set(evRef, {...ev, joinRequests: [...(ev.joinRequests || []), {userId, requestedAt: new Date().toISOString()}]});
+        return {alreadyRegistered: false, needsApproval: true, eventName: ev.name};
+      }
+    }
+
     const addedBy = via === "invite" ? "invite" : null;
     const newReg = {userId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
     tx.set(regRef, newReg);
@@ -426,6 +433,7 @@ exports.registerForEvent = onCall(async (request) => {
   });
 
   if (alreadyRegistered) return {status: "already-registered", waitlisted: false, eventName};
+  if (needsApproval) return {status: "needs-approval", eventName};
   const {waitlisted, pos} = await computeWaitlistInfo(db, communityId, eventId, userId);
   return {status: "ok", waitlisted, pos, eventName};
 });

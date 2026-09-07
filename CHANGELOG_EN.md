@@ -4,6 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.10 — Registration order is now pure first-come-first-served — no tier ever jumps the queue
+
+- **Removed the "priority window" entirely** (it used to let Regular members, and anyone admin-added/invited/approved, skip ahead of earlier-registered Casual members during the first 24h). This is exactly why Khalid showed up as #3 on event #72 despite registering late — a real bug, confirmed by the admin, described as "a very serious concern."
+- **Registration order is now purely chronological (FIFO) — like a cinema seat or a doctor's waiting room:** the moment you register and take your spot, your number is permanent, and only changes if someone ahead of you cancels (the existing shift-down rule already handles that).
+- **A related bug fixed at the same time:** a Guest (no membership, or "Guest"-tier) clicking an event's invite link used to register immediately with no admin approval — while the normal "I'm In" button already blocks guests behind a join request. Invite links now follow the same rule: a Guest is automatically converted into a join request requiring admin approval, and only receives their number the moment the admin actually approves it — not when they clicked the link.
+- **A one-time renumbering ran on every currently-open event** so today's numbers immediately reflect true registration order (this can change who's actually confirmed vs. waitlisted on a live event, not just reorder the same people — that's the intended correction, not a side effect).
+- **⚠️ This change touches Cloud Functions (`functions/index.js`) for the first time — needs a separate deploy (`firebase deploy --only functions`) before it reaches production.**
+
+---
+
 ## V0.15.09 — Dynamic engine now auto-refreshes future-round predictions after every round
 
 - **Direct request:** the admin had to manually tap "Regenerate" every time to refresh the break prediction for not-yet-generated rounds after each Dynamic-engine round completed. This now happens automatically the moment a round is generated — no extra button tap needed.

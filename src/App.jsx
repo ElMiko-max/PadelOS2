@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.07";
+const APP_VERSION = "V0.15.08";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -859,10 +859,17 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[]) {
   };
   const onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: findExpectedReturnCourt(p.userId)}));
   const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
-  returning.forEach(rp=>{
-    const targetCourt=findExpectedReturnCourt(rp.userId);
-    const sameCourtHasRoom=targetCourt&&buckets[targetCourt]&&buckets[targetCourt].length<4;
-    if(sameCourtHasRoom){ buckets[targetCourt].push(rp); return; }
+  // Requested 2026-09-07: process returners one target-court group at a time, in court order —
+  // every Court-1-bound returner is placed before any Court-2-bound returner is even
+  // considered, and so on — rather than in whatever order they happen to sit in the roster.
+  // Within a group, a returner who can't reclaim their own court's gap cascades DOWNWARD
+  // through the higher-numbered (lower-tier) courts in order, never to a "whichever court
+  // currently has the most empty seats" pick — that's what let someone land somewhere
+  // unrelated to their own court instead of the next one down.
+  const returningWithTarget = returning.map(rp=>({rp, targetCourt:findExpectedReturnCourt(rp.userId)}));
+  returningWithTarget.sort((a,b)=>(a.targetCourt??999)-(b.targetCourt??999));
+  returningWithTarget.forEach(({rp,targetCourt})=>{
+    if (targetCourt) { for(let c=targetCourt;c<=courts;c++){ if(buckets[c].length<4){ buckets[c].push(rp); return; } } }
     const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
     if(needy)buckets[parseInt(needy[0])].push(rp);
   });
@@ -1705,10 +1712,15 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[]) {
     }
     return null;
   };
-  returning.forEach(t => {
-    const lastCourt=findLastCourtCT(t.id);
-    const sameCourtHasRoom=lastCourt&&buckets[lastCourt]&&buckets[lastCourt].length<2;
-    if(sameCourtHasRoom){ buckets[lastCourt].push(t); return; }
+  // Same court-order cascade as genNextRoundCI's returning-player placement (requested
+  // 2026-09-07): every Court-1-bound returning team is placed before any Court-2-bound team is
+  // even considered, and within a group a team that can't reclaim its own court cascades
+  // DOWNWARD through the higher-numbered courts in order, not to whichever court has the most
+  // empty seats.
+  const returningWithCourt = returning.map(t=>({t, lastCourt:findLastCourtCT(t.id)}));
+  returningWithCourt.sort((a,b)=>(a.lastCourt??999)-(b.lastCourt??999));
+  returningWithCourt.forEach(({t,lastCourt}) => {
+    if (lastCourt) { for(let c=lastCourt;c<=courts;c++){ if(buckets[c].length<2){ buckets[c].push(t); return; } } }
     const needy=Object.entries(buckets).filter(([,ts])=>ts.length<2).sort((a,b)=>a[1].length-b[1].length)[0];
     if(needy)buckets[parseInt(needy[0])].push(t);
   });

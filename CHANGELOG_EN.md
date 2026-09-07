@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.08 — Returning-from-break placement now follows court order
+
+- **Direct request after testing the Dynamic engine:** a player returning from break used to be offered whichever court currently had the most open seats, not necessarily their own or the next one down. Now returning players are processed one court group at a time (all Court-1 returners first, then Court-2, then Court-3...), and each one tries to reclaim their own court first, cascading down to the next court in order if it's full — never to an unrelated court.
+- Same fix applied to CT Ladder (teams returning from break).
+- **Clarification, not a bug:** the "C4" tag shown next to a Round-1 break player is a USR-rank preview (where they'd sit if there were one more court), not a real court number — it's meant to show how close someone was to playing, not an actual assignment.
+
+---
+
 ## V0.15.07 — Another quick fix: the waitlist got merged into the active list on a test event
 
 - **Another bug caught by direct DEV testing**, from the same short window V0.15.05 was live before V0.15.06's fix: the old "who's active" calculation didn't correctly count already-confirmed non-priority (Casual/Guest) members against the event's capacity ceiling — so 3 extra players got a permanent confirm number on a test event (#207) even though it was already full (18 instead of 15), which showed up as "the waitlist merged into the active list."

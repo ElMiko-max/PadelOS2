@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.08";
+const APP_VERSION = "V0.15.09";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -7125,7 +7125,18 @@ export default function Matchkeeper() {
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
       const plan=syncCIPlanRoster(e.plan,e,registrationsRef.current.filter(r=>r.eventId===eid),comms.find(c=>c.id===cid),users);
-      return {...e,plan:genNextRoundCI(plan,e.retiredIds||[],e.breakConcentrateIds||[])};
+      const generated=genNextRoundCI(plan,e.retiredIds||[],e.breakConcentrateIds||[]);
+      // Requested 2026-09-07: under the Dynamic engine, the round that was just generated has
+      // the real pick, but every round AFTER it was still showing whatever "Regenerate Future"
+      // last computed — increasingly stale as real results accumulate — until the admin
+      // remembered to tap Regenerate manually. Folding that same recompute in here, right after
+      // each round generates, keeps the rest of the schedule current automatically. Classic is
+      // untouched — its stored prediction IS the real plan already, nothing to refresh.
+      if(generated.breakEngine==="dynamic"){
+        const newBreakPlan=regenerateBreakPlan(generated,generated.rounds.length,e.retiredIds||[],e.breakConcentrateIds||[]);
+        return {...e,plan:{...generated,breakPlan:newBreakPlan}};
+      }
+      return {...e,plan:generated};
     },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Next round generated ✓");
     return true;
@@ -7514,7 +7525,23 @@ export default function Matchkeeper() {
     // at click-time.
     updEvent(cid,eid,e=>{
       if(!e.plan)return e;
-      return {...e,plan:genNextCTLadder(e.plan,e.retiredIds||[],e.breakConcentrateIds||[])};
+      const generated=genNextCTLadder(e.plan,e.retiredIds||[],e.breakConcentrateIds||[]);
+      // Same auto-refresh as nextRoundCI, requested 2026-09-07 — see that comment for why.
+      if(generated.breakEngine==="dynamic"){
+        const generatedRounds=generated.rounds.length;
+        const teams=generated.sorted||generated.teams;
+        const tc=generated.courts;
+        const total=generated.maxRounds||generated.breakPlan.length;
+        const newBreakPlan=[...generated.breakPlan];
+        for(let i=0;i<generatedRounds;i++){
+          const r=generated.rounds[i];
+          if(r.onBreak&&r.onBreak.length>0) newBreakPlan[i]=(r.onBreakIds||r.onBreak.map(t=>t.id||t.teamId));
+        }
+        const fresh=buildCTBreakPlan(teams,tc,total,newBreakPlan.slice(0,generatedRounds),generated.firmBreaks||{},e.breakConcentrateIds||[]);
+        for(let i=generatedRounds;i<total;i++) newBreakPlan[i]=fresh[i];
+        return {...e,plan:{...generated,breakPlan:newBreakPlan}};
+      }
+      return {...e,plan:generated};
     },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
     toast2("Next match generated ✓");
     return true;

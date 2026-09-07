@@ -4,6 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.09 — Dynamic engine now auto-refreshes future-round predictions after every round
+
+- **Direct request:** the admin had to manually tap "Regenerate" every time to refresh the break prediction for not-yet-generated rounds after each Dynamic-engine round completed. This now happens automatically the moment a round is generated — no extra button tap needed.
+- The round that was just actually generated (the real Dynamic pick) is untouched — only the still-ungenerated rounds' predictions get refreshed.
+- Same change applied to CT Ladder.
+
+---
+
 ## V0.15.08 — Returning-from-break placement now follows court order
 
 - **Direct request after testing the Dynamic engine:** a player returning from break used to be offered whichever court currently had the most open seats, not necessarily their own or the next one down. Now returning players are processed one court group at a time (all Court-1 returners first, then Court-2, then Court-3...), and each one tries to reclaim their own court first, cascading down to the next court in order if it's full — never to an unrelated court.

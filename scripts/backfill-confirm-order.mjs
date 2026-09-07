@@ -1,7 +1,8 @@
 // One-off backfill for the confirmOrder feature (BUGS.md #18 follow-up, 2026-09-06): stamps a
 // permanent, dense, per-event seat number onto every registration doc that's currently
 // CONFIRMED (active per splitRegsByCapacity) but doesn't have one yet. Idempotent — skips
-// anything already numbered, so it's safe to re-run.
+// anything already numbered, so it's safe to re-run. Completed/archived/soft-deleted events are
+// skipped entirely (requested 2026-09-07) — nothing left to confirm on a closed event.
 //
 // Writes a full pre-write backup of every registration doc it's about to touch to backups/
 // BEFORE making any changes — that file is the rollback point. Restore with --restore.
@@ -103,11 +104,17 @@ async function restore(backupFile) {
   console.log(`Restored ${n} registration doc(s) ✓`);
 }
 
+// Skip completed/archived/soft-deleted events (requested 2026-09-07) — nothing left to confirm
+// on a closed event, and it keeps the blast radius of a production run scoped to events that
+// are actually still live/relevant.
+const isClosedEvent = (ev) => ev.status==="completed" || ev.archived===true || ev.deleted===true;
+
 async function backfill() {
   if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
 
-  const eventsSnap = await db.collection("padelos_events").get();
-  console.log(`Scanning ${eventsSnap.size} event(s) in ${expectedProjectId}...`);
+  const allEventsSnap = await db.collection("padelos_events").get();
+  const eventsSnap = { docs: allEventsSnap.docs.filter(d => !isClosedEvent(d.data())) };
+  console.log(`Scanning ${eventsSnap.docs.length} event(s) in ${expectedProjectId} (skipped ${allEventsSnap.size - eventsSnap.docs.length} completed/archived/deleted)...`);
 
   const commsCache = new Map();
   const getComm = async (cid) => {
@@ -167,8 +174,9 @@ async function backfill() {
 async function repair() {
   if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
 
-  const eventsSnap = await db.collection("padelos_events").get();
-  console.log(`Scanning ${eventsSnap.size} event(s) in ${expectedProjectId} for over-capacity confirmations...`);
+  const allEventsSnap = await db.collection("padelos_events").get();
+  const eventsSnap = { docs: allEventsSnap.docs.filter(d => !isClosedEvent(d.data())) };
+  console.log(`Scanning ${eventsSnap.docs.length} event(s) in ${expectedProjectId} for over-capacity confirmations (skipped ${allEventsSnap.size - eventsSnap.docs.length} completed/archived/deleted)...`);
 
   const backupEntries = [];
   const plannedWrites = []; // {eventId, userId, data} — data is the full doc with confirmOrder cleared

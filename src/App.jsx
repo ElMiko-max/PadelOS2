@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.11";
+const APP_VERSION = "V0.15.12";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -7636,8 +7636,47 @@ export default function Matchkeeper() {
   }, [newVersion, notifDisabled]);
 
   if (authLoading || (authUser && !dataLoaded)) {
-    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{color:"#64748B",fontSize:14}}>Loading…</div>
+    // Boot screen — replaced the plain "Loading…" text (2026-09-08, admin request) with an
+    // animated version of the app's own logo: the color-wheel ring spins behind a static court
+    // icon, with a soft ambient glow. Version + environment shown small at the bottom
+    // (deliberately kept, not hidden — the admin wants every screenshot to carry this info) in
+    // the same #475569/11px style already used for the same purpose on the Profile and menu
+    // screens (App.jsx ~3960, ~8058), so it stays legible rather than truly invisible.
+    return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:22,position:"relative"}}>
+      <div style={{position:"relative",width:108,height:108}}>
+        <div style={{position:"absolute",inset:-40,borderRadius:"50%",background:"radial-gradient(circle, rgba(139,92,246,0.25), transparent 70%)",filter:"blur(8px)",animation:"mkGlowPulse 2.6s ease-in-out infinite"}}/>
+        <svg viewBox="0 0 108 108" style={{position:"absolute",inset:0,width:"100%",height:"100%"}}>
+          <defs>
+            <linearGradient id="mkG1a" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#8B5CF6"/><stop offset="100%" stopColor="#EC4899"/></linearGradient>
+            <linearGradient id="mkG1b" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#F43F5E"/><stop offset="100%" stopColor="#FBBF24"/></linearGradient>
+            <linearGradient id="mkG1c" x1="0" y1="1" x2="1" y2="0"><stop offset="0%" stopColor="#22D3EE"/><stop offset="100%" stopColor="#22C55E"/></linearGradient>
+            <linearGradient id="mkG1d" x1="1" y1="1" x2="0" y2="0"><stop offset="0%" stopColor="#3B82F6"/><stop offset="100%" stopColor="#22D3EE"/></linearGradient>
+          </defs>
+          <circle cx="54" cy="54" r="53" fill="#0a0e1a"/>
+          <g style={{animation:"mkRingSpin 2.6s linear infinite",transformOrigin:"54px 54px"}}>
+            <circle cx="54" cy="54" r="44" fill="none" stroke="url(#mkG1a)" strokeWidth="9" strokeLinecap="round" strokeDasharray="55 400" strokeDashoffset="0"/>
+            <circle cx="54" cy="54" r="44" fill="none" stroke="url(#mkG1b)" strokeWidth="9" strokeLinecap="round" strokeDasharray="55 400" strokeDashoffset="-70"/>
+            <circle cx="54" cy="54" r="44" fill="none" stroke="url(#mkG1c)" strokeWidth="9" strokeLinecap="round" strokeDasharray="55 400" strokeDashoffset="-140"/>
+            <circle cx="54" cy="54" r="44" fill="none" stroke="url(#mkG1d)" strokeWidth="9" strokeLinecap="round" strokeDasharray="55 400" strokeDashoffset="-210"/>
+          </g>
+          <circle cx="54" cy="54" r="35" fill="none" stroke="#1e2439" strokeWidth="2"/>
+          <g transform="translate(29,38)">
+            <rect x="0" y="0" width="50" height="32" rx="1" fill="none" stroke="#F8FAFC" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+            <line x1="25" y1="0" x2="25" y2="32" stroke="#F8FAFC" strokeWidth="5" strokeLinecap="round"/>
+            <path d="M0 10 h6 v12 h-6" fill="none" stroke="#F8FAFC" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M50 10 h-6 v12 h6" fill="none" stroke="#F8FAFC" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round"/>
+            <line x1="8" y1="16" x2="19" y2="16" stroke="#F8FAFC" strokeWidth="5" strokeLinecap="round"/>
+            <line x1="31" y1="16" x2="42" y2="16" stroke="#F8FAFC" strokeWidth="5" strokeLinecap="round"/>
+            <circle cx="25" cy="16" r="3.4" fill="#F8FAFC"/>
+          </g>
+        </svg>
+      </div>
+      <div style={{fontSize:20,fontWeight:700,letterSpacing:"-0.01em",color:"#F1F5F9"}}>Matchkeeper</div>
+      <div style={{fontSize:12.5,color:"#64748B",fontWeight:500,display:"flex",gap:2}}>
+        <span>Getting things ready</span>
+        <span style={{display:"inline-flex"}}>{[0,1,2].map(i=><span key={i} style={{animation:"mkDotFade 1.4s infinite",animationDelay:`${i*0.2}s`}}>.</span>)}</span>
+      </div>
+      <div style={{position:"absolute",bottom:14,left:0,right:0,textAlign:"center",fontSize:11,color:"#475569"}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":!Capacitor.isNativePlatform()?" · Web":""}</div>
     </div>;
   }
   if (!authUser) {

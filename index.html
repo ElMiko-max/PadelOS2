@@ -16,6 +16,10 @@
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { font-family: 'Inter', system-ui, sans-serif; -webkit-tap-highlight-color: transparent; }
       @keyframes liveDotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.72); } }
+      /* Boot/loading screen (App.jsx's authLoading branch) — spinning logo ring + status dots. */
+      @keyframes mkRingSpin { to { transform: rotate(360deg); } }
+      @keyframes mkGlowPulse { 0%, 100% { opacity: .5; transform: scale(.94); } 50% { opacity: 1; transform: scale(1.04); } }
+      @keyframes mkDotFade { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
     </style>
   </head>
   <body>

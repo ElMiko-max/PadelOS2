@@ -4,6 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.12 — New animated boot/loading screen, replacing the plain black "Loading…" screen
+
+- **The screen shown while the app is starting up (waiting on sign-in/data) has been redesigned** — instead of a blank black screen with plain "Loading…" text, it now shows the app's own logo animated (the color ring spinning around the court icon), with "Matchkeeper" and "Getting things ready" underneath.
+- **The version number and environment (Web / DEV / Android) now show in small text at the bottom of the loading screen** — explicit admin request, so every screenshot taken carries that information automatically.
+
+---
+
 ## V0.15.11 — Regular-member priority window is back, correctly scoped this time, and the waitlist now has permanent numbering
 
 - **After a detailed discussion with the admin, it turned out the "Regular members get first dibs for the first 24h" idea was genuinely intended — the problem was never that the priority existed, it was how it was implemented.** The window is back, precisely respecified:

@@ -41,6 +41,16 @@ service cloud.firestore {
       allow create, update: if request.auth != null && request.resource.data.userId == int(userId);
       allow delete: if request.auth != null;
     }
+    // Per-registration lifecycle log (2026-09-09) — deliberately separate from the registrations
+    // subcollection above precisely so it survives a registration doc being deleted (unregister/
+    // removal). Append-only from the client (logRegHistory always uses arrayUnion), and no delete
+    // rule at all — nothing in the app is ever meant to erase it, only an Admin SDK script
+    // (bypasses rules entirely) could ever purge it, matching the "permanent" design intent
+    // structurally, not just by convention.
+    match /{path=**}/regHistory/{userId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.resource.data.userId == int(userId);
+    }
     match /padelos_links/{document} {
       allow read: if request.auth != null;
       // Real incident, V0.11.49: a client-side race silently linked strangers' sign-ins to the

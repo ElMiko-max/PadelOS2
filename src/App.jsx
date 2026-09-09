@@ -31,7 +31,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, collectionGroup, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, collectionGroup, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch, arrayUnion } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.20";
+const APP_VERSION = "V0.15.21";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3958,18 +3958,24 @@ function MemberProgress({comm, userId, status}){
     </div>
   </div>;
 }
-// Full position-change timeline for one registration (2026-09-09, admin request — "the
-// registration thing is very critical, especially for football"). Line 1 is always the actual
-// registration moment (`r.registeredAt`, already precise); everything after is `r.history`
-// (written by syncOrdering — see describeOrderingChange — every time confirmOrder/waitlistOrder
-// actually changes for this exact registration, whatever caused it: a cancellation upstream
-// opening a seat, an admin action, the priority window closing). Read-only, nothing computed
-// here — just rendering what was really recorded, so it can never show something that didn't
-// actually happen.
-function RegHistoryPanel({r}){
-  const entries = [{ts:r.registeredAt, note:"Registered"}, ...(r.history||[])];
+// Full lifecycle log for one registration (2026-09-09, admin request — "the registration thing
+// is very critical, especially for football", explicitly widened to "if all actions are
+// recorded" and made persistent across removal/re-registration). `entries` comes from the
+// padelos_events/<eid>/regHistory/<uid> doc — a doc that's NEVER deleted (unlike the
+// registration doc itself, which removeFromEvent deletes outright), fetched lazily by the caller
+// only once this row is expanded. Read-only, nothing computed here — just rendering what was
+// really recorded, so it can never show something that didn't actually happen.
+// `fallbackRegisteredAt`: for a registration that predates this feature (or a fresh one whose
+// very first regHistory write hasn't landed yet), there's no "Registered" entry yet — synthesize
+// one from the registration doc's own registeredAt so the panel is never empty for someone who's
+// clearly still registered.
+function RegHistoryPanel({entries, fallbackRegisteredAt}){
+  if(entries==="loading") return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>Loading…</div>;
+  const list = (entries&&entries.length) ? entries : (fallbackRegisteredAt ? [{ts:fallbackRegisteredAt, note:"Registered"}] : []);
+  const sorted = [...list].sort((a,b)=>a.ts<b.ts?-1:a.ts>b.ts?1:0);
+  if(!sorted.length) return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>No history recorded yet.</div>;
   return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>
-    {entries.map((h,i)=><div key={i} style={{display:"flex",gap:8,padding:"3px 0",borderBottom:i<entries.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+    {sorted.map((h,i)=><div key={i} style={{display:"flex",gap:8,padding:"3px 0",borderBottom:i<sorted.length-1?"0.5px solid var(--po-bdr)":"none"}}>
       <span style={{fontSize:10.5,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{fmtTs(h.ts)}</span>
       <span style={{fontSize:11,color:"var(--po-text)"}}>{h.note}</span>
     </div>)}
@@ -5225,6 +5231,20 @@ export default function Matchkeeper() {
       platform: Capacitor.isNativePlatform() ? "Android" : "Web",
     }).catch(e => console.log("Firestore write error (audit)", e));
   };
+  // Per-player registration history (2026-09-09, admin request — "a full example ... if all
+  // actions are recorded", explicitly choosing persistence over convenience: keep it even
+  // through removal/re-registration). Deliberately a SEPARATE doc
+  // (padelos_events/<eid>/regHistory/<uid>) from the registration doc itself — the registration
+  // doc gets deleted outright on unregister/removal (see deleteRegistrationDoc), which would
+  // silently wipe any history stored on it. This doc is never deleted, only ever appended to, so
+  // "Removed" and a later "Re-registered" both survive in the same timeline. arrayUnion (not a
+  // read-modify-write) means concurrent actions on the same registration can never lose an entry
+  // to a race, and setDoc+merge means it doesn't matter whether this is the first entry ever or
+  // the fiftieth.
+  const logRegHistory = (eid, uid, note) => {
+    return setDoc(doc(db,"padelos_events",String(eid),"regHistory",String(uid)), {userId:uid, entries:arrayUnion({ts:new Date().toISOString(), note})}, {merge:true})
+      .catch(e => console.log("Firestore write error (regHistory)", e));
+  };
   // Manual refresh — onSnapshot already keeps auditLog live, but a one-off server read (bypassing
   // any stale local cache) gives the console a visible "did something happen" affordance on tap.
   const [auditRefreshing, setAuditRefreshing] = useState(false);
@@ -5731,12 +5751,14 @@ export default function Matchkeeper() {
           const data = {...prevReg, ...patch};
           if (patch.confirmOrder === null) delete data.confirmOrder;
           if (patch.waitlistOrder === null) delete data.waitlistOrder;
-          // Full per-registration position history, shown via the expandable "Details" row in
-          // the Players tab — every entry here is a real, timestamped position change, never a
+          tx.set(ref, clean(data));
+          // Full per-registration position history, shown via the expandable row in the Players
+          // tab — written to the persistent regHistory doc (see logRegHistory), NOT onto the
+          // registration doc itself, so it survives even if this registration later gets deleted
+          // entirely. Every entry here is a real, timestamped position change, never a
           // reconstruction, since this is written at the one place either number ever changes.
           const note = describeOrderingChange(prevReg, data);
-          if (note) data.history = [...(prevReg.history||[]), {ts:new Date().toISOString(), note}];
-          tx.set(ref, clean(data));
+          if (note) tx.set(doc(db,"padelos_events",String(eid),"regHistory",String(userId)), {userId, entries:arrayUnion({ts:new Date().toISOString(), note})}, {merge:true});
           // Waitlist → active: had no confirmOrder before, has one now, and was genuinely sitting
           // on the waitlist already (not a brand-new registration landing straight on an open seat).
           if (patch.confirmOrder!=null && prevReg.confirmOrder==null && prevReg.waitlistOrder!=null) promoted.push(userId);
@@ -6712,6 +6734,7 @@ export default function Matchkeeper() {
         notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
       }
       logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+      logRegHistory(eid, me.id, "Registered (self, via app)");
     };
     setRegisteringEventId(eid);
     try {
@@ -6767,6 +6790,7 @@ export default function Matchkeeper() {
       toast2(`${u?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
       if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
       logAudit("event.register", `${me.nickname} added ${u?.nickname||uid} to "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+      logRegHistory(eid, uid, `Registered (added by ${me.nickname})`);
     };
     // Server-side backstop, same pattern as registerEv — see addMemberToEvent's comment in
     // functions/index.js. Falls back to the direct write below on anything except the function
@@ -6834,6 +6858,7 @@ export default function Matchkeeper() {
         if (status === "needs-approval") { toast2("Request sent ✓"); return; }
         if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
         logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
+        logRegHistory(eid, uid, "Registered (via invite link)");
         return;
       } catch (e) {
         if (e?.code === "functions/failed-precondition") { toast2(e.message || "This invite link is no longer valid", "err"); return; }
@@ -6847,6 +6872,7 @@ export default function Matchkeeper() {
     ).catch(e=>console.log("registerViaInvite registerWithMembership failed", e));
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
     logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
+    logRegHistory(eid, uid, "Registered (via invite link)");
   };
   // Event-level join requests — same shape as community joinRequests, but scoped to one
   // event: anyone who finds the event (not just invited, not just regular members) can ask
@@ -6868,6 +6894,7 @@ export default function Matchkeeper() {
       toast2(waitlisted?"Approved — waitlisted (event full)":"Approved ✓");
       if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
       logAudit("event.register", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
+      logRegHistory(eid, uid, `Registered (join request approved by ${me.nickname})`);
     };
     // Server-side backstop, same pattern as registerEv — see approveEventJoinRequest's comment
     // in functions/index.js. Falls back to the direct write below on anything except the
@@ -6906,6 +6933,7 @@ export default function Matchkeeper() {
     ).catch(e=>console.log("addGuest registerWithMembership failed", e));
     toast2(`${g.n} added ✓`);
     logAudit("event.register", `${me.nickname} added guest ${g.n} to "${ev.name}"`, "event", eid);
+    logRegHistory(eid, id, `Registered (added as guest by ${me.nickname})`);
     return true;
   };
   // Promotes a community guest to a full (casual) member — same person, same history,
@@ -6946,7 +6974,7 @@ export default function Matchkeeper() {
     if (added>0) toast2(`Added ${added} guest(s) to their communities ✓`);
     else toast2("No missing guest memberships found — all clean ✓");
   };
-  const checkIn=(cid,eid,uid)=>{updEvent(cid,eid,ev=>ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]});toast2("Checked in ✓");};
+  const checkIn=(cid,eid,uid)=>{updEvent(cid,eid,ev=>ev.checkedIn.includes(uid)?ev:{...ev,checkedIn:[...ev.checkedIn,uid]});toast2("Checked in ✓");logRegHistory(eid,uid,"Checked in");};
   const setPlan=(cid,eid,plan)=>updEvent(cid,eid,ev=>({...ev,plan}));
   const removeFromEvent=(cid,eid,uid)=>{
     if (!checkSubscriptionGuard({bypassSubscriptionLock:uid===me.id}) || !checkGodModeGuard(cid)) return;
@@ -7013,6 +7041,7 @@ export default function Matchkeeper() {
       }
     }
     logAudit("event.unregister", `${me.nickname} ${uid===me.id?"unregistered themselves":`removed ${u?.nickname||uid}`} from "${ev?.name||eid}"`, "event", eid);
+    logRegHistory(eid, uid, uid===me.id ? "Unregistered (self)" : `Removed (by ${me.nickname})`);
   };
   const addEventPhoto=(cid,eid,photo)=>{updEvent(cid,eid,ev=>({...ev,photos:[...(ev.photos||[]),{...photo,uploadedBy:me.id,uploadedAt:new Date().toISOString()}]}));toast2("Photo added 📸");
     const ev=getEv(cid,eid);
@@ -7107,8 +7136,14 @@ export default function Matchkeeper() {
     toast2(isRetiring?(ids.length>1?(noShow?"Team marked as no-show 🙈":"Team marked retired 🚑"):(noShow?"Player marked as no-show 🙈":"Player marked retired 🚑")):"Undone — back on the roster");
     const names=ids.map(id=>users.find(u=>u.id===id)?.nickname||id).join(", ");
     logAudit(isRetiring?(noShow?"player.noShow":"player.retire"):"player.unretire", `${me.nickname} ${isRetiring?(noShow?"marked as no-show":"retired"):"un-retired"} ${names} from "${ev.name}"`, "event", eid);
+    const histNote = isRetiring ? (noShow?`Marked no-show (by ${me.nickname})`:`Marked retired (by ${me.nickname})`) : `Un-retired (by ${me.nickname})`;
+    ids.forEach(id=>logRegHistory(eid,id,histNote));
   };
-  const togglePaid=(cid,eid,uid)=>{updEvent(cid,eid,ev=>{const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};});};
+  const togglePaid=(cid,eid,uid)=>{
+    const wasPaid = (getEv(cid,eid)?.paidIds||[]).includes(uid);
+    updEvent(cid,eid,ev=>{const p=new Set(ev.paidIds||[]);p.has(uid)?p.delete(uid):p.add(uid);return{...ev,paidIds:[...p]};});
+    logRegHistory(eid, uid, wasPaid ? "Marked as unpaid" : "Marked as paid");
+  };
   // "Direct" = paid their share through some channel that bypasses the collector entirely (cash
   // to the venue, handed to another admin, etc.) — settled, but not money the collector actually
   // holds, so it's tracked separately from paidIds (which specifically means "paid TO the
@@ -10700,7 +10735,25 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [openPlayerMenu,setOpenPlayerMenu] = useState(null); // userId whose Players-tab action menu is open
   const [expandedRegHistory,setExpandedRegHistory] = useState(new Set()); // userIds whose registration-position history is expanded — independent, any number at once
-  const toggleRegHistory = uid => setExpandedRegHistory(s=>{const n=new Set(s); n.has(uid)?n.delete(uid):n.add(uid); return n;});
+  // regHistory lives in its own Firestore doc (padelos_events/<eid>/regHistory/<uid>), separate
+  // from the registration doc — see logRegHistory's comment for why (survives removal). Fetched
+  // lazily, once, the first time a given row is expanded — this is admin-facing detail rarely
+  // opened, not something worth a live listener for every player in the list on every render.
+  const [regHistoryData,setRegHistoryData] = useState({}); // userId -> "loading" | entries[]
+  const toggleRegHistory = uid => setExpandedRegHistory(s=>{
+    const n = new Set(s);
+    if (n.has(uid)) { n.delete(uid); }
+    else {
+      n.add(uid);
+      if (!(uid in regHistoryData)) {
+        setRegHistoryData(d=>({...d,[uid]:"loading"}));
+        getDoc(doc(db,"padelos_events",String(effEv.id),"regHistory",String(uid)))
+          .then(snap=>setRegHistoryData(d=>({...d,[uid]: snap.exists() ? (snap.data().entries||[]) : []})))
+          .catch(e=>{ console.log("regHistory fetch failed", e); setRegHistoryData(d=>({...d,[uid]:[]})); });
+      }
+    }
+    return n;
+  });
   const [openPaymentMenu,setOpenPaymentMenu] = useState(null); // userId whose Settlement status menu is open
   const [photoUploading2,setPhotoUploading2] = useState(false);
   const [photoUploadProgress,setPhotoUploadProgress] = useState(null); // {done,total} while a multi-select batch is in flight
@@ -11949,7 +12002,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               </div>}
             </div>
           </div>
-          {expandedRegHistory.has(u.id)&&<RegHistoryPanel r={r}/>}
+          {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}
         </Card>;
       })}
       {capWaitlistedRegs.length>0&&<>
@@ -11976,7 +12029,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               <div onClick={e=>{e.stopPropagation();toggleRegHistory(u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
-            {expandedRegHistory.has(u.id)&&<RegHistoryPanel r={r}/>}
+            {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}
           </Card>;
         })}
       </>}

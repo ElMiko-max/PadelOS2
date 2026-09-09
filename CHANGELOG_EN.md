@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.20 (current) — Harden against the event #78 waitlist-ordering bug ever recurring
+## V0.15.21 (current, needs Firestore rules deploy) — Persistent full-lifecycle registration log per player
+
+- **Registration history now records everything that happens to a player in an event, not just seat-number changes:** registered (and how — self, invite link, added by an admin, guest, an approved join request), which seat/waitlist spot they landed on, every real position change and why, **removed from the event (and by whom)**, **re-registered** if that happens, **checked in**, **marked no-show / retired**, **marked as paid**.
+- **Now fully persistent — even through removal and re-registration, the old entries stay.** The log now lives in its own separate place from the player's actual registration (which really does get deleted if they're removed) — before this, the log was stored ON the registration itself, so removing someone would have wiped their whole history along with it.
+- **⚠️ Needs one extra deployment step before it actually works in production:** the Firestore security rules (`firestore.rules`) need deploying (`firebase deploy --only firestore:rules`) to allow writes to the new location — without that, every registration action will silently fail to log (everything else about registering still works normally).
+
+---
+
+## V0.15.20 — Harden against the event #78 waitlist-ordering bug ever recurring
 
 - **Internal safeguard only — nothing user-visible changes.** The V0.15.16 fix for the random-order bug (event #78) was correct, but it relied on whoever called that code remembering to sort the data first. The sort is now guaranteed **inside the shared function itself** (`computeOrderingUpdates`), not something a future caller has to remember. So even a future code change that forgets to pre-sort can no longer reintroduce this exact bug.
 - Note: the already-wrong numbers from before V0.15.16 (e.g. #13/#14/#15 on event #78) are left untouched — the admin explicitly asked not to fix the existing data right now.

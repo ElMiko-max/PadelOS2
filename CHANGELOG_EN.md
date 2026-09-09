@@ -4,6 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
+## V0.15.13 (DEV only so far) — Redesigned home ("Events") screen — more informative, more polished
+
+- **The home screen has a new top section** — a personalized time-of-day greeting, a spotlighted card for your soonest upcoming event (name, venue, time, day countdown, registration bar, and a direct link into it), and a quick row of four real stats: upcoming events, your USR, how many communities you're in, and matches played.
+- **Everything animates in gently on load** — the greeting, hero card, and stat numbers cascade in with a count-up effect, and the "next up" card carries a soft breathing glow. Previewed live as an Artifact before building it, with the admin picking this direction.
+- The existing Coming/Past tabs and every action (New/Select/Archive/Delete) are unchanged underneath the new section.
+- **⚠️ Shipped to DEV only so far** — not yet pushed to GitHub or built into an APK.
+
+---
+
 ## V0.15.12 — New animated boot/loading screen, replacing the plain black "Loading…" screen
 
 - **The screen shown while the app is starting up (waiting on sign-in/data) has been redesigned** — instead of a blank black screen with plain "Loading…" text, it now shows the app's own logo animated (the color ring spinning around the court icon), with "Matchkeeper" and "Getting things ready" underneath.

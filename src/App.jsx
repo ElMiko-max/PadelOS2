@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.12";
+const APP_VERSION = "V0.15.13";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3767,6 +3767,21 @@ function Btn({label,onClick,primary,danger,disabled,style={}}){
 }
 function SmBtn({label,onClick,color="#6366F1",active,style={}}){return <button onClick={onClick} style={{padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",border:`0.5px solid ${active?"#6366F1":color+"44"}`,background:active?"#6366F133":`${color}11`,color:active?"#A5B4FC":color,...style}}>{label}</button>;}
 function Card({children,style={},id}){return <div id={id} className="po-card" style={{background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,padding:"14px 16px",marginBottom:10,...style}}>{children}</div>;}
+// Home screen stat tiles (2026-09-09) — counts up from 0 to `to` once on mount, easing out.
+// Skips the animation for prefers-reduced-motion, same convention as the CSS entrance classes.
+function CountUp({to, suffix=""}){
+  const [n,setN]=useState(0);
+  useEffect(()=>{
+    if(to==null||isNaN(to)) return;
+    if(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches){ setN(to); return; }
+    let raf, start;
+    const dur=700;
+    const tick=(ts)=>{ if(!start)start=ts; const p=Math.min(1,(ts-start)/dur); setN(Math.round((1-Math.pow(1-p,3))*to)); if(p<1) raf=requestAnimationFrame(tick); };
+    raf=requestAnimationFrame(tick);
+    return ()=>cancelAnimationFrame(raf);
+  },[to]);
+  return <>{to==null?"—":n}{suffix}</>;
+}
 // A single link using the geo: URI scheme — on a phone with no default maps app set,
 // the OS itself pops up its native "Open with…" chooser (Google Maps, Waze, whatever's
 // installed). No custom in-app menu; falls back to the plain Maps link when we don't
@@ -12483,7 +12498,57 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
       </div>
     </div>;
   }
-  return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>
+  // Home screen redesign (2026-09-09, admin request, "Concept A — Focused Hero" — previewed as
+  // an Artifact before implementation): a personalized greeting, a single spotlighted card for
+  // the soonest upcoming event the user is actually registered for, and a slim row of cheap,
+  // real personal stats — sitting above the existing Events header/tabs/list, which are all
+  // untouched below. The spotlighted event is deliberately ALSO left in the Coming list further
+  // down (not removed from it) — simpler and safer than teaching the list to skip an id.
+  const heroEv = coming[0];
+  const heroVenue = heroEv && venues?.find(v=>v.id===heroEv.venueId);
+  const heroSplit = heroEv && splitRegsByCapacity(heroEv);
+  const heroCap = heroEv && (getMaxPlayers(heroEv) || heroEv.courts*5 || null);
+  const countdownLabel = ev => {
+    if(!ev.date) return "";
+    const evDate = new Date(`${ev.date}T00:00:00`); const today = new Date(); today.setHours(0,0,0,0);
+    const days = Math.round((evDate-today)/86400000);
+    return days<=0 ? "Today" : days===1 ? "Tomorrow" : `In ${days} days`;
+  };
+  const greetingHour = new Date().getHours();
+  const greeting = greetingHour<12 ? "Good morning" : greetingHour<18 ? "Good afternoon" : "Good evening";
+  const myCommCount = comms.filter(c=>c.members?.some(m=>m.userId===me.id)).length;
+  return <>
+    <div style={{marginBottom:16}}>
+      <div className="mk-animate-in" style={{fontSize:19,fontWeight:700,color:"var(--po-text)",animationDelay:".05s"}}>{greeting}, {me.nickname} 👋</div>
+      <div className="mk-animate-in" style={{fontSize:12,color:"var(--po-dim)",marginTop:2,animationDelay:".12s"}}>{fmtD(new Date())}</div>
+      {heroEv&&<div className="mk-hero" onClick={()=>onOpen(heroEv.communityId,heroEv.id)} style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa"}}>
+        <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
+        <div style={{position:"relative"}}>
+          <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
+          <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{heroEv.name}</div>
+          <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
+            {heroVenue&&<span>📍 {heroVenue.name}</span>}
+            <span>🕘 {fmtT(heroEv.time)}</span>
+          </div>
+          {heroCap&&<>
+            <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,.12)",marginTop:12,overflow:"hidden"}}>
+              <div className="mk-hero-bar-fill" style={{height:"100%",borderRadius:3,width:`${Math.min(100,(heroSplit.active.length/heroCap)*100)}%`,background:"linear-gradient(90deg,#818CF8,#34D399)"}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
+              <span style={{fontSize:11,color:"#C7D2FE"}}>{heroSplit.active.length} / {heroCap} registered</span>
+              <span style={{background:"#fff",color:"#1e1b3a",fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:8}}>View Event →</span>
+            </div>
+          </>}
+        </div>
+      </div>}
+      <div style={{display:"flex",gap:8,marginTop:14}}>
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".32s"}}><div style={{fontSize:16,fontWeight:800,color:"#818CF8"}}><CountUp to={coming.length}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Upcoming</div></div>
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".38s"}}><div style={{fontSize:16,fontWeight:800,color:"#34D399"}}><CountUp to={me.usr}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>USR</div></div>
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".44s"}}><div style={{fontSize:16,fontWeight:800,color:"#FBBF24"}}><CountUp to={myCommCount}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Communities</div></div>
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".5s"}}><div style={{fontSize:16,fontWeight:800,color:"#22D3EE"}}><CountUp to={me.usrHistory?.length||0}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Matches</div></div>
+      </div>
+    </div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>
     {isAdm&&!selMode&&<div style={{display:"flex",gap:8}}><SmBtn label="☑ Select" onClick={()=>setSelMode(true)} color="#6366F1"/><Btn label="+ New" primary onClick={handleNewClick}/></div>}
     {selMode&&<SmBtn label="✕ Cancel" onClick={exitSelMode} color="#94A3B8"/>}
   </div>

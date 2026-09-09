@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.17";
+const APP_VERSION = "V0.15.18";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -507,6 +507,25 @@ const splitRegsByCapacity = (ev, comm) => {
   return { active: [...confirmed, ...rest.slice(0, remainingMax)], waitlisted: rest.slice(remainingMax) };
 };
 const isRegWaitlisted = (ev, uid, comm) => splitRegsByCapacity(ev, comm).waitlisted.some(r=>r.userId===uid);
+// Per-registration position history (2026-09-09, admin request — "the registration thing is
+// very critical, especially for football"): a human-readable one-liner for how a registration's
+// confirmOrder/waitlistOrder just changed, from `prev` (the registration doc before this sync's
+// write) to `next` (confirmOrder/waitlistOrder after). Appended to that registration doc's own
+// `history` array by syncOrdering below — the single place either number is ever assigned — so
+// every position change, whoever/whatever caused it (a cancellation upstream, an admin action,
+// the priority window closing), ends up recorded without needing to instrument every caller.
+const describeOrderingChange = (prev, next) => {
+  const pC = prev.confirmOrder ?? null, pW = prev.waitlistOrder ?? null;
+  const nC = next.confirmOrder ?? null, nW = next.waitlistOrder ?? null;
+  if (pC==null && pW==null && nC!=null) return `Landed on confirmed seat #${nC}`;
+  if (pC==null && pW==null && nW!=null) return `Landed on waitlist #${nW}`;
+  if (pW!=null && nC!=null) return `Promoted from waitlist #${pW} to confirmed seat #${nC}`;
+  if (pW!=null && nW!=null && nW<pW) return `Moved up on the waitlist: #${pW} → #${nW}`;
+  if (pW!=null && nW!=null && nW>pW) return `Moved down on the waitlist: #${pW} → #${nW}`;
+  if (pC!=null && nC!=null && nC!==pC) return `Confirmed position shifted: #${pC} → #${nC}`;
+  if (pC!=null && nW!=null) return `Moved from confirmed seat #${pC} back to waitlist #${nW}`;
+  return null;
+};
 // Subscription suspension on top of the capacity split (Enhancement #17, item 2): a locked
 // user's EXISTING registration doesn't get deleted or mutated — it's demoted purely for this
 // computed view, same "no new state transition needed" philosophy as the capacity split itself.
@@ -2330,6 +2349,10 @@ const ini2   = s => s.substring(0,2).toUpperCase();
 // the week at a glance is genuinely useful, not just the calendar date.
 const fmtD   = d => new Date(d).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short",year:"numeric"});
 const fmtT   = t => { if(!t) return t; const [h,m]=t.split(":").map(Number); if(isNaN(h)) return t; const ap=h>=12?"PM":"AM"; const h12=h%12||12; return `${h12}:${String(m).padStart(2,"0")} ${ap}`; };
+// Full precision (down to the second) for a stored ISO timestamp — used by the registration
+// position history, where "which exact moment" (a burst of near-simultaneous registrations, or
+// a promotion firing seconds after a cancellation) is the whole point, unlike fmtD/fmtT above.
+const fmtTs  = iso => { const d=new Date(iso); return isNaN(d.getTime()) ? "—" : d.toLocaleString("en-GB",{day:"numeric",month:"short",year:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit",hour12:true}); };
 // Standard messaging-app convention (WhatsApp/iMessage/Slack): relative time is nice for
 // anything from today, but a bare "12d ago" stops being genuinely readable past a few days —
 // real bug report, 2026-09-02: old messages need an actual visible date+time, not an
@@ -3933,6 +3956,23 @@ function MemberProgress({comm, userId, status}){
     <div style={{height:4,borderRadius:2,background:"var(--po-bdr)",overflow:"hidden"}}>
       <div style={{height:"100%",borderRadius:2,width:`${Math.min(100,pct*100)}%`,background:color}}/>
     </div>
+  </div>;
+}
+// Full position-change timeline for one registration (2026-09-09, admin request — "the
+// registration thing is very critical, especially for football"). Line 1 is always the actual
+// registration moment (`r.registeredAt`, already precise); everything after is `r.history`
+// (written by syncOrdering — see describeOrderingChange — every time confirmOrder/waitlistOrder
+// actually changes for this exact registration, whatever caused it: a cancellation upstream
+// opening a seat, an admin action, the priority window closing). Read-only, nothing computed
+// here — just rendering what was really recorded, so it can never show something that didn't
+// actually happen.
+function RegHistoryPanel({r}){
+  const entries = [{ts:r.registeredAt, note:"Registered"}, ...(r.history||[])];
+  return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>
+    {entries.map((h,i)=><div key={i} style={{display:"flex",gap:8,padding:"3px 0",borderBottom:i<entries.length-1?"0.5px solid var(--po-bdr)":"none"}}>
+      <span style={{fontSize:10.5,color:"var(--po-dim)",whiteSpace:"nowrap"}}>{fmtTs(h.ts)}</span>
+      <span style={{fontSize:11,color:"var(--po-text)"}}>{h.note}</span>
+    </div>)}
   </div>;
 }
 function AreaSel({country,gov,area,onChange,egypt}){
@@ -5684,13 +5724,18 @@ export default function Matchkeeper() {
           const ref = refs.find(rf=>rf.id===String(userId));
           const snap = snaps.find(s=>s.id===String(userId));
           if (!ref || !snap?.exists()) return;
-          const data = {...snap.data(), ...patch};
+          const prevReg = snap.data();
+          const data = {...prevReg, ...patch};
           if (patch.confirmOrder === null) delete data.confirmOrder;
           if (patch.waitlistOrder === null) delete data.waitlistOrder;
+          // Full per-registration position history, shown via the expandable "Details" row in
+          // the Players tab — every entry here is a real, timestamped position change, never a
+          // reconstruction, since this is written at the one place either number ever changes.
+          const note = describeOrderingChange(prevReg, data);
+          if (note) data.history = [...(prevReg.history||[]), {ts:new Date().toISOString(), note}];
           tx.set(ref, clean(data));
           // Waitlist → active: had no confirmOrder before, has one now, and was genuinely sitting
           // on the waitlist already (not a brand-new registration landing straight on an open seat).
-          const prevReg = snap.data();
           if (patch.confirmOrder!=null && prevReg.confirmOrder==null && prevReg.waitlistOrder!=null) promoted.push(userId);
         });
         return promoted;
@@ -10651,6 +10696,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [openPlayerMenu,setOpenPlayerMenu] = useState(null); // userId whose Players-tab action menu is open
+  const [expandedRegHistory,setExpandedRegHistory] = useState(null); // userId whose registration-position history is expanded, or null
   const [openPaymentMenu,setOpenPaymentMenu] = useState(null); // userId whose Settlement status menu is open
   const [photoUploading2,setPhotoUploading2] = useState(false);
   const [photoUploadProgress,setPhotoUploadProgress] = useState(null); // {done,total} while a multi-select batch is in flight
@@ -11875,6 +11921,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   ? <Bdg label={addedByLabel?`🎫 Event Guest · ${addedByLabel}`:"🎫 Event Guest"} color="#8B5CF6"/>
                   : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
+              <div onClick={()=>setExpandedRegHistory(o=>o===u.id?null:u.id)} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory===u.id?"rotate(90deg)":"none",transition:"transform .15s"}}>▶</div>
               {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:170,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -11898,6 +11945,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               </div>}
             </div>
           </div>
+          {expandedRegHistory===u.id&&<RegHistoryPanel r={r}/>}
         </Card>;
       })}
       {capWaitlistedRegs.length>0&&<>
@@ -11908,8 +11956,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {[...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
           const u=users.find(u=>u.id===r.userId); if(!u) return null;
           const wMStatus=comm.members?.find(m=>m.userId===u.id)?.status;
-          return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08",cursor:onViewProfile?"pointer":"default"}}>
-            <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10}}>
+          return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08"}}>
+            <div onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{display:"flex",alignItems:"center",gap:10,cursor:onViewProfile?"pointer":"default"}}>
               {r.waitlistOrder!=null&&<div title={`Waitlist #${r.waitlistOrder}`} style={{width:22,height:22,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,background:"#F59E0B22",color:"#F59E0B"}}>{r.waitlistOrder}</div>}
               <Av u={u} size={34}/>
               <div style={{flex:1}}>
@@ -11921,8 +11969,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 </div>
                 <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
+              <div onClick={e=>{e.stopPropagation();setExpandedRegHistory(o=>o===u.id?null:u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory===u.id?"rotate(90deg)":"none",transition:"transform .15s"}}>▶</div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
+            {expandedRegHistory===u.id&&<RegHistoryPanel r={r}/>}
           </Card>;
         })}
       </>}

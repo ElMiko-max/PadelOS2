@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.17 (current) — Exclude a specific event from promotion/demotion attendance
+## V0.15.18 (current) — Full per-player registration position history
+
+- **A small arrow (▶) next to each player in the event's Players tab** (both the Registered list and the Waitlist) expands into a full history of their position in this event's registration: the **first line is the exact moment they registered** (down to the second), and every line after is a real change to their position and why — moved down the waitlist because someone above them cancelled, promoted from the waitlist into an active seat, or any other genuine change.
+- Especially important for football right now — "why am I not in the active list" or "why did they get in before me" now has an exact, recorded answer instead of a guess.
+- Recorded automatically from the one single place player positions actually change (`syncOrdering`), so a real position change can never happen without being logged.
+- Registrations from before this update will just show a "Registered" line until their next real position change.
+
+---
+
+## V0.15.17 — Exclude a specific event from promotion/demotion attendance
 
 - **Real problem:** after some Padel communities added a second weekly event, members who normally only ever came to the original day started naturally skipping the new one — and that counted as a "miss," delaying their Casual→Regular promotion (or even risking demotion) despite being perfectly regular on their actual day.
 - **Fix: a "Don't count for promotion/demotion" toggle on any event** — new option in the create/edit event screen. A marked event is left out of everyone's attendance calculation entirely: attending it doesn't help, missing it doesn't hurt, as if it never happened for tier purposes (everything else about the event — registration, results, etc. — is unaffected).

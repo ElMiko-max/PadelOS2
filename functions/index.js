@@ -138,8 +138,13 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
     // needed for this lookup anymore.
     const evSnap = await db.collection("padelos_events").doc(String(s.eventId)).get();
     const ev = evSnap.exists ? evSnap.data() : null;
-    if (!ev || ev.status === "cancelled") {
-      console.log(`[eventReminder] skipping ${s.id}: event not found or cancelled`);
+    // ev.deleted was missing here (real bug, found live 2026-09-09): this scheduled function
+    // fires independently of any client having the app open, so a deleted event's already-queued
+    // reminder entries kept firing real push notifications to registered players straight through
+    // deletion — the client-side reminder gate (App.jsx's checkReminders) never even got a chance
+    // to matter, since THIS is what actually dispatches reminders in production.
+    if (!ev || ev.status === "cancelled" || ev.deleted) {
+      console.log(`[eventReminder] skipping ${s.id}: event not found, cancelled, or deleted`);
       stillValid.push(s);
       continue;
     }
@@ -397,7 +402,7 @@ exports.registerForEvent = onCall(async (request) => {
     const evSnap = await tx.get(evRef);
     if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
     const ev = evSnap.data();
-    if (ev.status === "completed" || ev.status === "cancelled") {
+    if (ev.status === "completed" || ev.status === "cancelled" || ev.deleted) {
       throw new HttpsError("failed-precondition", via === "invite"
         ? "This event has already ended — the invite link is no longer valid."
         : "This event is closed — registration is no longer open.");
@@ -478,7 +483,7 @@ exports.addMemberToEvent = onCall(async (request) => {
     const evSnap = await tx.get(evRef);
     if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
     const ev = evSnap.data();
-    if (ev.status === "completed" || ev.status === "cancelled") {
+    if (ev.status === "completed" || ev.status === "cancelled" || ev.deleted) {
       throw new HttpsError("failed-precondition", "This event is closed — can't add players anymore.");
     }
     const regSnap = await tx.get(regRef);
@@ -509,7 +514,7 @@ exports.approveEventJoinRequest = onCall(async (request) => {
     const evSnap = await tx.get(evRef);
     if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
     const ev = evSnap.data();
-    if (ev.status === "completed" || ev.status === "cancelled") {
+    if (ev.status === "completed" || ev.status === "cancelled" || ev.deleted) {
       throw new HttpsError("failed-precondition", "This event is closed — the request can't be approved anymore.");
     }
     const regSnap = await tx.get(regRef);

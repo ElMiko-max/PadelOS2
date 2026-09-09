@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.21";
+const APP_VERSION = "V0.15.22";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6047,7 +6047,7 @@ export default function Matchkeeper() {
       const now = Date.now();
       commsRef.current.forEach(c => {
         c.events.forEach(ev => {
-          if (!ev.date || !ev.time || ev.status==="completed" || ev.status==="cancelled") return;
+          if (!ev.date || !ev.time || ev.status==="completed" || ev.status==="cancelled" || ev.deleted) return;
           const start = new Date(`${ev.date}T${ev.time}`).getTime();
           if (isNaN(start)) return;
           const hoursLeft = (start-now)/3600000;
@@ -6714,7 +6714,7 @@ export default function Matchkeeper() {
     // function itself. This is still the FIRST line of defense (fires before any network call,
     // and is what the registerForEvent Cloud Function's fallback below relies on) — but the
     // real backstop against a stale client not even having this check yet is that function.
-    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — registration is no longer open","err");return;}
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — registration is no longer open","err");return;}
     if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const afterRegistered = (waitlisted, waitPos) => {
@@ -6783,7 +6783,7 @@ export default function Matchkeeper() {
   };
   const addMember=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
-    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — can't add players anymore","err");return;}
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — can't add players anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
     const afterAdded = (waitlisted) => {
@@ -6824,7 +6824,7 @@ export default function Matchkeeper() {
     // been closed (event #50) — this path had no status check at all, so it silently added a
     // registration to a completed event with no round/match to ever put them in. The link
     // itself has no way to know it's stale, so the check has to live here.
-    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event has already ended — the invite link is no longer valid","err");return;}
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event has already ended — the invite link is no longer valid","err");return;}
     // Same gap as registerEv, confirmed live on a real rush event: the admin's "pause
     // registration" toggle only ever hid the in-app "I'm In" button — an invite link someone
     // already had (shared before the pause, in a WhatsApp group etc.) still registered them
@@ -6887,7 +6887,7 @@ export default function Matchkeeper() {
   };
   const approveEventJoin=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
-    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — the request can't be approved anymore","err");return;}
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — the request can't be approved anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
     const afterApproved = (waitlisted) => {
@@ -6921,7 +6921,7 @@ export default function Matchkeeper() {
   };
   const addGuest=(cid,eid,g)=>{
     const ev=getEv(cid,eid);
-    if(!ev||ev.status==="completed"||ev.status==="cancelled"){toast2("This event is closed — can't add guests anymore","err");return false;}
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — can't add guests anymore","err");return false;}
     if (nicknameTaken(g.n)) { toast2(`Nickname "${g.n}" is already used by another player`, "err"); return false; }
     if (phoneTaken(g.p)) { toast2(`Phone ${g.p} is already used by another player`, "err"); return false; }
     const id=_uid++;
@@ -11648,6 +11648,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
           {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
           {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
+          {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
         </div>
       </div>
       {showDup&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>

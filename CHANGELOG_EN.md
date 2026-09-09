@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.21 (current, needs Firestore rules deploy) — Persistent full-lifecycle registration log per player
+## V0.15.22 (current) — Fix notifications for deleted events + a clear "Deleted" badge
+
+- **🐛 Real bug fixed: deleted events were still sending reminder notifications** (24h/3h/1h before start) to registered players, even after deletion. Cause: the function that actually dispatches reminders in production (`dispatchEventReminders`, a server-side scheduled function that runs every minute regardless of whether anyone has the app open) only checked that an event wasn't cancelled — never that it wasn't deleted. Fixed server-side (the important one) and client-side.
+- **🐛 Related fix: it was still possible to register into a deleted event** (e.g. via an old invite link). Every registration entry point (self-registration, invite link, admin-added, guest, approved join request) now explicitly rejects a deleted event, server-side and client-side.
+- **A clear "🗑 Deleted" badge now shows at the top of a deleted event's screen** (there was previously no visual indicator at all beyond already knowing you picked it from the deleted-events list).
+
+---
+
+## V0.15.21 — Persistent full-lifecycle registration log per player
 
 - **Registration history now records everything that happens to a player in an event, not just seat-number changes:** registered (and how — self, invite link, added by an admin, guest, an approved join request), which seat/waitlist spot they landed on, every real position change and why, **removed from the event (and by whom)**, **re-registered** if that happens, **checked in**, **marked no-show / retired**, **marked as paid**.
 - **Now fully persistent — even through removal and re-registration, the old entries stay.** The log now lives in its own separate place from the player's actual registration (which really does get deleted if they're removed) — before this, the log was stored ON the registration itself, so removing someone would have wiped their whole history along with it.

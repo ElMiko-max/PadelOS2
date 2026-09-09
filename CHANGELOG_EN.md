@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.18 (current) — Full per-player registration position history
+## V0.15.19 (current) — Tweaks to the registration history arrow (V0.15.18)
+
+- **Fixed arrow direction:** now points down (▼) when collapsed and up when expanded — was backwards before.
+- **Multiple players' history can now stay expanded at once** — opening a new one no longer collapses whichever was already open; each toggles independently.
+
+---
+
+## V0.15.18 — Full per-player registration position history
 
 - **A small arrow (▶) next to each player in the event's Players tab** (both the Registered list and the Waitlist) expands into a full history of their position in this event's registration: the **first line is the exact moment they registered** (down to the second), and every line after is a real change to their position and why — moved down the waitlist because someone above them cancelled, promoted from the waitlist into an active seat, or any other genuine change.
 - Especially important for football right now — "why am I not in the active list" or "why did they get in before me" now has an exact, recorded answer instead of a guess.

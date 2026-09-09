@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.18";
+const APP_VERSION = "V0.15.19";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -10696,7 +10696,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [openPlayerMenu,setOpenPlayerMenu] = useState(null); // userId whose Players-tab action menu is open
-  const [expandedRegHistory,setExpandedRegHistory] = useState(null); // userId whose registration-position history is expanded, or null
+  const [expandedRegHistory,setExpandedRegHistory] = useState(new Set()); // userIds whose registration-position history is expanded — independent, any number at once
+  const toggleRegHistory = uid => setExpandedRegHistory(s=>{const n=new Set(s); n.has(uid)?n.delete(uid):n.add(uid); return n;});
   const [openPaymentMenu,setOpenPaymentMenu] = useState(null); // userId whose Settlement status menu is open
   const [photoUploading2,setPhotoUploading2] = useState(false);
   const [photoUploadProgress,setPhotoUploadProgress] = useState(null); // {done,total} while a multi-select batch is in flight
@@ -11921,7 +11922,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   ? <Bdg label={addedByLabel?`🎫 Event Guest · ${addedByLabel}`:"🎫 Event Guest"} color="#8B5CF6"/>
                   : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
               {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
-              <div onClick={()=>setExpandedRegHistory(o=>o===u.id?null:u.id)} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory===u.id?"rotate(90deg)":"none",transition:"transform .15s"}}>▶</div>
+              <div onClick={()=>toggleRegHistory(u.id)} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
               {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:170,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -11945,7 +11946,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               </div>}
             </div>
           </div>
-          {expandedRegHistory===u.id&&<RegHistoryPanel r={r}/>}
+          {expandedRegHistory.has(u.id)&&<RegHistoryPanel r={r}/>}
         </Card>;
       })}
       {capWaitlistedRegs.length>0&&<>
@@ -11969,10 +11970,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 </div>
                 <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
-              <div onClick={e=>{e.stopPropagation();setExpandedRegHistory(o=>o===u.id?null:u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory===u.id?"rotate(90deg)":"none",transition:"transform .15s"}}>▶</div>
+              <div onClick={e=>{e.stopPropagation();toggleRegHistory(u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
-            {expandedRegHistory===u.id&&<RegHistoryPanel r={r}/>}
+            {expandedRegHistory.has(u.id)&&<RegHistoryPanel r={r}/>}
           </Card>;
         })}
       </>}

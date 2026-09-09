@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.16 (current) — Audit trail for tier changes/waitlist promotion + real waitlist-ordering bug fix
+## V0.15.17 (current) — Exclude a specific event from promotion/demotion attendance
+
+- **Real problem:** after some Padel communities added a second weekly event, members who normally only ever came to the original day started naturally skipping the new one — and that counted as a "miss," delaying their Casual→Regular promotion (or even risking demotion) despite being perfectly regular on their actual day.
+- **Fix: a "Don't count for promotion/demotion" toggle on any event** — new option in the create/edit event screen. A marked event is left out of everyone's attendance calculation entirely: attending it doesn't help, missing it doesn't hurt, as if it never happened for tier purposes (everything else about the event — registration, results, etc. — is unaffected).
+- Uses the same shared `computeMemberStreak` function that drives both the real promote/demote at event close and the progress indicator on Profile/member list, so the exclusion applies consistently in both places automatically.
+
+---
+
+## V0.15.16 — Audit trail for tier changes/waitlist promotion + real waitlist-ordering bug fix
 
 - **The Audit Trail (Platform Admin) now logs every automatic member promotion/demotion** (Casual↔Regular) that happens when an event closes, **and every time someone moves off the waitlist into an active seat** because someone else cancelled.
 - **🐛 Real bug fixed, found on production event #78:** when an active (confirmed) player unregistered, the code responsible for reordering the waitlist read registrations back from the database in an arbitrary order (not actual registration-time order) in one specific path — which could let the wrong person get pulled off the waitlist instead of whoever was genuinely next in line. Fixed by sorting the data correctly before that decision is made.

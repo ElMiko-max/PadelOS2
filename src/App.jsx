@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.16";
+const APP_VERSION = "V0.15.17";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1733,7 +1733,12 @@ const ctLadderBreakPts = (tc) => Math.floor((tc+1)/2);
 // real to compute progress toward; a Guest's tier stays admin-decided only, no indicator shown.
 function computeMemberStreak(comm, userId){
   const eventTime = e => new Date(`${e.date}T${e.time||"00:00"}`).getTime();
-  const completedEvs = (comm?.events||[]).filter(e=>e.status==="completed").sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
+  // excludeFromAttendance: an admin-set per-event flag (2026-09-09, admin request — a newly
+  // added second weekly event meant regulars who'd only ever come to the original day started
+  // racking up "misses" on the new one too, delaying promotions that shouldn't have been
+  // delayed). An excluded event is left out of eligibleEvs entirely — attending it doesn't
+  // help the streak, missing it doesn't reset it either, exactly as if it never happened.
+  const completedEvs = (comm?.events||[]).filter(e=>e.status==="completed"&&!e.excludeFromAttendance).sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
   const eligibleEvs = completedEvs.filter(e=>e.visibility!=="private"||e.registrations?.some(r=>r.userId===userId));
   if(eligibleEvs.length===0) return null;
   const latestAttended = eligibleEvs[eligibleEvs.length-1].registrations?.some(r=>r.userId===userId);
@@ -6302,7 +6307,7 @@ export default function Matchkeeper() {
     // round/team generator (its own picker, e.g. CI's "Round duration" or CT's "Match duration"
     // at generation time), not the event create/edit form. This is just the seed default those
     // pickers start from before the admin generates anything.
-    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams};
+    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams,excludeFromAttendance:!!d.excludeFromAttendance};
     createEventDoc(ev);toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
@@ -9398,7 +9403,7 @@ function EvCard({ev,me,users,venues,onClick}){
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false});
+  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
   const venuePitches=v?.pitches||[];
@@ -9444,6 +9449,10 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     </div>
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
+    <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
+      <div style={{width:20,height:20,borderRadius:5,flexShrink:0,marginTop:1,border:`1.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-dim)"}`,background:f.excludeFromAttendance?"#F59E0B":"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#1e1b3a",fontWeight:700}}>{f.excludeFromAttendance?"✓":""}</div>
+      <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Don't count for promotion/demotion</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Attending or missing this event never affects anyone's Casual↔Regular streak — useful for a newly added or occasional extra event.</div></div>
+    </div>
 
     {/* ── Sport ── */}
     {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
@@ -9470,7 +9479,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
 // ── Event Edit Form (courts + times only) ─────────────
 function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3"});
+  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance});
   const set=(k,val)=>setF(p=>({...p,[k]:val}));
   const v=venues.find(x=>x.id===parseInt(f.venueId));
   const maxC=v?v.courts.length:10;
@@ -9507,6 +9516,10 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           event actually happened. */}
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${(v.pitches||[]).length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div></div>
+      <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
+        <div style={{width:20,height:20,borderRadius:5,flexShrink:0,marginTop:1,border:`1.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-dim)"}`,background:f.excludeFromAttendance?"#F59E0B":"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#1e1b3a",fontWeight:700}}>{f.excludeFromAttendance?"✓":""}</div>
+        <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Don't count for promotion/demotion</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Attending or missing this event never affects anyone's Casual↔Regular streak.</div></div>
+      </div>
 
       {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}
 
@@ -9535,7 +9548,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           </div>)}
         </div>
       </>}
-      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})})} style={{width:"100%"}}/>
+      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})})} style={{width:"100%"}}/>
     </Card>
   </>;
 }

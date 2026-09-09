@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.13";
+const APP_VERSION = "V0.15.14";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1722,6 +1722,28 @@ const ctLadderBreakPts = (tc) => Math.floor((tc+1)/2);
 // Weighted USR calculation: CI events weight=1.0, CT events weight=0.5
 // Rolling window = last entries until sum(weights) >= 5.0
 // Seed entries (from initial USR) always weight=1.0
+// Shared by closeEvent's actual promote/demote write AND the read-only progress indicators on
+// the Profile screen and CommDetail's member list (2026-09-09, admin request — "sometimes we
+// need to know [how close someone is], and we need to show to users too"). Pulled out into one
+// pure function so the live "here's your current streak" display can never drift from what
+// closeEvent will actually do the next time an event closes — a duplicate reimplementation here
+// would be exactly the kind of two-copies-disagree bug this whole session has been about.
+// Deliberately NOT extended to Guest->Casual: that promotion has no automatic rule at all today
+// (confirmed by reading closeEvent — it only ever touches casual/regular), so there's nothing
+// real to compute progress toward; a Guest's tier stays admin-decided only, no indicator shown.
+function computeMemberStreak(comm, userId){
+  const eventTime = e => new Date(`${e.date}T${e.time||"00:00"}`).getTime();
+  const completedEvs = (comm?.events||[]).filter(e=>e.status==="completed").sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
+  const eligibleEvs = completedEvs.filter(e=>e.visibility!=="private"||e.registrations?.some(r=>r.userId===userId));
+  if(eligibleEvs.length===0) return null;
+  const latestAttended = eligibleEvs[eligibleEvs.length-1].registrations?.some(r=>r.userId===userId);
+  let streak=0;
+  for(let i=eligibleEvs.length-1;i>=0;i--){
+    const wasReg = eligibleEvs[i].registrations?.some(r=>r.userId===userId);
+    if(wasReg===latestAttended) streak++; else break;
+  }
+  return {streak, latestAttended, eligibleCount:eligibleEvs.length};
+}
 function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
   if(!usrHistory||usrHistory.length===0) return seedUsr;
   // Build the working list newest-first
@@ -3871,6 +3893,43 @@ function TwoRowTabs({tabs,active,onChange}){
 }
 function rBdg(r){const m={owner:["#C084FC","Owner"],admin:["#38BDF8","Admin"],member:["#64748B","Member"]};const[c,l]=m[r]||["#64748B",r];return <Bdg label={l} color={c}/>;}
 function sBdg(s){const m={regular:["#34D399","Regular"],casual:["#FBBF24","Casual"],inactive:["#94A3B8","Inactive"],guest:["#F59E0B","Guest"]};const[c,l]=m[s]||["#94A3B8",s];return <Bdg label={l} color={c}/>;}
+// Live preview of what closeEvent's promote/demote pass would actually do for this member the
+// next time an event closes — requested 2026-09-09 ("sometimes we need to know [how close], and
+// we need to show to users too"). Casual/Regular only, using the exact same computeMemberStreak
+// the real write uses — Guest has no automatic rule at all, so nothing to preview (admin-only,
+// see that function's comment). Shown both to admins (CommDetail's member list) and to the
+// member themselves (Profile).
+function MemberProgress({comm, userId, status}){
+  if(status!=="casual" && status!=="regular") return null;
+  const s = computeMemberStreak(comm, userId);
+  if(!s) return null;
+  const promoteAfter = comm.promoteAfter||3, demoteAfter = comm.demoteAfter||4;
+  let label, sub, pct, color;
+  if(status==="casual"){
+    if(s.latestAttended){
+      const n=Math.min(s.streak,promoteAfter);
+      label = `${n}/${promoteAfter} to Regular`; sub = "Keep attending to move up"; pct = n/promoteAfter; color = "#34D399";
+    } else {
+      return <div style={{fontSize:10,color:"var(--po-dim)",marginTop:2}}>⏳ Attend the next event to start climbing toward Regular</div>;
+    }
+  } else {
+    if(!s.latestAttended){
+      const n=Math.min(s.streak,demoteAfter);
+      label = `${n}/${demoteAfter} missed`; sub = `${Math.max(0,demoteAfter-n)} more miss${demoteAfter-n===1?"":"es"} → Casual`; pct = n/demoteAfter; color = "#F59E0B";
+    } else {
+      return <div style={{fontSize:10,color:"#34D399",marginTop:2}}>✓ Attending regularly</div>;
+    }
+  }
+  return <div style={{marginTop:4,maxWidth:160}}>
+    <div style={{display:"flex",justifyContent:"space-between",fontSize:9.5,marginBottom:2}}>
+      <span style={{color,fontWeight:700}}>{label}</span>
+      <span style={{color:"var(--po-dim)"}}>{sub}</span>
+    </div>
+    <div style={{height:4,borderRadius:2,background:"var(--po-bdr)",overflow:"hidden"}}>
+      <div style={{height:"100%",borderRadius:2,width:`${Math.min(100,pct*100)}%`,background:color}}/>
+    </div>
+  </div>;
+}
 function AreaSel({country,gov,area,onChange,egypt}){
   const countries=Object.keys(egypt||{});
   const govs=country?Object.keys((egypt||{})[country]||{}):[];
@@ -6504,29 +6563,16 @@ export default function Matchkeeper() {
     closeEventTx(cid,eid,c=>{
       const updatedEvents = c.events.map(e=>e.id!==eid?e:{...e,status:"completed",closedAt:new Date().toISOString()});
       const promoteAfter = c.promoteAfter||3, demoteAfter = c.demoteAfter||4;
-      // Sort by full date+time, not just date — multiple events on the same calendar day (common
-      // in test data, and not impossible in real use) used to tie-break on whatever arbitrary
-      // order the events happened to arrive in from Firestore (unordered by default, not
-      // guaranteed stable), which could silently change a member's promote/demote streak from one
-      // close to the next with no data actually changing. `time` breaks same-day ties correctly;
-      // `id` is the final fallback for a genuinely identical date+time.
-      const eventTime = e => new Date(`${e.date}T${e.time||"00:00"}`).getTime();
-      const completedEvs = updatedEvents.filter(e=>e.status==="completed").sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
+      // computeMemberStreak (shared with the read-only progress indicators on Profile/CommDetail)
+      // handles the actual sort-by-date-then-time + eligible-events + streak math — see its own
+      // comment for why this must never be reimplemented separately here.
+      const cWithClosedEvent = {...c, events:updatedEvents};
       const updatedMembers = c.members.map(m=>{
         if(m.role!=="member") return m; // owners/admins aren't auto-managed this way
-        // A private event this member was never invited to (not registered in it) shouldn't
-        // count as a "miss" for them — they had no way to attend. Public events always count;
-        // private events only count when the member actually has a registration in them.
-        const eligibleEvs = completedEvs.filter(e=>e.visibility!=="private"||e.registrations.some(r=>r.userId===m.userId));
-        if(eligibleEvs.length===0) return m;
-        const latestAttended = eligibleEvs[eligibleEvs.length-1].registrations.some(r=>r.userId===m.userId);
-        let streak=0;
-        for(let i=eligibleEvs.length-1;i>=0;i--){
-          const wasReg = eligibleEvs[i].registrations.some(r=>r.userId===m.userId);
-          if(wasReg===latestAttended) streak++; else break;
-        }
-        if(latestAttended && streak>=promoteAfter && m.status==="casual") return {...m,status:"regular"};
-        if(!latestAttended && streak>=demoteAfter && m.status==="regular") return {...m,status:"casual"};
+        const s = computeMemberStreak(cWithClosedEvent, m.userId);
+        if(!s) return m;
+        if(s.latestAttended && s.streak>=promoteAfter && m.status==="casual") return {...m,status:"regular"};
+        if(!s.latestAttended && s.streak>=demoteAfter && m.status==="regular") return {...m,status:"casual"};
         return m;
       });
       return {...c, events:updatedEvents, members:updatedMembers};
@@ -8717,6 +8763,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                         </div>
                       : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>⚽ FSR {u.footballSkill||"Not Rated"} · {u.area}</div>)
                   : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>🎾 USR {u.usr} · {u.area}</div>}
+                <MemberProgress comm={comm} userId={u.id} status={m.status}/>
                 {isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
               {(isAdmin||(meIsPlatformAdmin&&m.role==="admin"))&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
@@ -12853,12 +12900,13 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
     {isMeTab&&<span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join / Create</span>}
   </div>
   {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>{isMeTab?<>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></>:"Not in any community yet."}</div></Card>
-    :mine.map(c=>{const myRole=c.members.find(m=>m.userId===user.id)?.role;
+    :mine.map(c=>{const myMember=c.members.find(m=>m.userId===user.id);const myRole=myMember?.role;
       return <Card key={c.id} style={{padding:"10px 14px",marginBottom:6}}>
         <div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:onOpenCommunity?"pointer":"default"}}>
           <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{c.name}</span>
-          {rBdg(myRole)}
+          <div style={{display:"flex",alignItems:"center",gap:6}}>{myMember&&sBdg(myMember.status)}{rBdg(myRole)}</div>
         </div>
+        {myMember&&<MemberProgress comm={c} userId={user.id} status={myMember.status}/>}
       </Card>;})}
 
   {canSeeActivity ? <>

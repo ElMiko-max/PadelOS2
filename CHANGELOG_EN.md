@@ -4,7 +4,19 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.13 (DEV only so far) — Redesigned home ("Events") screen — more informative, more polished
+## V0.15.14 (DEV only so far) — Member tier progress indicator (Casual↔Regular) on Profile and member list
+
+- **A new indicator shows how close a member is to being promoted or demoted**, using the exact same live rule that already governs this whenever an event actually closes (consecutive attendance/misses vs. the community's "Promote after"/"Demote after" settings):
+  - **Casual, currently on an attending streak:** "2/3 to Regular" with a green progress bar.
+  - **Regular, currently on a missing streak:** "2/4 missed" with an amber warning showing how many more misses would trigger demotion.
+  - **Guest:** no indicator shown — there's no automatic rule for Guest promotion at all (confirmed by reading the code before building this), so it stays a manual admin decision only.
+- **Shown in two places:** the community's member-management screen (admin view), and the Profile screen (a member sees it themselves next to each community they're in).
+- Internal cleanup: the calculation now lives in one shared function (`computeMemberStreak`) used by both the new indicator **and** the real code that actually promotes/demotes — so the indicator can never drift out of sync with what will really happen.
+- **⚠️ DEV only so far**, along with the rest of V0.15.13 — not pushed or built into an APK yet.
+
+---
+
+## V0.15.13 — Redesigned home ("Events") screen — more informative, more polished
 
 - **The home screen has a new top section** — a personalized time-of-day greeting, a spotlighted card for your soonest upcoming event (name, venue, time, day countdown, registration bar, and a direct link into it), and a quick row of four real stats: upcoming events, your USR, how many communities you're in, and matches played.
 - **Everything animates in gently on load** — the greeting, hero card, and stat numbers cascade in with a count-up effect, and the "next up" card carries a soft breathing glow. Previewed live as an Artifact before building it, with the admin picking this direction.

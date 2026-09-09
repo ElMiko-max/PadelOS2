@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.15";
+const APP_VERSION = "V0.15.16";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5661,10 +5661,20 @@ export default function Matchkeeper() {
     if (preSnap.empty) return;
     const refs = preSnap.docs.map(d=>d.ref);
     try {
-      await runTransaction(db, async (tx) => {
+      const promotedUserIds = await runTransaction(db, async (tx) => {
         const snaps = await Promise.all(refs.map(r=>tx.get(r)));
-        const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data());
+        // Real bug, found live on event #78: a Firestore transactional get() returns docs in
+        // whatever internal order the server happens to have, NOT insertion/registeredAt order.
+        // computeOrderingUpdates/splitRegsByCapacity's "pure chronological fill" branch relies on
+        // registrations already being sorted oldest-first (true for every OTHER caller, which all
+        // go through `comms`/regsByEvent's sort) — passing this raw, unsorted order silently let
+        // the wrong waitlisted person get pulled into an opened active seat. Sorted here to match
+        // regsByEvent's exact sort (App.jsx ~4106) so this caller can never again violate that
+        // shared assumption.
+        const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data())
+          .sort((a,b) => a.registeredAt!==b.registeredAt ? (a.registeredAt<b.registeredAt?-1:1) : String(a.userId).localeCompare(String(b.userId)));
         const patches = computeOrderingUpdates(freshRegs, ev, comm);
+        const promoted = [];
         patches.forEach((patch, userId) => {
           const ref = refs.find(rf=>rf.id===String(userId));
           const snap = snaps.find(s=>s.id===String(userId));
@@ -5673,8 +5683,17 @@ export default function Matchkeeper() {
           if (patch.confirmOrder === null) delete data.confirmOrder;
           if (patch.waitlistOrder === null) delete data.waitlistOrder;
           tx.set(ref, clean(data));
+          // Waitlist → active: had no confirmOrder before, has one now, and was genuinely sitting
+          // on the waitlist already (not a brand-new registration landing straight on an open seat).
+          const prevReg = snap.data();
+          if (patch.confirmOrder!=null && prevReg.confirmOrder==null && prevReg.waitlistOrder!=null) promoted.push(userId);
         });
+        return promoted;
       }, {maxAttempts:10});
+      promotedUserIds.forEach(uid => {
+        const u = users.find(u=>u.id===uid);
+        logAudit("event.waitlist_promote", `${u?.nickname||uid} moved from the waitlist to an active seat in "${ev.name}"`, "event", eid);
+      });
     } catch(e) { console.log("syncOrdering failed", e); }
   };
   // registerViaInvite / addGuest: atomically grant community membership AND event registration —
@@ -6560,6 +6579,12 @@ export default function Matchkeeper() {
       }));
     }
 
+    // Captured from the FIRST (optimistic, synchronous) invocation of the fn below — closeEventTx
+    // also re-runs it later inside a retrying transaction, but that happens asynchronously after
+    // this call returns, so reading this array right after closeEventTx(...) only ever sees the
+    // one optimistic pass. Same fire-once-on-the-optimistic-pass convention as the "Event closed"
+    // toast/audit line below it, which has always fired this way.
+    const tierChanges = [];
     closeEventTx(cid,eid,c=>{
       const updatedEvents = c.events.map(e=>e.id!==eid?e:{...e,status:"completed",closedAt:new Date().toISOString()});
       const promoteAfter = c.promoteAfter||3, demoteAfter = c.demoteAfter||4;
@@ -6571,14 +6596,18 @@ export default function Matchkeeper() {
         if(m.role!=="member") return m; // owners/admins aren't auto-managed this way
         const s = computeMemberStreak(cWithClosedEvent, m.userId);
         if(!s) return m;
-        if(s.latestAttended && s.streak>=promoteAfter && m.status==="casual") return {...m,status:"regular"};
-        if(!s.latestAttended && s.streak>=demoteAfter && m.status==="regular") return {...m,status:"casual"};
+        if(s.latestAttended && s.streak>=promoteAfter && m.status==="casual") { tierChanges.push({userId:m.userId, from:"casual", to:"regular"}); return {...m,status:"regular"}; }
+        if(!s.latestAttended && s.streak>=demoteAfter && m.status==="regular") { tierChanges.push({userId:m.userId, from:"regular", to:"casual"}); return {...m,status:"casual"}; }
         return m;
       });
       return {...c, events:updatedEvents, members:updatedMembers};
     });
     toast2("Event closed ✓ — ratings updated");
     logAudit("event.close", `${me.nickname} closed event "${ev.name}"${scoringMethod==="new"?" (Output PES scoring)":""}`, "event", eid);
+    tierChanges.forEach(chg => {
+      const u = users.find(u=>u.id===chg.userId);
+      logAudit("member.tier_change", `${u?.nickname||chg.userId} auto-moved ${chg.from} → ${chg.to} (closing "${ev.name}")`, "member", chg.userId);
+    });
   };
   // willLandWaitlisted: computed BEFORE the mutation, by simulating the new registration
   // appended and running it through the same tier-aware splitRegsByCapacity real registrations
@@ -6870,14 +6899,23 @@ export default function Matchkeeper() {
     if (!checkSubscriptionGuard({bypassSubscriptionLock:uid===me.id}) || !checkGodModeGuard(cid)) return;
     const ev=getEv(cid,eid);
     // If the person leaving held an active (non-waitlisted) spot and someone's waiting,
-    // whoever is first in line is about to be pulled into the active range purely by the
-    // array shifting — no separate "promote" transaction, just notify the specific person
-    // this affects, since notify() lists don't reflect who newly crossed the threshold.
+    // whoever is first in the waitlist (by their permanent waitlistOrder) is about to be pulled
+    // into an active seat by syncOrdering — notify them directly, since notify() lists don't
+    // reflect who newly crossed the threshold. This used to compare `ev.registrations`' raw
+    // array index against `max` directly — a leftover from before confirmOrder/waitlistOrder
+    // existed, which could name the wrong person once the array's natural order no longer
+    // matched who was actually active/waitlisted (e.g. a Regular member's priority-window seat).
+    // splitRegsByCapacity (the same function that decides real active/waitlisted status
+    // everywhere else) is the only correct source for this now.
     const max = getMaxPlayers(ev);
     let promoted = null;
     if (ev && max!=null) {
-      const idx = ev.registrations.findIndex(r=>r.userId===uid);
-      if (idx>=0 && idx<max && ev.registrations.length>max) promoted = ev.registrations[max];
+      const comm = comms.find(c=>c.id===cid);
+      const { active, waitlisted } = splitRegsByCapacity(ev, comm);
+      const wasActive = active.some(r=>r.userId===uid);
+      if (wasActive && waitlisted.length) {
+        promoted = [...waitlisted].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity))[0];
+      }
     }
     const hadReg = ev && ev.registrations.some(r=>r.userId===uid);
     // Three independent writes, not one atomic transaction — deleting the registration doc,

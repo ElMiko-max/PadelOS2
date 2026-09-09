@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.15 (current, DEV only so far) — Home is now its own screen, separate from Events, and sport-aware
+## V0.15.16 (current, awaiting push/prod confirmation) — Audit trail for tier changes/waitlist promotion + real waitlist-ordering bug fix
+
+- **The Audit Trail (Platform Admin) now logs every automatic member promotion/demotion** (Casual↔Regular) that happens when an event closes, **and every time someone moves off the waitlist into an active seat** because someone else cancelled.
+- **🐛 Real bug fixed, found on production event #78:** when an active (confirmed) player unregistered, the code responsible for reordering the waitlist read registrations back from the database in an arbitrary order (not actual registration-time order) in one specific path — which could let the wrong person get pulled off the waitlist instead of whoever was genuinely next in line. Fixed by sorting the data correctly before that decision is made.
+- **🐛 Related fix:** the "🎉 You're in!" notification sent to the promoted player was computed with an old, pre-confirmOrder/waitlistOrder method (raw array position) that could name the wrong person. It now uses the same real calculation (splitRegsByCapacity + waitlistOrder) that actually decides who gets promoted.
+
+---
+
+## V0.15.15 (DEV only so far) — Home is now its own screen, separate from Events, and sport-aware
 
 - **Correction to V0.15.13:** the new dashboard (greeting + next-event hero card + stat row) has been pulled out of the "Events" screen and now lives on its own separate "Home" screen — opened via the **Matchkeeper logo itself** (top-left, now clickable). The **"Events"** button goes back to being exactly what it was before V0.15.13 — the plain Coming/Past list, nothing added on top.
 - **The app now opens on "Home" by default** instead of "Events", since it's the actual landing page.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.14";
+const APP_VERSION = "V0.15.15";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4123,7 +4123,7 @@ export default function Matchkeeper() {
   const [invites, setInvites] = useState([]); // {id, code, createdBy, createdAt, label, communityId, eventId}
   const [authUser, setAuthUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [nav,    setNav]    = useState("events");
+  const [nav,    setNav]    = useState("home");
   const [view,   setView]   = useState({screen:"list"});
   const [navHistory, setNavHistory] = useState([]); // stack of {nav, view} for back navigation
 
@@ -8065,6 +8065,7 @@ export default function Matchkeeper() {
             onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})}
           />
         }
+        {nav==="home"&&<HomeSc events={allEvents} me={me} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onGoEvents={()=>goRoot("events")}/>}
         {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}} onBulkArchive={bulkArchiveEvents} onBulkDelete={bulkDeleteEvents}/>}
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
@@ -8152,7 +8153,7 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
   ];
   return <div style={{background:TH?.nav||"#0E1117",borderBottom:`0.5px solid ${TH?.border||"var(--po-bdr)"}`,padding:"0 8px",display:"flex",alignItems:"center",justifyContent:"space-between",height:60,position:"sticky",top:0,left:0,right:0,width:"100%",zIndex:50,transition:"all 0.2s",boxSizing:"border-box",gap:4}}>
     <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-      <img src="/logo-icon-192.png" width={36} height={36} style={{borderRadius:9,flexShrink:0}} alt="Matchkeeper"/>
+      <img src="/logo-icon-192.png" width={36} height={36} onClick={()=>onNav("home")} style={{borderRadius:9,flexShrink:0,cursor:"pointer"}} alt="Matchkeeper"/>
       <div style={{display:"flex",flexDirection:"column",lineHeight:1.05}}>
         <span style={{fontSize:11,fontWeight:600,color:dark?"#F1F5F9":"#FFFFFF"}}>Matchkeeper</span>
         <span style={{fontSize:8,fontWeight:400,color:dark?"#F1F5F9":"#FFFFFF",opacity:0.6}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":!isNativeAndroid?" · Web":""}</span>
@@ -12493,6 +12494,100 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 }
 
 // ══════════════════════════════════════════════════════
+//  HOME (landing dashboard) — reached via the Matchkeeper logo in TopBar, kept fully separate
+//  from EvList/Events (the "Events" pill, which stays the plain Coming/Past list untouched)
+//  per the admin's explicit correction: logo → dashboard, Events button → the old plain screen.
+//  Sport-aware for players active in both Padel and Football, reusing the exact
+//  activeSports/hasPadel/hasFootball/showSportSwitcher/effSportView pattern ProfileSc already
+//  established, rather than inventing a second way to do the same thing.
+// ══════════════════════════════════════════════════════
+function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents}){
+  const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
+  const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)||ev.createdBy===me.id).map(ev=>ev.id));
+  const now=Date.now();
+  const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
+  const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
+  const comingAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort((a,b)=>evTime(a)-evTime(b));
+
+  const mine = comms.filter(c=>c.members?.some(m=>m.userId===me.id));
+  const activeSports = new Set();
+  mine.forEach(c => (c.sports?.length ? c.sports : [DEFAULT_SPORT]).forEach(sp => activeSports.add(sp)));
+  mine.forEach(c => (c.events||[]).forEach(ev => {
+    if (!ev.deleted && ev.registrations.some(r=>r.userId===me.id)) activeSports.add(ev.sport||DEFAULT_SPORT);
+  }));
+  const hasPadel = activeSports.has("Padel Tennis"), hasFootball = activeSports.has("Football");
+  const showSportSwitcher = hasPadel && hasFootball;
+  const [sportView,setSportView]=useState(null); // null = not chosen yet, defaults to whichever sport the player actually has
+  const effSportView = sportView || (hasPadel ? "Padel Tennis" : "Football");
+  const isFootball = effSportView==="Football";
+
+  const coming = showSportSwitcher ? comingAll.filter(ev=>(ev.sport||DEFAULT_SPORT)===effSportView) : comingAll;
+  const heroEv = coming[0];
+  const heroVenue = heroEv && venues?.find(v=>v.id===heroEv.venueId);
+  const heroSplit = heroEv && splitRegsByCapacity(heroEv);
+  const heroCap = heroEv && (getMaxPlayers(heroEv) || heroEv.courts*5 || null);
+  const countdownLabel = ev => {
+    if(!ev.date) return "";
+    const evDate = new Date(`${ev.date}T00:00:00`); const today = new Date(); today.setHours(0,0,0,0);
+    const days = Math.round((evDate-today)/86400000);
+    return days<=0 ? "Today" : days===1 ? "Tomorrow" : `In ${days} days`;
+  };
+  const greetingHour = new Date().getHours();
+  const greeting = greetingHour<12 ? "Good morning" : greetingHour<18 ? "Good afternoon" : "Good evening";
+  const myCommCount = mine.length;
+  // Football has no computed USR-style rating (see closeEvent's usrHistory note) — FSR
+  // (footballSkill, an A-E letter grade) and calcFootballPlayerStats stand in for it here,
+  // same substitution ProfileSc already makes for its own stat blocks.
+  const fs = isFootball ? calcFootballPlayerStats(comms, me.id) : null;
+
+  return <>
+    <div style={{marginBottom:16}}>
+      <div className="mk-animate-in" style={{fontSize:19,fontWeight:700,color:"var(--po-text)",animationDelay:".05s"}}>{greeting}, {me.nickname} 👋</div>
+      <div className="mk-animate-in" style={{fontSize:12,color:"var(--po-dim)",marginTop:2,animationDelay:".12s"}}>{fmtD(new Date())}</div>
+      {showSportSwitcher&&<div className="mk-animate-in" style={{display:"flex",gap:6,marginTop:12,animationDelay:".18s"}}>
+        <div onClick={()=>setSportView("Padel Tennis")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Padel Tennis"?"#6366F1":"var(--po-inp)",color:effSportView==="Padel Tennis"?"#fff":"var(--po-sub)"}}>🎾 Padel</div>
+        <div onClick={()=>setSportView("Football")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Football"?"#34D399":"var(--po-inp)",color:effSportView==="Football"?"#fff":"var(--po-sub)"}}>⚽ Football</div>
+      </div>}
+      {heroEv?<div className="mk-hero" onClick={()=>onOpen(heroEv.communityId,heroEv.id)} style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa"}}>
+        <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
+        <div style={{position:"relative"}}>
+          <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
+          <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{heroEv.name}</div>
+          <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
+            {heroVenue&&<span>📍 {heroVenue.name}</span>}
+            <span>🕘 {fmtT(heroEv.time)}</span>
+          </div>
+          {heroCap&&<>
+            <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,.12)",marginTop:12,overflow:"hidden"}}>
+              <div className="mk-hero-bar-fill" style={{height:"100%",borderRadius:3,width:`${Math.min(100,(heroSplit.active.length/heroCap)*100)}%`,background:"linear-gradient(90deg,#818CF8,#34D399)"}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
+              <span style={{fontSize:11,color:"#C7D2FE"}}>{heroSplit.active.length} / {heroCap} registered</span>
+              <span style={{background:"#fff",color:"#1e1b3a",fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:8}}>View Event →</span>
+            </div>
+          </>}
+        </div>
+      </div>:<div className="mk-animate-in" style={{marginTop:14,padding:16,borderRadius:14,textAlign:"center",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".2s"}}>
+        <div style={{fontSize:13,color:"var(--po-dim)"}}>No upcoming {showSportSwitcher?effSportView:""} events yet</div>
+        <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>
+      </div>}
+      <div style={{display:"flex",gap:8,marginTop:14}}>
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".32s"}}><div style={{fontSize:16,fontWeight:800,color:"#818CF8"}}><CountUp to={coming.length}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Upcoming</div></div>
+        {isFootball
+          ? <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".38s"}}><div style={{fontSize:16,fontWeight:800,color:"#34D399"}}>{me.footballSkill||"—"}</div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>FSR</div></div>
+          : <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".38s"}}><div style={{fontSize:16,fontWeight:800,color:"#34D399"}}><CountUp to={me.usr}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>USR</div></div>}
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".44s"}}><div style={{fontSize:16,fontWeight:800,color:"#FBBF24"}}><CountUp to={myCommCount}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Communities</div></div>
+        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".5s"}}><div style={{fontSize:16,fontWeight:800,color:"#22D3EE"}}><CountUp to={isFootball?(fs?.matches||0):(me.usrHistory?.length||0)}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Matches</div></div>
+      </div>
+    </div>
+    <div className="mk-animate-in" onClick={onGoEvents} style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",animationDelay:".58s"}}>
+      <div style={{fontSize:13,fontWeight:600,color:"var(--po-dim)"}}>See all events</div>
+      <div style={{fontSize:13,color:"#818CF8",fontWeight:700}}>→</div>
+    </div>
+  </>;
+}
+
+// ══════════════════════════════════════════════════════
 //  EVENTS LIST
 // ══════════════════════════════════════════════════════
 function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,onBulkArchive,onBulkDelete}){
@@ -12545,56 +12640,7 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
       </div>
     </div>;
   }
-  // Home screen redesign (2026-09-09, admin request, "Concept A — Focused Hero" — previewed as
-  // an Artifact before implementation): a personalized greeting, a single spotlighted card for
-  // the soonest upcoming event the user is actually registered for, and a slim row of cheap,
-  // real personal stats — sitting above the existing Events header/tabs/list, which are all
-  // untouched below. The spotlighted event is deliberately ALSO left in the Coming list further
-  // down (not removed from it) — simpler and safer than teaching the list to skip an id.
-  const heroEv = coming[0];
-  const heroVenue = heroEv && venues?.find(v=>v.id===heroEv.venueId);
-  const heroSplit = heroEv && splitRegsByCapacity(heroEv);
-  const heroCap = heroEv && (getMaxPlayers(heroEv) || heroEv.courts*5 || null);
-  const countdownLabel = ev => {
-    if(!ev.date) return "";
-    const evDate = new Date(`${ev.date}T00:00:00`); const today = new Date(); today.setHours(0,0,0,0);
-    const days = Math.round((evDate-today)/86400000);
-    return days<=0 ? "Today" : days===1 ? "Tomorrow" : `In ${days} days`;
-  };
-  const greetingHour = new Date().getHours();
-  const greeting = greetingHour<12 ? "Good morning" : greetingHour<18 ? "Good afternoon" : "Good evening";
-  const myCommCount = comms.filter(c=>c.members?.some(m=>m.userId===me.id)).length;
   return <>
-    <div style={{marginBottom:16}}>
-      <div className="mk-animate-in" style={{fontSize:19,fontWeight:700,color:"var(--po-text)",animationDelay:".05s"}}>{greeting}, {me.nickname} 👋</div>
-      <div className="mk-animate-in" style={{fontSize:12,color:"var(--po-dim)",marginTop:2,animationDelay:".12s"}}>{fmtD(new Date())}</div>
-      {heroEv&&<div className="mk-hero" onClick={()=>onOpen(heroEv.communityId,heroEv.id)} style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa"}}>
-        <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
-        <div style={{position:"relative"}}>
-          <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
-          <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{heroEv.name}</div>
-          <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
-            {heroVenue&&<span>📍 {heroVenue.name}</span>}
-            <span>🕘 {fmtT(heroEv.time)}</span>
-          </div>
-          {heroCap&&<>
-            <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,.12)",marginTop:12,overflow:"hidden"}}>
-              <div className="mk-hero-bar-fill" style={{height:"100%",borderRadius:3,width:`${Math.min(100,(heroSplit.active.length/heroCap)*100)}%`,background:"linear-gradient(90deg,#818CF8,#34D399)"}}/>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
-              <span style={{fontSize:11,color:"#C7D2FE"}}>{heroSplit.active.length} / {heroCap} registered</span>
-              <span style={{background:"#fff",color:"#1e1b3a",fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:8}}>View Event →</span>
-            </div>
-          </>}
-        </div>
-      </div>}
-      <div style={{display:"flex",gap:8,marginTop:14}}>
-        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".32s"}}><div style={{fontSize:16,fontWeight:800,color:"#818CF8"}}><CountUp to={coming.length}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Upcoming</div></div>
-        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".38s"}}><div style={{fontSize:16,fontWeight:800,color:"#34D399"}}><CountUp to={me.usr}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>USR</div></div>
-        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".44s"}}><div style={{fontSize:16,fontWeight:800,color:"#FBBF24"}}><CountUp to={myCommCount}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Communities</div></div>
-        <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".5s"}}><div style={{fontSize:16,fontWeight:800,color:"#22D3EE"}}><CountUp to={me.usrHistory?.length||0}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Matches</div></div>
-      </div>
-    </div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>
     {isAdm&&!selMode&&<div style={{display:"flex",gap:8}}><SmBtn label="☑ Select" onClick={()=>setSelMode(true)} color="#6366F1"/><Btn label="+ New" primary onClick={handleNewClick}/></div>}
     {selMode&&<SmBtn label="✕ Cancel" onClick={exitSelMode} color="#94A3B8"/>}

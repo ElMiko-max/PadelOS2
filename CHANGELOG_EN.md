@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.14 (DEV only so far) — Member tier progress indicator (Casual↔Regular) on Profile and member list
+## V0.15.15 (current, DEV only so far) — Home is now its own screen, separate from Events, and sport-aware
+
+- **Correction to V0.15.13:** the new dashboard (greeting + next-event hero card + stat row) has been pulled out of the "Events" screen and now lives on its own separate "Home" screen — opened via the **Matchkeeper logo itself** (top-left, now clickable). The **"Events"** button goes back to being exactly what it was before V0.15.13 — the plain Coming/Past list, nothing added on top.
+- **The app now opens on "Home" by default** instead of "Events", since it's the actual landing page.
+- **The dashboard is now aware of players who play more than one sport:** if a player is active in both Padel and Football, a switcher (🎾 Padel / ⚽ Football) appears — the same one already used on the Profile screen — and each sport gets its own next-event card and its own stat numbers (USR for Padel; FSR for Football instead of USR, since it's a different concept entirely — a letter grade, not a number). A single-sport player never sees the switcher and just sees their own sport's numbers directly.
+- **⚠️ DEV only so far**, along with the still-open V0.15.13/14 — not pushed to GitHub or built into an APK yet.
+
+---
+
+## V0.15.14 — Member tier progress indicator (Casual↔Regular) on Profile and member list
 
 - **A new indicator shows how close a member is to being promoted or demoted**, using the exact same live rule that already governs this whenever an event actually closes (consecutive attendance/misses vs. the community's "Promote after"/"Demote after" settings):
   - **Casual, currently on an attending streak:** "2/3 to Regular" with a green progress bar.

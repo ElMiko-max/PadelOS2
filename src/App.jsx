@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.19";
+const APP_VERSION = "V0.15.20";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5674,7 +5674,16 @@ export default function Matchkeeper() {
     [...numbered, ...unnumbered].forEach(r => { result.set(r.userId, ++n); });
     return result;
   };
-  const computeOrderingUpdates = (freshRegs, ev, comm) => {
+  const computeOrderingUpdates = (freshRegsIn, ev, comm) => {
+    // Enforced HERE, not left to the caller to remember: splitRegsByCapacity's "pure
+    // chronological fill" branch requires registrations to already be sorted oldest-first. Every
+    // caller happens to go through `comms`/regsByEvent's own sort today — except syncOrdering's
+    // transactional re-read, which doesn't (a real bug, found live on event #78: Firestore's
+    // tx.get() returns docs in arbitrary server order, not registeredAt order, and 15 confirmed
+    // seats got permanently mis-numbered in one shot before this was caught). Sorting inside this
+    // shared function — the one place either number is ever assigned — means that invariant can
+    // never again depend on a caller remembering to sort first.
+    const freshRegs = [...freshRegsIn].sort((a,b) => a.registeredAt!==b.registeredAt ? (a.registeredAt<b.registeredAt?-1:1) : String(a.userId).localeCompare(String(b.userId)));
     const maxPlayers = getMaxPlayers(ev);
     const { active, waitlisted } = splitRegsByCapacity({...ev, registrations:freshRegs}, comm);
     // Defensive cap, independent of whatever splitRegsByCapacity computes — real corruption
@@ -5708,16 +5717,10 @@ export default function Matchkeeper() {
     try {
       const promotedUserIds = await runTransaction(db, async (tx) => {
         const snaps = await Promise.all(refs.map(r=>tx.get(r)));
-        // Real bug, found live on event #78: a Firestore transactional get() returns docs in
-        // whatever internal order the server happens to have, NOT insertion/registeredAt order.
-        // computeOrderingUpdates/splitRegsByCapacity's "pure chronological fill" branch relies on
-        // registrations already being sorted oldest-first (true for every OTHER caller, which all
-        // go through `comms`/regsByEvent's sort) — passing this raw, unsorted order silently let
-        // the wrong waitlisted person get pulled into an opened active seat. Sorted here to match
-        // regsByEvent's exact sort (App.jsx ~4106) so this caller can never again violate that
-        // shared assumption.
-        const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data())
-          .sort((a,b) => a.registeredAt!==b.registeredAt ? (a.registeredAt<b.registeredAt?-1:1) : String(a.userId).localeCompare(String(b.userId)));
+        // Firestore's tx.get() returns docs in arbitrary server order, not registeredAt order —
+        // computeOrderingUpdates itself now sorts internally (see its own comment) specifically
+        // so this raw, unsorted read is always safe to hand it directly.
+        const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data());
         const patches = computeOrderingUpdates(freshRegs, ev, comm);
         const promoted = [];
         patches.forEach((patch, userId) => {

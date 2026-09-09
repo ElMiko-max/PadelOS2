@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.19 (current) — Tweaks to the registration history arrow (V0.15.18)
+## V0.15.20 (current) — Harden against the event #78 waitlist-ordering bug ever recurring
+
+- **Internal safeguard only — nothing user-visible changes.** The V0.15.16 fix for the random-order bug (event #78) was correct, but it relied on whoever called that code remembering to sort the data first. The sort is now guaranteed **inside the shared function itself** (`computeOrderingUpdates`), not something a future caller has to remember. So even a future code change that forgets to pre-sort can no longer reintroduce this exact bug.
+- Note: the already-wrong numbers from before V0.15.16 (e.g. #13/#14/#15 on event #78) are left untouched — the admin explicitly asked not to fix the existing data right now.
+
+---
+
+## V0.15.19 — Tweaks to the registration history arrow (V0.15.18)
 
 - **Fixed arrow direction:** now points down (▼) when collapsed and up when expanded — was backwards before.
 - **Multiple players' history can now stay expanded at once** — opening a new one no longer collapses whichever was already open; each toggles independently.

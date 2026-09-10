@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.01";
+const APP_VERSION = "V0.16.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5691,8 +5691,37 @@ export default function Matchkeeper() {
       const devAuth = getAuth(devApp);
       const devDb = getFirestore(devApp);
       if (!devAuth.currentUser) await signInWithPopup(devAuth, new GoogleAuthProvider());
+      // comms-split migration (2026-08-28) moved communities/events/registrations off the single
+      // padelos/comms blob doc into padelos_communities/padelos_events (+ a registrations
+      // subcollection per event) — this clone was never updated to match, so it kept writing the
+      // old abandoned blob (nothing on the read side listens for it anymore, matching
+      // warnOnLegacyCommsWrite's tripwire), which has also now grown past Firestore's 1MB-per-
+      // field limit as real prod data grew (BUGS.md #19). Rewritten to mirror factoryReset's own
+      // wipe-then-reseed pattern against the real split collections, chunked at 450 writes/batch
+      // to stay clear of Firestore's 500-op batch limit regardless of how large prod's data gets.
+      const chunkedCommit = async (ops) => {
+        for (let i=0;i<ops.length;i+=450) {
+          const batch = writeBatch(devDb);
+          ops.slice(i,i+450).forEach(op=>op(batch));
+          await batch.commit();
+        }
+      };
+      const [existingCommsSnap, existingEventsSnap, existingRegsSnap] = await Promise.all([
+        getDocs(collection(devDb,"padelos_communities")),
+        getDocs(collection(devDb,"padelos_events")),
+        getDocs(collectionGroup(devDb,"registrations")),
+      ]);
+      await chunkedCommit([
+        ...existingRegsSnap.docs.map(d=>b=>b.delete(d.ref)),
+        ...existingCommsSnap.docs.map(d=>b=>b.delete(d.ref)),
+        ...existingEventsSnap.docs.map(d=>b=>b.delete(d.ref)),
+      ]);
+      await chunkedCommit([
+        ...communities.map(c=>b=>b.set(doc(devDb,"padelos_communities",String(c.id)), clean(c))),
+        ...events.map(e=>b=>b.set(doc(devDb,"padelos_events",String(e.id)), packEventForFirestore(e))),
+        ...registrations.map(r=>b=>b.set(doc(devDb,"padelos_events",String(r.eventId),"registrations",String(r.userId)), clean(r))),
+      ]);
       await Promise.all([
-        setDoc(doc(devDb,"padelos","comms"), {value:JSON.stringify(comms)}),
         setDoc(doc(devDb,"padelos","users"), {value:JSON.stringify(users)}),
         setDoc(doc(devDb,"padelos","venues"), {value:JSON.stringify(venues)}),
         setDoc(doc(devDb,"padelos","egypt"), {value:JSON.stringify(egypt)}),

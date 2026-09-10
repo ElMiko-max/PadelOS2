@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.01 (current) — Adjustment to V0.16.00: the full old ⚙️ menu is back at the top of Settings + the red dot returns
+## V0.16.02 (current) — 🐛 Fix: "Clone to DEV" was still writing the pre-migration data shape
+
+- **BUGS.md #19 fixed.** "☁️ Clone Data to DEV" was failing with `invalid-argument ... longer than 1048487 bytes` — caused by it still writing `comms` as one giant Firestore document (`padelos/comms`), a shape abandoned by the "comms-split migration" back on 2026-08-28. Production itself has stored communities/events/registrations as separate documents ever since; this tool alone was never updated to match.
+- **Fix:** the tool now writes in production's actual current shape (a separate document per community/event/registration instead of one blob), batched to stay under Firestore's per-batch limit regardless of how large the data gets in the future.
+- **Note:** production itself was never actually at risk from this one (correcting an earlier note in BUGS.md #19) — it already moved off the blob shape in the migration; only this one leftover tool hadn't caught up.
+
+---
+
+## V0.16.01 — Adjustment to V0.16.00: the full old ⚙️ menu is back at the top of Settings + the red dot returns
 
 - **Same release as V0.16.00 — an adjustment, not a new feature.** The admin clarified that "put Settings down at the bottom" meant the *entire* old ⚙️ dropdown, not just a settings-preferences screen — so the Account section (Venues, Platform Admin, Version Updates, the dev/production switch, the Events-From filter, Sign Out) is now the first thing in the Settings screen, above Notifications, with a small identity header (nickname + USR) matching what the old dropdown showed at its top.
 - **The red dot is back** — it used to appear on the ⚙️ gear icon when a newer Android build was available; it now shows the same way on the bottom-nav "Settings" tab itself, visible without opening the screen first.

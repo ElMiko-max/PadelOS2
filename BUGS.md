@@ -17,7 +17,7 @@
 
 ## ⚪ برّه الخريطة لسه
 
-- [#19](#19) — "Clone to DEV" بيفشل بـ `invalid-argument The value of property "value" is longer than 1048487 bytes.`
+*(فاضي دلوقتي)*
 
 ---
 
@@ -25,13 +25,13 @@
 
 ---
 
-## #19 — "Clone to DEV" بيفشل: مستند `comms` في Firestore عدّى حد الـ 1 ميجا
+## #19 — "Clone to DEV" بيفشل: كان لسه بيكتب في مستند `padelos/comms` القديم المتروك بعد الـ migration
 
-- **الحالة:** 🔴 مفتوح
+- **الحالة:** ✅ اتصلح (V0.16.02، مش متسلّم في نسخة APK لسه)
 - **اتسجل:** 2026-09-10
-- **الوصف:** زرار "☁️ Clone Data to DEV" (Platform Admin → Data & Backup → Other Tools) بيفشل برسالة `invalid-argument The value of property "value" is longer than 1048487 bytes.` — ده حد Firestore الأقصى لحجم أي **حقل واحد** جوه مستند (1 ميجابايت). السبب: `cloneToDev` (و`comms` بشكل عام في التطبيق كله) بيتخزن كمستند Firestore واحد بس (`padelos/comms`) فيه حقل واحد اسمه `value` عبارة عن `JSON.stringify(comms)` — يعني كل الكوميونيتيز وكل الأحداث والتسجيلات والماتشات جواها كـ نص JSON واحد ضخم. حجم الداتا الحقيقية دلوقتي عدّى الـ 1 ميجا فعليًا.
-- **⚠️ خطر أكبر من مجرد أداة الـ Clone:** نفس النمط ده (`setDoc(doc(db,"padelos","comms"), {value:JSON.stringify(comms)})`) هو اللي البرودكشن نفسه بيستخدمه لحفظ `comms` (مش بس أداة الـ clone). يعني لو الداتا الحقيقية في البرودكشن كمان عدّت أو هتعدي نفس الحد ده قريب، أي حفظ عادي (تسجيل حدث، إضافة نتيجة ماتش...) ممكن يفشل بنفس الطريقة — مش مجرد باج في أداة تجريبية.
-- **الحل المقترح (لسه متعملش):** الموضوع محتاج تصميم — تقسيم `comms` لمستندات Firestore منفصلة (زي مستند لكل كوميونيتي بدل مستند واحد للكل) بدل الـ blob الواحد. ده تغيير أكبر من إصلاح سطر واحد، محتاج نقاش قبل التنفيذ.
+- **الوصف:** زرار "☁️ Clone Data to DEV" (Platform Admin → Data & Backup → Other Tools) كان بيفشل برسالة `invalid-argument The value of property "value" is longer than 1048487 bytes.` — حد Firestore الأقصى لحجم أي **حقل واحد** جوه مستند (1 ميجابايت). السبب الحقيقي بعد التحقيق: `cloneToDev` كان لسه بيكتب `comms` (كل الكوميونيتيز + الأحداث + التسجيلات مدموجين) كمستند Firestore واحد بس (`padelos/comms`, حقل `value` = `JSON.stringify(comms)`) — وده الشكل **القديم من قبل "comms-split migration" (2026-08-28)**. بعد الـ migration دي، البرودكشن نفسه بقى بيخزن الكوميونيتيز والأحداث والتسجيلات في مستندات منفصلة (`padelos_communities`, `padelos_events`, وsubcollection `registrations` لكل حدث) — مفيش حد بيقرا من `padelos/comms` تاني أصلًا (فيه حتى Cloud Function اسمها `warnOnLegacyCommsWrite` هدفها تنبّه لو حد كتب فيه بالغلط). الأداة دي بس اللي اتنسيت وقت الـ migration وفضلت بتكتب الشكل القديم، وحجم الداتا الحقيقية دلوقتي عدّى الـ 1 ميجا فعليًا فبانت المشكلة.
+- **مش خطر على البرودكشن نفسه** (تصحيح لملاحظة كتبتها هنا الأول): البرودكشن بالفعل بقى بيخزن `comms` مقسّم بالطريقة دي من الـ migration، مش كمستند واحد — يعني التسجيل والحجز العادي مش معرّض لنفس الباج ده. `users`, `venues`, `egypt`, `expenseCategories`, `usrWindowSize` لسهم على النمط القديم (مستند واحد لكل واحد) بس حجمهم صغير وبعيد عن حد الـ 1 ميجا.
+- **الحل:** `cloneToDev` بقى بيكتب `communities`/`events`/`registrations` بنفس شكل البرودكشن الحقيقي (مستندات منفصلة، مش blob واحد) — بيمسح أول أي مستندات قديمة موجودة في padelos-dev وبعدين يكتب النسخة الجديدة، على batches مقسّمة (450 عملية للـ batch) عشان ميتعداش حد الـ 500 عملية لكل batch مهما كبرت الداتا. باقي الحقول (`users`, `venues`, `egypt`, `expenseCategories`, `usrWindowSize`) فضلت زي ما هي (لسه صغيرة، مش قريبة من الحد).
 
 ---
 

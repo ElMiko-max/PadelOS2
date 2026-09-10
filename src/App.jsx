@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.26";
+const APP_VERSION = "V0.15.27";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -404,7 +404,10 @@ function mmTeamLabelWithBadges(team, comms, oppTeamIds){
 }
 // Same power-balance logic as the live Rounds/Matches screens: history-based (📊) once
 // there's real head-to-head data, USR-based (⚖️) fallback otherwise. Compact for notification width.
-function mmBalanceLabel(comms, teamA, teamB, excludeEventId){
+function mmBalanceLabel(comms, teamA, teamB, excludeEventId, sport){
+  // Head-to-head and the USR balance fallback are both Padel-only concepts (2026-09-10, admin
+  // request) — football has no USR at all, so the ⚖️ fallback would show a meaningless number.
+  if(sport==="Football") return "";
   const idsA=(teamA||[]).map(p=>p.userId), idsB=(teamB||[]).map(p=>p.userId);
   const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId});
   if(h2h.meetings>0) return `📊 ${Math.round(h2h.sideAWinRate*100)}%:${Math.round(h2h.sideBWinRate*100)}% (${h2h.meetings}n)`;
@@ -446,7 +449,7 @@ function mmBuildCTLadderPayload(round, comms, excludeEventId){
 // on the native side (no tap-to-record wired up there): League can have several matches per
 // court per round, so there's no single "current match" the widget's tap/court-index
 // resolution could target.
-function mmBuildCTLeaguePayload(round, comms, excludeEventId){
+function mmBuildCTLeaguePayload(round, comms, excludeEventId, sport){
   const pick = (matches, group) => (matches||[]).filter(m=>m.live && m.winner==null).map(m=>{
     const pA=m.teamA?.players||[], pB=m.teamB?.players||[];
     return {
@@ -454,7 +457,7 @@ function mmBuildCTLeaguePayload(round, comms, excludeEventId){
       group,
       teamA: (m.teamA?.name?m.teamA.name+": ":"") + mmTeamLabelWithBadges(pA, comms, pB.map(p=>p.userId)),
       teamB: (m.teamB?.name?m.teamB.name+": ":"") + mmTeamLabelWithBadges(pB, comms, pA.map(p=>p.userId)),
-      balance: mmBalanceLabel(comms, pA, pB, excludeEventId),
+      balance: mmBalanceLabel(comms, pA, pB, excludeEventId, sport),
       winner: null,
     };
   });
@@ -1355,7 +1358,12 @@ function calcExactHeadToHeadCT(comms, sideAPlayerIds, sideBPlayerIds, opts){
   let meetings=0, sideAWins=0, sideBWins=0, last=null;
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
     // Same fix as calcExactHeadToHeadCI above — deleted events must not count as history.
-    if(ev.type!=="closed_teams"||!ev.plan||ev.deleted) return;
+    // Football excluded entirely (2026-09-10, admin request — "previous meeting and head to
+    // head... is not valid [for football], only in padel for now"). Also sidesteps a real
+    // correctness gap this would otherwise hit now that football matches can end in a draw:
+    // `matchTeamAWon = m.winner==="A"` is false for winner==="draw" too, which would have
+    // silently miscounted every football draw as a win for whichever side isn't teamA.
+    if(ev.type!=="closed_teams"||!ev.plan||ev.deleted||ev.sport==="Football") return;
     const isCurrent = excludeEventId!=null && ev.id===excludeEventId;
     if(isCurrent){ if(beforeRound==null) return; } else if(ev.status!=="completed") return;
     ev.plan.rounds.forEach((r,ri)=>{
@@ -10464,15 +10472,23 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
 
   function MatchCard({m,ri,mi,side}){
     const gc=side==="A"?gcA:gcB, sc=getS(ri,mi,side);
+    // Both head-to-head history and the USR-gap fallback are Padel-only concepts (2026-09-10,
+    // admin request — "the previous meeting and head to head... is not valid [for football],
+    // only in padel for now") — football's team rating isn't USR at all (see teamFormationRating/
+    // FOOTBALL_SKILL_RATING), so a "USR gap" badge would be showing a number that doesn't mean
+    // what it claims to for football anyway. calcExactHeadToHeadCT also now excludes football
+    // matches entirely, so h2h.meetings is always 0 for a football matchup — computed here
+    // regardless (cheap, and keeps the fallback badge below correct for Padel) but neither
+    // component ever renders anything for football.
     const h2h=calcExactHeadToHead(comms||[], (m.teamA?.players||[]).map(p=>p.userId), (m.teamB?.players||[]).map(p=>p.userId), {excludeEventId:eventId, beforeRound:ri});
-    const H2HRow=()=>h2h.meetings===0?null:<div style={{textAlign:"center",marginBottom:5,fontSize:12,fontWeight:700,padding:"4px 6px",borderRadius:7,background:"var(--po-inp)"}}>
+    const H2HRow=()=>(isFootballEv||h2h.meetings===0)?null:<div style={{textAlign:"center",marginBottom:5,fontSize:12,fontWeight:700,padding:"4px 6px",borderRadius:7,background:"var(--po-inp)"}}>
       <span style={{color:gcA}}>{Math.round(h2h.sideAWinRate*100)}%</span> <span style={{fontSize:10}}>📊</span> <span style={{color:gcB}}>{Math.round(h2h.sideBWinRate*100)}%</span> <span style={{fontWeight:400,fontSize:10,color:"var(--po-dim)"}}>({h2h.meetings}n)</span>
     </div>;
     // USR-gap fallback badge — shown whenever there's no head-to-head history, whether the
     // match is still open or already settled, so reviewing an old match keeps the same
     // context that was available when the winner was picked.
     const bAvgA=m.teamA?.avgUsr??0, bAvgB=m.teamB?.avgUsr??0, bGap=Math.abs(bAvgA-bAvgB);
-    const BalanceBadge=()=>(h2h.meetings===0&&bAvgA!==bAvgB)?<span title={`USR gap: ${bGap} (${m.teamA?.name} avg ${bAvgA} vs ${m.teamB?.name} avg ${bAvgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:bGap<=5?"#34D399":bGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {bAvgA>bAvgB?m.teamA?.name:m.teamB?.name} +{Math.round((bGap/((bAvgA+bAvgB)/2))*100)}%</span>:null;
+    const BalanceBadge=()=>(!isFootballEv&&h2h.meetings===0&&bAvgA!==bAvgB)?<span title={`USR gap: ${bGap} (${m.teamA?.name} avg ${bAvgA} vs ${m.teamB?.name} avg ${bAvgB}) — no head-to-head history yet`} style={{fontSize:10,fontWeight:700,color:bGap<=5?"#34D399":bGap<=10?"#F59E0B":"#EF4444"}}>⚖️ {bAvgA>bAvgB?m.teamA?.name:m.teamB?.name} +{Math.round((bGap/((bAvgA+bAvgB)/2))*100)}%</span>:null;
     // Same conflict check for both states below — a completed match's teams can still be
     // "busy" if one of them is now live in a different, still-undecided match, so it needs
     // the same dimming treatment as an undecided match would.
@@ -11430,7 +11446,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     // wiring tap listeners on these rows entirely.
     const isLadder = plan.format==="ladder";
     const lastRound = plan.rounds[plan.rounds.length-1];
-    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : mmBuildCTLeaguePayload(lastRound, comms||[], effEv.id);
+    const courts = isLadder ? mmBuildCTLadderPayload(lastRound, comms||[], effEv.id) : mmBuildCTLeaguePayload(lastRound, comms||[], effEv.id, effEv.sport);
     const ladderLastRound = isLadder && plan.rounds.length>=(plan.maxRounds||99);
     const breakPlayers = isLadder ? mmCTBreakLabel(lastRound) : "";
     const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts, interactive: isLadder };

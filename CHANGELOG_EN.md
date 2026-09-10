@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.26 (current) — ⚽ Draws now allowed in Football, with real 3-1-0 league points
+## V0.15.27 (current) — Hide "previous meeting"/head-to-head from Football (Padel only for now)
+
+- **The head-to-head indicator (📊) and the team-balance fallback (⚖️ USR gap) are now Padel-only** — removed entirely from the football (Teams · League) match card and from the Match Mode phone notification, per the admin's explicit call that these "aren't valid for football right now."
+- **🐛 Fixed a real bug this was about to cause:** `calcExactHeadToHeadCT` computed head-to-head across every `closed_teams` event without distinguishing Padel from Football — now that football supports draws (V0.15.26), a drawn football match would have been silently miscounted as a win for one of the two teams. This exclusion heads that off too, not just hiding the indicator.
+- Note: this is a **temporary exclusion at the admin's request** ("only in padel for now") — football could get its own correctly-scoped version of this later if wanted.
+
+---
+
+## V0.15.26 — ⚽ Draws now allowed in Football, with real 3-1-0 league points
 
 - **Football events (Teams · League) now support a real draw** — when the score ties, instead of the "adjust the score to confirm a winner" message (still shown for Padel, which must always produce a winner), a "🤝 Confirm Draw" button appears to record it officially.
 - **Real league points for football:** win = 3 points, draw = 1 point each, loss = 0 — and the standings table now ranks by points instead of raw win count (exactly like real football), then goal difference, then goals scored.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.23";
+const APP_VERSION = "V0.15.24";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1825,6 +1825,65 @@ function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
   }
   return Math.round(weightedSum / totalWeight);
 }
+// Personal Feed (2026-09-10, admin request — home screen, expandable to a full screen, "things
+// from that style mixed from other trail and notification information but specific to the
+// user"). Deliberately built from data that already exists rather than new tracking:
+// regHistoryDocs (per-event lifecycle log, V0.15.21), the global Audit Trail filtered to entries
+// actually about this player, and usrHistory's own rolling-average math (calcWeightedUSR, called
+// exactly as it's called everywhere else, never a parallel copy). One shared builder used by both
+// the Home screen's compact card and the full Feed screen so they can never show different things.
+function feedIconFor(note){
+  if(/^Registered/.test(note)) return {icon:"🎾", bg:"#6366F122", color:"#818CF8"};
+  if(/^Promoted from waitlist/.test(note)) return {icon:"🎉", bg:"#34D39922", color:"#34D399"};
+  if(/^Landed on confirmed seat/.test(note)) return {icon:"✅", bg:"#34D39922", color:"#34D399"};
+  if(/^Landed on waitlist/.test(note)) return {icon:"⏳", bg:"#F59E0B22", color:"#F59E0B"};
+  if(/^Moved up on the waitlist/.test(note)) return {icon:"⬆️", bg:"#34D39922", color:"#34D399"};
+  if(/waitlist #\d+$/.test(note)||/^Moved down on the waitlist/.test(note)) return {icon:"⬇️", bg:"#F59E0B22", color:"#F59E0B"};
+  if(/^Removed|^Unregistered/.test(note)) return {icon:"✕", bg:"#EF444422", color:"#EF4444"};
+  if(/^Checked in/.test(note)) return {icon:"✅", bg:"#34D39922", color:"#34D399"};
+  if(/no-show/i.test(note)) return {icon:"🙈", bg:"#EF444422", color:"#EF4444"};
+  if(/^Marked retired/.test(note)) return {icon:"🚑", bg:"#F59E0B22", color:"#F59E0B"};
+  if(/^Un-retired/.test(note)) return {icon:"↩", bg:"#34D39922", color:"#34D399"};
+  if(/^Marked as paid/.test(note)) return {icon:"💰", bg:"#34D39922", color:"#34D399"};
+  if(/^Marked as unpaid/.test(note)) return {icon:"💸", bg:"#F59E0B22", color:"#F59E0B"};
+  return {icon:"🔀", bg:"#94A3B822", color:"#94A3B8"};
+}
+function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
+  const items = [];
+  (regHistoryDocs||[]).forEach(doc => {
+    const ev = comms.flatMap(c=>c.events).find(e=>e.id===doc.eventId);
+    const evName = ev?.name || `Event #${doc.eventId}`;
+    (doc.entries||[]).forEach(entry => {
+      const {icon,bg,color} = feedIconFor(entry.note);
+      items.push({ts:entry.ts, icon, bg, color, text:`${entry.note} — ${evName}`, nav: ev ? {cid:ev.communityId, eid:doc.eventId} : null});
+    });
+  });
+  // Promotions/demotions: same audit entries closeEvent's real write already fires (App.jsx's
+  // "member.tier_change" action) — filtered to ones where THIS player is the target, not just
+  // ones they happened to trigger.
+  (auditLog||[]).filter(a=>a.action==="member.tier_change" && a.targetType==="member" && a.targetId===me.id).forEach(a => {
+    const promoted = /→\s*regular/i.test(a.summary||"");
+    items.push({ts:a.ts, icon:promoted?"🆙":"🔻", bg:promoted?"#22D3EE22":"#F59E0B22", color:promoted?"#22D3EE":"#F59E0B", text:a.summary, nav:null});
+  });
+  // USR changes: real historical deltas — replays calcWeightedUSR at each prefix of the actual
+  // stored history, so a delta can never be shown that doesn't match the number really on file.
+  const hist = me.usrHistory||[];
+  const seedUsr = me.seedUsr ?? me.usr;
+  let prevUsr = seedUsr;
+  hist.forEach((h,i) => {
+    const after = calcWeightedUSR(hist.slice(0,i+1), seedUsr, usrWindowSize);
+    if(after!==prevUsr) items.push({ts:`${h.date}T12:00:00`, icon:"📈", bg:"#F59E0B22", color:"#F59E0B", text:`USR updated ${prevUsr} → ${after} after ${h.eventName}`, nav:null});
+    prevUsr = after;
+  });
+  return items.sort((a,b)=> a.ts<b.ts?1:a.ts>b.ts?-1:0);
+}
+const dayLabel = (d) => {
+  const now = new Date();
+  if(d.toDateString()===now.toDateString()) return "Today";
+  const yest = new Date(now); yest.setDate(yest.getDate()-1);
+  if(d.toDateString()===yest.toDateString()) return "Yesterday";
+  return d.toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
+};
 // Preview-only: what does THIS candidate PES value actually contribute to a player's real USR?
 // Compares two histories built from the SAME baseline (this event's own entry removed
 // entirely, if it exists) — one with the candidate pes applied, one without — rather than
@@ -4011,6 +4070,42 @@ function RegHistoryPanel({entries, fallbackRegisteredAt}){
     </div>)}
   </div>;
 }
+// One row, shared verbatim by the Home screen's compact feed card and the full FeedSc screen —
+// see buildUserFeed for where `item` comes from.
+function FeedItemRow({item,onOpen}){
+  const clickable = item.nav && onOpen;
+  return <div onClick={clickable?()=>onOpen(item.nav.cid,item.nav.eid):undefined} style={{display:"flex",gap:9,padding:"7px 0",cursor:clickable?"pointer":"default"}}>
+    <div style={{width:26,height:26,borderRadius:8,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,background:item.bg,color:item.color}}>{item.icon}</div>
+    <div style={{flex:1,minWidth:0}}>
+      <div style={{fontSize:11.5,color:"var(--po-text)",lineHeight:1.4}}>{item.text}</div>
+      <div style={{fontSize:9.5,color:"var(--po-dim)",marginTop:1}}>{timeAgo(item.ts)}</div>
+    </div>
+  </div>;
+}
+// Full-screen expansion of the Home card's feed — reached via "See all →", same items (already
+// built once by buildUserFeed and passed down), just grouped by day with no 3-item cap.
+function FeedSc({feedItems,onBack,onOpen}){
+  const groups = [];
+  feedItems.forEach(item => {
+    const label = dayLabel(new Date(item.ts));
+    if(!groups.length || groups[groups.length-1].label!==label) groups.push({label, items:[]});
+    groups[groups.length-1].items.push(item);
+  });
+  return <>
+    <BBtn onBack={onBack} label="Home"/>
+    <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>📰 Your Feed</div>
+    {feedItems.length===0&&<Card><div style={{fontSize:13,color:"var(--po-dim)",textAlign:"center",padding:20}}>Nothing here yet — your activity will show up as it happens.</div></Card>}
+    {groups.map((g,gi)=><div key={gi}>
+      <div style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5,margin:"14px 2px 6px"}}>{g.label}</div>
+      <Card>
+        {g.items.map((item,i)=><React.Fragment key={i}>
+          {i>0&&<div style={{height:1,background:"var(--po-bdr)",margin:"0 -16px"}}/>}
+          <FeedItemRow item={item} onOpen={onOpen}/>
+        </React.Fragment>)}
+      </Card>
+    </div>)}
+  </>;
+}
 function AreaSel({country,gov,area,onChange,egypt}){
   const countries=Object.keys(egypt||{});
   const govs=country?Object.keys((egypt||{})[country]||{}):[];
@@ -5246,6 +5341,18 @@ export default function Matchkeeper() {
     }, e => console.log("Firestore audit error", e));
     return unsub;
   }, [authUser]);
+  // Personal Feed (2026-09-10, admin request) — one-time fetch of every regHistory doc across
+  // every event this player has ever touched, via a collectionGroup query (see firestore.rules'
+  // {path=**} form, added for exactly this). A one-shot getDocs, not a live listener: this is a
+  // Home-screen summary, not a real-time collaboration surface, so "fresh as of your last visit
+  // to Home" is the right tradeoff, same reasoning as the per-event history panel's lazy fetch.
+  const [myRegHistoryDocs, setMyRegHistoryDocs] = useState([]);
+  useEffect(() => {
+    if (!me?.id) return;
+    getDocs(query(collectionGroup(db,"regHistory"), where("userId","==",me.id)))
+      .then(snap => setMyRegHistoryDocs(snap.docs.map(d => ({eventId:Number(d.ref.parent.parent.id), ...d.data()}))))
+      .catch(e => console.log("Firestore regHistory feed fetch failed", e));
+  }, [me?.id]);
   // Returns the write promise (most callers ignore it — fire-and-forget) so the handful of
   // callers that reload/navigate away immediately after (factoryReset) can await it first,
   // since window.location.reload() would otherwise kill the in-flight write.
@@ -8229,7 +8336,8 @@ export default function Matchkeeper() {
             onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})}
           />
         }
-        {nav==="home"&&<HomeSc events={allEvents} me={me} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onGoEvents={()=>goRoot("events")}/>}
+        {nav==="home"&&<HomeSc events={allEvents} me={me} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onGoEvents={()=>goRoot("events")} auditLog={auditLog} regHistoryDocs={myRegHistoryDocs} usrWindowSize={usrWindowSize} onSeeAllFeed={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("feed");setView({screen:"list"});}}/>}
+        {nav==="feed"&&<FeedSc feedItems={buildUserFeed({me, comms, auditLog, regHistoryDocs:myRegHistoryDocs, usrWindowSize})} onBack={goBack} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}}/>}
         {nav==="events"&&view.screen==="list"&&<EvList events={allEvents} me={me} users={users} comms={comms} venues={venues} eventCommFilter={eventCommFilter} onOpen={(cid,eid)=>{setNav("communities");go("event",{cid,eid});}} onCreateEv={(cid)=>{setNav("communities");go("createEvent",{cid});}} onBulkArchive={bulkArchiveEvents} onBulkDelete={bulkDeleteEvents}/>}
         {nav==="venues"&&view.screen==="list"&&<VenueList venues={venues} onAdd={()=>go("addVenue")} onEdit={id=>go("editVenue",{vid:id})} onBack={goBack}/>}
         {nav==="venues"&&view.screen==="addVenue"&&<VenueForm onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
@@ -12698,7 +12806,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 //  activeSports/hasPadel/hasFootball/showSportSwitcher/effSportView pattern ProfileSc already
 //  established, rather than inventing a second way to do the same thing.
 // ══════════════════════════════════════════════════════
-function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents}){
+function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditLog,regHistoryDocs,usrWindowSize,onSeeAllFeed}){
   const filteredEvents = (!eventCommFilter||eventCommFilter==="all") ? events : events.filter(ev=>ev.communityId===parseInt(eventCommFilter));
   const myIds=new Set(filteredEvents.filter(ev=>ev.registrations?.some(r=>r.userId===me.id)||ev.createdBy===me.id).map(ev=>ev.id));
   const now=Date.now();
@@ -12744,6 +12852,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents}){
     return {ev:soonest, comm:c};
   }).filter(Boolean).sort((a,b)=>evTime(a.ev)-evTime(b.ev))[0];
   const nudgeMsg = nudge && regNudgeMessage(nudge.comm, me.id, nudge.ev.name);
+  const feedItems = buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize});
   // Football has no computed USR-style rating (see closeEvent's usrHistory note) — FSR
   // (footballSkill, an A-E letter grade) and calcFootballPlayerStats stand in for it here,
   // same substitution ProfileSc already makes for its own stat blocks.
@@ -12800,6 +12909,16 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents}){
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-dim)"}}>See all events</div>
       <div style={{fontSize:13,color:"#818CF8",fontWeight:700}}>→</div>
     </div>
+    {/* Personal Feed — added to the bottom of this existing screen, not a replacement for any of
+        the above (admin's explicit instruction). Compact here (3 most recent); "See all" expands
+        to the full FeedSc screen sharing these exact same items. */}
+    {feedItems.length>0&&<div className="mk-animate-in" style={{marginTop:16,padding:14,borderRadius:12,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".64s"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div style={{fontSize:12.5,fontWeight:700,color:"var(--po-text)"}}>📰 Your Feed</div>
+        <div onClick={onSeeAllFeed} style={{fontSize:10.5,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>See all →</div>
+      </div>
+      {feedItems.slice(0,3).map((item,i)=><FeedItemRow key={i} item={item} onOpen={onOpen}/>)}
+    </div>}
   </>;
 }
 

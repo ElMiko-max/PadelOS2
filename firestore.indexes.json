@@ -1,0 +1,12 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "regHistory",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

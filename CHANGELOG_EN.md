@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.23 (current) — Encourage registration with a Casual↔Regular motivational message
+## V0.15.24 (current, needs a Firestore index deploy) — 📰 Personal Feed on the Home screen
+
+- **A new "Your Feed" section at the bottom of the existing Home screen** (not a replacement — added below the registration nudge card and the "See all events" row) shows the 3 most recent things that happened to *you*; "See all →" opens a full screen with your whole history grouped by day.
+- **No new data collection at all** — built entirely from what already exists: the permanent per-event registration log (`regHistory`, V0.15.21), real promotion/demotion entries (Audit Trail, V0.15.16), and your own `usrHistory` — USR deltas are computed by replaying the exact same real USR math, not estimated.
+- Example items: "Registered — Wednesday Night Padel", "Promoted from waitlist #2 to confirmed seat #14", "USR updated 54 → 57 after Monday Legends", "auto-moved casual → regular".
+- **⚠️ Needs one extra deployment step:** the new query needs a Firestore index (`firebase deploy --only firestore:indexes`) — without it the Feed just stays empty (fails silently, nothing else breaks) until the index is deployed and finishes building.
+
+---
+
+## V0.15.23 — Encourage registration with a Casual↔Regular motivational message
 
 - **A new card on the Home screen encourages you to register** for the soonest event, across any of your communities, that's still open for registration and that you haven't registered for yet.
 - **The message is tied to your real status** (the same math that actually drives promotion/demotion):

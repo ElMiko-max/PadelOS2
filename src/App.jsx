@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.27";
+const APP_VERSION = "V0.15.28";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4095,13 +4095,21 @@ function MemberProgress({comm, userId, status}){
 // registration doc itself, which removeFromEvent deletes outright), fetched lazily by the caller
 // only once this row is expanded. Read-only, nothing computed here — just rendering what was
 // really recorded, so it can never show something that didn't actually happen.
-// `fallbackRegisteredAt`: for a registration that predates this feature (or a fresh one whose
-// very first regHistory write hasn't landed yet), there's no "Registered" entry yet — synthesize
-// one from the registration doc's own registeredAt so the panel is never empty for someone who's
-// clearly still registered.
+// `fallbackRegisteredAt`: real bug, found live in production (2026-09-10, admin report) — a
+// handful of players who registered right around when this feature first shipped only ever got
+// their LATER entries recorded (e.g. "Promoted from waitlist #1 to confirmed seat #4"), because
+// their very first write attempt predates the feature (or its Firestore rules) going live. That
+// exact moment is genuinely gone and can't be reconstructed — but registeredAt itself has sat on
+// every registration doc since long before this feature ever existed, so it's never actually
+// missing. Whenever the real entries don't already contain a "Registered" line of their own
+// (checked, not just "list is empty" — a partial history missing only its first line is exactly
+// the bug that was found), one gets synthesized from it and prepended, so the timeline always has
+// a real starting point instead of silently opening mid-story.
 function RegHistoryPanel({entries, fallbackRegisteredAt}){
   if(entries==="loading") return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>Loading…</div>;
-  const list = (entries&&entries.length) ? entries : (fallbackRegisteredAt ? [{ts:fallbackRegisteredAt, note:"Registered"}] : []);
+  const real = entries||[];
+  const hasRealRegisteredEntry = real.some(h=>h.note?.startsWith("Registered"));
+  const list = (!hasRealRegisteredEntry && fallbackRegisteredAt) ? [{ts:fallbackRegisteredAt, note:"Registered"}, ...real] : real;
   const sorted = [...list].sort((a,b)=>a.ts<b.ts?-1:a.ts>b.ts?1:0);
   if(!sorted.length) return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,fontSize:11,color:"var(--po-dim)"}}>No history recorded yet.</div>;
   return <div style={{marginTop:8,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>

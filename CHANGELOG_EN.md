@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.27 (current) — Hide "previous meeting"/head-to-head from Football (Padel only for now)
+## V0.15.28 (current) — 🐛 Fix: the "Registered" line was missing for some players' history
+
+- **Real bug found live in production (example: M Adel on event #80):** players who registered right at the moment the registration-history feature (V0.15.21) was still rolling out only ever showed their LATER event (e.g. "Promoted from waitlist #1 to confirmed seat #4") with no "Registered" line at all — not because it didn't happen, but because their very first write attempt landed before the feature (and its Firestore rules) had fully finished deploying.
+- **Fix:** the registration history screen now always makes sure a "Registered" line is present — if the real recorded history is genuinely missing one, it synthesizes it from the registration's own real `registeredAt` field (which has existed long before this feature) instead of showing an incomplete-looking history.
+- This is a display-layer fix only (no new data was written) — every player who registered after the feature was fully live (like everyone else on that same event) already had a complete history and is unaffected.
+
+---
+
+## V0.15.27 — Hide "previous meeting"/head-to-head from Football (Padel only for now)
 
 - **The head-to-head indicator (📊) and the team-balance fallback (⚖️ USR gap) are now Padel-only** — removed entirely from the football (Teams · League) match card and from the Match Mode phone notification, per the admin's explicit call that these "aren't valid for football right now."
 - **🐛 Fixed a real bug this was about to cause:** `calcExactHeadToHeadCT` computed head-to-head across every `closed_teams` event without distinguishing Padel from Football — now that football supports draws (V0.15.26), a drawn football match would have been silently miscounted as a win for one of the two teams. This exclusion heads that off too, not just hiding the indicator.

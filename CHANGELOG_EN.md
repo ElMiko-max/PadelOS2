@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.29 (current) — Registration history now logs "requested to join" too, not just the approval
+## V0.15.30 (current) — Home: a slider for all upcoming events + a more complete Feed
+
+- **The "Next Up" card on Home is now a slider** — if you're registered in more than one upcoming event, all of them show up (not just the soonest), with ‹ › arrows or dots underneath to move between them. No day-count cap of any kind — every upcoming event you're registered for is in there.
+- **🐛 Fixed a real bug: whole events were missing from the Feed entirely** — if you registered for an event before the registration-history feature had fully finished rolling out (e.g. two events the admin created and registered himself into), the Feed showed nothing for them at all, since no `regHistory` existed yet. Now, any event you're genuinely registered for that has no real "Registered" line gets one backfilled from the registration's own real `registeredAt`.
+- **The Feed now also shows admin actions, not just things that happened to you as a player** — first case added: "you approved so-and-so's join request" now shows in your own feed when you're the one who approved it (per a specific example given). Let me know if you want more admin action types added (adding a player, removing one, promoting someone else, etc.).
+
+---
+
+## V0.15.29 — Registration history now logs "requested to join" too, not just the approval
 
 - **The invite link that routes a Guest into admin approval now logs that step on its own** — "🙋 Requested to join" fires when the request is sent, not just "Registered (join request approved by...)" when it's later approved. Both lines now show, in order.
 - **A rejected request is now logged too** ("Join request rejected (by...)") instead of just disappearing with no trace.

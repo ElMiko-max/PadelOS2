@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.29";
+const APP_VERSION = "V0.15.30";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1875,20 +1875,45 @@ function feedIconFor(note){
 }
 function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
   const items = [];
+  const allEvents = comms.flatMap(c=>c.events||[]);
+  const eventsWithRealRegisteredEntry = new Set();
   (regHistoryDocs||[]).forEach(doc => {
-    const ev = comms.flatMap(c=>c.events).find(e=>e.id===doc.eventId);
+    const ev = allEvents.find(e=>e.id===doc.eventId);
     const evName = ev?.name || `Event #${doc.eventId}`;
     (doc.entries||[]).forEach(entry => {
+      if(entry.note?.startsWith("Registered")) eventsWithRealRegisteredEntry.add(doc.eventId);
       const {icon,bg,color} = feedIconFor(entry.note);
       items.push({ts:entry.ts, icon, bg, color, text:`${entry.note} — ${evName}`, nav: ev ? {cid:ev.communityId, eid:doc.eventId} : null});
     });
   });
+  // Backfill a "Registered" line for every event the player is actually registered in but has no
+  // real regHistory "Registered" entry for (2026-09-10, admin report — two events he created and
+  // registered himself into right after this feature shipped were missing from the Feed
+  // entirely). Covers both a event with NO regHistory doc at all (registered before this feature
+  // existed) and the narrower partial-history gap RegHistoryPanel already covers per-event.
+  // registeredAt has sat on every registration doc long before this feature ever did, so it's
+  // never actually missing — only the later position-change steps (unrecoverable) are lost.
+  comms.forEach(c=>(c.events||[]).forEach(ev=>{
+    const reg = ev.registrations?.find(r=>r.userId===me.id);
+    if(!reg || eventsWithRealRegisteredEntry.has(ev.id)) return;
+    items.push({ts:reg.registeredAt, icon:"🎾", bg:"#6366F122", color:"#818CF8", text:`Registered — ${ev.name}`, nav:{cid:c.id, eid:ev.id}});
+  }));
   // Promotions/demotions: same audit entries closeEvent's real write already fires (App.jsx's
   // "member.tier_change" action) — filtered to ones where THIS player is the target, not just
   // ones they happened to trigger.
   (auditLog||[]).filter(a=>a.action==="member.tier_change" && a.targetType==="member" && a.targetId===me.id).forEach(a => {
     const promoted = /→\s*regular/i.test(a.summary||"");
     items.push({ts:a.ts, icon:promoted?"🆙":"🔻", bg:promoted?"#22D3EE22":"#F59E0B22", color:promoted?"#22D3EE":"#F59E0B", text:a.summary, nav:null});
+  });
+  // Admin actions taken ON OTHER players — "part of my admin journey too" (2026-09-10, admin
+  // report, concrete example: approving someone's join request). Narrowly scoped to approvals
+  // specifically (detected via the summary's own wording, which only ever says "approved" when
+  // it's someone else's request — a self-registration summary never does) rather than every
+  // actorId===me.id audit entry, which would also pull in every tier change caused by closing an
+  // event and get noisy fast. Ask if this should widen to cover more admin action types.
+  (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.register" && /approved/i.test(a.summary||"")).forEach(a => {
+    const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
+    items.push({ts:a.ts, icon:"✅", bg:"#8B5CF622", color:"#A78BFA", text:a.summary, nav: ev ? {cid:ev.communityId, eid:ev.id} : null});
   });
   // USR changes: real historical deltas — replays calcWeightedUSR at each prefix of the actual
   // stored history, so a delta can never be shown that doesn't match the number really on file.
@@ -12901,7 +12926,15 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
   const isFootball = effSportView==="Football";
 
   const coming = showSportSwitcher ? comingAll.filter(ev=>(ev.sport||DEFAULT_SPORT)===effSportView) : comingAll;
-  const heroEv = coming[0];
+  // Hero is now a small slider across ALL upcoming events, not just the soonest one (2026-09-10,
+  // admin report — "I have two events registered in, so they should both appear, or there should
+  // be a slider"). No day-count cap of any kind — `coming` already just means every future event
+  // this player is registered for, however far out that runs. Clamped defensively (not reset via
+  // an effect) so switching sports/losing an event mid-view can never point past the new array's
+  // end.
+  const [heroIdx,setHeroIdx]=useState(0);
+  const heroIdxClamped = Math.min(heroIdx, Math.max(0, coming.length-1));
+  const heroEv = coming[heroIdxClamped];
   const heroVenue = heroEv && venues?.find(v=>v.id===heroEv.venueId);
   const heroSplit = heroEv && splitRegsByCapacity(heroEv);
   const heroCap = heroEv && (getMaxPlayers(heroEv) || heroEv.courts*5 || null);
@@ -12962,6 +12995,11 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
       </div>:<div className="mk-animate-in" style={{marginTop:14,padding:16,borderRadius:14,textAlign:"center",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".2s"}}>
         <div style={{fontSize:13,color:"var(--po-dim)"}}>No upcoming {showSportSwitcher?effSportView:""} events yet</div>
         <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>
+      </div>}
+      {coming.length>1&&<div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:12,marginTop:8}}>
+        <div onClick={()=>setHeroIdx(i=>(Math.min(i,coming.length-1)-1+coming.length)%coming.length)} style={{cursor:"pointer",fontSize:13,color:"var(--po-dim)",padding:"2px 8px",userSelect:"none"}}>‹</div>
+        <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>setHeroIdx(i)} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
+        <div onClick={()=>setHeroIdx(i=>(Math.min(i,coming.length-1)+1)%coming.length)} style={{cursor:"pointer",fontSize:13,color:"var(--po-dim)",padding:"2px 8px",userSelect:"none"}}>›</div>
       </div>}
       <div style={{display:"flex",gap:8,marginTop:14}}>
         <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".32s"}}><div style={{fontSize:16,fontWeight:800,color:"#818CF8"}}><CountUp to={coming.length}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Upcoming</div></div>

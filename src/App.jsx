@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.25";
+const APP_VERSION = "V0.15.26";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1227,19 +1227,23 @@ function calcDreamOrFunnyMatch(stats, kind){
 // closeEvent fix keeping football out of USR/TR entirely), so this just answers the two things
 // that actually matter for football: how often do I win, and how many goals do I score.
 function calcFootballPlayerStats(comms, userId){
-  let matches=0, wins=0, losses=0, goals=0;
+  let matches=0, wins=0, draws=0, losses=0, goals=0;
   const eventIds = new Set();
   comms.forEach(c=>(c.events||[]).forEach(ev=>{
     if(ev.sport!=="Football"||ev.status!=="completed"||!ev.plan) return;
     if(!ev.registrations.some(r=>r.userId===userId)) return;
     let playedThisEvent=false;
+    // closed_ind is unreachable for football today (FOOTBALL_EVENT_TYPES only offers
+    // closed_teams/open — see its own comment), kept here defensively in case that ever changes.
     if(ev.type==="closed_ind"){
       (ev.plan.rounds||[]).forEach(r=>(r.matches||[]).forEach(m=>{
         if(!m.winner) return;
         const inA=m.teamA.some(p=>p.userId===userId), inB=m.teamB.some(p=>p.userId===userId);
         if(!inA&&!inB) return;
         playedThisEvent=true; matches++;
-        if((inA&&m.winner==="A")||(inB&&m.winner==="B")) wins++; else losses++;
+        if(m.winner==="draw") draws++;
+        else if((inA&&m.winner==="A")||(inB&&m.winner==="B")) wins++;
+        else losses++;
       }));
     } else if(ev.type==="closed_teams"){
       (ev.plan.rounds||[]).forEach(r=>{
@@ -1248,8 +1252,11 @@ function calcFootballPlayerStats(comms, userId){
           const inA=m.teamA.players.some(p=>p.userId===userId), inB=m.teamB.players.some(p=>p.userId===userId);
           if(!inA&&!inB) return;
           playedThisEvent=true; matches++;
-          const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
-          if(won) wins++; else losses++;
+          // A draw (2026-09-10, admin request — football allows draws, unlike padel) is
+          // neither team's win — miscounting it as a loss was the bug here before this fix.
+          if(m.winner==="draw") draws++;
+          else if((inA&&m.winner==="A")||(inB&&m.winner==="B")) wins++;
+          else losses++;
           const myScorers = inA ? m.scorersA : m.scorersB;
           goals += (myScorers||[]).find(s=>s.userId===userId)?.goals || 0;
         });
@@ -1258,7 +1265,7 @@ function calcFootballPlayerStats(comms, userId){
     if(playedThisEvent) eventIds.add(ev.id);
   }));
   return {
-    matches, wins, losses, winRate: matches?wins/matches:0,
+    matches, wins, draws, losses, winRate: matches?wins/matches:0,
     goals, events: eventIds.size, goalsPerEvent: eventIds.size?goals/eventIds.size:0,
   };
 }
@@ -2018,10 +2025,11 @@ function nextFootballLeagueRound(plan) {
 }
 
 // CT Standings — cumulative all rounds
-function calcCTStandings(plan) {
+function calcCTStandings(plan, sport) {
   if (!plan) return [];
+  const isFootball = sport==="Football";
   const stats = {};
-  plan.teams.forEach(t => { stats[t.id] = { wins:0, losses:0, scoreDiff:0, goalsFor:0, goalsAgainst:0, played:0, breaks:0, pts:0, team:t }; });
+  plan.teams.forEach(t => { stats[t.id] = { wins:0, draws:0, losses:0, scoreDiff:0, goalsFor:0, goalsAgainst:0, played:0, breaks:0, pts:0, team:t }; });
 
   if (plan.format === "ladder") {
     const tc = plan.courts;
@@ -2039,21 +2047,38 @@ function calcCTStandings(plan) {
     return Object.values(stats).filter(s=>s.team).sort((a,b)=>b.pts-a.pts||b.wins-a.wins).map((s,i)=>({...s,finalRank:i+1,group:null}));
   }
 
-  // League: cumulative wins + score diff across ALL rounds
+  // League: cumulative wins/draws + score diff across ALL rounds. Football (2026-09-10, admin
+  // request — "football matches allow draw, unlike padel... win gets three points, draw gets
+  // one") gets a real draw outcome plus standard league points; Padel's League+Promotion/
+  // Relegation format shares this exact branch but its own match-entry UI never produces
+  // winner==="draw" at all (still must pick a winner), so it's unaffected either way — points
+  // stay gated to football specifically so a Padel standings table can't start awarding pts.
   plan.rounds.forEach(round => {
     const allM = [...(round.matchesA||[]), ...(round.matchesB||[])];
     allM.forEach(m => {
       if (!m.winner) return;
+      if (m.winner==="draw") {
+        const a=m.scoreA||0, b=m.scoreB||0;
+        if(stats[m.teamA?.id]){stats[m.teamA.id].draws++;stats[m.teamA.id].played++;stats[m.teamA.id].goalsFor+=a;stats[m.teamA.id].goalsAgainst+=b;stats[m.teamA.id].pts+=1;}
+        if(stats[m.teamB?.id]){stats[m.teamB.id].draws++;stats[m.teamB.id].played++;stats[m.teamB.id].goalsFor+=b;stats[m.teamB.id].goalsAgainst+=a;stats[m.teamB.id].pts+=1;}
+        return;
+      }
       const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
       const wScore=m.winner==="A"?(m.scoreA||0):(m.scoreB||0), lScore=m.winner==="A"?(m.scoreB||0):(m.scoreA||0);
-      if(stats[W.id]){stats[W.id].wins++;stats[W.id].played++;stats[W.id].goalsFor+=wScore;stats[W.id].goalsAgainst+=lScore;stats[W.id].scoreDiff+=(wScore-lScore);}
-      if(stats[L.id]){stats[L.id].losses++;stats[L.id].played++;stats[L.id].goalsFor+=lScore;stats[L.id].goalsAgainst+=wScore;stats[L.id].scoreDiff-=(wScore-lScore);}
+      if(stats[W.id]){stats[W.id].wins++;stats[W.id].played++;stats[W.id].goalsFor+=wScore;stats[W.id].goalsAgainst+=lScore;stats[W.id].pts+=isFootball?3:0;}
+      if(stats[L.id]){stats[L.id].losses++;stats[L.id].played++;stats[L.id].goalsFor+=lScore;stats[L.id].goalsAgainst+=wScore;}
     });
   });
+  Object.values(stats).forEach(s=>{s.scoreDiff=s.goalsFor-s.goalsAgainst;});
 
   // Group A first, then Group B
-  // All teams merged and sorted by wins → score diff → goals for
-  const allStats = Object.values(stats).filter(s=>s.team).sort((a,b)=>b.wins-a.wins||b.scoreDiff-a.scoreDiff||b.goalsFor-a.goalsFor);
+  // Football ranks by league points (win=3/draw=1/loss=0) → score diff → goals for, the
+  // standard football tie-break order. Padel keeps ranking by raw win count, exactly as before
+  // (equivalent to points here since it never has draws and never awards pts in this branch).
+  const allStats = Object.values(stats).filter(s=>s.team).sort((a,b)=>
+    isFootball ? (b.pts-a.pts||b.scoreDiff-a.scoreDiff||b.goalsFor-a.goalsFor)
+               : (b.wins-a.wins||b.scoreDiff-a.scoreDiff||b.goalsFor-a.goalsFor)
+  );
   return allStats.map((s,i)=>({...s,group:plan.groupA.find(t=>t.id===s.team.id)?"A":"B",finalRank:i+1}));
 }
 // Football-only Top Scorers — sums m.scorersA/m.scorersB (kept separate per team, see
@@ -6736,7 +6761,7 @@ export default function Matchkeeper() {
     // ── CT: Calculate TES → update TR per combination ─
     if(ev.type==="closed_teams"&&ev.plan){
       const plan=ev.plan;
-      const stands=calcCTStandings(plan);
+      const stands=calcCTStandings(plan, ev.sport);
       const format=plan.format;
       // X-System: Platform-Admin-only choice at close time, Ladder only (League never eligible —
       // see PLAN). Standard path below is untouched — only the final teamTES[...] value is affected.
@@ -8660,7 +8685,7 @@ function CommStatsTab({comm, users, onViewProfile}){
   const ciCache = {}, ctCache = {};
   completedEvents.forEach(ev=>{
     if(ev.type==="closed_ind"&&ev.plan) ciCache[ev.id]=calcCIStandings(ev.plan,users);
-    if(ev.type==="closed_teams"&&ev.plan) ctCache[ev.id]=calcCTStandings(ev.plan);
+    if(ev.type==="closed_teams"&&ev.plan) ctCache[ev.id]=calcCTStandings(ev.plan, ev.sport);
   });
   const stats = members.map(u=>{
     let participations=0, wins=0, totalPts=0, totalMaxPts=0;
@@ -10464,7 +10489,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
       {hasConflict&&<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,fontWeight:600,color:"#EF4444",background:"#EF444411",borderRadius:7,padding:"5px 8px",marginBottom:6}}>⚠️ {conflictA?m.teamA?.name:m.teamB?.name} live elsewhere right now</div>}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
         <span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase"}}>{isFootballEv?"Pitch":"Court"} {m.court}{isLeague&&!isFootballEv?` · Group ${side}`:""}</span>
-        <Bdg label={`${m.winner==="A"?m.teamA?.name:m.teamB?.name} wins`} color="#34D399"/>
+        <Bdg label={m.winner==="draw"?"🤝 Draw":`${m.winner==="A"?m.teamA?.name:m.teamB?.name} wins`} color={m.winner==="draw"?"#F59E0B":"#34D399"}/>
       </div>
       {(()=>{
         const ds = isFootballEv ? getDS(ri,mi,side,m) : null;
@@ -10475,13 +10500,13 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
             <div style={{flex:1,textAlign:"center"}}>
               <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
-              <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
+              <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
             </div>
             <div style={{fontSize:12,color:"#334155",fontWeight:700,marginTop:2}}>—</div>
             <div style={{flex:1,textAlign:"center"}}>
               <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
-              <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
+              <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
             </div>
           </div>
           {isFootballEv&&<ScorersTrigger tagged={dTagged} hasScorers={dHasScorers} isAdmin={isAdmin} onClick={()=>setScorersModal({ri,mi,side})}/>}
@@ -10538,8 +10563,15 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
           // what let a team's saved score end up below its own tagged goal count.
           const sumA=(sc.scorersA||[]).reduce((s,x)=>s+x.goals,0), sumB=(sc.scorersB||[]).reduce((s,x)=>s+x.goals,0);
           const fA=Math.max(sc.scoreA,sumA), fB=Math.max(sc.scoreB,sumB);
+          const tied = fA===fB;
+          const confirmDraw=e=>{e.preventDefault();onSetWinCT(ri,mi,side,"draw",fA,fB);if(sc.scorersA?.length||sc.scorersB?.length)onSetCTScorers(ri,mi,side,sc.scorersA||[],sc.scorersB||[]);};
           return <>
-            {fA===fB&&fA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>}
+            {/* Football allows a draw (2026-09-10, admin request — unlike Padel, which must
+                always produce a winner); on a tie it gets its own confirm button instead of the
+                "adjust the score" warning, worth 1pt each side in calcCTStandings. */}
+            {tied&&(isFootballEv
+              ? <button onMouseDown={confirmDraw} style={{width:"100%",padding:"7px 0",borderRadius:8,border:"0.5px solid #F59E0B44",background:"#F59E0B22",color:"#FBBF24",fontSize:12,fontWeight:600,cursor:"pointer",marginBottom:6}}>🤝 Confirm Draw {fA}–{fB}</button>
+              : fA>0&&<div style={{textAlign:"center",fontSize:11,color:"#F59E0B",marginBottom:6}}>⚠️ Tied — adjust score to confirm winner</div>)}
             <div style={{display:"flex",gap:6}}>
               <button onMouseDown={e=>{e.preventDefault();onSetWinCT(ri,mi,side,"A",fA,fB);if(isFootballEv&&(sc.scorersA?.length||sc.scorersB?.length))onSetCTScorers(ri,mi,side,sc.scorersA||[],sc.scorersB||[]);}}
                 disabled={fA<=fB}
@@ -11530,7 +11562,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const ciR1Locked = isCI&&plan&&plan.rounds.length>0&&
     plan.rounds[0].matches.some(m=>m.winner!=null);
   const ciStands = isCI?calcCIStandings(plan,users):[];
-  const ctStands = isCT?calcCTStandings(plan):[];
+  const ctStands = isCT?calcCTStandings(plan, effEv.sport):[];
   const [sharing,setSharing] = useState(false);
   const [showDup,setShowDup] = useState(false);
   const [dupDate,setDupDate] = useState(()=>{const d=new Date(ev.date);d.setDate(d.getDate()+7);return d.toISOString().split("T")[0];});
@@ -12700,6 +12732,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>
         {plan?.format==="ladder"
           ? `Court pts: ${Array.from({length:tc},(_,i)=>`C${i+1}=${ctLadderCourtPts(i+1,tc)}`).join(" · ")} · Break=${ctLadderBreakPts(tc)}`
+          : isFootballEv
+          ? "Cumulative all rounds · Win=3 · Draw=1 · Loss=0 → Score Diff"
           : "Cumulative all rounds · Wins → Score Diff · Group A first"}
       </div>
 
@@ -12721,14 +12755,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   <div style={{fontSize:11,color:"var(--po-dim)"}}>{s.team?.players?.map(p=>p.nickname).join(" & ")}</div>
                   <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>
                     {plan?.format!=="ladder"
-                      ? `${s.wins}W · ${s.losses}L · Diff ${s.scoreDiff>=0?"+":""}${s.scoreDiff}`
+                      ? `${s.wins}W${isFootballEv?` · ${s.draws}D`:""} · ${s.losses}L · Diff ${s.scoreDiff>=0?"+":""}${s.scoreDiff}`
                       : `${s.wins}W · ${s.losses}L · ${s.breaks||0} breaks · max ${maxPts}pts`}
                     {tes!==null&&<span style={{marginLeft:8,color:"#6366F1",fontWeight:600}}>TES {tes}%</span>}
                   </div>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:18,fontWeight:700,color:gc}}>{plan?.format==="ladder"?s.pts:s.wins}</div>
-                  <div style={{fontSize:10,color:"var(--po-dim)"}}>{plan?.format==="ladder"?"pts":"wins"}</div>
+                  <div style={{fontSize:18,fontWeight:700,color:gc}}>{plan?.format==="ladder"?s.pts:isFootballEv?s.pts:s.wins}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)"}}>{plan?.format==="ladder"?"pts":isFootballEv?"pts":"wins"}</div>
                 </div>
               </div>
             </Card>;
@@ -13361,7 +13395,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt};
             }
           } else if (hostEvent.type==="closed_teams") {
-            const stands = calcCTStandings(hostEvent.plan);
+            const stands = calcCTStandings(hostEvent.plan, hostEvent.sport);
             const team = hostEvent.plan.teams?.find(t=>t.players?.some(p=>p.userId===user.id));
             const s = team&&stands.find(s=>s.team?.id===team.id);
             if (s) extraStats = {wins:s.wins, pts:s.pts, breaks:s.breaks, finalCourt:null, isTeam:true};
@@ -13455,10 +13489,10 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       {footballEvents.map(({ev,comm},i)=>{
         let resultLabel=null, resultColor="var(--po-dim)";
         if (ev.type==="closed_teams" && ev.plan) {
-          const stands = calcCTStandings(ev.plan);
+          const stands = calcCTStandings(ev.plan, ev.sport);
           const team = ev.plan.teams?.find(t=>t.players?.some(p=>p.userId===user.id));
           const s = team && stands.find(s=>s.team?.id===team.id);
-          if (s) { resultLabel=`${s.wins}W-${s.losses}L`; resultColor = s.wins>s.losses?"#34D399":s.wins<s.losses?"#EF4444":"var(--po-dim)"; }
+          if (s) { resultLabel=`${s.wins}W-${s.draws}D-${s.losses}L`; resultColor = s.wins>s.losses?"#34D399":s.wins<s.losses?"#EF4444":"var(--po-dim)"; }
         }
         return <div key={ev.id} onClick={()=>onOpenEvent&&onOpenEvent(comm.id,ev.id)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",borderBottom:i<footballEvents.length-1?"0.5px solid var(--po-bdr)":"none",cursor:onOpenEvent?"pointer":"default"}}>
           <div>
@@ -13481,7 +13515,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
       <Card>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
           <span style={{fontSize:28,fontWeight:800,color:fs.winRate>=0.5?"#34D399":"#EF4444"}}>{Math.round(fs.winRate*100)}%</span>
-          <span style={{fontSize:12,color:"var(--po-dim)"}}>{fs.wins}W – {fs.losses}L · {fs.matches} match{fs.matches!==1?"es":""}</span>
+          <span style={{fontSize:12,color:"var(--po-dim)"}}>{fs.wins}W – {fs.draws}D – {fs.losses}L · {fs.matches} match{fs.matches!==1?"es":""}</span>
         </div>
       </Card>
       <ST>⚽ Goals</ST>

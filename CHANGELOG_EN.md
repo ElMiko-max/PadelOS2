@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.25 (current) — Correction: the extra event — attending counts, missing doesn't
+## V0.15.26 (current) — ⚽ Draws now allowed in Football, with real 3-1-0 league points
+
+- **Football events (Teams · League) now support a real draw** — when the score ties, instead of the "adjust the score to confirm a winner" message (still shown for Padel, which must always produce a winner), a "🤝 Confirm Draw" button appears to record it officially.
+- **Real league points for football:** win = 3 points, draw = 1 point each, loss = 0 — and the standings table now ranks by points instead of raw win count (exactly like real football), then goal difference, then goals scored.
+- **Padel is completely unaffected** — still always requires a winner per match, and its standings still rank by win count exactly as before.
+- Football player stats (profile, match history) now show draws properly (W-D-L) instead of a draw being miscounted as a loss.
+
+---
+
+## V0.15.25 — Correction: the extra event — attending counts, missing doesn't
 
 - **Correction to V0.15.17's "exclude from promotion/demotion" toggle:** the previous behavior excluded a marked event entirely from the calculation either way. That turned out wrong — **if a member actually attends the extra event (e.g. the new Wednesday), it should count as real attendance**, adding to a promotion streak or breaking a miss-streak — **only missing it should be the part that doesn't count**.
 - **In practice:** a Regular member who misses Monday (the main day) but attends Wednesday (the extra day) now has that attendance count and reset their miss counter — previously Wednesday didn't count either way.

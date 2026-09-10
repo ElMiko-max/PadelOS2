@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.22";
+const APP_VERSION = "V0.15.23";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1767,6 +1767,36 @@ function computeMemberStreak(comm, userId){
     if(wasReg===latestAttended) streak++; else break;
   }
   return {streak, latestAttended, eligibleCount:eligibleEvs.length};
+}
+// Encourage-to-register nudge (2026-09-10, admin request — "attract users... encourage
+// registration in event of their regular communities... combine with a motivational message to
+// become regular or not to become casual"). Built on computeMemberStreak — the same single
+// source of truth behind the real promote/demote and the progress indicators — so a nudge can
+// never claim a streak number that doesn't match what will actually happen at close time.
+// Guests and non-members (role owner/admin aren't auto-managed either) get a plain, tier-free
+// nudge, same reasoning as MemberProgress's own guard.
+function regNudgeMessage(comm, userId, eventName){
+  const mem = comm.members?.find(m=>m.userId===userId);
+  const plain = {text:`New event open in ${comm.name} — register for ${eventName}!`, color:"#6366F1"};
+  if(!mem || mem.role!=="member" || mem.status==="guest") return plain;
+  const promoteAfter = comm.promoteAfter||3, demoteAfter = comm.demoteAfter||4;
+  const s = computeMemberStreak(comm, userId);
+  if(mem.status==="casual"){
+    if(s?.latestAttended){
+      const n = Math.min(s.streak, promoteAfter);
+      return {text:`🔥 You're ${n}/${promoteAfter} toward Regular — register for ${eventName} to keep the streak alive!`, color:"#34D399"};
+    }
+    return {text:`🎾 Register for ${eventName} to start your climb toward Regular status!`, color:"#6366F1"};
+  }
+  if(mem.status==="regular"){
+    if(s && !s.latestAttended){
+      const n = Math.min(s.streak, demoteAfter);
+      const left = Math.max(0, demoteAfter-n);
+      return {text:`⚠️ ${left} more miss${left===1?"":"es"} and you'll drop to Casual — register for ${eventName} now!`, color:"#F59E0B"};
+    }
+    return {text:`✅ You're a Regular here — register for ${eventName} and keep it up!`, color:"#34D399"};
+  }
+  return plain;
 }
 function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
   if(!usrHistory||usrHistory.length===0) return seedUsr;
@@ -6383,9 +6413,17 @@ export default function Matchkeeper() {
     const comm = comms.find(c=>c.id===cid);
     if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
     logAudit("event.create", `${me.nickname} created event "${ev.name}" in ${comm?.name||cid}`, "event", id);
-    if (ev.type && ev.visibility!=="private") {
-      const recipients = (comm?.members||[]).filter(m=>m.userId!==me.id).map(m=>m.userId);
-      notify(recipients, "reg_open", ev, `🎾 New event: ${ev.name}`, `Registration is open — ${fmtD(ev.date)}`);
+    // Personalized per recipient (2026-09-10, admin request — "attract users... encourage
+    // registration... combine with a motivational message to become regular or not to become
+    // casual") rather than one shared body: each member gets their own real Casual/Regular
+    // streak-aware line via regNudgeMessage, the same status math the Home screen's own nudge
+    // card and the progress indicators already use — so it's never a generic broadcast made to
+    // sound personal, it actually reflects where that specific person stands.
+    if (ev.type && ev.visibility!=="private" && comm) {
+      comm.members.filter(m=>m.userId!==me.id).forEach(m=>{
+        const {text} = regNudgeMessage(comm, m.userId, ev.name);
+        notify([m.userId], "reg_open", ev, `🎾 New event: ${ev.name}`, text);
+      });
     }
   };
   const editEvent=(cid,eid,d)=>{
@@ -12694,6 +12732,18 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents}){
   const greetingHour = new Date().getHours();
   const greeting = greetingHour<12 ? "Good morning" : greetingHour<18 ? "Good afternoon" : "Good evening";
   const myCommCount = mine.length;
+  // Encourage-to-register nudge: the soonest open event, in any of my communities, that I
+  // haven't registered for yet — deliberately only shown when there's an actual event to act on
+  // (per the admin's own call), not a standing "you're at risk" banner with nothing to do about
+  // it right now. Sport-filtered same as the hero card when the switcher is active, so it never
+  // nudges toward a Football event while looking at the Padel tab or vice versa.
+  const nudge = mine.map(c => {
+    const openUnregistered = (c.events||[]).filter(ev=>!ev.deleted&&!ev.archived&&ev.status==="registration_open"&&ev.visibility!=="private"&&!(showSportSwitcher&&(ev.sport||DEFAULT_SPORT)!==effSportView)&&!ev.registrations.some(r=>r.userId===me.id)&&isFutureEv(ev));
+    if(!openUnregistered.length) return null;
+    const soonest=[...openUnregistered].sort((a,b)=>evTime(a)-evTime(b))[0];
+    return {ev:soonest, comm:c};
+  }).filter(Boolean).sort((a,b)=>evTime(a.ev)-evTime(b.ev))[0];
+  const nudgeMsg = nudge && regNudgeMessage(nudge.comm, me.id, nudge.ev.name);
   // Football has no computed USR-style rating (see closeEvent's usrHistory note) — FSR
   // (footballSkill, an A-E letter grade) and calcFootballPlayerStats stand in for it here,
   // same substitution ProfileSc already makes for its own stat blocks.
@@ -12739,6 +12789,13 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents}){
         <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".5s"}}><div style={{fontSize:16,fontWeight:800,color:"#22D3EE"}}><CountUp to={isFootball?(fs?.matches||0):(me.usrHistory?.length||0)}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Matches</div></div>
       </div>
     </div>
+    {nudge&&<div className="mk-animate-in" onClick={()=>onOpen(nudge.ev.communityId,nudge.ev.id)} style={{marginBottom:16,padding:14,borderRadius:12,cursor:"pointer",background:"var(--po-card)",border:`0.5px solid ${nudgeMsg.color}44`,animationDelay:".54s"}}>
+      <div style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>📣 {nudge.comm.name}</div>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--po-text)",marginTop:4}}>{nudge.ev.name}</div>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{fmtD(nudge.ev.date)} · {fmtT(nudge.ev.time)}</div>
+      <div style={{fontSize:12,color:nudgeMsg.color,fontWeight:600,marginTop:8}}>{nudgeMsg.text}</div>
+      <div style={{marginTop:10,display:"inline-block",background:nudgeMsg.color,color:"#0E1117",fontSize:11,fontWeight:700,padding:"6px 14px",borderRadius:8}}>Register →</div>
+    </div>}
     <div className="mk-animate-in" onClick={onGoEvents} style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",animationDelay:".58s"}}>
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-dim)"}}>See all events</div>
       <div style={{fontSize:13,color:"#818CF8",fontWeight:700}}>→</div>

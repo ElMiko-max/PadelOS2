@@ -4,7 +4,21 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.22 (current) — Fix notifications for deleted events + a clear "Deleted" badge
+## V0.15.23 (current) — Encourage registration with a Casual↔Regular motivational message
+
+- **A new card on the Home screen encourages you to register** for the soonest event, across any of your communities, that's still open for registration and that you haven't registered for yet.
+- **The message is tied to your real status** (the same math that actually drives promotion/demotion):
+  - **Casual, on an attending streak:** "🔥 You're N/promoteAfter toward Regular — register to keep the streak alive!"
+  - **Casual, no streak yet:** "🎾 Register to start your climb toward Regular status!"
+  - **Regular, on a missing streak:** "⚠️ X more misses and you'll drop to Casual — register now!"
+  - **Regular, attending well:** "✅ You're a Regular here — register and keep it up!"
+  - **Guest:** a plain nudge, no promotion talk (matches the rest of the app — no automatic rule exists for Guests).
+- **The same idea now applies to the notification sent when a new event opens** — instead of one generic message to every member, each person gets their own status-aware line.
+- The card only ever shows when there's an actual event open to register for right now — not a standing reminder with nothing to act on.
+
+---
+
+## V0.15.22 — Fix notifications for deleted events + a clear "Deleted" badge
 
 - **🐛 Real bug fixed: deleted events were still sending reminder notifications** (24h/3h/1h before start) to registered players, even after deletion. Cause: the function that actually dispatches reminders in production (`dispatchEventReminders`, a server-side scheduled function that runs every minute regardless of whether anyone has the app open) only checked that an event wasn't cancelled — never that it wasn't deleted. Fixed server-side (the important one) and client-side.
 - **🐛 Related fix: it was still possible to register into a deleted event** (e.g. via an old invite link). Every registration entry point (self-registration, invite link, admin-added, guest, approved join request) now explicitly rejects a deleted event, server-side and client-side.

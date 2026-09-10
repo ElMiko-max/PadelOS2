@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.00 (current) — Bottom nav replaces the top tabs + Home screen cleanup
+## V0.16.01 (current) — Adjustment to V0.16.00: the full old ⚙️ menu is back at the top of Settings + the red dot returns
+
+- **Same release as V0.16.00 — an adjustment, not a new feature.** The admin clarified that "put Settings down at the bottom" meant the *entire* old ⚙️ dropdown, not just a settings-preferences screen — so the Account section (Venues, Platform Admin, Version Updates, the dev/production switch, the Events-From filter, Sign Out) is now the first thing in the Settings screen, above Notifications, with a small identity header (nickname + USR) matching what the old dropdown showed at its top.
+- **The red dot is back** — it used to appear on the ⚙️ gear icon when a newer Android build was available; it now shows the same way on the bottom-nav "Settings" tab itself, visible without opening the screen first.
+
+---
+
+## V0.16.00 — Bottom nav replaces the top tabs + Home screen cleanup
 
 - **Navigation moved to a 5-tab bottom bar: Home, Events, Communities, Me, Settings** — replacing the old top-bar "Events"/"Me" pills and the ⚙️ dropdown menu entirely. Home uses the real Matchkeeper logo (not a generic icon) and does the same thing tapping the logo always did.
 - **Everything that used to live in the ⚙️ dropdown now lives inside the Settings screen itself** (it's a full tab now, not a menu) — Venues, Platform Admin, Version Updates, the Android app download/update link, the dev/production environment switch, the "Events From" community filter, and Sign Out all moved there under a new Account section.

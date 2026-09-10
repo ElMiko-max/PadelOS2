@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.00";
+const APP_VERSION = "V0.16.01";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4618,6 +4618,31 @@ export default function Matchkeeper() {
   };
   const [toast,  setToast]  = useState(null);
   const [notifMenu, setNotifMenu] = useState(false);
+  // Android update check — lifted up here (was TopBar-local, then SettingsSc-local) so BOTH the
+  // Settings screen's own rows AND the red-dot badge on the bottom-nav Settings tab (visible
+  // without opening the screen — same visibility the old ⚙️ gear icon's red dot had) share one
+  // source of truth instead of two independent polling loops.
+  const isAndroidWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent||"");
+  const isNativeAndroid = Capacitor.isNativePlatform();
+  const [apkVersion, setApkVersion] = useState(LATEST_APK_VERSION_FALLBACK);
+  const [apkVersionFetched, setApkVersionFetched] = useState(false);
+  useEffect(() => {
+    if (!isAndroidWeb && !isNativeAndroid) return;
+    let cancelled = false;
+    const check = () => {
+      fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
+        .then(r => r.json())
+        .then(d => { if (!cancelled) { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); } })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 5 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [isAndroidWeb, isNativeAndroid]);
+  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
+  const nativeUpdateAvailable = isNativeAndroid && apkVersionFetched && apkVersion !== APP_VERSION;
   const [dark,   setDark]   = useState(false);
   // Theme colors
   const TH = dark ? {
@@ -8425,6 +8450,7 @@ export default function Matchkeeper() {
         {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>;})()}
         {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}}
+          isAndroidWeb={isAndroidWeb} apkVersion={apkVersion} apkVersionFetched={apkVersionFetched} apkUrl={apkUrl} nativeUpdateAvailable={nativeUpdateAvailable}
           onVenues={()=>goRoot("venues")}
           onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});}}
           onVersionUpdates={()=>setShowVersionUpdates(true)}
@@ -8454,7 +8480,7 @@ export default function Matchkeeper() {
         />}
       </div>
       {toast&&<div style={{position:"fixed",bottom:76,left:"50%",transform:"translateX(-50%)",background:toast.t==="err"?"#EF4444":"#10B981",color:"#fff",padding:"10px 20px",borderRadius:8,fontSize:13,fontWeight:500,zIndex:999,whiteSpace:"nowrap",boxShadow:"0 4px 20px #00000055"}}>{toast.msg}</div>}
-      <BottomNav me={me} nav={nav} onNav={n=>goRoot(n)}/>
+      <BottomNav me={me} nav={nav} onNav={n=>goRoot(n)} settingsAlert={nativeUpdateAvailable}/>
     </div>
   );
 }
@@ -8510,7 +8536,7 @@ function TopBar({me,onNav,TH,dark,
 // old top-bar Events/Me pills plus the ⚙️ dropdown (whose other items — Platform Admin, Venues,
 // Version Updates, the APK link, Sign Out — moved into SettingsSc itself, now that Settings is a
 // full-screen destination instead of a menu).
-function BottomNav({me,nav,onNav}){
+function BottomNav({me,nav,onNav,settingsAlert}){
   const items = [
     {k:"home", l:"Home", isImg:true},
     {k:"events", l:"Events", chip:"#F472B6", icon:(
@@ -8540,12 +8566,15 @@ function BottomNav({me,nav,onNav}){
       const active = nav===t.k;
       const flat = t.avatar||t.isImg; // no colored chip behind a raster logo or the profile photo — same special-case TopBar's old Me pill used
       return <button key={t.k} onClick={()=>onNav(t.k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,padding:"7px 2px",border:"none",background:"transparent",cursor:"pointer",minHeight:56}}>
-        <div style={{width:26,height:26,borderRadius:t.avatar?"50%":8,background:flat?"transparent":(active?t.chip:"transparent"),color:flat?undefined:(active?"#fff":"var(--po-dim)"),display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
+        <div style={{position:"relative",width:26,height:26,borderRadius:t.avatar?"50%":8,background:flat?"transparent":(active?t.chip:"transparent"),color:flat?undefined:(active?"#fff":"var(--po-dim)"),display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
           {t.avatar
             ? <Av u={me} size={26}/>
             : t.isImg
               ? <img src="/logo-icon-192.png" width={22} height={22} style={{borderRadius:6,display:"block",opacity:active?1:0.55}} alt=""/>
               : t.icon}
+          {/* Same red-dot the old ⚙️ gear icon showed for "an app update is available" — now on
+              the Settings tab so it's visible without opening the screen. */}
+          {t.k==="settings"&&settingsAlert&&<span style={{position:"absolute",top:-2,right:-2,width:9,height:9,borderRadius:"50%",background:"#EF4444",border:"1.5px solid var(--po-card)"}}/>}
         </div>
         <span style={{fontSize:9,fontWeight:600,color:active?"var(--po-text)":"var(--po-dim)"}}>{t.l}</span>
       </button>;
@@ -14354,7 +14383,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   </>;
 }
 
-function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onPlatformAdmin,onVenues,onVersionUpdates,onSignOut}){
+function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onPlatformAdmin,onVenues,onVersionUpdates,onSignOut,
+  isAndroidWeb,apkVersion,apkVersionFetched,apkUrl,nativeUpdateAvailable}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
   // Separate from pushStatus: once Android reports "denied" (permanently blocked — no
@@ -14365,28 +14395,6 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const isNative = Capacitor.isNativePlatform();
-  // Android *browser* visitor — always offer the download, they may not have the app at all.
-  // Moved here from the old TopBar ⚙️ dropdown now that Settings is its own screen instead of a menu.
-  const isAndroidWeb = !isNative && /Android/i.test(navigator.userAgent||"");
-  const [apkVersion, setApkVersion] = useState(LATEST_APK_VERSION_FALLBACK);
-  const [apkVersionFetched, setApkVersionFetched] = useState(false);
-  useEffect(() => {
-    if (!isAndroidWeb && !isNative) return;
-    let cancelled = false;
-    const check = () => {
-      fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
-        .then(r => r.json())
-        .then(d => { if (!cancelled) { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); } })
-        .catch(() => {});
-    };
-    check();
-    const interval = setInterval(check, 5 * 60 * 1000);
-    const onVisible = () => { if (document.visibilityState === "visible") check(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
-  }, [isAndroidWeb, isNative]);
-  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
-  const nativeUpdateAvailable = isNative && apkVersionFetched && apkVersion !== APP_VERSION;
   useEffect(() => {
     if (isNative) {
       PushNotifications.checkPermissions().then(res => {
@@ -14428,6 +14436,35 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   };
   return <>
     <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
+    {/* Identity + Account — this is the entire old ⚙️ dropdown menu (identity header, Venues,
+        Platform Admin, Version Updates, the dev/prod switch, the Android app link, Sign Out),
+        moved here in full and placed first — not buried under Notifications/Preferences/Support —
+        since this is the primary reason the admin opens this tab, per their explicit correction. */}
+    <Card style={{marginBottom:16}}>
+      <div style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{user.nickname}</div>
+      <div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>USR {user.usr} · {usrLv(user.usr).l}</div>
+    </Card>
+    <ST>Account</ST>
+    <Card style={{padding:0,overflow:"hidden",marginBottom:16}}>
+      {[
+        {i:"🏟",l:"Venues",fn:onVenues},
+        ...(user.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),
+        ...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>window.open(apkUrl,"_blank")}]:[]),
+        ...(isNative&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>window.open(apkUrl,"_blank")}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),
+        ...(user.id===1?[
+          {i:"📋",l:"Version Updates",fn:onVersionUpdates},
+          {i:IS_DEV_ENV?"🏭":"🧪",l:IS_DEV_ENV?"Open Production":"Open DEV Environment",fn:()=>window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank")},
+        ]:[]),
+      ].map(item=><div key={item.l} onClick={item.muted?undefined:item.fn} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:item.muted?"default":"pointer",opacity:item.muted?0.7:1}}>
+        <span style={{fontSize:18}}>{item.i}</span>
+        <span style={{flex:1,fontSize:14,color:item.muted?"var(--po-dim)":"var(--po-text)"}}>{item.l}</span>
+        {!item.muted&&<span style={{color:"var(--po-dim)"}}>›</span>}
+      </div>)}
+      <div onClick={onSignOut} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+        <span style={{fontSize:18}}>🚪</span>
+        <span style={{flex:1,fontSize:14,color:"#EF4444",fontWeight:600}}>Sign Out</span>
+      </div>
+    </Card>
     <ST>Notifications</ST>
     <Card style={{marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -14513,29 +14550,6 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
       {infoPanel==="terms"&&<div style={{padding:"4px 16px 16px",fontSize:12,color:"var(--po-sub)",lineHeight:1.6}}>
         Matchkeeper is an internal tool used to organize your community's events. Your name, phone number, and match history are visible only to your community's admins and members — never sold or shared outside it. For any question about your data, contact the community admin directly above.
       </div>}
-    </Card>
-    {/* Account/admin tools — moved here from the old TopBar ⚙️ dropdown, now that Settings is a
-        full-screen bottom-nav tab instead of a menu. */}
-    <ST>Account</ST>
-    <Card style={{padding:0,overflow:"hidden"}}>
-      {[
-        {i:"🏟",l:"Venues",fn:onVenues},
-        ...(user.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),
-        ...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>window.open(apkUrl,"_blank")}]:[]),
-        ...(isNative&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>window.open(apkUrl,"_blank")}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),
-        ...(user.id===1?[
-          {i:"📋",l:"Version Updates",fn:onVersionUpdates},
-          {i:IS_DEV_ENV?"🏭":"🧪",l:IS_DEV_ENV?"Open Production":"Open DEV Environment",fn:()=>window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank")},
-        ]:[]),
-      ].map(item=><div key={item.l} onClick={item.muted?undefined:item.fn} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:item.muted?"default":"pointer",opacity:item.muted?0.7:1}}>
-        <span style={{fontSize:18}}>{item.i}</span>
-        <span style={{flex:1,fontSize:14,color:item.muted?"var(--po-dim)":"var(--po-text)"}}>{item.l}</span>
-        {!item.muted&&<span style={{color:"var(--po-dim)"}}>›</span>}
-      </div>)}
-      <div onClick={onSignOut} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
-        <span style={{fontSize:18}}>🚪</span>
-        <span style={{flex:1,fontSize:14,color:"#EF4444",fontWeight:600}}>Sign Out</span>
-      </div>
     </Card>
     <div style={{textAlign:"center",marginTop:24,fontSize:12,color:"var(--po-bdr)"}}>Matchkeeper {APP_VERSION}</div>
   </>;

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.28";
+const APP_VERSION = "V0.15.29";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1857,6 +1857,8 @@ function calcWeightedUSR(usrHistory, seedUsr, windowSize=5){
 // the Home screen's compact card and the full Feed screen so they can never show different things.
 function feedIconFor(note){
   if(/^Registered/.test(note)) return {icon:"🎾", bg:"#6366F122", color:"#818CF8"};
+  if(/^Requested to join/.test(note)) return {icon:"🙋", bg:"#FBBF2422", color:"#FBBF24"};
+  if(/^Join request rejected/.test(note)) return {icon:"🚫", bg:"#EF444422", color:"#EF4444"};
   if(/^Promoted from waitlist/.test(note)) return {icon:"🎉", bg:"#34D39922", color:"#34D399"};
   if(/^Landed on confirmed seat/.test(note)) return {icon:"✅", bg:"#34D39922", color:"#34D399"};
   if(/^Landed on waitlist/.test(note)) return {icon:"⏳", bg:"#F59E0B22", color:"#F59E0B"};
@@ -7078,6 +7080,11 @@ export default function Matchkeeper() {
     toast2("Request sent ✓");
     if (ev) notify([ev.createdBy].filter(Boolean), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
     logAudit("event.requestJoin", `${me.nickname} requested to join "${ev?.name||eid}"`, "event", eid);
+    // Written here even though no registration doc exists yet (2026-09-10, admin request — "several
+    // steps should be there on the same event" for the invite-link → approval flow) — regHistory
+    // is its own doc, so it's fine for this to be its very first entry; setDoc+merge in
+    // logRegHistory means the later "Registered (approved)" entry just appends to the same doc.
+    logRegHistory(eid, me.id, "Requested to join");
   };
   const approveEventJoin=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
@@ -7112,6 +7119,7 @@ export default function Matchkeeper() {
   const rejectEventJoin=(cid,eid,uid)=>{
     updEvent(cid,eid,ev=>({...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)}));
     toast2("Rejected");
+    logRegHistory(eid, uid, `Join request rejected (by ${me.nickname})`);
   };
   const addGuest=(cid,eid,g)=>{
     const ev=getEv(cid,eid);

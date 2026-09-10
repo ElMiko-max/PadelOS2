@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.28 (current) — 🐛 Fix: the "Registered" line was missing for some players' history
+## V0.15.29 (current) — Registration history now logs "requested to join" too, not just the approval
+
+- **The invite link that routes a Guest into admin approval now logs that step on its own** — "🙋 Requested to join" fires when the request is sent, not just "Registered (join request approved by...)" when it's later approved. Both lines now show, in order.
+- **A rejected request is now logged too** ("Join request rejected (by...)") instead of just disappearing with no trace.
+- This continues the same idea from V0.15.21/28 — every real step in a registration's journey should be there, with nothing overwriting or hiding another.
+
+---
+
+## V0.15.28 — 🐛 Fix: the "Registered" line was missing for some players' history
 
 - **Real bug found live in production (example: M Adel on event #80):** players who registered right at the moment the registration-history feature (V0.15.21) was still rolling out only ever showed their LATER event (e.g. "Promoted from waitlist #1 to confirmed seat #4") with no "Registered" line at all — not because it didn't happen, but because their very first write attempt landed before the feature (and its Firestore rules) had fully finished deploying.
 - **Fix:** the registration history screen now always makes sure a "Registered" line is present — if the real recorded history is genuinely missing one, it synthesizes it from the registration's own real `registeredAt` field (which has existed long before this feature) instead of showing an incomplete-looking history.

@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.15.24 (current, needs a Firestore index deploy) — 📰 Personal Feed on the Home screen
+## V0.15.25 (current) — Correction: the extra event — attending counts, missing doesn't
+
+- **Correction to V0.15.17's "exclude from promotion/demotion" toggle:** the previous behavior excluded a marked event entirely from the calculation either way. That turned out wrong — **if a member actually attends the extra event (e.g. the new Wednesday), it should count as real attendance**, adding to a promotion streak or breaking a miss-streak — **only missing it should be the part that doesn't count**.
+- **In practice:** a Regular member who misses Monday (the main day) but attends Wednesday (the extra day) now has that attendance count and reset their miss counter — previously Wednesday didn't count either way.
+- Updated the create/edit event screen's copy to describe this correctly ("Optional (extra weekly event)" instead of "Don't count for promotion/demotion").
+
+---
+
+## V0.15.24 — 📰 Personal Feed on the Home screen
 
 - **A new "Your Feed" section at the bottom of the existing Home screen** (not a replacement — added below the registration nudge card and the "See all events" row) shows the 3 most recent things that happened to *you*; "See all →" opens a full screen with your whole history grouped by day.
 - **No new data collection at all** — built entirely from what already exists: the permanent per-event registration log (`regHistory`, V0.15.21), real promotion/demotion entries (Audit Trail, V0.15.16), and your own `usrHistory` — USR deltas are computed by replaying the exact same real USR math, not estimated.

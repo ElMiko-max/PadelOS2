@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.24";
+const APP_VERSION = "V0.15.25";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1752,13 +1752,21 @@ const ctLadderBreakPts = (tc) => Math.floor((tc+1)/2);
 // real to compute progress toward; a Guest's tier stays admin-decided only, no indicator shown.
 function computeMemberStreak(comm, userId){
   const eventTime = e => new Date(`${e.date}T${e.time||"00:00"}`).getTime();
-  // excludeFromAttendance: an admin-set per-event flag (2026-09-09, admin request — a newly
+  const completedEvs = (comm?.events||[]).filter(e=>e.status==="completed").sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
+  // excludeFromAttendance: an admin-set per-event flag (2026-09-09/10, admin request — a newly
   // added second weekly event meant regulars who'd only ever come to the original day started
   // racking up "misses" on the new one too, delaying promotions that shouldn't have been
-  // delayed). An excluded event is left out of eligibleEvs entirely — attending it doesn't
-  // help the streak, missing it doesn't reset it either, exactly as if it never happened.
-  const completedEvs = (comm?.events||[]).filter(e=>e.status==="completed"&&!e.excludeFromAttendance).sort((a,b)=>eventTime(a)-eventTime(b)||a.id-b.id);
-  const eligibleEvs = completedEvs.filter(e=>e.visibility!=="private"||e.registrations?.some(r=>r.userId===userId));
+  // delayed). Deliberately ASYMMETRIC, not a blanket skip: missing an excluded event never
+  // counts against you (dropped from eligibleEvs entirely, as if it never happened) — but
+  // attending one always counts as real attendance, same as any other event. The admin's own
+  // words: "it should by default affect the attending... if I attended the Wednesday, that is
+  // counted... but if the regular user miss it, it doesn't count."
+  const eligibleEvs = completedEvs.filter(e=>{
+    const attended = e.registrations?.some(r=>r.userId===userId);
+    if(e.visibility==="private" && !attended) return false;
+    if(e.excludeFromAttendance && !attended) return false;
+    return true;
+  });
   if(eligibleEvs.length===0) return null;
   const latestAttended = eligibleEvs[eligibleEvs.length-1].registrations?.some(r=>r.userId===userId);
   let streak=0;
@@ -9680,7 +9688,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
     <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
       <div style={{width:20,height:20,borderRadius:5,flexShrink:0,marginTop:1,border:`1.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-dim)"}`,background:f.excludeFromAttendance?"#F59E0B":"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#1e1b3a",fontWeight:700}}>{f.excludeFromAttendance?"✓":""}</div>
-      <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Don't count for promotion/demotion</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Attending or missing this event never affects anyone's Casual↔Regular streak — useful for a newly added or occasional extra event.</div></div>
+      <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Optional (extra weekly event)</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Missing this event never counts against anyone's Casual↔Regular streak — but attending it still counts as attendance, same as any other event. Useful for a newly added or occasional extra event.</div></div>
     </div>
 
     {/* ── Sport ── */}
@@ -9747,7 +9755,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div></div>
       <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
         <div style={{width:20,height:20,borderRadius:5,flexShrink:0,marginTop:1,border:`1.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-dim)"}`,background:f.excludeFromAttendance?"#F59E0B":"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#1e1b3a",fontWeight:700}}>{f.excludeFromAttendance?"✓":""}</div>
-        <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Don't count for promotion/demotion</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Attending or missing this event never affects anyone's Casual↔Regular streak.</div></div>
+        <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Optional (extra weekly event)</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Missing this event never counts against anyone's Casual↔Regular streak — but attending it still counts as attendance, same as any other event.</div></div>
       </div>
 
       {sportOptions.length>1&&<div style={{marginBottom:14}}><Drp label="Sport" value={f.sport} onChange={v2=>set("sport",v2)} options={sportOptions.map(s=>({v:s,l:s}))}/></div>}

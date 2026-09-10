@@ -1,10 +1,20 @@
 # Matchkeeper — Changelog (English)
 
-English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" screen (Platform Admin only — see the 📋 item in the top-right ⚙️ menu). `CHANGELOG.md` stays the master record in Arabic; this file only needs a new entry from here on, for versions that actually ship — it doesn't need to (and currently doesn't) cover the project's full history.
+English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" screen (Platform Admin only — see the 📋 item inside the bottom-nav Settings tab, under Account). `CHANGELOG.md` stays the master record in Arabic; this file only needs a new entry from here on, for versions that actually ship — it doesn't need to (and currently doesn't) cover the project's full history.
 
 ---
 
-## V0.15.30 (current) — Home: a slider for all upcoming events + a more complete Feed
+## V0.16.00 (current) — Bottom nav replaces the top tabs + Home screen cleanup
+
+- **Navigation moved to a 5-tab bottom bar: Home, Events, Communities, Me, Settings** — replacing the old top-bar "Events"/"Me" pills and the ⚙️ dropdown menu entirely. Home uses the real Matchkeeper logo (not a generic icon) and does the same thing tapping the logo always did.
+- **Everything that used to live in the ⚙️ dropdown now lives inside the Settings screen itself** (it's a full tab now, not a menu) — Venues, Platform Admin, Version Updates, the Android app download/update link, the dev/production environment switch, the "Events From" community filter, and Sign Out all moved there under a new Account section.
+- **The Home screen's event slider is now swiped, not tapped** — the ‹ › arrow buttons are gone; drag the card left or right instead. The dot indicator underneath still shows your position.
+- **"See all events" link removed from Home** — it sat between the stat tiles and the Feed and is gone outright, not just hidden.
+- **Home's Feed panel is taller and denser** — up to 6 recent items instead of 3, with smaller type, since it's no longer squeezed above a link that no longer exists.
+
+---
+
+## V0.15.30 — Home: a slider for all upcoming events + a more complete Feed
 
 - **The "Next Up" card on Home is now a slider** — if you're registered in more than one upcoming event, all of them show up (not just the soonest), with ‹ › arrows or dots underneath to move between them. No day-count cap of any kind — every upcoming event you're registered for is in there.
 - **🐛 Fixed a real bug: whole events were missing from the Feed entirely** — if you registered for an event before the registration-history feature had fully finished rolling out (e.g. two events the admin created and registered himself into), the Feed showed nothing for them at all, since no `regHistory` existed yet. Now, any event you're genuinely registered for that has no real "Registered" line gets one backfilled from the registration's own real `registeredAt`.

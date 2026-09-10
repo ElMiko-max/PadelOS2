@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.15.30";
+const APP_VERSION = "V0.16.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4148,13 +4148,13 @@ function RegHistoryPanel({entries, fallbackRegisteredAt}){
 }
 // One row, shared verbatim by the Home screen's compact feed card and the full FeedSc screen —
 // see buildUserFeed for where `item` comes from.
-function FeedItemRow({item,onOpen}){
+function FeedItemRow({item,onOpen,compact}){
   const clickable = item.nav && onOpen;
-  return <div onClick={clickable?()=>onOpen(item.nav.cid,item.nav.eid):undefined} style={{display:"flex",gap:9,padding:"7px 0",cursor:clickable?"pointer":"default"}}>
-    <div style={{width:26,height:26,borderRadius:8,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,background:item.bg,color:item.color}}>{item.icon}</div>
+  return <div onClick={clickable?()=>onOpen(item.nav.cid,item.nav.eid):undefined} style={{display:"flex",gap:compact?7:9,padding:compact?"5px 0":"7px 0",cursor:clickable?"pointer":"default"}}>
+    <div style={{width:compact?20:26,height:compact?20:26,borderRadius:compact?6:8,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:compact?10:12,background:item.bg,color:item.color}}>{item.icon}</div>
     <div style={{flex:1,minWidth:0}}>
-      <div style={{fontSize:11.5,color:"var(--po-text)",lineHeight:1.4}}>{item.text}</div>
-      <div style={{fontSize:9.5,color:"var(--po-dim)",marginTop:1}}>{timeAgo(item.ts)}</div>
+      <div style={{fontSize:compact?10:11.5,color:"var(--po-text)",lineHeight:1.35}}>{item.text}</div>
+      <div style={{fontSize:compact?8:9.5,color:"var(--po-dim)",marginTop:1}}>{timeAgo(item.ts)}</div>
     </div>
   </div>;
 }
@@ -4617,7 +4617,6 @@ export default function Matchkeeper() {
     setView({screen:"list"});
   };
   const [toast,  setToast]  = useState(null);
-  const [menu,   setMenu]   = useState(false);
   const [notifMenu, setNotifMenu] = useState(false);
   const [dark,   setDark]   = useState(false);
   // Theme colors
@@ -8175,7 +8174,7 @@ export default function Matchkeeper() {
   }
 
   return (
-    <div onClick={()=>{menu&&setMenu(false);notifMenu&&setNotifMenu(false);}}
+    <div onClick={()=>{notifMenu&&setNotifMenu(false);}}
       style={{
         "--po-bg":   TH.bg,
         "--po-card": TH.card,
@@ -8199,8 +8198,7 @@ export default function Matchkeeper() {
         textarea.po-inp{color:var(--po-text)!important;background:var(--po-inp)!important;}
         @keyframes mkSpin{to{transform:rotate(360deg);}}
       `}</style>
-      <TopBar me={me} nav={nav} menu={menu} setMenu={setMenu} TH={TH} dark={dark} onNav={n=>{goRoot(n);}} onProfile={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid:me.id});setMenu(false);}} onMyCommunities={()=>{goCommList();setMenu(false);}} onVenues={()=>{goRoot("venues");setMenu(false);}} onSettings={()=>{goRoot("settings");setMenu(false);}} onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});setMenu(false);}} onVersionUpdates={()=>{setShowVersionUpdates(true);setMenu(false);}} onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
-        comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter}
+      <TopBar me={me} TH={TH} dark={dark} onNav={n=>{goRoot(n);}}
         notifications={notifications} notifMenu={notifMenu} setNotifMenu={setNotifMenu}
         onMarkNotifRead={markNotifRead} onMarkAllNotifRead={markAllNotifRead}
         onOpenNotif={n=>{setNotifMenu(false);openNotif(n);}}
@@ -8213,7 +8211,7 @@ export default function Matchkeeper() {
         if(godMode){setGodMode(false);toast2("God Mode off");}
         else if(window.confirm("⚡ Enable God Mode?\n\nYou'll get full admin authority on any community or event screen, regardless of your real membership there. Any actual change you make while flagged will ask for confirmation again first — use carefully."))
           {setGodMode(true);toast2("⚡ God Mode ON — full authority everywhere until you turn it off");}
-      }} title={godMode?"God Mode ON — tap to turn off":"Tap to enable God Mode"} style={{position:"fixed",bottom:20,right:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:godMode?"#EF4444":"var(--po-card)",border:`2px solid ${godMode?"#EF4444":"var(--po-bdr)"}`,boxShadow:godMode?"0 0 16px #EF444488":"0 2px 8px #00000044",color:godMode?"#fff":"var(--po-dim)",transition:"all 0.2s"}}>⚡</div>}
+      }} title={godMode?"God Mode ON — tap to turn off":"Tap to enable God Mode"} style={{position:"fixed",bottom:80,right:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,cursor:"pointer",background:godMode?"#EF4444":"var(--po-card)",border:`2px solid ${godMode?"#EF4444":"var(--po-bdr)"}`,boxShadow:godMode?"0 0 16px #EF444488":"0 2px 8px #00000044",color:godMode?"#fff":"var(--po-dim)",transition:"all 0.2s"}}>⚡</div>}
       {/* Register/join confirmation for an invite link — staged by the applied-invite effect
           instead of acting immediately. They've already been navigated to the actual event/
           community page underneath this (so they can see what it is either way); declining
@@ -8273,7 +8271,7 @@ export default function Matchkeeper() {
       {/* Real Apple logo silhouette (inline SVG, not an emoji — glyphs render inconsistently
           across platforms/fonts and a phone emoji doesn't read as "this is for iPhone") so it's
           instantly recognizable regardless of the device's emoji set. */}
-      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:20,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044"}}>
+      {isIosNonStandalone()&&!showIosOverlay&&<div onClick={expandIosOverlay} title="Add Matchkeeper to your Home Screen" style={{position:"fixed",bottom:80,left:16,zIndex:200,width:52,height:52,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",background:"var(--po-card)",border:"2px solid #6366F1",boxShadow:"0 2px 8px #00000044"}}>
         <svg width="24" height="24" viewBox="0 0 384 512" fill="#6366F1" aria-hidden="true"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>
       </div>}
       {isIosNonStandalone()&&showIosOverlay&&<div style={{position:"fixed",inset:0,zIndex:300,background:"linear-gradient(160deg,#1E1B4B 0%,#0E1117 60%)",overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
@@ -8301,7 +8299,7 @@ export default function Matchkeeper() {
           <div onClick={collapseIosOverlay} style={{marginTop:26,fontSize:13,fontWeight:600,color:"#818CF8",cursor:"pointer",textDecoration:"underline"}}>Got it, I'll do this later</div>
         </div>
       </div>}
-      <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 80px"}}>
+      <div style={{flex:1,maxWidth:680,width:"100%",margin:"0 auto",padding:"16px 12px 148px"}}>
         {godMode&&<div style={{fontSize:12,fontWeight:700,color:"#fff",background:"#EF4444",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
           <span>⚡ GOD MODE ACTIVE — full admin authority here, not your real role</span>
           <span onClick={()=>{setGodMode(false);toast2("God Mode off");}} style={{cursor:"pointer",textDecoration:"underline",flexShrink:0,whiteSpace:"nowrap"}}>Turn off</span>
@@ -8426,7 +8424,12 @@ export default function Matchkeeper() {
         {nav==="venues"&&view.screen==="editVenue"&&<VenueForm editV={venues.find(v=>v.id===view.vid)} onBack={goBack} onSave={saveVenue} egypt={egypt}/>}
         {nav==="profile"&&(()=>{const pUser=users.find(u=>u.id===(view.uid??me.id))||me;return <ProfileSc user={pUser} me={me} viewedByAdmin={!!view.uid&&view.uid!==me.id} comms={comms} onBack={goBack} onEditUser={editUser} onOpenCommunity={goComm} onOpenEvent={goEvent} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(pUser.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>;})()}
         {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>}
-        {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}} onBack={goBack}/>}
+        {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}}
+          onVenues={()=>goRoot("venues")}
+          onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});}}
+          onVersionUpdates={()=>setShowVersionUpdates(true)}
+          onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
+        />}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
           onOpen={openNotif}/>}
@@ -8450,78 +8453,25 @@ export default function Matchkeeper() {
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
       </div>
-      {toast&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:toast.t==="err"?"#EF4444":"#10B981",color:"#fff",padding:"10px 20px",borderRadius:8,fontSize:13,fontWeight:500,zIndex:999,whiteSpace:"nowrap",boxShadow:"0 4px 20px #00000055"}}>{toast.msg}</div>}
+      {toast&&<div style={{position:"fixed",bottom:76,left:"50%",transform:"translateX(-50%)",background:toast.t==="err"?"#EF4444":"#10B981",color:"#fff",padding:"10px 20px",borderRadius:8,fontSize:13,fontWeight:500,zIndex:999,whiteSpace:"nowrap",boxShadow:"0 4px 20px #00000055"}}>{toast.msg}</div>}
+      <BottomNav me={me} nav={nav} onNav={n=>goRoot(n)}/>
     </div>
   );
 }
 
-function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,onSettings,onPlatformAdmin,onVersionUpdates,onSignOut,TH,dark,
-  comms,eventCommFilter,onSetEventCommFilter,
+function TopBar({me,onNav,TH,dark,
   notifications=[],notifMenu,setNotifMenu,onMarkNotifRead,onMarkAllNotifRead,onOpenNotif,onSeeAllNotifs}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  // Android *browser* visitor — always offer the download, they may not have the app at all.
-  const isAndroidWeb = !Capacitor.isNativePlatform() && /Android/i.test(navigator.userAgent||"");
-  // Native (installed APK) — this app only ships for Android, so isNativePlatform() here always
-  // means "already-installed Android app". No auto-update path exists (unlike a PWA reload), so
-  // it needs its own in-app download link — only surfaced once a genuinely newer build exists.
   const isNativeAndroid = Capacitor.isNativePlatform();
-  // releases/latest.json is written fresh next to the APK itself at delivery time (never by
-  // `npm run build`), so polling it — same pattern as the dist/version.json web-update check —
-  // means this link can never point at a stale/missing file the way a hardcoded constant could.
-  const [apkVersion, setApkVersion] = useState(LATEST_APK_VERSION_FALLBACK);
-  const [apkVersionFetched, setApkVersionFetched] = useState(false);
-  // Re-checks periodically and whenever the app comes back to the foreground — not just once at
-  // cold launch (same pattern as the web new-version banner below). A native app can stay open
-  // in the background for days; checking only on mount meant a real update could sit deployed
-  // for a long time before the red dot ever appeared, since nothing ever re-fetched.
-  useEffect(() => {
-    if (!isAndroidWeb && !isNativeAndroid) return;
-    let cancelled = false;
-    const check = () => {
-      fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
-        .then(r => r.json())
-        .then(d => { if (!cancelled) { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); } })
-        .catch(() => {});
-    };
-    check();
-    const interval = setInterval(check, 5 * 60 * 1000);
-    const onVisible = () => { if (document.visibilityState === "visible") check(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
-  }, [isAndroidWeb, isNativeAndroid]);
-  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
-  // "Different from what's running" is the same simple signal the web new-version banner already
-  // uses (dist/version.json vs APP_VERSION) — latest.json only ever holds the single current
-  // release, so any mismatch (once the fetch has actually resolved) means this installed build is behind.
-  const nativeUpdateAvailable = isNativeAndroid && apkVersionFetched && apkVersion !== APP_VERSION;
-  const tabs = [
-    {k:"events", l:"Events", chip:"#F472B6", iconColor:"#7A1042", rot:4, icon:(
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="3" y="3.5" width="18" height="17" rx="4" fill="none" stroke="currentColor" strokeWidth="2.4"/>
-        <path d="M12 3.5v17" stroke="currentColor" strokeWidth="1.8" strokeDasharray="0.5 3.2" strokeLinecap="round"/>
-        <circle cx="7.3" cy="14.5" r="2.1" fill="currentColor"/><circle cx="16.7" cy="8.5" r="2.1" fill="currentColor"/>
-      </svg>
-    )},
-    {k:"me", l:"Me", chip:"#FBBF24", iconColor:"#7C4A03", rot:-4, avatar:true},
-  ];
-  return <div style={{background:TH?.nav||"#0E1117",borderBottom:`0.5px solid ${TH?.border||"var(--po-bdr)"}`,padding:"0 8px",display:"flex",alignItems:"center",justifyContent:"space-between",height:60,position:"sticky",top:0,left:0,right:0,width:"100%",zIndex:50,transition:"all 0.2s",boxSizing:"border-box",gap:4}}>
-    <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-      <img src="/logo-icon-192.png" width={36} height={36} onClick={()=>onNav("home")} style={{borderRadius:9,flexShrink:0,cursor:"pointer"}} alt="Matchkeeper"/>
+  return <div style={{background:TH?.nav||"#0E1117",borderBottom:`0.5px solid ${TH?.border||"var(--po-bdr)"}`,padding:"0 8px",display:"flex",alignItems:"center",justifyContent:"space-between",height:52,position:"sticky",top:0,left:0,right:0,width:"100%",zIndex:50,transition:"all 0.2s",boxSizing:"border-box",gap:4}}>
+    <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0,cursor:"pointer"}} onClick={()=>onNav("home")}>
+      <img src="/logo-icon-192.png" width={32} height={32} style={{borderRadius:8,flexShrink:0}} alt="Matchkeeper"/>
       <div style={{display:"flex",flexDirection:"column",lineHeight:1.05}}>
         <span style={{fontSize:11,fontWeight:600,color:dark?"#F1F5F9":"#FFFFFF"}}>Matchkeeper</span>
         <span style={{fontSize:8,fontWeight:400,color:dark?"#F1F5F9":"#FFFFFF",opacity:0.6}}>{APP_VERSION}{IS_DEV_ENV?" · DEV":!isNativeAndroid?" · Web":""}</span>
       </div>
     </div>
-    <div style={{display:"flex",gap:6,flex:1,justifyContent:"center",minWidth:0}}>{tabs.map(t=>{
-      const active = nav===t.k;
-      return <button key={t.k} onClick={()=>onNav(t.k)} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px 6px 6px",borderRadius:11,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",minHeight:38,background:active?"rgba(255,255,255,0.97)":"rgba(255,255,255,0.16)",transition:"all 0.15s",flexShrink:1,overflow:"hidden"}}>
-        <div style={{width:26,height:26,borderRadius:t.avatar?"50%":8,background:t.avatar?"transparent":t.chip,color:t.iconColor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transform:t.avatar?"none":`rotate(${t.rot}deg)`,overflow:"hidden"}}>
-          {t.avatar ? <Av u={me} size={26}/> : React.cloneElement(t.icon,{width:17,height:17})}
-        </div>
-        <span style={{color:active?"#4F46E5":"rgba(255,255,255,0.92)",whiteSpace:"nowrap"}}>{t.l}</span>
-      </button>;
-    })}</div>
     <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
       <div onClick={()=>setNotifMenu&&setNotifMenu(o=>!o)} style={{cursor:"pointer",padding:6,position:"relative",display:"flex"}}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -8552,34 +8502,54 @@ function TopBar({me,nav,menu,setMenu,onNav,onProfile,onMyCommunities,onVenues,on
         {myNotifs.length>0&&<div onClick={onSeeAllNotifs} style={{padding:"9px",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",borderTop:"0.5px solid var(--po-bdr)"}}>See all</div>}
       </div>}
     </div>
-    <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
-      <div onClick={()=>setMenu(o=>!o)} style={{cursor:"pointer",padding:6,display:"flex",position:"relative"}}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7"/>
-          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82A1.65 1.65 0 003 13.09H3a2 2 0 010-4h0a1.65 1.65 0 001.51-1A1.65 1.65 0 004.18 6.2l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V2a2 2 0 014 0v0a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V8a1.65 1.65 0 001.51 1H21a2 2 0 010 4h0a1.65 1.65 0 00-1.6 1z" stroke={dark?"#F1F5F9":"#FFFFFF"} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-        {nativeUpdateAvailable&&<span style={{position:"absolute",top:4,right:4,width:9,height:9,borderRadius:"50%",background:"#EF4444",border:"1.5px solid "+(TH?.nav||"#0E1117")}}/>}
-      </div>
-      {menu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,minWidth:190,zIndex:100,boxShadow:"0 8px 32px #00000066"}}>
-        <div style={{padding:"8px 10px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}><div className="po-text" style={{fontWeight:600,fontSize:13,color:"var(--po-text)"}}>{me.nickname}</div><div className="po-dim" style={{fontSize:11,color:"var(--po-dim)"}}>USR {me.usr} · {usrLv(me.usr).l}</div></div>
-        {comms&&<div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"0.5px solid var(--po-bdr)",marginBottom:4}}>
-          <span style={{fontSize:12,color:"var(--po-sub)",flexShrink:0}}>👥 Events from</span>
-          <select value={eventCommFilter||"all"} onChange={e=>{onSetEventCommFilter&&onSetEventCommFilter(e.target.value);}}
-            style={{flex:1,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:6,padding:"4px 6px",color:"var(--po-text)",fontSize:12,minWidth:0}}>
-            <option value="all">All Communities</option>
-            {comms.filter(c=>c.members.some(m=>m.userId===me.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>}
-        {[...(me.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),{i:"👥",l:"My Communities",fn:onMyCommunities},{i:"🏟",l:"Venues",fn:onVenues},{i:"⚙️",l:"Settings",fn:onSettings},...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}]:[]),...(isNativeAndroid&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>{setMenu(false);window.open(apkUrl,"_blank");}}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),
-          // Admin-only tools, grouped right above Sign Out per admin's own preference rather than
-          // mixed in at the top of the menu (Version Updates) or buried in Platform Admin (DEV env link).
-          ...(me.id===1?[
-            {i:"📋",l:"Version Updates",fn:()=>{setMenu(false);onVersionUpdates&&onVersionUpdates();}},
-            {i:IS_DEV_ENV?"🏭":"🧪",l:IS_DEV_ENV?"Open Production":"Open DEV Environment",fn:()=>{setMenu(false);window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank");}},
-          ]:[]),
-          {i:"🚪",l:"Sign Out",fn:()=>{setMenu(false);onSignOut&&onSignOut();},d:true}].map(x=><button key={x.l} onClick={x.fn} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"10px 10px",minHeight:40,borderRadius:7,border:"none",background:"transparent",color:x.d?"#EF4444":x.muted?"var(--po-dim)":"var(--po-sub)",fontSize:13,cursor:x.muted?"default":"pointer",opacity:x.muted?0.7:1,textAlign:"left"}}>{x.i} {x.l}</button>)}
-      </div>}
-    </div>
+  </div>;
+}
+
+// Five equal root tabs — Home (the actual app logo, not a generic house icon — tapping it does
+// the same thing as tapping the logo in TopBar), Events, Communities, Me, Settings. Replaces the
+// old top-bar Events/Me pills plus the ⚙️ dropdown (whose other items — Platform Admin, Venues,
+// Version Updates, the APK link, Sign Out — moved into SettingsSc itself, now that Settings is a
+// full-screen destination instead of a menu).
+function BottomNav({me,nav,onNav}){
+  const items = [
+    {k:"home", l:"Home", isImg:true},
+    {k:"events", l:"Events", chip:"#F472B6", icon:(
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="3" y="3.5" width="18" height="17" rx="4" fill="none" stroke="currentColor" strokeWidth="2.4"/>
+        <path d="M12 3.5v17" stroke="currentColor" strokeWidth="1.8" strokeDasharray="0.5 3.2" strokeLinecap="round"/>
+        <circle cx="7.3" cy="14.5" r="2.1" fill="currentColor"/><circle cx="16.7" cy="8.5" r="2.1" fill="currentColor"/>
+      </svg>
+    )},
+    {k:"communities", l:"Communities", chip:"#34D399", icon:(
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="2"/><circle cx="17" cy="9.5" r="2.6" stroke="currentColor" strokeWidth="2"/>
+        <path d="M3.5 20c0-3.6 2.9-6 6-6 2.1 0 3.9 1 5 2.6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+        <path d="M14.5 15c2.6 0 5 1.8 5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+    )},
+    {k:"me", l:"Me", avatar:true},
+    {k:"settings", l:"Settings", chip:"#818CF8", icon:(
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" strokeWidth="1.8"/>
+        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82A1.65 1.65 0 003 13.09H3a2 2 0 010-4h0a1.65 1.65 0 001.51-1A1.65 1.65 0 004.18 6.2l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V2a2 2 0 014 0v0a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V8a1.65 1.65 0 001.51 1H21a2 2 0 010 4h0a1.65 1.65 0 00-1.6 1z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    )},
+  ];
+  return <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:50,display:"flex",background:"var(--po-card)",borderTop:"0.5px solid var(--po-bdr)",boxSizing:"border-box",paddingBottom:"env(safe-area-inset-bottom, 0px)"}}>
+    {items.map(t=>{
+      const active = nav===t.k;
+      const flat = t.avatar||t.isImg; // no colored chip behind a raster logo or the profile photo — same special-case TopBar's old Me pill used
+      return <button key={t.k} onClick={()=>onNav(t.k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,padding:"7px 2px",border:"none",background:"transparent",cursor:"pointer",minHeight:56}}>
+        <div style={{width:26,height:26,borderRadius:t.avatar?"50%":8,background:flat?"transparent":(active?t.chip:"transparent"),color:flat?undefined:(active?"#fff":"var(--po-dim)"),display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
+          {t.avatar
+            ? <Av u={me} size={26}/>
+            : t.isImg
+              ? <img src="/logo-icon-192.png" width={22} height={22} style={{borderRadius:6,display:"block",opacity:active?1:0.55}} alt=""/>
+              : t.icon}
+        </div>
+        <span style={{fontSize:9,fontWeight:600,color:active?"var(--po-text)":"var(--po-dim)"}}>{t.l}</span>
+      </button>;
+    })}
   </div>;
 }
 
@@ -12933,6 +12903,21 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
   // an effect) so switching sports/losing an event mid-view can never point past the new array's
   // end.
   const [heroIdx,setHeroIdx]=useState(0);
+  // Swipe, not tap-through-arrows (admin's explicit call — the ‹ › buttons are gone). Tracked via
+  // a ref rather than state since only the gesture math needs it, never a re-render; `swiped` guards
+  // the card's own onClick so a drag that crossed the threshold doesn't also fire onOpen underneath it.
+  const heroTouchRef = useRef({x:0,swiped:false});
+  const onHeroTouchStart = e => { heroTouchRef.current = {x:e.touches[0].clientX, swiped:false}; };
+  const onHeroTouchMove = e => { if (Math.abs(e.touches[0].clientX - heroTouchRef.current.x) > 10) heroTouchRef.current.swiped = true; };
+  const onHeroTouchEnd = e => {
+    if (coming.length<2) return;
+    const dx = e.changedTouches[0].clientX - heroTouchRef.current.x;
+    if (Math.abs(dx) < 40) return;
+    setHeroIdx(i => {
+      const cur = Math.min(i, coming.length-1);
+      return dx<0 ? (cur+1)%coming.length : (cur-1+coming.length)%coming.length;
+    });
+  };
   const heroIdxClamped = Math.min(heroIdx, Math.max(0, coming.length-1));
   const heroEv = coming[heroIdxClamped];
   const heroVenue = heroEv && venues?.find(v=>v.id===heroEv.venueId);
@@ -12973,7 +12958,9 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         <div onClick={()=>setSportView("Padel Tennis")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Padel Tennis"?"#6366F1":"var(--po-inp)",color:effSportView==="Padel Tennis"?"#fff":"var(--po-sub)"}}>🎾 Padel</div>
         <div onClick={()=>setSportView("Football")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Football"?"#34D399":"var(--po-inp)",color:effSportView==="Football"?"#fff":"var(--po-sub)"}}>⚽ Football</div>
       </div>}
-      {heroEv?<div className="mk-hero" onClick={()=>onOpen(heroEv.communityId,heroEv.id)} style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa"}}>
+      {heroEv?<div className="mk-hero" onClick={()=>{if(!heroTouchRef.current.swiped) onOpen(heroEv.communityId,heroEv.id);}}
+        onTouchStart={onHeroTouchStart} onTouchMove={onHeroTouchMove} onTouchEnd={onHeroTouchEnd}
+        style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa",touchAction:"pan-y"}}>
         <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
         <div style={{position:"relative"}}>
           <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
@@ -12996,10 +12983,9 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         <div style={{fontSize:13,color:"var(--po-dim)"}}>No upcoming {showSportSwitcher?effSportView:""} events yet</div>
         <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>
       </div>}
-      {coming.length>1&&<div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:12,marginTop:8}}>
-        <div onClick={()=>setHeroIdx(i=>(Math.min(i,coming.length-1)-1+coming.length)%coming.length)} style={{cursor:"pointer",fontSize:13,color:"var(--po-dim)",padding:"2px 8px",userSelect:"none"}}>‹</div>
+      {coming.length>1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,marginTop:8}}>
         <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>setHeroIdx(i)} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
-        <div onClick={()=>setHeroIdx(i=>(Math.min(i,coming.length-1)+1)%coming.length)} style={{cursor:"pointer",fontSize:13,color:"var(--po-dim)",padding:"2px 8px",userSelect:"none"}}>›</div>
+        <div style={{fontSize:9.5,color:"var(--po-dim)",fontWeight:600}}>← swipe card for more events →</div>
       </div>}
       <div style={{display:"flex",gap:8,marginTop:14}}>
         <div className="mk-animate-in" style={{flex:1,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:"9px 6px",textAlign:"center",animationDelay:".32s"}}><div style={{fontSize:16,fontWeight:800,color:"#818CF8"}}><CountUp to={coming.length}/></div><div style={{fontSize:8.5,color:"var(--po-dim)",marginTop:2,textTransform:"uppercase",letterSpacing:0.4}}>Upcoming</div></div>
@@ -13017,19 +13003,18 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
       <div style={{fontSize:12,color:nudgeMsg.color,fontWeight:600,marginTop:8}}>{nudgeMsg.text}</div>
       <div style={{marginTop:10,display:"inline-block",background:nudgeMsg.color,color:"#0E1117",fontSize:11,fontWeight:700,padding:"6px 14px",borderRadius:8}}>Register →</div>
     </div>}
-    <div className="mk-animate-in" onClick={onGoEvents} style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",animationDelay:".58s"}}>
-      <div style={{fontSize:13,fontWeight:600,color:"var(--po-dim)"}}>See all events</div>
-      <div style={{fontSize:13,color:"#818CF8",fontWeight:700}}>→</div>
-    </div>
     {/* Personal Feed — added to the bottom of this existing screen, not a replacement for any of
-        the above (admin's explicit instruction). Compact here (3 most recent); "See all" expands
-        to the full FeedSc screen sharing these exact same items. */}
+        the above (admin's explicit instruction). No fixed height, so it naturally grows with
+        however much screen the device has; compact rows (smaller type via the `compact` prop)
+        fit 5-6 recent items instead of 3. "See all" still expands to the full FeedSc screen
+        sharing these exact same items. The old "See all events" link above this was removed
+        outright, not hidden — admin's explicit call. */}
     {feedItems.length>0&&<div className="mk-animate-in" style={{marginTop:16,padding:14,borderRadius:12,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".64s"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <div style={{fontSize:12.5,fontWeight:700,color:"var(--po-text)"}}>📰 Your Feed</div>
         <div onClick={onSeeAllFeed} style={{fontSize:10.5,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>See all →</div>
       </div>
-      {feedItems.slice(0,3).map((item,i)=><FeedItemRow key={i} item={item} onOpen={onOpen}/>)}
+      {feedItems.slice(0,6).map((item,i)=><FeedItemRow key={i} item={item} onOpen={onOpen} compact/>)}
     </div>}
   </>;
 }
@@ -14369,7 +14354,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   </>;
 }
 
-function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onBack}){
+function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onPlatformAdmin,onVenues,onVersionUpdates,onSignOut}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
   // Separate from pushStatus: once Android reports "denied" (permanently blocked — no
@@ -14380,6 +14365,28 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   const [infoPanel,setInfoPanel] = useState(null); // 'faq' | 'terms' | null
   const admin = users.find(u=>u.id===1); // platform admin — used for Contact Support links
   const isNative = Capacitor.isNativePlatform();
+  // Android *browser* visitor — always offer the download, they may not have the app at all.
+  // Moved here from the old TopBar ⚙️ dropdown now that Settings is its own screen instead of a menu.
+  const isAndroidWeb = !isNative && /Android/i.test(navigator.userAgent||"");
+  const [apkVersion, setApkVersion] = useState(LATEST_APK_VERSION_FALLBACK);
+  const [apkVersionFetched, setApkVersionFetched] = useState(false);
+  useEffect(() => {
+    if (!isAndroidWeb && !isNative) return;
+    let cancelled = false;
+    const check = () => {
+      fetch(`https://padelos-6f999.web.app/releases/latest.json?t=${Date.now()}`, { cache: "no-store" })
+        .then(r => r.json())
+        .then(d => { if (!cancelled) { if (d.version) setApkVersion(d.version); setApkVersionFetched(true); } })
+        .catch(() => {});
+    };
+    check();
+    const interval = setInterval(check, 5 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [isAndroidWeb, isNative]);
+  const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
+  const nativeUpdateAvailable = isNative && apkVersionFetched && apkVersion !== APP_VERSION;
   useEffect(() => {
     if (isNative) {
       PushNotifications.checkPermissions().then(res => {
@@ -14419,7 +14426,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
   const openAppSettings = () => {
     NativeSettings.open({optionAndroid: AndroidSettings.ApplicationDetails, optionIOS: IOSSettings.App}).catch(e=>console.log("openAppSettings failed", e));
   };
-  return <><BBtn onBack={onBack} label="Back"/>
+  return <>
     <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
     <ST>Notifications</ST>
     <Card style={{marginBottom:16}}>
@@ -14460,7 +14467,18 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
         </div>
         <span style={{fontSize:12,color:"var(--po-dim)",minWidth:24}}>{dark?"On":"Off"}</span>
       </div>
-      {[{i:"🌍",l:"Language",n:"English"},{i:"📍",l:"Home Area",n:user.area}].map((item,i)=><div key={item.l} onClick={item.l==="Language"?()=>alert("Arabic support is planned for a future update — English only for now."):undefined} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:i<1?"0.5px solid var(--po-bdr)":"none",cursor:"pointer"}}><span style={{fontSize:18}}>{item.i}</span><span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{item.l}</span><span style={{fontSize:12,color:"var(--po-dim)"}}>{item.n}</span><span style={{color:"var(--po-dim)"}}>›</span></div>)}
+      {[{i:"🌍",l:"Language",n:"English"},{i:"📍",l:"Home Area",n:user.area}].map((item,i)=><div key={item.l} onClick={item.l==="Language"?()=>alert("Arabic support is planned for a future update — English only for now."):undefined} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:"pointer"}}><span style={{fontSize:18}}>{item.i}</span><span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{item.l}</span><span style={{fontSize:12,color:"var(--po-dim)"}}>{item.n}</span><span style={{color:"var(--po-dim)"}}>›</span></div>)}
+      {/* Moved here from the old TopBar ⚙️ dropdown — filters which community's events show
+          in the Events tab, now that the dropdown itself is gone. */}
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px"}}>
+        <span style={{fontSize:18}}>🎾</span>
+        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Events From</span>
+        <select value={eventCommFilter||"all"} onChange={e=>onSetEventCommFilter&&onSetEventCommFilter(e.target.value)} className="po-inp"
+          style={{background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:6,padding:"5px 8px",color:"var(--po-text)",fontSize:12,maxWidth:150}}>
+          <option value="all">All Communities</option>
+          {comms.filter(c=>c.members.some(m=>m.userId===user.id)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </div>
     </Card>
         <ST>Support</ST>
     <Card style={{padding:0,overflow:"hidden"}}>
@@ -14495,6 +14513,29 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
       {infoPanel==="terms"&&<div style={{padding:"4px 16px 16px",fontSize:12,color:"var(--po-sub)",lineHeight:1.6}}>
         Matchkeeper is an internal tool used to organize your community's events. Your name, phone number, and match history are visible only to your community's admins and members — never sold or shared outside it. For any question about your data, contact the community admin directly above.
       </div>}
+    </Card>
+    {/* Account/admin tools — moved here from the old TopBar ⚙️ dropdown, now that Settings is a
+        full-screen bottom-nav tab instead of a menu. */}
+    <ST>Account</ST>
+    <Card style={{padding:0,overflow:"hidden"}}>
+      {[
+        {i:"🏟",l:"Venues",fn:onVenues},
+        ...(user.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),
+        ...(isAndroidWeb?[{i:"📥",l:`Android App ${apkVersion}`,fn:()=>window.open(apkUrl,"_blank")}]:[]),
+        ...(isNative&&apkVersionFetched?[nativeUpdateAvailable?{i:"📥",l:`Update available — ${apkVersion}`,fn:()=>window.open(apkUrl,"_blank")}:{i:"✓",l:`Up to date (${APP_VERSION})`,fn:()=>{},muted:true}]:[]),
+        ...(user.id===1?[
+          {i:"📋",l:"Version Updates",fn:onVersionUpdates},
+          {i:IS_DEV_ENV?"🏭":"🧪",l:IS_DEV_ENV?"Open Production":"Open DEV Environment",fn:()=>window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank")},
+        ]:[]),
+      ].map(item=><div key={item.l} onClick={item.muted?undefined:item.fn} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:item.muted?"default":"pointer",opacity:item.muted?0.7:1}}>
+        <span style={{fontSize:18}}>{item.i}</span>
+        <span style={{flex:1,fontSize:14,color:item.muted?"var(--po-dim)":"var(--po-text)"}}>{item.l}</span>
+        {!item.muted&&<span style={{color:"var(--po-dim)"}}>›</span>}
+      </div>)}
+      <div onClick={onSignOut} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
+        <span style={{fontSize:18}}>🚪</span>
+        <span style={{flex:1,fontSize:14,color:"#EF4444",fontWeight:600}}>Sign Out</span>
+      </div>
     </Card>
     <div style={{textAlign:"center",marginTop:24,fontSize:12,color:"var(--po-bdr)"}}>Matchkeeper {APP_VERSION}</div>
   </>;

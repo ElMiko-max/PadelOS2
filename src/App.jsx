@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.06";
+const APP_VERSION = "V0.16.07";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4008,7 +4008,12 @@ function Btn({label,onClick,primary,danger,disabled,style={}}){
   return <button onClick={onClick} disabled={disabled} style={{padding:"9px 16px",borderRadius:8,border:`0.5px solid ${bc}`,background:disabled?"var(--po-bdr)":bg,color:disabled?"var(--po-dim)":cl,fontSize:13,fontWeight:500,cursor:disabled?"default":"pointer",opacity:disabled?0.6:1,...style}}>{label}</button>;
 }
 function SmBtn({label,onClick,color="#6366F1",active,style={}}){return <button onClick={onClick} style={{padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",border:`0.5px solid ${active?"#6366F1":color+"44"}`,background:active?"#6366F133":`${color}11`,color:active?"#A5B4FC":color,...style}}>{label}</button>;}
-function Card({children,style={},id}){return <div id={id} className="po-card" style={{background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,padding:"14px 16px",marginBottom:10,...style}}>{children}</div>;}
+// `clickable` gives a Card real "this opens something" affordance — a slightly brighter border
+// and a faint fill lift, so the same border/radius used for a purely static info box no longer
+// looks identical to a fully-tappable navigation row (interface-clarity audit, 2026-09-11).
+// Applied as a CSS class (see .po-card.clickable above), not an inline style — .po-card's own
+// background/border-color are !important, which silently wins over any inline override here.
+function Card({children,style={},id,clickable}){return <div id={id} className={clickable?"po-card clickable":"po-card"} style={{background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,padding:"14px 16px",marginBottom:10,...(clickable?{cursor:"pointer"}:{}),...style}}>{children}</div>;}
 // Full-width tappable row (icon + label + chevron) — the shared fix for "a wide button reads as a
 // title or a list item" (interface-clarity audit, 2026-09-11). The old inline pattern reused
 // everywhere (Settings, Platform Admin's "Other Tools", Factory Reset included) was plain
@@ -8298,6 +8303,10 @@ export default function Matchkeeper() {
       }}>
       <style>{`
         .po-card{background:var(--po-card)!important;border-color:var(--po-bdr)!important;box-shadow:var(--po-shadow)!important;}
+        /* Card's clickable prop (interface-clarity audit, 2026-09-11) — needs its own
+           higher-specificity rule since .po-card's own background/border-color are !important,
+           which silently wins over any inline style Card tries to set for the same properties. */
+        .po-card.clickable{background:var(--po-inp)!important;border-color:var(--po-sub)!important;}
         .po-inp{background:var(--po-inp)!important;border-color:var(--po-bdr)!important;color:var(--po-text)!important;}
         .po-inp::placeholder{color:var(--po-dim)!important;}
         .po-text{color:var(--po-text)!important;}
@@ -9388,7 +9397,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       <SmBtn label="Send" onClick={()=>{if(replyText.trim()){onReplyAnnouncement&&onReplyAnnouncement(a.id,replyText);setReplyText("");setReplyingTo(null);}}} color="#6366F1"/>
                       <SmBtn label="✕" onClick={()=>{setReplyingTo(null);setReplyText("");}} color="#94A3B8"/>
                     </div>
-                  : <div onClick={()=>{setReplyingTo(a.id);setReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
+                  : <SmBtn label="💬 Reply" onClick={()=>{setReplyingTo(a.id);setReplyText("");}} color="#6366F1"/>}
               </div>
             </Card>;
             });
@@ -9765,7 +9774,7 @@ function EvCard({ev,me,users,venues,onClick}){
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
   const avgUsr=calcEventAvgUsr(ev,users||[]);
-  return <Card style={{cursor:"pointer"}}><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
+  return <Card clickable><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
               // Compact version of the graduated Min/Max capacity indicator (V0.09.22, EvDetail)
               // — same status-pill + Min-tick language, scaled down for a list card (no marker
               // dot or Start/Max text labels, the fill edge itself shows position at this size).
@@ -9791,7 +9800,7 @@ function EvCard({ev,me,users,venues,onClick}){
                 </div>
                 {waitlisted.length>0&&<div style={{fontSize:10,color:"#F59E0B",marginTop:3}}>⏳ {waitlisted.length} waiting</div>}
               </div>;
-            })()}<div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div></div></Card>;
+            })()}<div style={{fontSize:11,color:"var(--po-dim)",marginTop:3}}>{fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div></div><span style={{color:"var(--po-dim)",flexShrink:0,fontSize:18}}>›</span></div></Card>;
 }
 
 // ── Event Create Form ─────────────────────────────────
@@ -12609,7 +12618,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                       <SmBtn label="Send" onClick={()=>{if(eventReplyText.trim()){onReplyEventAnnouncement&&onReplyEventAnnouncement(a.id,eventReplyText);setEventReplyText("");setEventReplyingTo(null);}}} color="#6366F1"/>
                       <SmBtn label="✕" onClick={()=>{setEventReplyingTo(null);setEventReplyText("");}} color="#94A3B8"/>
                     </div>
-                  : <div onClick={()=>{setEventReplyingTo(a.id);setEventReplyText("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>💬 Reply</div>}
+                  : <SmBtn label="💬 Reply" onClick={()=>{setEventReplyingTo(a.id);setEventReplyText("");}} color="#6366F1"/>}
               </div>
             </Card>
           )}
@@ -13256,8 +13265,8 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
   </Card>}
     {showCommPicker&&<Card style={{marginBottom:12}}>
       <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Which community?</div>
-      {adminComms.map(c=><div key={c.id} onClick={()=>{setShowCommPicker(false);onCreateEv(c.id);}} style={{padding:"9px 10px",borderRadius:8,cursor:"pointer",fontSize:13,color:"var(--po-text)",border:"0.5px solid var(--po-bdr)",marginBottom:6}}>{c.name}</div>)}
-      <div onClick={()=>setShowCommPicker(false)} style={{textAlign:"center",fontSize:12,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>Cancel</div>
+      {adminComms.map(c=><ListRow key={c.id} icon="👥" label={c.name} onClick={()=>{setShowCommPicker(false);onCreateEv(c.id);}}/>)}
+      <Btn label="Cancel" onClick={()=>setShowCommPicker(false)} style={{width:"100%",marginTop:4}}/>
     </Card>}
     <Tabs tabs={[[`coming`,`Coming (${coming.length})`],[`past`,`Past (${past.length})`]]} active={sub} onChange={setSub}/>
     {sub==="coming"&&<>{coming.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>📅</div>No upcoming events.</div></Card>:coming.map(ev=><Row key={ev.id} ev={ev}/>)}{others.length>0&&<><ST>Other Upcoming</ST>{others.map(ev=><Row key={ev.id} ev={ev}/>)}</>}</>}

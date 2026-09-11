@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.06 (current) — First batch from the interface-clarity audit: wide buttons and Factory Reset are now unambiguous
+## V0.16.07 (current) — Second batch from the interface-clarity audit: event cards, the community picker, and Reply buttons
+
+- **`Card` now has a distinct "clickable" look** — a slightly brighter background/border when the whole card is tappable, instead of looking identical to a plain info box.
+- **The event card in the events list (EvCard) now has a visible trailing "›"** — signals the whole card is tappable, not just its badges.
+- **The "Which community?" picker (shown when creating a new event) now has real tappable-looking options** instead of disabled-looking rows, and "Cancel" is now a real button instead of plain text.
+- **The "💬 Reply" control (on announcements, both in a community and inside an event) is now a real pill-shaped button** instead of colored text with no border at all.
+
+---
+
+## V0.16.06 — First batch from the interface-clarity audit: wide buttons and Factory Reset are now unambiguous
 
 - **Following the interface audit requested this session**, this is the first batch of fixes from that report:
 - **`Btn`'s default (non-primary, non-danger) variant now has a real background fill** instead of just a thin transparent outline — this was the direct root cause behind "wide buttons read as a title, not a button."

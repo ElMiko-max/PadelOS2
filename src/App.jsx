@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.02";
+const APP_VERSION = "V0.16.03";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1905,13 +1905,44 @@ function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
     const promoted = /→\s*regular/i.test(a.summary||"");
     items.push({ts:a.ts, icon:promoted?"🆙":"🔻", bg:promoted?"#22D3EE22":"#F59E0B22", color:promoted?"#22D3EE":"#F59E0B", text:a.summary, nav:null});
   });
+  // New events created in any community I'm a member of — "MK created, or you created an event
+  // too... should appear" (2026-09-11 admin request). Includes events I created myself, not just
+  // other admins' — deliberately not deduped against anything else, since nothing else in this
+  // feed already announces a brand-new event.
+  const myCommIds = new Set(comms.filter(c=>c.members?.some(m=>m.userId===me.id)).map(c=>c.id));
+  (auditLog||[]).filter(a=>a.action==="event.create").forEach(a=>{
+    const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
+    if(!ev || !myCommIds.has(ev.communityId)) return;
+    items.push({ts:a.ts, icon:"🆕", bg:"#34D39922", color:"#34D399", text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
+  });
+  // Registration activity on events I CREATED, from anyone — "Mister X registered in your event",
+  // "Mister W unregistered from your event" (2026-09-11 admin request). Skips my OWN plain
+  // self-register/self-unregister on it (that exact action is already the "Registered — EventName"
+  // backfill entry above); `seenEventActivityTs` then stops the existing "I approved someone
+  // else's request" rule right below from adding the same audit doc a second time when that
+  // approval happened to be on an event I own.
+  const seenEventActivityTs = new Set();
+  const isSelfRegAction = s => /registered for "|unregistered themselves from "/i.test(s||"");
+  (auditLog||[]).filter(a=>a.action==="event.register"||a.action==="event.unregister").forEach(a=>{
+    const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
+    if(!ev || ev.createdBy!==me.id) return;
+    if(a.actorId===me.id && isSelfRegAction(a.summary)) return;
+    seenEventActivityTs.add(a.ts);
+    const isApproval = /approved/i.test(a.summary||"");
+    const isUnreg = a.action==="event.unregister";
+    items.push({ts:a.ts,
+      icon: isUnreg?"✕":isApproval?"✅":"🎾",
+      bg: isUnreg?"#EF444422":isApproval?"#8B5CF622":"#6366F122",
+      color: isUnreg?"#EF4444":isApproval?"#A78BFA":"#818CF8",
+      text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
+  });
   // Admin actions taken ON OTHER players — "part of my admin journey too" (2026-09-10, admin
   // report, concrete example: approving someone's join request). Narrowly scoped to approvals
   // specifically (detected via the summary's own wording, which only ever says "approved" when
   // it's someone else's request — a self-registration summary never does) rather than every
   // actorId===me.id audit entry, which would also pull in every tier change caused by closing an
   // event and get noisy fast. Ask if this should widen to cover more admin action types.
-  (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.register" && /approved/i.test(a.summary||"")).forEach(a => {
+  (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.register" && /approved/i.test(a.summary||"") && !seenEventActivityTs.has(a.ts)).forEach(a => {
     const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
     items.push({ts:a.ts, icon:"✅", bg:"#8B5CF622", color:"#A78BFA", text:a.summary, nav: ev ? {cid:ev.communityId, eid:ev.id} : null});
   });
@@ -12961,6 +12992,11 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
   // an effect) so switching sports/losing an event mid-view can never point past the new array's
   // end.
   const [heroIdx,setHeroIdx]=useState(0);
+  // Which way the card should slide in from, purely cosmetic (2026-09-11, admin request — "can we
+  // see the cards moving right to left, left to right"). Keyed off heroEv.id below so the inner
+  // content remounts and replays the CSS animation on every change, while the outer .mk-hero div
+  // itself never remounts — its own one-time entrance glow (mkHeroGlow) is untouched.
+  const [slideDir,setSlideDir]=useState(1);
   // Swipe, not tap-through-arrows (admin's explicit call — the ‹ › buttons are gone). Tracked via
   // a ref rather than state since only the gesture math needs it, never a re-render; `swiped` guards
   // the card's own onClick so a drag that crossed the threshold doesn't also fire onOpen underneath it.
@@ -12971,6 +13007,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
     if (coming.length<2) return;
     const dx = e.changedTouches[0].clientX - heroTouchRef.current.x;
     if (Math.abs(dx) < 40) return;
+    setSlideDir(dx<0 ? 1 : -1);
     setHeroIdx(i => {
       const cur = Math.min(i, coming.length-1);
       return dx<0 ? (cur+1)%coming.length : (cur-1+coming.length)%coming.length;
@@ -13020,7 +13057,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         onTouchStart={onHeroTouchStart} onTouchMove={onHeroTouchMove} onTouchEnd={onHeroTouchEnd}
         style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa",touchAction:"pan-y"}}>
         <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
-        <div style={{position:"relative"}}>
+        <div key={heroEv.id} className={slideDir===1?"mk-hero-slide-next":"mk-hero-slide-prev"} style={{position:"relative"}}>
           <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
           <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{heroEv.name}</div>
           <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
@@ -13042,7 +13079,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>
       </div>}
       {coming.length>1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,marginTop:8}}>
-        <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>setHeroIdx(i)} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
+        <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>{setSlideDir(i>heroIdxClamped?1:-1);setHeroIdx(i);}} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
         <div style={{fontSize:9.5,color:"var(--po-dim)",fontWeight:600}}>← swipe card for more events →</div>
       </div>}
       <div style={{display:"flex",gap:8,marginTop:14}}>

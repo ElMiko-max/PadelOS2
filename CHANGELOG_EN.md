@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.02 (current) — 🐛 Fix: "Clone to DEV" was still writing the pre-migration data shape
+## V0.16.03 (current) — Feed now shows new events + activity on your own events, plus a swipe animation
+
+- **The Feed now shows "a new event was created"** in any community you're a member of — whether an admin (or MK) created it, or you did.
+- **The Feed now shows registration/unregistration activity on events YOU created** — "so-and-so registered for your event", "so-and-so unregistered from your event" — regardless of who took the action, not just things that happened to you personally.
+- **A small slide animation on the "Next Up" card when you swipe** — it now slides and fades in from whichever direction you swiped, instead of snapping instantly. No change to how the swipe itself behaves.
+
+---
+
+## V0.16.02 — 🐛 Fix: "Clone to DEV" was still writing the pre-migration data shape
 
 - **BUGS.md #19 fixed.** "☁️ Clone Data to DEV" was failing with `invalid-argument ... longer than 1048487 bytes` — caused by it still writing `comms` as one giant Firestore document (`padelos/comms`), a shape abandoned by the "comms-split migration" back on 2026-08-28. Production itself has stored communities/events/registrations as separate documents ever since; this tool alone was never updated to match.
 - **Fix:** the tool now writes in production's actual current shape (a separate document per community/event/registration instead of one blob), batched to stay under Firestore's per-batch limit regardless of how large the data gets in the future.

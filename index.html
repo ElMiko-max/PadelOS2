@@ -28,8 +28,16 @@
       .mk-animate-in { opacity: 0; animation: mkFadeUp .55s cubic-bezier(.16,1,.3,1) forwards; }
       .mk-hero { animation: mkFadeUp .6s cubic-bezier(.16,1,.3,1) both, mkHeroGlow 2.6s ease-in-out .7s infinite; }
       .mk-hero-bar-fill { transform: scaleX(0); transform-origin: left; animation: mkGrowBarX 1.1s cubic-bezier(.16,1,.3,1) forwards; animation-delay: .9s; }
+      /* Home hero card swipe transition (2026-09-11, admin request — "can we see the cards
+         moving right to left, left to right"). Applied to the card's inner content only, keyed
+         off the event id so switching events remounts it and replays the slide — the outer
+         .mk-hero div itself is untouched, so its one-time entrance/glow above never restarts. */
+      @keyframes mkSlideFromRight { from { opacity: 0; transform: translateX(26px); } to { opacity: 1; transform: translateX(0); } }
+      @keyframes mkSlideFromLeft { from { opacity: 0; transform: translateX(-26px); } to { opacity: 1; transform: translateX(0); } }
+      .mk-hero-slide-next { animation: mkSlideFromRight .32s cubic-bezier(.16,1,.3,1) both; }
+      .mk-hero-slide-prev { animation: mkSlideFromLeft .32s cubic-bezier(.16,1,.3,1) both; }
       @media (prefers-reduced-motion: reduce) {
-        .mk-animate-in, .mk-hero, .mk-hero-bar-fill { animation: none !important; opacity: 1 !important; transform: none !important; }
+        .mk-animate-in, .mk-hero, .mk-hero-bar-fill, .mk-hero-slide-next, .mk-hero-slide-prev { animation: none !important; opacity: 1 !important; transform: none !important; }
       }
     </style>
   </head>

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.03";
+const APP_VERSION = "V0.16.04";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12992,26 +12992,39 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
   // an effect) so switching sports/losing an event mid-view can never point past the new array's
   // end.
   const [heroIdx,setHeroIdx]=useState(0);
-  // Which way the card should slide in from, purely cosmetic (2026-09-11, admin request — "can we
-  // see the cards moving right to left, left to right"). Keyed off heroEv.id below so the inner
-  // content remounts and replays the CSS animation on every change, while the outer .mk-hero div
-  // itself never remounts — its own one-time entrance glow (mkHeroGlow) is untouched.
+  // Which way the incoming card's content slides in from — purely cosmetic (2026-09-11, admin
+  // request). Keyed off heroEv.id below so the inner content remounts and replays the entrance
+  // animation on every change, while the outer .mk-hero div itself never remounts — its own
+  // one-time entrance glow (mkHeroGlow) is untouched.
   const [slideDir,setSlideDir]=useState(1);
-  // Swipe, not tap-through-arrows (admin's explicit call — the ‹ › buttons are gone). Tracked via
-  // a ref rather than state since only the gesture math needs it, never a re-render; `swiped` guards
-  // the card's own onClick so a drag that crossed the threshold doesn't also fire onOpen underneath it.
+  // Live drag-follow (2026-09-11, admin follow-up — the first cut only nudged the inner text a
+  // little after the fact and didn't actually read as a card moving). `dragX` drives the outer
+  // card's own translateX in real time while a finger is down (`dragging` disables the CSS
+  // transition so it tracks 1:1 with no lag), then on release either snaps back to 0 (short drag)
+  // or finishes sliding fully off in the same direction before swapping heroIdx underneath it —
+  // exactly the "card gets thrown off, next one settles in" feel that was missing.
+  const [dragX,setDragX]=useState(0);
+  const [dragging,setDragging]=useState(false);
   const heroTouchRef = useRef({x:0,swiped:false});
-  const onHeroTouchStart = e => { heroTouchRef.current = {x:e.touches[0].clientX, swiped:false}; };
-  const onHeroTouchMove = e => { if (Math.abs(e.touches[0].clientX - heroTouchRef.current.x) > 10) heroTouchRef.current.swiped = true; };
-  const onHeroTouchEnd = e => {
-    if (coming.length<2) return;
-    const dx = e.changedTouches[0].clientX - heroTouchRef.current.x;
-    if (Math.abs(dx) < 40) return;
-    setSlideDir(dx<0 ? 1 : -1);
-    setHeroIdx(i => {
-      const cur = Math.min(i, coming.length-1);
-      return dx<0 ? (cur+1)%coming.length : (cur-1+coming.length)%coming.length;
-    });
+  const onHeroTouchStart = e => { heroTouchRef.current = {x:e.touches[0].clientX, swiped:false}; setDragging(true); };
+  const onHeroTouchMove = e => {
+    const dx = e.touches[0].clientX - heroTouchRef.current.x;
+    if (Math.abs(dx) > 10) heroTouchRef.current.swiped = true;
+    setDragX(dx);
+  };
+  const onHeroTouchEnd = () => {
+    setDragging(false);
+    if (coming.length<2 || Math.abs(dragX) < 40) { setDragX(0); return; }
+    const dir = dragX<0 ? 1 : -1; // 1 = advancing to next (card exits left), -1 = going back (card exits right)
+    setDragX(dir===1 ? -280 : 280);
+    setTimeout(() => {
+      setSlideDir(dir);
+      setHeroIdx(i => {
+        const cur = Math.min(i, coming.length-1);
+        return dir===1 ? (cur+1)%coming.length : (cur-1+coming.length)%coming.length;
+      });
+      setDragX(0);
+    }, 220);
   };
   const heroIdxClamped = Math.min(heroIdx, Math.max(0, coming.length-1));
   const heroEv = coming[heroIdxClamped];
@@ -13053,9 +13066,12 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         <div onClick={()=>setSportView("Padel Tennis")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Padel Tennis"?"#6366F1":"var(--po-inp)",color:effSportView==="Padel Tennis"?"#fff":"var(--po-sub)"}}>🎾 Padel</div>
         <div onClick={()=>setSportView("Football")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Football"?"#34D399":"var(--po-inp)",color:effSportView==="Football"?"#fff":"var(--po-sub)"}}>⚽ Football</div>
       </div>}
-      {heroEv?<div className="mk-hero" onClick={()=>{if(!heroTouchRef.current.swiped) onOpen(heroEv.communityId,heroEv.id);}}
+      {heroEv?<div className="mk-animate-in" style={{marginTop:14,animationDelay:".22s"}}>
+      <div className="mk-hero" onClick={()=>{if(!heroTouchRef.current.swiped) onOpen(heroEv.communityId,heroEv.id);}}
         onTouchStart={onHeroTouchStart} onTouchMove={onHeroTouchMove} onTouchEnd={onHeroTouchEnd}
-        style={{position:"relative",marginTop:14,borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa",touchAction:"pan-y"}}>
+        style={{position:"relative",borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa",touchAction:"pan-y",
+          transform:`translateX(${dragX}px) rotate(${Math.max(-8,Math.min(8,dragX/16))}deg)`, opacity:Math.max(1-Math.abs(dragX)/320,0.35),
+          transition:dragging?"none":"transform .22s cubic-bezier(.16,1,.3,1), opacity .22s cubic-bezier(.16,1,.3,1)"}}>
         <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
         <div key={heroEv.id} className={slideDir===1?"mk-hero-slide-next":"mk-hero-slide-prev"} style={{position:"relative"}}>
           <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
@@ -13074,6 +13090,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
             </div>
           </>}
         </div>
+      </div>
       </div>:<div className="mk-animate-in" style={{marginTop:14,padding:16,borderRadius:14,textAlign:"center",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".2s"}}>
         <div style={{fontSize:13,color:"var(--po-dim)"}}>No upcoming {showSportSwitcher?effSportView:""} events yet</div>
         <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>

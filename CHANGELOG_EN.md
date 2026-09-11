@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.03 (current) — Feed now shows new events + activity on your own events, plus a swipe animation
+## V0.16.04 (current) — Swipe animation redo: the whole card now moves and tilts with your finger
+
+- **Adjustment to V0.16.03** — the previous animation only nudged the text inside the card a little, and didn't read as an actual card moving. Admin feedback after trying it: "I still don't see the card moving... I want to feel like a card is turning right and left."
+- **The whole card now follows your finger in real time as you drag**, and tilts slightly (rotate) in the drag direction — a real "picking up and moving a card" feel. Let go too early and it snaps back; drag far enough and it finishes sliding off in that direction before the next one appears.
+- **A technical fix underneath:** the page-load fade-in animation, if left on the same element as the card, blocks any other transform from ever applying to it afterward (this is exactly what kept V0.16.03's tweak from being visible) — it now lives on a wrapper around the card instead, freeing the card itself to move.
+
+---
+
+## V0.16.03 — Feed now shows new events + activity on your own events, plus a swipe animation
 
 - **The Feed now shows "a new event was created"** in any community you're a member of — whether an admin (or MK) created it, or you did.
 - **The Feed now shows registration/unregistration activity on events YOU created** — "so-and-so registered for your event", "so-and-so unregistered from your event" — regardless of who took the action, not just things that happened to you personally.

@@ -3,7 +3,7 @@ const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
 const {initializeApp} = require("firebase-admin/app");
 const {getMessaging} = require("firebase-admin/messaging");
-const {getFirestore} = require("firebase-admin/firestore");
+const {getFirestore, FieldValue} = require("firebase-admin/firestore");
 initializeApp();
 
 exports.sendPushOnNotification = onDocumentWritten("padelos/notifications", async (event) => {
@@ -362,6 +362,20 @@ const computeWaitlistInfo = async (db, communityId, eventId, userId) => {
   return {waitlisted: onIt, pos: onIt ? waitlistArr.length : 0};
 };
 
+// Writes the "Registered" line into the SAME transaction that creates the registration doc
+// (BUGS.md #20, 2026-09-11) — previously this was a separate client-side logRegHistory() call made
+// only AFTER this function's response came back, which meant a real registration could exist with
+// no "Registered" entry at all if the app was interrupted (closed, backgrounded, network drop)
+// between this function's write landing server-side and that follow-up call ever running.
+// src/App.jsx's own callers (registerEv/addMember/registerViaInvite/approveEventJoin) now skip
+// their client-side logRegHistory call specifically on the path where this function succeeded —
+// see each one's `viaServerFn` guard — so this is the only writer for that case, not a second one
+// racing to double-log the same moment.
+const writeRegHistory = (tx, db, eventId, userId, note) => {
+  const ref = db.collection("padelos_events").doc(String(eventId)).collection("regHistory").doc(String(userId));
+  tx.set(ref, {userId, entries: FieldValue.arrayUnion({ts: new Date().toISOString(), note})}, {merge: true});
+};
+
 // registerForEvent — same "close the stale-client gap" reasoning as claimOrCreateProfile above,
 // applied to event registration instead of profile identity. Real incident that motivated this
 // (2026-08-27, event #55 "Thursday trial"): the admin's "pause registration" toggle only ever
@@ -442,6 +456,7 @@ exports.registerForEvent = onCall(async (request) => {
     const addedBy = via === "invite" ? "invite" : null;
     const newReg = {userId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
     tx.set(regRef, newReg);
+    writeRegHistory(tx, db, eventId, userId, via === "invite" ? "Registered (via invite link)" : "Registered (self, via app)");
     if (via === "invite" && !comm.members.some(m => m.userId === userId)) {
       tx.set(commRef, {...comm, members: [...comm.members, {userId, role: "member", status: "guest", since: new Date().toISOString().slice(0, 10)}]});
     }
@@ -470,7 +485,7 @@ exports.registerForEvent = onCall(async (request) => {
 exports.addMemberToEvent = onCall(async (request) => {
   const auth = request.auth;
   if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
-  const {communityId, eventId, targetUserId} = request.data || {};
+  const {communityId, eventId, targetUserId, actorNickname} = request.data || {};
   if (communityId == null || eventId == null || targetUserId == null) {
     throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
   }
@@ -491,6 +506,11 @@ exports.addMemberToEvent = onCall(async (request) => {
 
     const newReg = {userId: targetUserId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "admin", isGuest: false};
     tx.set(regRef, newReg);
+    // actorNickname is client-supplied (same trust model as logAudit's own actorName elsewhere in
+    // this app — a human-readable history note, not a security/permission check) so the note
+    // reads the same as the client's own logRegHistory call used to, instead of a generic
+    // "an admin" — see writeRegHistory's comment for why this write moved here at all.
+    writeRegHistory(tx, db, eventId, targetUserId, `Registered (added by ${actorNickname || "an admin"})`);
     return {alreadyRegistered: false, eventName: ev.name};
   });
 
@@ -501,7 +521,7 @@ exports.addMemberToEvent = onCall(async (request) => {
 exports.approveEventJoinRequest = onCall(async (request) => {
   const auth = request.auth;
   if (!auth) throw new HttpsError("unauthenticated", "Must be signed in.");
-  const {communityId, eventId, targetUserId} = request.data || {};
+  const {communityId, eventId, targetUserId, actorNickname} = request.data || {};
   if (communityId == null || eventId == null || targetUserId == null) {
     throw new HttpsError("invalid-argument", "communityId, eventId and targetUserId are required.");
   }
@@ -523,6 +543,7 @@ exports.approveEventJoinRequest = onCall(async (request) => {
     if (!regSnap.exists) {
       const newReg = {userId: targetUserId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy: "approved", isGuest: false};
       tx.set(regRef, newReg);
+      writeRegHistory(tx, db, eventId, targetUserId, `Registered (join request approved by ${actorNickname || "an admin"})`);
     }
     return {eventName: ev.name};
   });

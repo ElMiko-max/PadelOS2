@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.08 (current) — 🐛 Fix: the community edit button only ever showed for the literal Owner
+## V0.16.09 (current) — 🐛 Two fixes: "Promote after" now accepts 0 + BUGS.md #20 (missing Registered line) fixed
+
+- **The "Promote after" field in community editing now genuinely accepts 0.** It was treated as "no value" (`||3`) instead of a real value, so a community actually saved with 0 re-opened showing 3, and every real calculation in the app still behaved as if it were 3 instead of skipping the casual stage entirely as intended. Fixed everywhere this value is read.
+- **BUGS.md #20 fixed (the missing "Registered" line after re-registering):** the cause was that writing the "Registered" line was a separate step after the Cloud Function finished, not part of the same operation. The Cloud Functions (`registerForEvent`, `addMemberToEvent`, `approveEventJoinRequest`) now write that line at the exact same moment they create the registration, so there's no window left where the app closing or the network dropping could lose it. Required a Cloud Functions deploy — a new destination for this session, separate from Web/APK.
+
+---
+
+## V0.16.08 — 🐛 Fix: the community edit button only ever showed for the literal Owner
 
 - **Real bug found:** the "✏️" button that edits a community's name/description only rendered when your role was exactly "Owner" — a regular community Admin, or even a Platform Admin with God Mode on, saw no button at all. That read as "the banner must be covering it," but it simply wasn't there.
 - **Fix:** now uses the same `isAdmin` check every other admin control on this screen already uses (Owner, or Admin, or Platform Admin with God Mode), instead of that narrower one.

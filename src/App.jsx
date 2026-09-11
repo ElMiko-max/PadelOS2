@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.05";
+const APP_VERSION = "V0.16.06";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4000,11 +4000,35 @@ function Podium({top3,title}){
   </Card>;
 }
 function Btn({label,onClick,primary,danger,disabled,style={}}){
-  const bg=primary?"#6366F1":danger?"#EF444422":"transparent", bc=primary?"#6366F1":danger?"#EF4444":"var(--po-bdr)", cl=primary?"#fff":danger?"#EF4444":"var(--po-sub)";
+  // Default (non-primary, non-danger) variant used to be `background:"transparent"` with only a
+  // 0.5px border — at the wide/full-flex widths most call sites use, that read as empty space
+  // with faint text, not a button (interface-clarity audit, 2026-09-11: "very wide buttons are
+  // usually not recognized as buttons"). A real fill is the floor for "this is clickable" at any width.
+  const bg=primary?"#6366F1":danger?"#EF444422":"var(--po-inp)", bc=primary?"#6366F1":danger?"#EF4444":"var(--po-bdr)", cl=primary?"#fff":danger?"#EF4444":"var(--po-sub)";
   return <button onClick={onClick} disabled={disabled} style={{padding:"9px 16px",borderRadius:8,border:`0.5px solid ${bc}`,background:disabled?"var(--po-bdr)":bg,color:disabled?"var(--po-dim)":cl,fontSize:13,fontWeight:500,cursor:disabled?"default":"pointer",opacity:disabled?0.6:1,...style}}>{label}</button>;
 }
 function SmBtn({label,onClick,color="#6366F1",active,style={}}){return <button onClick={onClick} style={{padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",border:`0.5px solid ${active?"#6366F1":color+"44"}`,background:active?"#6366F133":`${color}11`,color:active?"#A5B4FC":color,...style}}>{label}</button>;}
 function Card({children,style={},id}){return <div id={id} className="po-card" style={{background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,padding:"14px 16px",marginBottom:10,...style}}>{children}</div>;}
+// Full-width tappable row (icon + label + chevron) — the shared fix for "a wide button reads as a
+// title or a list item" (interface-clarity audit, 2026-09-11). The old inline pattern reused
+// everywhere (Settings, Platform Admin's "Other Tools", Factory Reset included) was plain
+// body-text color on a transparent background with only a faint "›" as the sole tell that it's
+// clickable — indistinguishable from a section heading, and identical for a harmless nav row and
+// an irreversible destructive one. This gives every such row its own visible boundary regardless
+// of width, and `danger` gives destructive actions a warning look at rest, not only in the
+// follow-up confirm() dialog.
+function ListRow({icon,label,sub,onClick,danger,muted,dim,trailing}){
+  // `muted` = truly inert (no handler, e.g. an already-current-version row) vs `dim` = visually
+  // de-emphasized (nothing to act on right now) but the tap still goes through — some existing
+  // call sites run their confirm()/action regardless of count, only the affordance dims.
+  return <div onClick={muted?undefined:onClick} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 14px",borderRadius:10,marginBottom:7,cursor:muted?"default":"pointer",
+    background:danger?"#EF444416":"var(--po-inp)", border:`0.5px solid ${danger?"#EF444455":"var(--po-bdr)"}`, opacity:(muted||dim)?0.6:1}}>
+    <span style={{fontSize:18,flexShrink:0}}>{icon}</span>
+    <span style={{flex:1,fontSize:14,fontWeight:danger?700:500,color:danger?"#F87171":muted?"var(--po-dim)":"var(--po-text)"}}>{label}</span>
+    {sub&&<span style={{fontSize:12,color:"var(--po-dim)",flexShrink:0}}>{sub}</span>}
+    {!muted&&<span style={{color:danger?"#F87171":"var(--po-dim)",flexShrink:0}}>{trailing||"›"}</span>}
+  </div>;
+}
 // Home screen stat tiles (2026-09-09) — counts up from 0 to `to` once on mount, easing out.
 // Skips the animation for prefers-reduced-motion, same convention as the CSS entrance classes.
 function CountUp({to, suffix=""}){
@@ -12476,8 +12500,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   step left to race on at all, under rapid taps or otherwise. See
                   setPaymentStatus's comment for the tap-to-cycle version this replaced. */}
               {!isPayer&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
-                <div onClick={()=>setOpenPaymentMenu(o=>o===uid?null:uid)} style={{padding:"6px 10px",borderRadius:8,background:meta.bg,border:`0.5px solid ${meta.border}`,fontSize:12,fontWeight:600,color:meta.color,cursor:"pointer",whiteSpace:"nowrap"}}>
-                  {meta.label} ▾
+                {/* Deliberately NOT the Bdg soft-tint recipe (thin low-opacity border, no shadow)
+                    — this picker is clickable and sat right next to real Bdgs (Collector/Direct
+                    above) looking identical apart from an invisible cursor style (interface-
+                    clarity audit, 2026-09-11). Full-opacity border + a colored shadow gives it
+                    real "lift" so it reads as a control, not another status label. */}
+                <div onClick={()=>setOpenPaymentMenu(o=>o===uid?null:uid)} style={{padding:"6px 11px",borderRadius:8,background:meta.bg,border:`1.5px solid ${meta.color==="var(--po-dim)"?"#94A3B8":meta.color}`,fontSize:12,fontWeight:700,color:meta.color,cursor:"pointer",whiteSpace:"nowrap",boxShadow:`0 1px 6px ${meta.color==="var(--po-dim)"?"#94A3B8":meta.color}44`}}>
+                  {meta.label} <span style={{fontSize:9}}>▾</span>
                 </div>
                 {openPaymentMenu===uid&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
                   {PAYMENT_STATUS_CYCLE.map(s=>{
@@ -14428,44 +14457,15 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     </CollapsibleSection>
 
     <ST>Other Tools</ST>
-    <Card style={{padding:0,overflow:"hidden",marginBottom:16}}>
-      <div onClick={onExport} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
-        <span style={{fontSize:18}}>💾</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Export Data</span>
-        <span style={{fontSize:12,color:"var(--po-dim)"}}>Download JSON</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      <div onClick={()=>{if(window.confirm("Repair duplicate event IDs?\n\nThis scans all events and reassigns new unique IDs to any duplicates found, without deleting any data. Safe to run anytime."))onRepairIds();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
-        <span style={{fontSize:18}}>🔧</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Repair Data (Event IDs & Venues)</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      <div onClick={()=>{if(window.confirm("Backfill guest memberships?\n\nThis scans every event for guests added before this feature existed, and adds any missing ones to their community's member list. Safe to run anytime — never removes or duplicates anything."))onBackfillGuests();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:"0.5px solid var(--po-bdr)"}}>
-        <span style={{fontSize:18}}>🧑‍🤝‍🧑</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Backfill Guest Memberships</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      <div onClick={()=>{if(window.confirm(`Clean orphaned account links?\n\nFound ${orphanedLinksCount} email/Google login(s) still "claimed" by a deleted user — this releases them so that person can sign in fresh again. Safe to run anytime.`))onCleanOrphanedLinks();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:orphanedLinksCount>0?"pointer":"default",borderBottom:"0.5px solid var(--po-bdr)",opacity:orphanedLinksCount>0?1:0.5}}>
-        <span style={{fontSize:18}}>🧹</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Clean Orphaned Account Links{orphanedLinksCount>0?` (${orphanedLinksCount})`:""}</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      <div onClick={()=>setShowDupEmails(o=>!o)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:dupEmailGroups.length>0?"pointer":"default",borderBottom:"0.5px solid var(--po-bdr)",opacity:dupEmailGroups.length>0?1:0.5}}>
-        <span style={{fontSize:18}}>📧</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>Find Duplicate Emails{dupEmailGroups.length>0?` (${dupEmailGroups.length})`:""}</span>
-        <span style={{color:"var(--po-dim)"}}>{showDupEmails?"⌄":"›"}</span>
-      </div>
-      <div onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer",borderBottom:!IS_DEV_ENV?"0.5px solid var(--po-bdr)":"none"}}>
-        <span style={{fontSize:18}}>⚠️</span>
-        <span style={{flex:1,fontSize:14,color:"#EF4444"}}>Factory Reset (Erase Everything)</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>
-      {!IS_DEV_ENV&&<div onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:cloningToDev?"default":"pointer",opacity:cloningToDev?0.5:1}}>
-        <span style={{fontSize:18}}>☁️</span>
-        <span style={{flex:1,fontSize:14,color:"var(--po-text)"}}>{cloningToDev?"Cloning to DEV…":"Clone Data to DEV"}</span>
-        <span style={{color:"var(--po-dim)"}}>›</span>
-      </div>}
-    </Card>
+    <div style={{marginBottom:16}}>
+      <ListRow icon="💾" label="Export Data" sub="Download JSON" onClick={onExport}/>
+      <ListRow icon="🔧" label="Repair Data (Event IDs & Venues)" onClick={()=>{if(window.confirm("Repair duplicate event IDs?\n\nThis scans all events and reassigns new unique IDs to any duplicates found, without deleting any data. Safe to run anytime."))onRepairIds();}}/>
+      <ListRow icon="🧑‍🤝‍🧑" label="Backfill Guest Memberships" onClick={()=>{if(window.confirm("Backfill guest memberships?\n\nThis scans every event for guests added before this feature existed, and adds any missing ones to their community's member list. Safe to run anytime — never removes or duplicates anything."))onBackfillGuests();}}/>
+      <ListRow icon="🧹" label={`Clean Orphaned Account Links${orphanedLinksCount>0?` (${orphanedLinksCount})`:""}`} dim={orphanedLinksCount===0} onClick={()=>{if(window.confirm(`Clean orphaned account links?\n\nFound ${orphanedLinksCount} email/Google login(s) still "claimed" by a deleted user — this releases them so that person can sign in fresh again. Safe to run anytime.`))onCleanOrphanedLinks();}}/>
+      <ListRow icon="📧" label={`Find Duplicate Emails${dupEmailGroups.length>0?` (${dupEmailGroups.length})`:""}`} dim={dupEmailGroups.length===0} trailing={showDupEmails?"⌄":"›"} onClick={()=>setShowDupEmails(o=>!o)}/>
+      <ListRow icon="⚠️" label="Factory Reset (Erase Everything)" danger onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}}/>
+      {!IS_DEV_ENV&&<ListRow icon="☁️" label={cloningToDev?"Cloning to DEV…":"Clone Data to DEV"} dim={cloningToDev} onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}}/>}
+    </div>
     {showDupEmails&&<Card style={{marginBottom:16}}>
       {dupEmailGroups.length===0&&<div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"10px 0"}}>No duplicate emails found ✓</div>}
       {dupEmailGroups.map(([email,us],gi)=><div key={email} style={{marginBottom:gi<dupEmailGroups.length-1?14:0,paddingBottom:gi<dupEmailGroups.length-1?14:0,borderBottom:gi<dupEmailGroups.length-1?"0.5px solid var(--po-bdr)":"none"}}>
@@ -14553,7 +14553,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
       <div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>USR {user.usr} · {usrLv(user.usr).l}</div>
     </Card>
     <ST>Account</ST>
-    <Card style={{padding:0,overflow:"hidden",marginBottom:16}}>
+    <div style={{marginBottom:9}}>
       {[
         {i:"🏟",l:"Venues",fn:onVenues},
         ...(user.id===1?[{i:"🛡",l:"Platform Admin",fn:onPlatformAdmin}]:[]),
@@ -14563,16 +14563,9 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
           {i:"📋",l:"Version Updates",fn:onVersionUpdates},
           {i:IS_DEV_ENV?"🏭":"🧪",l:IS_DEV_ENV?"Open Production":"Open DEV Environment",fn:()=>window.open(IS_DEV_ENV?"https://www.matchkeeper.app":"https://padelos-dev.web.app","_blank")},
         ]:[]),
-      ].map(item=><div key={item.l} onClick={item.muted?undefined:item.fn} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",borderBottom:"0.5px solid var(--po-bdr)",cursor:item.muted?"default":"pointer",opacity:item.muted?0.7:1}}>
-        <span style={{fontSize:18}}>{item.i}</span>
-        <span style={{flex:1,fontSize:14,color:item.muted?"var(--po-dim)":"var(--po-text)"}}>{item.l}</span>
-        {!item.muted&&<span style={{color:"var(--po-dim)"}}>›</span>}
-      </div>)}
-      <div onClick={onSignOut} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",cursor:"pointer"}}>
-        <span style={{fontSize:18}}>🚪</span>
-        <span style={{flex:1,fontSize:14,color:"#EF4444",fontWeight:600}}>Sign Out</span>
-      </div>
-    </Card>
+      ].map(item=><ListRow key={item.l} icon={item.i} label={item.l} onClick={item.fn} muted={item.muted}/>)}
+      <ListRow icon="🚪" label="Sign Out" onClick={onSignOut}/>
+    </div>
     <ST>Notifications</ST>
     <Card style={{marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>

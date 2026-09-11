@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.05 (current) — Swipe animation is now a real carousel: two cards half-and-half mid-drag, no tilt
+## V0.16.06 (current) — First batch from the interface-clarity audit: wide buttons and Factory Reset are now unambiguous
+
+- **Following the interface audit requested this session**, this is the first batch of fixes from that report:
+- **`Btn`'s default (non-primary, non-danger) variant now has a real background fill** instead of just a thin transparent outline — this was the direct root cause behind "wide buttons read as a title, not a button."
+- **A new shared row style (`ListRow`)** now covers every "Venues" / "Platform Admin" / "Factory Reset"-style row in Settings and Platform Admin — each one now has a real background and border instead of plain text on empty space, so it reads as tappable regardless of width.
+- **"Factory Reset (Erase Everything)" now looks dangerous before you tap it** — a visible red-tinted background and border, not just red text like every other row. This was the highest-severity finding in the audit.
+- **The Ledger's payment-status chip (✓ Paid ▾) is now visually distinct from the plain badges beside it** (💰 Collector, ↪ Direct) — a full-opacity border plus a subtle colored shadow, instead of looking identical to a read-only badge.
+
+---
+
+## V0.16.05 — Swipe animation is now a real carousel: two cards half-and-half mid-drag, no tilt
 
 - **Adjustment to V0.16.04** — admin feedback: "animation is bad... why is there a tilt, not just straight scrolling" and "at one point 2 cards should appear half half."
 - **Tilt (rotate) removed entirely** — motion is now pure horizontal, exactly as asked.

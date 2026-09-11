@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.07";
+const APP_VERSION = "V0.16.08";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9143,7 +9143,14 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:4}}>
         <div style={{fontSize:22,fontWeight:800,lineHeight:1.1,letterSpacing:-0.4,color:"var(--po-text)"}}>{comm.name}{SEEDED_COMM_IDS.has(comm.id)&&<> <SeedBadge/></>}</div>
-        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><Bdg label={comm.type==="public"?"Public":"Private"} color={comm.type==="public"?"#34D399":"var(--po-sub)"}/>{myRole==="owner"&&<SmBtn label="✏️" onClick={onEdit} color="#6366F1"/>}</div>
+        {/* Was `myRole==="owner"` only — the single stricter permission check on this whole
+            screen, inconsistent with every other admin control here (member management,
+            requests, banner...) which all use `isAdmin` (owner OR admin OR Platform-Admin-with-
+            godMode). A community admin (not the literal owner) — or a platform admin using God
+            Mode — had no way to edit the community's own name/description at all; the button
+            simply never rendered, which read as "the banner is covering the edit pencil" from
+            the outside (interface-clarity audit follow-up, 2026-09-11). */}
+        <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}><Bdg label={comm.type==="public"?"Public":"Private"} color={comm.type==="public"?"#34D399":"var(--po-sub)"}/>{isAdmin&&<SmBtn label="✏️" onClick={onEdit} color="#6366F1"/>}</div>
       </div>
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · {comm.country||"مصر"} · Founded {fmtD(comm.founded)}</div>
       <div style={{fontSize:13,color:"var(--po-sub)",marginTop:10}}>{comm.description}</div>

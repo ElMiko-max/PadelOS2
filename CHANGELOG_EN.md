@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.07 (current) — Second batch from the interface-clarity audit: event cards, the community picker, and Reply buttons
+## V0.16.08 (current) — 🐛 Fix: the community edit button only ever showed for the literal Owner
+
+- **Real bug found:** the "✏️" button that edits a community's name/description only rendered when your role was exactly "Owner" — a regular community Admin, or even a Platform Admin with God Mode on, saw no button at all. That read as "the banner must be covering it," but it simply wasn't there.
+- **Fix:** now uses the same `isAdmin` check every other admin control on this screen already uses (Owner, or Admin, or Platform Admin with God Mode), instead of that narrower one.
+- **New bug logged (#20):** the admin also noticed a player's registration history can be missing its "Registered" line if they were removed from an event and later re-registered — logged in BUGS.md, not fixed yet (needs a Cloud Functions change).
+
+---
+
+## V0.16.07 — Second batch from the interface-clarity audit: event cards, the community picker, and Reply buttons
 
 - **`Card` now has a distinct "clickable" look** — a slightly brighter background/border when the whole card is tappable, instead of looking identical to a plain info box.
 - **The event card in the events list (EvCard) now has a visible trailing "›"** — signals the whole card is tappable, not just its badges.

@@ -17,11 +17,22 @@
 
 ## ⚪ برّه الخريطة لسه
 
-*(فاضي دلوقتي)*
+- [#20](#20) — سطر "Registered" ممكن يضيع لو حد اتشال من حدث وبعدين اترجّع تاني (Race Condition بين الـ Cloud Function وتسجيل الـ regHistory)
 
 ---
 
 ## 📜 السجل الكامل
+
+---
+
+## #20 — سطر "Registered" ممكن يضيع لو حد اتشال من حدث وبعدين اترجّع تاني
+
+- **الحالة:** 🔴 مفتوح
+- **اتسجل:** 2026-09-11
+- **الوصف:** لاحظ الأدمن (من شاشة Players → تاريخ التسجيل لكل لاعب، حدث فوتبول #84) إن سطر "Landed on confirmed seat #X" أو "Landed on waitlist #X" بيظهر من غير أي سطر "Registered" قبله — مع إن الشخص فعليًا "Removed" قبل كده وبعدين لازم يكون رجع اتسجل تاني عشان ياخد ترتيب جديد. مثال حقيقي من الشاشة: طارق شعبان — Registered → Landed on seat #2 → Removed → **Landed on confirmed seat #2** (من غير Registered قبلها، بعد حوالي 13 ساعة).
+- **السبب المرجّح (بعد تتبّع الكود، مش تأكيد 100% من داتا حقيقية):** التسجيل بيحصل في خطوتين مش atomic: (1) Cloud Function (`registerForEvent`/`addMemberToEvent`) بتعمل مستند التسجيل، (2) بعدها الكود على الجهاز (client) لوحده بيكتب سطر "Registered" في `regHistory`. لو التطبيق اتقفل أو النت قطع بالظبط بين الخطوتين (بعد ما الـ Cloud Function خلصت فعليًا على السيرفر، بس قبل ما الرد يرجع للتطبيق)، المستند بيفضل موجود من غير أي سطر "Registered" — وبعدين أي إعادة حساب ترتيب (`syncOrdering`) بتسجل "Landed on..." طبيعي لإن الكتابة دي فعلاً atomic مع تحديد الترتيب.
+- **ليه معرفناش نأكد 100%:** محتاجين نشوف الداتا الحقيقية (`regHistory`/`registrations`/`padelos_audit`) للحدث #84 على البرودكشن، ومفيش مفتاح قراءة (`PADELOS_ADMIN_KEY`) متاح في الجلسة دي. أداة `scripts/query-db.js` الحالية كمان مش بتدعم قراءة الـ subcollections دي أصلًا (بس `padelos/{docId}` و `padelos_audit`).
+- **الإصلاح المقترح (لسه متعملش):** نقل كتابة "Registered" في `regHistory` جوه نفس الـ transaction اللي بتعمل مستند التسجيل في الـ Cloud Functions (`registerForEvent`, `addMemberToEvent`, `approveEventJoinRequest`) بدل ما تكون خطوة تانية بعديها على الجهاز — ده يشيل الـ race window خالص. محتاج `firebase deploy --only functions` (مخرج جديد لسه معملناهوش الجلسة دي، غير الـ hosting/APK).
 
 ---
 

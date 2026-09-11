@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.11 (current) — Modernization notes from the audit: entrance animation on the main screens + animated counters
+## V0.16.12 (current) — Fixes from real admin testing on the APK
+
+- **🐛 The "Me" bottom-nav tab didn't visibly show it was active** — the only difference was label text color, easy to miss against a profile photo. Home and Me now get a visible ring around their icon when active.
+- **🐛 The Back button on the Venues screen (reached from Settings) didn't work at all — neither the top-left arrow nor the phone's back button** — caused by using the same navigation call the root tabs use (which wipes the back history) instead of preserving a path back to Settings. Fixed.
+- **🐛 The phone's hardware Back button always showed "Press back again to exit," on every screen, even ones with a visible ← Back arrow at the top** — meaning real in-app back navigation never worked via the hardware button at all. It now pops back one screen (same as the ← arrow), and only offers to exit once there's genuinely nowhere left to go back to.
+- **The Home Feed box now shows up to 12 items instead of 6** — there was empty space left below 6 on larger screens with no real reason to stop there.
+- **🐛 A player's registration history was cached the first time you opened it, and never refreshed again during that same visit to the screen** — removing and re-registering someone while staying on the same screen, then reopening their history, showed the old snapshot from before those actions, not the current one. It now refetches every time you open it.
+
+---
+
+## V0.16.11 — Modernization notes from the audit: entrance animation on the main screens + animated counters
 
 - **All 5 bottom-nav root screens (Home, Events, Communities, Me, Settings) now share the same subtle "fade up" entrance on their header when you open them** — the same motion Home already had, now consistent across all five tabs.
 - **Whole-number stats (event/match/venue counts in Platform Admin, transaction count in the subscription statement) now count up on load** instead of appearing fully-formed. Deliberately left alone anywhere the number has decimals or thousand-separator formatting (EGP amounts) — the counter always rounds to a whole number, which would have changed how the final value looks.

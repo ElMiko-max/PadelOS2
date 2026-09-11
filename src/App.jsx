@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.11";
+const APP_VERSION = "V0.16.12";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5797,9 +5797,20 @@ export default function Matchkeeper() {
 
   const toast2 = (msg,t="ok") => { setToast({msg,t}); setTimeout(()=>setToast(null),2600); };
   const backPressRef = useRef(0);
+  // Real bug, found live on the APK (2026-09-11 admin report): this unconditionally showed
+  // "Press back again to exit" on EVERY screen, including ones with their own visible ← Back
+  // button (Venues, Platform Admin) — the hardware back button never actually navigated
+  // in-app, only ever offered to exit. Now it pops the same navHistory stack the ← Back button
+  // uses, and only falls through to the exit-confirmation once there's genuinely nowhere left
+  // to go back to (a root tab). `navHistory` is read via a ref so the listener (registered once,
+  // Capacitor's add/remove has real native cost) always sees its current value without having
+  // to re-subscribe on every navigation.
+  const navHistoryRef = useRef(navHistory);
+  navHistoryRef.current = navHistory;
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     const handler = CapApp.addListener("backButton", () => {
+      if (navHistoryRef.current.length > 0) { goBack(); return; }
       const now = Date.now();
       if (now - backPressRef.current < 2000) {
         CapApp.exitApp();
@@ -8558,7 +8569,7 @@ export default function Matchkeeper() {
         {nav==="me"&&<ProfileSc user={me} me={me} comms={comms} isMeTab onOpenCommunity={goComm} onOpenEvent={goEvent} onExploreCommunities={goCommList} onEditUser={editUser} onViewProfile={uid=>{setNavHistory(h=>[...h,{nav,view}]);setNav("profile");setView({screen:"profile",uid});}} onSetComboName={(partnerId,name)=>setComboName(me.id,partnerId,name)} usrWindowSize={usrWindowSize} egypt={egypt} myGooglePhotoURL={authUser?.photoURL} onToast={toast2} onRecalcUsr={recalcUsrFromSeed}/>}
         {nav==="settings"&&<SettingsSc user={me} users={users} comms={comms} eventCommFilter={eventCommFilter} onSetEventCommFilter={setEventCommFilter} dark={dark} onToggleDark={()=>setDark(d=>!d)} onSendTestNotif={()=>{notify([me.id],"test",null,"🔔 Test notification",`Hey ${me.nickname}, if you see this on your lock screen, push is working!`);toast2("Sent — check your lock screen ✓");}}
           isAndroidWeb={isAndroidWeb} apkVersion={apkVersion} apkVersionFetched={apkVersionFetched} apkUrl={apkUrl} nativeUpdateAvailable={nativeUpdateAvailable}
-          onVenues={()=>goRoot("venues")}
+          onVenues={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("venues");setView({screen:"list"});}}
           onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});}}
           onVersionUpdates={()=>setShowVersionUpdates(true)}
           onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
@@ -8672,8 +8683,12 @@ function BottomNav({me,nav,onNav,settingsAlert}){
     {items.map(t=>{
       const active = nav===t.k;
       const flat = t.avatar||t.isImg; // no colored chip behind a raster logo or the profile photo — same special-case TopBar's old Me pill used
+      // Flat tabs (avatar/logo) had NO visible active state at all besides the label text color —
+      // real bug, found on the APK (2026-09-11): "only Me tab doesn't highlight." A photo avatar
+      // in particular buries a subtle text-color-only change entirely. A ring around the icon
+      // itself, same treatment for both flat tabs, fixes it regardless of what image is inside.
       return <button key={t.k} onClick={()=>onNav(t.k)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,padding:"7px 2px",border:"none",background:"transparent",cursor:"pointer",minHeight:56}}>
-        <div style={{position:"relative",width:26,height:26,borderRadius:t.avatar?"50%":8,background:flat?"transparent":(active?t.chip:"transparent"),color:flat?undefined:(active?"#fff":"var(--po-dim)"),display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
+        <div style={{position:"relative",width:26,height:26,borderRadius:t.avatar?"50%":8,background:flat?"transparent":(active?t.chip:"transparent"),color:flat?undefined:(active?"#fff":"var(--po-dim)"),display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden",boxShadow:flat&&active?"0 0 0 2px #818CF8":"none"}}>
           {t.avatar
             ? <Av u={me} size={26}/>
             : t.isImg
@@ -11101,20 +11116,22 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [expandedRegHistory,setExpandedRegHistory] = useState(new Set()); // userIds whose registration-position history is expanded — independent, any number at once
   // regHistory lives in its own Firestore doc (padelos_events/<eid>/regHistory/<uid>), separate
   // from the registration doc — see logRegHistory's comment for why (survives removal). Fetched
-  // lazily, once, the first time a given row is expanded — this is admin-facing detail rarely
-  // opened, not something worth a live listener for every player in the list on every render.
+  // fresh every time a row is expanded — this is admin-facing detail rarely opened, not something
+  // worth a live listener for every player in the list on every render, but it must NOT be cached
+  // across expands either: real bug, found on the APK (2026-09-11) — an admin removing and
+  // re-registering someone while this same screen stayed open re-expanded to a stale snapshot
+  // from before those actions, missing everything since (this used to only fetch once per uid,
+  // ever, for the lifetime of this screen instance).
   const [regHistoryData,setRegHistoryData] = useState({}); // userId -> "loading" | entries[]
   const toggleRegHistory = uid => setExpandedRegHistory(s=>{
     const n = new Set(s);
     if (n.has(uid)) { n.delete(uid); }
     else {
       n.add(uid);
-      if (!(uid in regHistoryData)) {
-        setRegHistoryData(d=>({...d,[uid]:"loading"}));
-        getDoc(doc(db,"padelos_events",String(effEv.id),"regHistory",String(uid)))
-          .then(snap=>setRegHistoryData(d=>({...d,[uid]: snap.exists() ? (snap.data().entries||[]) : []})))
-          .catch(e=>{ console.log("regHistory fetch failed", e); setRegHistoryData(d=>({...d,[uid]:[]})); });
-      }
+      setRegHistoryData(d=>({...d,[uid]:"loading"}));
+      getDoc(doc(db,"padelos_events",String(effEv.id),"regHistory",String(uid)))
+        .then(snap=>setRegHistoryData(d=>({...d,[uid]: snap.exists() ? (snap.data().entries||[]) : []})))
+        .catch(e=>{ console.log("regHistory fetch failed", e); setRegHistoryData(d=>({...d,[uid]:[]})); });
     }
     return n;
   });
@@ -13218,7 +13235,11 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         <div style={{fontSize:12.5,fontWeight:700,color:"var(--po-text)"}}>📰 Your Feed</div>
         <div onClick={onSeeAllFeed} style={{fontSize:10.5,fontWeight:700,color:"#818CF8",cursor:"pointer",textDecoration:"underline"}}>See all →</div>
       </div>
-      {feedItems.slice(0,6).map((item,i)=><FeedItemRow key={i} item={item} onOpen={onOpen} compact/>)}
+      {/* Was slice(0,6) — on a real phone (not just this dev environment's viewport) there's
+          real empty space left below 6 rows before the bottom nav (2026-09-11 APK feedback).
+          The box itself has no height cap, so it can already grow with more rows — the fixed
+          count was the only thing artificially holding it back. */}
+      {feedItems.slice(0,12).map((item,i)=><FeedItemRow key={i} item={item} onOpen={onOpen} compact/>)}
     </div>}
   </>;
 }

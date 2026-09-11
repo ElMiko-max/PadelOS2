@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.10";
+const APP_VERSION = "V0.16.11";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8695,7 +8695,7 @@ function CommList({comms,me,onOpen,onCreate}){
   const mine=comms.filter(c=>c.members.some(m=>m.userId===me.id));
   const shown=comms.filter(c=>c.type==="public"&&!c.members.some(m=>m.userId===me.id)).filter(c=>!q?c.gov===me.gov||c.area===me.area:c.name.toLowerCase().includes(q.toLowerCase())||c.area.includes(q));
   function CR({c}){const act=c.members.filter(m=>m.status!=="inactive").length,my=c.members.find(m=>m.userId===me.id);return <Card style={{cursor:"pointer"}}><div onClick={()=>onOpen(c.id)} style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>👥</div><div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{c.name}</span>{SEEDED_COMM_IDS.has(c.id)&&<SeedBadge/>}<Bdg label={c.type==="public"?"Public":"Private"} color={c.type==="public"?"#34D399":"var(--po-sub)"}/>{(c.sports?.length?c.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}{my&&rBdg(my.role)}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:2}}>📍 {c.area} · {c.gov}</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{act} members · {c.events.length} events</div></div></div></Card>;}
-  return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Communities</div><Btn label="+ New" onClick={onCreate} primary/></div>
+  return <><div className="mk-animate-in" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Communities</div><Btn label="+ New" onClick={onCreate} primary/></div>
     <Tabs tabs={[["mine",`Mine (${mine.length})`],["explore","Explore"]]} active={sub} onChange={setSub}/>
     {sub==="mine"&&(mine.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>👥</div>No communities. <span style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline"}} onClick={()=>setSub("explore")}>Explore →</span></div></Card>:mine.map(c=><CR key={c.id} c={c}/>))}
     {sub==="explore"&&<><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search by name or area..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:8}}/>{!q&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:10}}>📍 Near {me.area}</div>}{shown.length===0?<Card><div style={{textAlign:"center",padding:"20px 0",color:"var(--po-dim)",fontSize:13}}>No communities found.</div></Card>:shown.map(c=><CR key={c.id} c={c}/>)}</>}
@@ -8786,9 +8786,12 @@ function CommOverview({comm, venues}){
   return <>
     <div style={{fontSize:13,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>📊 Overview</div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:12}}>
-      {[["Events",visibleEvents.length],["Matches",totalMatches],["Venues",venueRows.length],["Events/mo",eventsPerMonth]].map(([l,v])=>
+      {/* CountUp only for the genuinely-integer ones — Events/mo is a .toFixed(1) string, and
+          CountUp always rounds to a whole number, so animating that would lose its own decimal
+          at rest, not just mid-count. */}
+      {[["Events",visibleEvents.length,true],["Matches",totalMatches,true],["Venues",venueRows.length,true],["Events/mo",eventsPerMonth,false]].map(([l,v,animate])=>
         <div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"8px 4px",textAlign:"center"}}>
-          <div style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{v}</div>
+          <div style={{fontSize:15,fontWeight:700,color:"var(--po-text)"}}>{animate?<CountUp to={v}/>:v}</div>
           <div style={{fontSize:9,color:"var(--po-dim)",marginTop:1}}>{l}</div>
         </div>
       )}
@@ -13274,7 +13277,7 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
     </div>;
   }
   return <>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>
+    <div className="mk-animate-in" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Events</div>
     {isAdm&&!selMode&&<div style={{display:"flex",gap:8}}><SmBtn label="☑ Select" onClick={()=>setSelMode(true)} color="#6366F1"/><Btn label="+ New" primary onClick={handleNewClick}/></div>}
     {selMode&&<SmBtn label="✕ Cancel" onClick={exitSelMode} color="#94A3B8"/>}
   </div>
@@ -13515,7 +13518,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
 
   // Build team history from all CT completed events the user participated in
 
-  return <>{isMeTab?<div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Me</div>:<BBtn onBack={onBack} label="Back"/>}
+  return <>{isMeTab?<div className="po-text mk-animate-in" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Me</div>:<BBtn onBack={onBack} label="Back"/>}
   {viewedByAdmin&&<div style={{marginBottom:12,padding:"8px 12px",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>{isPlatformAdmin?"🛡 Viewing as Platform Admin — visible only to you":`👀 Viewing ${user.nickname}'s profile`}</div>}
   <Card><div style={{display:"flex",gap:14,alignItems:"center",marginBottom:16}}>
     <Av u={user} size={isMeTab?68:56}/>
@@ -14135,7 +14138,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
         return <>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
             {totals.map(([l,v])=><Card key={l} style={{textAlign:"center",padding:"12px 8px"}}>
-              <div style={{fontSize:18,fontWeight:700,color:"var(--po-text)"}}>{l==="Transactions"?v:`${v.toLocaleString()} EGP`}</div>
+              <div style={{fontSize:18,fontWeight:700,color:"var(--po-text)"}}>{l==="Transactions"?<CountUp to={v}/>:`${v.toLocaleString()} EGP`}</div>
               <div style={{fontSize:10,color:"var(--po-dim)",marginTop:2}}>{l}</div>
             </Card>)}
           </div>
@@ -14578,7 +14581,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
     NativeSettings.open({optionAndroid: AndroidSettings.ApplicationDetails, optionIOS: IOSSettings.App}).catch(e=>console.log("openAppSettings failed", e));
   };
   return <>
-    <div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
+    <div className="po-text mk-animate-in" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Settings</div>
     {/* Identity + Account — this is the entire old ⚙️ dropdown menu (identity header, Venues,
         Platform Admin, Version Updates, the dev/prod switch, the Android app link, Sign Out),
         moved here in full and placed first — not buried under Notifications/Preferences/Support —

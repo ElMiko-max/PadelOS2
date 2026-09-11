@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.10 (current) — Third batch from the interface-clarity audit: every clickable colored text is now underlined
+## V0.16.11 (current) — Modernization notes from the audit: entrance animation on the main screens + animated counters
+
+- **All 5 bottom-nav root screens (Home, Events, Communities, Me, Settings) now share the same subtle "fade up" entrance on their header when you open them** — the same motion Home already had, now consistent across all five tabs.
+- **Whole-number stats (event/match/venue counts in Platform Admin, transaction count in the subscription statement) now count up on load** instead of appearing fully-formed. Deliberately left alone anywhere the number has decimals or thousand-separator formatting (EGP amounts) — the counter always rounds to a whole number, which would have changed how the final value looks.
+
+---
+
+## V0.16.10 — Third batch from the interface-clarity audit: every clickable colored text is now underlined
 
 - **Every plain colored clickable text in the app (no border, no background) is now underlined** — the same rule already applied to "Reply"/"Cancel" last round, now covering the remaining ~28 spots (Sign out, See all, Explore, Mark all read, Collapse, Clear, Remove Photo, and others) — one consistent signal that it's clickable, not just a color choice.
 

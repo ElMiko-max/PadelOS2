@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.09";
+const APP_VERSION = "V0.16.10";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8231,7 +8231,7 @@ export default function Matchkeeper() {
         <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Update Required</div>
         <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>This app version ({APP_VERSION}) is too old to keep using safely — a required fix has shipped since. Please update to continue.</div>
         {apkUrl && <a href={apkUrl} target="_blank" rel="noreferrer" style={{display:"inline-block",padding:"11px 20px",borderRadius:10,background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,textDecoration:"none"}}>📥 Download Update</a>}
-        <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:16}}>Sign out</div>
+        <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer",textDecoration:"underline",marginTop:16}}>Sign out</div>
       </div>
     </div>;
   }
@@ -8241,7 +8241,7 @@ export default function Matchkeeper() {
         <div style={{fontSize:32,marginBottom:12}}>🚫</div>
         <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Account Suspended</div>
         <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>A platform admin has suspended your account. Your match history and stats are untouched, but you can't sign in or use the app right now — contact the admin if you think this is a mistake.</div>
-        <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer"}}>Sign out</div>
+        <div onClick={()=>signOut(fbAuth)} style={{fontSize:12,color:"#818CF8",cursor:"pointer",textDecoration:"underline"}}>Sign out</div>
       </div>
     </div>;
   }
@@ -8254,7 +8254,7 @@ export default function Matchkeeper() {
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>This invite link will connect your account to <b style={{color:"#F1F5F9"}}>{target.nickname}</b>'s profile{target.area&&target.area!=="—"?` (${target.area})`:""}. Only confirm if that's really you — if this link was forwarded to you by mistake, don't claim someone else's profile.</div>
           <button onClick={()=>{autoInviteClaimRef.current=inv.code;claimViaInvite(inv.targetUserId,inv);setPendingInviteConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
-          <div onClick={()=>{clearPendingInvite();autoInviteClaimRef.current=inv.code;setPendingInviteConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
+          <div onClick={()=>{clearPendingInvite();autoInviteClaimRef.current=inv.code;setPendingInviteConfirm(null);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",textDecoration:"underline",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
         </div>
       </div>;
@@ -8267,7 +8267,7 @@ export default function Matchkeeper() {
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Is this you?</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>A profile already exists for this email — <b style={{color:"#F1F5F9"}}>{target.nickname}</b>{target.area&&target.area!=="—"?` (${target.area})`:""}. Confirm only if that's really you, so we don't create a duplicate profile.</div>
           <button onClick={()=>{claimViaEmailMatch(target.id);setPendingEmailMatchConfirm(null);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Yes, that's me</button>
-          <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfileOrMatch(true);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>That's not me — create my own profile instead</div>
+          <div onClick={()=>{setPendingEmailMatchConfirm(null);createFreshProfileOrMatch(true);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",textDecoration:"underline",marginTop:14}}>That's not me — create my own profile instead</div>
           <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:10}}>Sign out</div>
         </div>
       </div>;
@@ -8279,7 +8279,7 @@ export default function Matchkeeper() {
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>New here?</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>You're signed in as <b style={{color:"#F1F5F9"}}>{authUser.displayName||authUser.email}</b>, but there's no Matchkeeper profile for this account (yet, or anymore). Continue to set one up, or sign out if this isn't the account you meant to use.</div>
           <button onClick={()=>{createFreshProfileOrMatch();setPendingFreshProfileConfirm(false);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>Continue — create my profile</button>
-          <div onClick={()=>{setPendingFreshProfileConfirm(false);signOut(fbAuth);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>Sign out</div>
+          <div onClick={()=>{setPendingFreshProfileConfirm(false);signOut(fbAuth);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",textDecoration:"underline",marginTop:14}}>Sign out</div>
         </div>
       </div>;
     }
@@ -8295,7 +8295,7 @@ export default function Matchkeeper() {
           <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Taking longer than expected</div>
           <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>Setting up your profile is stuck — this is usually a connection issue. Try again, or sign out and back in.</div>
           <button onClick={()=>window.location.reload()} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:"#6366F1",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer"}}>🔄 Try Again</button>
-          <div onClick={()=>{clearPendingInvite();signOut(fbAuth);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",marginTop:14}}>Sign out</div>
+          <div onClick={()=>{clearPendingInvite();signOut(fbAuth);}} style={{fontSize:12,color:"#818CF8",cursor:"pointer",textDecoration:"underline",marginTop:14}}>Sign out</div>
         </div>
       ) : <div style={{color:"#64748B",fontSize:14}}>Setting up your profile…</div>}
     </div>;
@@ -8616,7 +8616,7 @@ function TopBar({me,onNav,TH,dark,
       {notifMenu&&<div style={{position:"absolute",right:0,top:42,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,width:300,maxWidth:"85vw",zIndex:100,boxShadow:"0 8px 32px #00000066",overflow:"hidden"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 12px",borderBottom:"0.5px solid var(--po-bdr)"}}>
           <span style={{fontWeight:700,fontSize:13,color:"var(--po-text)"}}>🔔 Notifications</span>
-          {unreadCount>0&&<span onClick={onMarkAllNotifRead} style={{fontSize:11,color:"#6366F1",cursor:"pointer",fontWeight:600}}>Mark all read</span>}
+          {unreadCount>0&&<span onClick={onMarkAllNotifRead} style={{fontSize:11,color:"#6366F1",cursor:"pointer",textDecoration:"underline",fontWeight:600}}>Mark all read</span>}
         </div>
         <div style={{maxHeight:340,overflowY:"auto"}}>
           {myNotifs.length===0
@@ -8632,7 +8632,7 @@ function TopBar({me,onNav,TH,dark,
               </div>)
           }
         </div>
-        {myNotifs.length>0&&<div onClick={onSeeAllNotifs} style={{padding:"9px",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",borderTop:"0.5px solid var(--po-bdr)"}}>See all</div>}
+        {myNotifs.length>0&&<div onClick={onSeeAllNotifs} style={{padding:"9px",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",textDecoration:"underline",borderTop:"0.5px solid var(--po-bdr)"}}>See all</div>}
       </div>}
     </div>
   </div>;
@@ -8697,7 +8697,7 @@ function CommList({comms,me,onOpen,onCreate}){
   function CR({c}){const act=c.members.filter(m=>m.status!=="inactive").length,my=c.members.find(m=>m.userId===me.id);return <Card style={{cursor:"pointer"}}><div onClick={()=>onOpen(c.id)} style={{display:"flex",gap:12,alignItems:"flex-start"}}><div style={{width:44,height:44,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>👥</div><div style={{flex:1,minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:15,color:"var(--po-text)"}}>{c.name}</span>{SEEDED_COMM_IDS.has(c.id)&&<SeedBadge/>}<Bdg label={c.type==="public"?"Public":"Private"} color={c.type==="public"?"#34D399":"var(--po-sub)"}/>{(c.sports?.length?c.sports:[DEFAULT_SPORT]).map(s=><Bdg key={s} label={sportLabel(s)} color="#A78BFA"/>)}{my&&rBdg(my.role)}</div><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:2}}>📍 {c.area} · {c.gov}</div><div className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{act} members · {c.events.length} events</div></div></div></Card>;}
   return <><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{fontSize:18,fontWeight:600,color:"var(--po-text)"}}>Communities</div><Btn label="+ New" onClick={onCreate} primary/></div>
     <Tabs tabs={[["mine",`Mine (${mine.length})`],["explore","Explore"]]} active={sub} onChange={setSub}/>
-    {sub==="mine"&&(mine.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>👥</div>No communities. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>setSub("explore")}>Explore →</span></div></Card>:mine.map(c=><CR key={c.id} c={c}/>))}
+    {sub==="mine"&&(mine.length===0?<Card><div style={{textAlign:"center",padding:"24px 0",color:"var(--po-dim)",fontSize:13}}><div style={{fontSize:28,marginBottom:8}}>👥</div>No communities. <span style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline"}} onClick={()=>setSub("explore")}>Explore →</span></div></Card>:mine.map(c=><CR key={c.id} c={c}/>))}
     {sub==="explore"&&<><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search by name or area..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:8}}/>{!q&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:10}}>📍 Near {me.area}</div>}{shown.length===0?<Card><div style={{textAlign:"center",padding:"20px 0",color:"var(--po-dim)",fontSize:13}}>No communities found.</div></Card>:shown.map(c=><CR key={c.id} c={c}/>)}</>}
   </>;
 }
@@ -9353,7 +9353,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,color:"var(--po-text)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{a.message}</div>
-                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}{!defaultOpen&&<span onClick={()=>toggleAnn(a.id)} style={{color:"#6366F1",cursor:"pointer",marginLeft:8}}>▲ Collapse</span>}</div>
+                  <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{a.authorName} · {timeAgo(a.createdAt)}{!defaultOpen&&<span onClick={()=>toggleAnn(a.id)} style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline",marginLeft:8}}>▲ Collapse</span>}</div>
                 </div>
                 {isAdmin&&<SmBtn label="✕" onClick={()=>{if(window.confirm("Remove this announcement?"))onDeleteAnnouncement&&onDeleteAnnouncement(a.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11,flexShrink:0}}/>}
               </div>
@@ -9394,8 +9394,8 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       admin has to deliberately choose to see it rather than it being visible by
                       default. */}
                   {isAdmin&&<div style={{display:"flex",gap:12}}>
-                    <div onClick={()=>setRevealedPolls(s=>({...s,[a.id]:!s[a.id]}))} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>{revealedPolls[a.id]?"🙈 Hide who voted":"👁 See who voted"}</div>
-                    {onCreateInvite&&<div onClick={()=>sharePollLink(a)} style={{fontSize:11,color:"#6366F1",cursor:"pointer"}}>{pollShareState[a.id]==="sharing"?"⏳ Sharing…":pollShareState[a.id]==="copied"?"✓ Copied to clipboard":"📤 Share poll link"}</div>}
+                    <div onClick={()=>setRevealedPolls(s=>({...s,[a.id]:!s[a.id]}))} style={{fontSize:11,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>{revealedPolls[a.id]?"🙈 Hide who voted":"👁 See who voted"}</div>
+                    {onCreateInvite&&<div onClick={()=>sharePollLink(a)} style={{fontSize:11,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>{pollShareState[a.id]==="sharing"?"⏳ Sharing…":pollShareState[a.id]==="copied"?"✓ Copied to clipboard":"📤 Share poll link"}</div>}
                   </div>}
                   {isAdmin&&revealedPolls[a.id]&&<div style={{padding:"8px 10px",background:"var(--po-inp)",borderRadius:8,display:"flex",flexDirection:"column",gap:5}}>
                     {a.poll.options.map(o=>{
@@ -9596,17 +9596,17 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
               const vd=prompt("Effective from (YYYY-MM-DD):", bk.monthlyDueSince||todayStr);
               if(vd===null)return;
               onSetBookkeeping({monthlyDue:parseFloat(va), monthlyDueSince:vd});
-            }} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
+            }} style={{fontSize:10,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>✏️ edit</span>
           </div>
           <div>
             <div style={{fontSize:10,color:"var(--po-dim)"}}>Casual members charged</div>
             <div style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{includeCasual?"Yes":"No"}</div>
-            <span onClick={()=>{if(window.confirm(includeCasual?"Stop charging casual members the monthly due?\n\nOnly Regular members will keep accruing new charges going forward — charges already recorded aren't removed.":"Start charging casual members the monthly due again?\n\nThey'll start accruing new charges going forward — no back-charges for the time they were excluded."))onSetBookkeeping({includeCasual:!includeCasual});}} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
+            <span onClick={()=>{if(window.confirm(includeCasual?"Stop charging casual members the monthly due?\n\nOnly Regular members will keep accruing new charges going forward — charges already recorded aren't removed.":"Start charging casual members the monthly due again?\n\nThey'll start accruing new charges going forward — no back-charges for the time they were excluded."))onSetBookkeeping({includeCasual:!includeCasual});}} style={{fontSize:10,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>✏️ edit</span>
           </div>
           <div>
             <div style={{fontSize:10,color:"var(--po-dim)"}}>Opening balance</div>
             <div style={{fontSize:14,fontWeight:700,color:"var(--po-text)"}}>{bk.openingBalance||0} EGP</div>
-            <span onClick={()=>{const v=prompt("Opening cash balance (EGP) — whatever was already in the box before you started tracking here:",String(bk.openingBalance||0));if(v!==null&&!isNaN(parseFloat(v)))onSetBookkeeping({openingBalance:parseFloat(v)});}} style={{fontSize:10,color:"#6366F1",cursor:"pointer"}}>✏️ edit</span>
+            <span onClick={()=>{const v=prompt("Opening cash balance (EGP) — whatever was already in the box before you started tracking here:",String(bk.openingBalance||0));if(v!==null&&!isNaN(parseFloat(v)))onSetBookkeeping({openingBalance:parseFloat(v)});}} style={{fontSize:10,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>✏️ edit</span>
           </div>
         </div>
         <div style={{flex:1,textAlign:"center"}}>
@@ -9678,7 +9678,7 @@ function LedgerTab({comm,users,me,isAdmin,regs,onViewProfile,onOpenEvent,onSetBo
         </div>}
         {/* Opening balance is always reachable here (not buried behind expand) — it's a
             per-player, one-time setup action admins need to find easily. */}
-        <div style={{fontSize:10,color:"#6366F1",cursor:"pointer",marginTop:6}} onClick={e=>{e.stopPropagation();
+        <div style={{fontSize:10,color:"#6366F1",cursor:"pointer",textDecoration:"underline",marginTop:6}} onClick={e=>{e.stopPropagation();
           const v=prompt(`Opening balance for ${u.nickname} (EGP) — a starting balance from before this ledger existed, specific to this player.\nPositive = they already owed money. Negative = they already had credit.`, String(openingEntry?.amount||0));
           if(v===null) return;
           const amt=parseFloat(v);
@@ -13182,7 +13182,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
       </div>
       </div>:<div className="mk-animate-in" style={{marginTop:14,padding:16,borderRadius:14,textAlign:"center",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".2s"}}>
         <div style={{fontSize:13,color:"var(--po-dim)"}}>No upcoming {showSportSwitcher?effSportView:""} events yet</div>
-        <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>
+        <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer",textDecoration:"underline"}}>Browse Events →</div>
       </div>}
       {coming.length>1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,marginTop:8}}>
         <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>setHeroIdx(i)} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
@@ -13213,7 +13213,7 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
     {feedItems.length>0&&<div className="mk-animate-in" style={{marginTop:16,padding:14,borderRadius:12,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".64s"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <div style={{fontSize:12.5,fontWeight:700,color:"var(--po-text)"}}>📰 Your Feed</div>
-        <div onClick={onSeeAllFeed} style={{fontSize:10.5,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>See all →</div>
+        <div onClick={onSeeAllFeed} style={{fontSize:10.5,fontWeight:700,color:"#818CF8",cursor:"pointer",textDecoration:"underline"}}>See all →</div>
       </div>
       {feedItems.slice(0,6).map((item,i)=><FeedItemRow key={i} item={item} onOpen={onOpen} compact/>)}
     </div>}
@@ -13422,7 +13422,7 @@ function UserEditModal({user,isNew,isPlatformAdmin,isMe,egypt,myGooglePhotoURL,o
             <span style={{fontSize:13,fontWeight:600,color:photoUploading?"var(--po-dim)":"#6366F1"}}>{photoUploading?"Uploading…":"📷 Change Photo"}</span>
           </label>
           {isMe&&myGooglePhotoURL&&<div onClick={resetToGooglePhoto} style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",cursor:"pointer",marginTop:4}}>↺ Reset to Google Photo</div>}
-          {isMe&&user.photoURL&&<div onClick={removeMyPhoto} style={{fontSize:12,fontWeight:600,color:"#EF4444",cursor:"pointer",marginTop:4}}>🗑 Remove Photo</div>}
+          {isMe&&user.photoURL&&<div onClick={removeMyPhoto} style={{fontSize:12,fontWeight:600,color:"#EF4444",cursor:"pointer",marginTop:4,textDecoration:"underline"}}>🗑 Remove Photo</div>}
         </div>
       </div>}
       <Inp label="Nickname" value={nf.nickname} onChange={v=>set("nickname",v)}/>
@@ -13576,9 +13576,9 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
 
   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"16px 0 8px"}}>
     <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)"}}>{isMeTab?"My Communities":`${user.nickname}'s Communities`}</span>
-    {isMeTab&&<span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>🔍 Explore / Join / Create</span>}
+    {isMeTab&&<span onClick={()=>onExploreCommunities&&onExploreCommunities()} style={{fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>🔍 Explore / Join / Create</span>}
   </div>
-  {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>{isMeTab?<>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></>:"Not in any community yet."}</div></Card>
+  {mine.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"14px 0"}}>{isMeTab?<>Not in any community yet. <span style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline"}} onClick={()=>onExploreCommunities&&onExploreCommunities()}>Explore →</span></>:"Not in any community yet."}</div></Card>
     :mine.map(c=>{const myMember=c.members.find(m=>m.userId===user.id);const myRole=myMember?.role;
       return <Card key={c.id} style={{padding:"10px 14px",marginBottom:6}}>
         <div onClick={()=>onOpenCommunity&&onOpenCommunity(c.id)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:onOpenCommunity?"pointer":"default"}}>
@@ -13805,7 +13805,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
         {isOpen&&<div style={{padding:"0 12px 10px"}}>
           {history.map((h,hi)=><div key={hi} style={{padding:"7px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
-              <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · <span onClick={e=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===h.eventId));if(hc){e.stopPropagation();onOpenEvent&&onOpenEvent(hc.id,h.eventId);}}} style={{color:"#6366F1",cursor:"pointer",fontWeight:600}}>{h.eventName}</span> <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
+              <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · <span onClick={e=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===h.eventId));if(hc){e.stopPropagation();onOpenEvent&&onOpenEvent(hc.id,h.eventId);}}} style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline",fontWeight:600}}>{h.eventName}</span> <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
               <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
             </div>
             <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"
@@ -13831,7 +13831,7 @@ function ProfileSc({user,me,comms,onBack,viewedByAdmin,onEditUser,isMeTab,onOpen
               {isOpen&&<div style={{padding:"0 12px 8px"}}>
                 {p.history.map((h,hi)=><div key={hi} style={{padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
-                    <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · <span onClick={e=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===h.eventId));if(hc){e.stopPropagation();onOpenEvent&&onOpenEvent(hc.id,h.eventId);}}} style={{color:"#6366F1",cursor:"pointer",fontWeight:600}}>{h.eventName}</span> <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
+                    <span style={{color:"var(--po-dim)"}}>{fmtD(h.date)} · <span onClick={e=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===h.eventId));if(hc){e.stopPropagation();onOpenEvent&&onOpenEvent(hc.id,h.eventId);}}} style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline",fontWeight:600}}>{h.eventName}</span> <Bdg label={h.type==="ct"?"CT":"CI"} color={h.type==="ct"?"#06B6D4":"#6366F1"}/></span>
                     <span style={{fontWeight:700,color:h.won?"#34D399":"#EF4444"}}>{h.won?"✅ Won":"❌ Lost"}{h.score?` ${h.score.for}–${h.score.against}`:""}</span>
                   </div>
                   <div style={{color:"var(--po-text)",fontSize:12,marginTop:2}}>{kind==="partner"
@@ -14240,7 +14240,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           <option value="">All versions</option>
           {versionOpts.map(v=><option key={v} value={v}>{v}</option>)}
         </select>
-        {(auditActionFilter||auditVersionFilter||auditActorFilter)&&<div onClick={()=>{setAuditActionFilter("");setAuditVersionFilter("");setAuditActorFilter("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer",display:"flex",alignItems:"center",padding:"0 6px"}}>Clear ✕</div>}
+        {(auditActionFilter||auditVersionFilter||auditActorFilter)&&<div onClick={()=>{setAuditActionFilter("");setAuditVersionFilter("");setAuditActorFilter("");}} style={{fontSize:11,color:"#6366F1",cursor:"pointer",textDecoration:"underline",display:"flex",alignItems:"center",padding:"0 6px"}}>Clear ✕</div>}
       </div>
       {filtered.length===0&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"20px 0"}}>{auditLog.length===0?"No activity logged yet.":"No matches"}</div></Card>}
       {filtered.length>0&&<div style={{overflowX:"auto",WebkitOverflowScrolling:"touch",border:"0.5px solid var(--po-bdr)",borderRadius:8}}>
@@ -14282,7 +14282,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
                     <td style={{padding:"8px 10px",fontSize:12,color:"var(--po-text)",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}}>{e.summary}</td>
                     <td style={{padding:"8px 6px",fontSize:11,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.3}}>
                       {!target?<span style={{color:"var(--po-dim)"}}>—</span>
-                        :target.onClick?<span onClick={target.onClick} style={{color:"#6366F1",cursor:"pointer"}}>{target.icon} {target.label}</span>
+                        :target.onClick?<span onClick={target.onClick} style={{color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>{target.icon} {target.label}</span>
                         :<span style={{color:"var(--po-dim)"}}>{target.icon} {target.label}</span>}
                     </td>
                     <td style={{padding:"8px 10px",fontSize:10,color:"var(--po-dim)",whiteSpace:"nowrap",lineHeight:1.4}}>
@@ -14614,7 +14614,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
         {(!isNative||pushStatus==="error")&&<Btn label={pushStatus==="on"?"✓ On":pushStatus==="error"?(pushBlocked?"Open Settings":"Try Again"):"Enable"} primary={pushStatus!=="on"} onClick={(isNative&&pushBlocked)?openAppSettings:enablePush} style={{flexShrink:0}}/>}
         {isNative&&pushStatus==="on"&&<span style={{fontSize:18}}>✅</span>}
       </div>
-      {pushStatus==="on"&&<div onClick={onSendTestNotif} style={{marginTop:12,paddingTop:12,borderTop:"0.5px solid var(--po-bdr)",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer"}}>Send myself a test notification</div>}
+      {pushStatus==="on"&&<div onClick={onSendTestNotif} style={{marginTop:12,paddingTop:12,borderTop:"0.5px solid var(--po-bdr)",textAlign:"center",fontSize:12,fontWeight:600,color:"#6366F1",cursor:"pointer",textDecoration:"underline"}}>Send myself a test notification</div>}
     </Card>
     {isNative&&<Card style={{marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>

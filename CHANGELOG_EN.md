@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.04 (current) — Swipe animation redo: the whole card now moves and tilts with your finger
+## V0.16.05 (current) — Swipe animation is now a real carousel: two cards half-and-half mid-drag, no tilt
+
+- **Adjustment to V0.16.04** — admin feedback: "animation is bad... why is there a tilt, not just straight scrolling" and "at one point 2 cards should appear half half."
+- **Tilt (rotate) removed entirely** — motion is now pure horizontal, exactly as asked.
+- **The next (or previous) card now genuinely appears beside the current one while dragging** — a real carousel (like a deck of cards), not a single card moving alone. Drag halfway and you'll see exactly half of each card.
+
+---
+
+## V0.16.04 — Swipe animation redo: the whole card now moves and tilts with your finger
 
 - **Adjustment to V0.16.03** — the previous animation only nudged the text inside the card a little, and didn't read as an actual card moving. Admin feedback after trying it: "I still don't see the card moving... I want to feel like a card is turning right and left."
 - **The whole card now follows your finger in real time as you drag**, and tilts slightly (rotate) in the drag direction — a real "picking up and moving a card" feel. Let go too early and it snaps back; drag far enough and it finishes sliding off in that direction before the next one appears.

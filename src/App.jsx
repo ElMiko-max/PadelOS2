@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.04";
+const APP_VERSION = "V0.16.05";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12992,45 +12992,85 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
   // an effect) so switching sports/losing an event mid-view can never point past the new array's
   // end.
   const [heroIdx,setHeroIdx]=useState(0);
-  // Which way the incoming card's content slides in from — purely cosmetic (2026-09-11, admin
-  // request). Keyed off heroEv.id below so the inner content remounts and replays the entrance
-  // animation on every change, while the outer .mk-hero div itself never remounts — its own
-  // one-time entrance glow (mkHeroGlow) is untouched.
-  const [slideDir,setSlideDir]=useState(1);
-  // Live drag-follow (2026-09-11, admin follow-up — the first cut only nudged the inner text a
-  // little after the fact and didn't actually read as a card moving). `dragX` drives the outer
-  // card's own translateX in real time while a finger is down (`dragging` disables the CSS
-  // transition so it tracks 1:1 with no lag), then on release either snaps back to 0 (short drag)
-  // or finishes sliding fully off in the same direction before swapping heroIdx underneath it —
-  // exactly the "card gets thrown off, next one settles in" feel that was missing.
+  const heroIdxClamped = Math.min(heroIdx, Math.max(0, coming.length-1));
+  const heroEv = coming[heroIdxClamped];
+  // Real carousel drag (2026-09-11 x2, admin follow-up — the first cut only moved the single card
+  // as a whole with a tilt; the ask was straight horizontal motion, with the neighboring card
+  // genuinely visible half-and-half mid-drag, like an actual deck of cards). `heroWidthRef` is the
+  // card's own measured width — used both as the swipe-completion distance (so the neighbor lands
+  // flush at 0, not at an arbitrary offset) and the completion threshold. `dragTransition` toggles
+  // the CSS transition off during the live drag (1:1 finger tracking, no lag) and on for the
+  // settle/snap-back.
   const [dragX,setDragX]=useState(0);
-  const [dragging,setDragging]=useState(false);
+  const [dragTransition,setDragTransition]=useState(false);
+  const heroWrapRef = useRef(null);
+  const heroWidthRef = useRef(0);
+  useEffect(() => {
+    const measure = () => { heroWidthRef.current = heroWrapRef.current?.offsetWidth || 0; };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
   const heroTouchRef = useRef({x:0,swiped:false});
-  const onHeroTouchStart = e => { heroTouchRef.current = {x:e.touches[0].clientX, swiped:false}; setDragging(true); };
+  const onHeroTouchStart = e => { heroTouchRef.current = {x:e.touches[0].clientX, swiped:false}; setDragTransition(false); };
   const onHeroTouchMove = e => {
+    if (coming.length<2) return;
     const dx = e.touches[0].clientX - heroTouchRef.current.x;
     if (Math.abs(dx) > 10) heroTouchRef.current.swiped = true;
     setDragX(dx);
   };
   const onHeroTouchEnd = () => {
-    setDragging(false);
-    if (coming.length<2 || Math.abs(dragX) < 40) { setDragX(0); return; }
+    const w = heroWidthRef.current || 1;
+    setDragTransition(true);
+    if (coming.length<2 || Math.abs(dragX) < Math.min(90, w*0.25)) { setDragX(0); return; }
     const dir = dragX<0 ? 1 : -1; // 1 = advancing to next (card exits left), -1 = going back (card exits right)
-    setDragX(dir===1 ? -280 : 280);
+    setDragX(dir===1 ? -w : w);
     setTimeout(() => {
-      setSlideDir(dir);
+      setDragTransition(false);
       setHeroIdx(i => {
         const cur = Math.min(i, coming.length-1);
         return dir===1 ? (cur+1)%coming.length : (cur-1+coming.length)%coming.length;
       });
       setDragX(0);
-    }, 220);
+    }, 260);
   };
-  const heroIdxClamped = Math.min(heroIdx, Math.max(0, coming.length-1));
-  const heroEv = coming[heroIdxClamped];
-  const heroVenue = heroEv && venues?.find(v=>v.id===heroEv.venueId);
-  const heroSplit = heroEv && splitRegsByCapacity(heroEv);
-  const heroCap = heroEv && (getMaxPlayers(heroEv) || heroEv.courts*5 || null);
+  const prevHeroEv = coming.length>1 ? coming[(heroIdxClamped-1+coming.length)%coming.length] : null;
+  const nextHeroEv = coming.length>1 ? coming[(heroIdxClamped+1)%coming.length] : null;
+  // Shared body renderer — prev/current/next are the same card design with different event data,
+  // each computing its own venue/registration split rather than reusing heroEv's.
+  const heroCardBody = ev => {
+    const v = venues?.find(x=>x.id===ev.venueId);
+    const split = splitRegsByCapacity(ev);
+    const cap = getMaxPlayers(ev) || ev.courts*5 || null;
+    return <>
+      <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
+      <div style={{position:"relative"}}>
+        <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(ev)}</div>
+        <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{ev.name}</div>
+        <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
+          {v&&<span>📍 {v.name}</span>}
+          <span>🕘 {fmtT(ev.time)}</span>
+        </div>
+        {cap&&<>
+          <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,.12)",marginTop:12,overflow:"hidden"}}>
+            <div style={{height:"100%",borderRadius:3,width:`${Math.min(100,(split.active.length/cap)*100)}%`,background:"linear-gradient(90deg,#818CF8,#34D399)"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
+            <span style={{fontSize:11,color:"#C7D2FE"}}>{split.active.length} / {cap} registered</span>
+            <span style={{background:"#fff",color:"#1e1b3a",fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:8}}>View Event →</span>
+          </div>
+        </>}
+      </div>
+    </>;
+  };
+  // `current` stays in normal flow (position:relative) so it — and it alone — gives the outer
+  // wrapper its height; prev/next are absolutely positioned siblings at -100%/+100%, invisible
+  // until a drag brings them into the wrapper's overflow:hidden viewport.
+  const heroSlotBase = {boxSizing:"border-box",padding:16,overflow:"hidden",borderRadius:14,background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa",
+    transform:`translateX(${dragX}px)`, transition:dragTransition?"transform .26s cubic-bezier(.16,1,.3,1)":"none"};
+  const heroCurrentStyle = {...heroSlotBase, position:"relative"};
+  const heroPrevStyle = {...heroSlotBase, position:"absolute", top:0, left:"-100%", width:"100%", height:"100%"};
+  const heroNextStyle = {...heroSlotBase, position:"absolute", top:0, left:"100%", width:"100%", height:"100%"};
   const countdownLabel = ev => {
     if(!ev.date) return "";
     const evDate = new Date(`${ev.date}T00:00:00`); const today = new Date(); today.setHours(0,0,0,0);
@@ -13067,36 +13107,21 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
         <div onClick={()=>setSportView("Football")} style={{flex:1,textAlign:"center",padding:"7px 0",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,background:effSportView==="Football"?"#34D399":"var(--po-inp)",color:effSportView==="Football"?"#fff":"var(--po-sub)"}}>⚽ Football</div>
       </div>}
       {heroEv?<div className="mk-animate-in" style={{marginTop:14,animationDelay:".22s"}}>
-      <div className="mk-hero" onClick={()=>{if(!heroTouchRef.current.swiped) onOpen(heroEv.communityId,heroEv.id);}}
-        onTouchStart={onHeroTouchStart} onTouchMove={onHeroTouchMove} onTouchEnd={onHeroTouchEnd}
-        style={{position:"relative",borderRadius:14,padding:16,overflow:"hidden",cursor:"pointer",background:"linear-gradient(135deg, #1b1f3a 0%, #241a3d 55%, #2b1830 100%)",border:"0.5px solid #3730a3aa",touchAction:"pan-y",
-          transform:`translateX(${dragX}px) rotate(${Math.max(-8,Math.min(8,dragX/16))}deg)`, opacity:Math.max(1-Math.abs(dragX)/320,0.35),
-          transition:dragging?"none":"transform .22s cubic-bezier(.16,1,.3,1), opacity .22s cubic-bezier(.16,1,.3,1)"}}>
-        <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
-        <div key={heroEv.id} className={slideDir===1?"mk-hero-slide-next":"mk-hero-slide-prev"} style={{position:"relative"}}>
-          <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(heroEv)}</div>
-          <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{heroEv.name}</div>
-          <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
-            {heroVenue&&<span>📍 {heroVenue.name}</span>}
-            <span>🕘 {fmtT(heroEv.time)}</span>
-          </div>
-          {heroCap&&<>
-            <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,.12)",marginTop:12,overflow:"hidden"}}>
-              <div className="mk-hero-bar-fill" style={{height:"100%",borderRadius:3,width:`${Math.min(100,(heroSplit.active.length/heroCap)*100)}%`,background:"linear-gradient(90deg,#818CF8,#34D399)"}}/>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
-              <span style={{fontSize:11,color:"#C7D2FE"}}>{heroSplit.active.length} / {heroCap} registered</span>
-              <span style={{background:"#fff",color:"#1e1b3a",fontSize:11,fontWeight:700,padding:"5px 12px",borderRadius:8}}>View Event →</span>
-            </div>
-          </>}
+      <div ref={heroWrapRef} style={{position:"relative",overflow:"hidden",borderRadius:14}}>
+        {prevHeroEv&&<div style={heroPrevStyle}>{heroCardBody(prevHeroEv)}</div>}
+        <div className="mk-hero" onClick={()=>{if(!heroTouchRef.current.swiped) onOpen(heroEv.communityId,heroEv.id);}}
+          onTouchStart={onHeroTouchStart} onTouchMove={onHeroTouchMove} onTouchEnd={onHeroTouchEnd}
+          style={{...heroCurrentStyle,cursor:"pointer",touchAction:"pan-y"}}>
+          {heroCardBody(heroEv)}
         </div>
+        {nextHeroEv&&<div style={heroNextStyle}>{heroCardBody(nextHeroEv)}</div>}
       </div>
       </div>:<div className="mk-animate-in" style={{marginTop:14,padding:16,borderRadius:14,textAlign:"center",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",animationDelay:".2s"}}>
         <div style={{fontSize:13,color:"var(--po-dim)"}}>No upcoming {showSportSwitcher?effSportView:""} events yet</div>
         <div onClick={onGoEvents} style={{marginTop:8,display:"inline-block",fontSize:12,fontWeight:700,color:"#818CF8",cursor:"pointer"}}>Browse Events →</div>
       </div>}
       {coming.length>1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,marginTop:8}}>
-        <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>{setSlideDir(i>heroIdxClamped?1:-1);setHeroIdx(i);}} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
+        <div style={{display:"flex",gap:5}}>{coming.map((_,i)=><div key={i} onClick={()=>setHeroIdx(i)} style={{width:6,height:6,borderRadius:"50%",cursor:"pointer",background:i===heroIdxClamped?"#818CF8":"var(--po-bdr)"}}/>)}</div>
         <div style={{fontSize:9.5,color:"var(--po-dim)",fontWeight:600}}>← swipe card for more events →</div>
       </div>}
       <div style={{display:"flex",gap:8,marginTop:14}}>

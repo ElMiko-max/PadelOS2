@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.12";
+const APP_VERSION = "V0.16.13";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5979,7 +5979,17 @@ export default function Matchkeeper() {
   // exactly the case that should be rejected. checkRegistrationOpen is only set true by the
   // player-facing "I'm In" flow (registerEv) — admin-driven adds (addMember/addGuest/
   // approveEventJoin) intentionally skip it, same as today's behavior.
-  const registerInEvent = (cid, eid, uid, regData, {checkRegistrationOpen=false, opts={}}={}) => {
+  // Writes a regHistory "Registered" line inside the SAME transaction that creates the
+  // registration doc — the client-side counterpart to functions/index.js's writeRegHistory.
+  // Closes the same race there for the Cloud Functions (BUGS.md #20) but for the direct-write
+  // fallback path (dev, or whenever the Cloud Function is unavailable/times out): previously this
+  // was a separate logRegHistory() call made by the caller AFTER the transaction resolved, so an
+  // app interruption between the two could leave a real registration with no "Registered" entry,
+  // same failure mode, just the fallback path instead of the server one.
+  const txRegHistory = (tx, eid, uid, note) => {
+    tx.set(doc(db,"padelos_events",String(eid),"regHistory",String(uid)), {userId:uid, entries:arrayUnion({ts:new Date().toISOString(), note})}, {merge:true});
+  };
+  const registerInEvent = (cid, eid, uid, regData, {checkRegistrationOpen=false, opts={}, regHistoryNote=null}={}) => {
     if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
     const already = registrationsRef.current.some(r=>r.eventId===eid && r.userId===uid);
     if (!already) setRegLocal(eid, uid, {...regData, userId:uid, eventId:eid});
@@ -5995,6 +6005,7 @@ export default function Matchkeeper() {
       if (rSnap.exists()) return {eventId:eid, ...rSnap.data()}; // already registered — no-op, keeps the original registeredAt
       const newReg = {...regData, userId:uid, eventId:eid};
       tx.set(rDocRef, clean(newReg));
+      if (regHistoryNote) txRegHistory(tx, eid, uid, regHistoryNote);
       return newReg;
     }, {maxAttempts:30}).then(saved => {
       setRegLocal(eid, uid, saved);
@@ -6113,7 +6124,7 @@ export default function Matchkeeper() {
   // or vice versa. Both target documents are either brand-new (registration) or a small,
   // already-optimistically-applied membership change, so — like updCommunityAndEvent — no
   // sibling-query complexity is needed.
-  const registerWithMembership = (cid, eid, uid, memberFn, regData, opts={}) => {
+  const registerWithMembership = (cid, eid, uid, memberFn, regData, opts={}, regHistoryNote=null) => {
     if (!checkSubscriptionGuard(opts) || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
     const startingC = communitiesRef.current.find(c=>c.id===cid);
     const optC = memberFn(startingC);
@@ -6134,6 +6145,7 @@ export default function Matchkeeper() {
       if (rSnap.exists()) return {updatedC, savedReg:{eventId:eid, ...rSnap.data()}};
       const newReg = {...regData, userId:uid, eventId:eid};
       tx.set(rDocRef, clean(newReg));
+      if (regHistoryNote) txRegHistory(tx, eid, uid, regHistoryNote);
       return {updatedC, savedReg:newReg};
     }, {maxAttempts:30}).then(({updatedC, savedReg}) => {
       communitiesRef.current = communitiesRef.current.map(c=>c.id===cid?updatedC:c);
@@ -6156,7 +6168,7 @@ export default function Matchkeeper() {
   // registration — same "never leave one without the other" reasoning as
   // registerWithMembership just above, against the event doc's `joinRequests` field instead of
   // the community doc.
-  const approveJoinAndRegister = (cid, eid, uid, regData) => {
+  const approveJoinAndRegister = (cid, eid, uid, regData, regHistoryNote=null) => {
     if (!checkSubscriptionGuard() || !checkGodModeGuard(cid)) return Promise.reject(new Error("blocked"));
     const already = registrationsRef.current.some(r=>r.eventId===eid && r.userId===uid);
     if (!already) setRegLocal(eid, uid, {...regData, userId:uid, eventId:eid});
@@ -6176,6 +6188,7 @@ export default function Matchkeeper() {
       if (rSnap.exists()) return {updatedE, savedReg:{eventId:eid, ...rSnap.data()}};
       const newReg = {...regData, userId:uid, eventId:eid};
       tx.set(rDocRef, clean(newReg));
+      if (regHistoryNote) txRegHistory(tx, eid, uid, regHistoryNote);
       return {updatedE, savedReg:newReg};
     }, {maxAttempts:30}).then(({updatedE, savedReg}) => {
       eventsRef.current = eventsRef.current.map(e=>e.id===eid?updatedE:e);
@@ -7062,12 +7075,12 @@ export default function Matchkeeper() {
     if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — registration is no longer open","err");return;}
     if(ev.registrationOpen===false){toast2("Registration is currently paused for this event — check back later","err");return;}
     const comm = comms.find(c=>c.id===cid);
-    // `viaServerFn`: true when registerForEvent (the Cloud Function) already created the
-    // registration — it now writes the "Registered" regHistory line itself, atomically with that
-    // write (BUGS.md #20), so logging it again here would just duplicate it. Only the direct-write
-    // fallback path below (dev, or the function unavailable/timed out) still needs this client-side
-    // write, since nothing else in that path ever gets it into regHistory.
-    const afterRegistered = (waitlisted, waitPos, viaServerFn) => {
+    // regHistory's "Registered" line is written atomically with the registration doc itself now —
+    // server-side inside registerForEvent (functions/index.js) when that succeeds, or client-side
+    // inside registerInEvent's own transaction (the regHistoryNote passed below) on the
+    // direct-write fallback path. Either way it's already handled by the time this runs — nothing
+    // left for afterRegistered itself to log (BUGS.md #20 and its fallback-path counterpart).
+    const afterRegistered = (waitlisted, waitPos) => {
       if (waitlisted) {
         toast2(`You're #${waitPos} on the waitlist`);
         if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${waitPos} on the waitlist for ${ev.name}`, "We'll notify you if a spot opens up.");
@@ -7084,7 +7097,6 @@ export default function Matchkeeper() {
         notify(recipients, "eventRegistration", ev, waitlisted?"⏳ New waitlist signup":"🎾 New registration", `${me.nickname} ${waitlisted?"joined the waitlist for":"just registered for"} ${ev.name}`);
       }
       logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
-      if (!viaServerFn) logRegHistory(eid, me.id, "Registered (self, via app)");
     };
     setRegisteringEventId(eid);
     try {
@@ -7101,7 +7113,7 @@ export default function Matchkeeper() {
         const res = await withTimeout(fn({communityId:cid, eventId:eid, via:null}), 8000);
         const {status, waitlisted, pos} = res.data || {};
         if (status === "already-registered") return;
-        afterRegistered(!!waitlisted, pos||0, true);
+        afterRegistered(!!waitlisted, pos||0);
         return;
       } catch (e) {
         if (e?.code === "functions/failed-precondition") { toast2(e.message || "Registration is currently closed", "err"); return; }
@@ -7114,7 +7126,7 @@ export default function Matchkeeper() {
     // real concurrency the guess can be wrong (someone else's registration could land in
     // between), so the true answer is recomputed from the confirmed data that comes back.
     try {
-      await registerInEvent(cid, eid, me.id, {registeredAt:new Date().toISOString(), status:"registered", addedBy:null, isGuest:false}, {checkRegistrationOpen:true});
+      await registerInEvent(cid, eid, me.id, {registeredAt:new Date().toISOString(), status:"registered", addedBy:null, isGuest:false}, {checkRegistrationOpen:true, regHistoryNote:"Registered (self, via app)"});
       // Waitlist position for the toast is a plain post-write read of this event's current
       // registrations, fetched fresh from Firestore (not via comms — that's still on the closure
       // from before this await) — informational only, never enforced, so it doesn't need to be
@@ -7123,7 +7135,7 @@ export default function Matchkeeper() {
       const freshEv = {...ev, registrations: freshSnap.docs.map(d=>({...d.data(), eventId:eid}))};
       const {waitlisted} = splitRegsByCapacity(freshEv, comm);
       const isWaitlisted = waitlisted.some(r=>r.userId===me.id);
-      afterRegistered(isWaitlisted, isWaitlisted?waitlisted.length:0, false);
+      afterRegistered(isWaitlisted, isWaitlisted?waitlisted.length:0);
     } catch (e) {
       toast2(e?.message && e.message!=="blocked" ? e.message : "Registration didn't go through — too many people were registering at the same moment. Please try again.", "err");
     }
@@ -7136,13 +7148,13 @@ export default function Matchkeeper() {
     if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — can't add players anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
-    // See registerEv's matching comment — `viaServerFn` true means addMemberToEvent already wrote
-    // the "Registered" regHistory line atomically with the registration itself (BUGS.md #20).
-    const afterAdded = (waitlisted, viaServerFn) => {
+    // regHistory's "Registered" line is written atomically now, either server-side in
+    // addMemberToEvent or client-side inside registerInEvent's own transaction below — see
+    // registerEv's matching comment.
+    const afterAdded = (waitlisted) => {
       toast2(`${u?.nickname} added${waitlisted?" — waitlisted (event full)":""} ✓`);
       if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — added by an admin`);
       logAudit("event.register", `${me.nickname} added ${u?.nickname||uid} to "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
-      if (!viaServerFn) logRegHistory(eid, uid, `Registered (added by ${me.nickname})`);
     };
     // Server-side backstop, same pattern as registerEv — see addMemberToEvent's comment in
     // functions/index.js. Falls back to the direct write below on anything except the function
@@ -7153,7 +7165,7 @@ export default function Matchkeeper() {
         const res = await withTimeout(fn({communityId:cid, eventId:eid, targetUserId:uid, actorNickname:me.nickname}), 8000);
         const {status, waitlisted} = res.data || {};
         if (status === "already-registered") return;
-        afterAdded(!!waitlisted, true);
+        afterAdded(!!waitlisted);
         return;
       } catch (e) {
         if (e?.code === "functions/failed-precondition") { toast2(e.message || "This event is closed", "err"); return; }
@@ -7161,8 +7173,8 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "admin");
-    registerInEvent(cid, eid, uid, {registeredAt:new Date().toISOString(), status:"registered", addedBy:"admin", isGuest:false}).catch(e=>{ console.log("addMember registerInEvent failed", e); toast2("That didn't save — please try again.", "err"); });
-    afterAdded(waitlisted, false);
+    registerInEvent(cid, eid, uid, {registeredAt:new Date().toISOString(), status:"registered", addedBy:"admin", isGuest:false}, {regHistoryNote:`Registered (added by ${me.nickname})`}).catch(e=>{ console.log("addMember registerInEvent failed", e); toast2("That didn't save — please try again.", "err"); });
+    afterAdded(waitlisted);
   };
   // An invite link is deliberate access granted by an admin — it skips the regular-member
   // priority window entirely (that gate exists to stop random public sign-ups from queue-
@@ -7210,10 +7222,9 @@ export default function Matchkeeper() {
         if (status === "needs-approval") { toast2("Request sent ✓"); return; }
         if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
         logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
-        // No logRegHistory here — registerForEvent (the Cloud Function, called with via:"invite"
-        // above) already wrote "Registered (via invite link)" atomically with the registration
-        // itself (BUGS.md #20). Still needed in the direct-write fallback below, since that path
-        // never goes through the function at all.
+        // regHistory's "Registered (via invite link)" line is written atomically either here
+        // (server-side, inside registerForEvent) or client-side inside registerWithMembership's
+        // own transaction below — see registerEv's matching comment.
         return;
       } catch (e) {
         if (e?.code === "functions/failed-precondition") { toast2(e.message || "This invite link is no longer valid", "err"); return; }
@@ -7223,11 +7234,11 @@ export default function Matchkeeper() {
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
     registerWithMembership(cid, eid, uid,
       c => ({...c, members: c.members.some(m=>m.userId===uid) ? c.members : [...c.members,{userId:uid,role:"member",status:"guest",since:today}]}),
-      {registeredAt:new Date().toISOString(), status:"registered", addedBy:"invite", isGuest:false}
+      {registeredAt:new Date().toISOString(), status:"registered", addedBy:"invite", isGuest:false},
+      {}, "Registered (via invite link)"
     ).catch(e=>console.log("registerViaInvite registerWithMembership failed", e));
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
     logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
-    logRegHistory(eid, uid, "Registered (via invite link)");
   };
   // Event-level join requests — same shape as community joinRequests, but scoped to one
   // event: anyone who finds the event (not just invited, not just regular members) can ask
@@ -7250,15 +7261,15 @@ export default function Matchkeeper() {
     if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — the request can't be approved anymore","err");return;}
     const comm = comms.find(c=>c.id===cid);
     const u=users.find(u=>u.id===uid);
-    // See registerEv's matching comment — `viaServerFn` true means approveEventJoinRequest
-    // already wrote the "Registered" regHistory line atomically with the registration itself
-    // (BUGS.md #20), except in the (harmless) edge case where a registration already existed —
-    // that function only writes it when it's genuinely creating a new registration doc.
-    const afterApproved = (waitlisted, viaServerFn) => {
+    // regHistory's "Registered (join request approved by ...)" line is written atomically
+    // either server-side in approveEventJoinRequest or client-side inside approveJoinAndRegister's
+    // own transaction below — see registerEv's matching comment. Either way it's only written
+    // when a registration doc is genuinely being created, not for the (harmless) edge case where
+    // one already existed.
+    const afterApproved = (waitlisted) => {
       toast2(waitlisted?"Approved — waitlisted (event full)":"Approved ✓");
       if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — request approved`);
       logAudit("event.register", `${me.nickname} approved ${u?.nickname||uid}'s request to join "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
-      if (!viaServerFn) logRegHistory(eid, uid, `Registered (join request approved by ${me.nickname})`);
     };
     // Server-side backstop, same pattern as registerEv — see approveEventJoinRequest's comment
     // in functions/index.js. Falls back to the direct write below on anything except the
@@ -7268,7 +7279,7 @@ export default function Matchkeeper() {
         const fn = httpsCallable(getFunctionsLazy(), "approveEventJoinRequest");
         const res = await withTimeout(fn({communityId:cid, eventId:eid, targetUserId:uid, actorNickname:me.nickname}), 8000);
         const {waitlisted} = res.data || {};
-        afterApproved(!!waitlisted, true);
+        afterApproved(!!waitlisted);
         return;
       } catch (e) {
         if (e?.code === "functions/failed-precondition") { toast2(e.message || "This event is closed", "err"); return; }
@@ -7276,8 +7287,8 @@ export default function Matchkeeper() {
       }
     }
     const {waitlisted} = willLandWaitlisted(ev, uid, comm, "approved");
-    approveJoinAndRegister(cid, eid, uid, {registeredAt:new Date().toISOString(), status:"registered", addedBy:"approved", isGuest:false}).catch(e=>console.log("approveEventJoin approveJoinAndRegister failed", e));
-    afterApproved(waitlisted, false);
+    approveJoinAndRegister(cid, eid, uid, {registeredAt:new Date().toISOString(), status:"registered", addedBy:"approved", isGuest:false}, `Registered (join request approved by ${me.nickname})`).catch(e=>console.log("approveEventJoin approveJoinAndRegister failed", e));
+    afterApproved(waitlisted);
   };
   const rejectEventJoin=(cid,eid,uid)=>{
     updEvent(cid,eid,ev=>({...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)}));

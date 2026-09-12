@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.12 (current) — Fixes from real admin testing on the APK
+## V0.16.13 (current) — Bug #20: closing the gap in the fallback write path too
+
+- V0.16.09's fix for bug #20 only covered the Cloud Functions (server) side — if one of those ever fails or times out (or on Dev builds, which skip the server entirely), the app falls back to a direct write from the phone. That fallback was still writing the "Registered" history line in two separate steps, not one atomic operation, so the same drop-the-line race was still possible there.
+- All four registration paths (self-registering, an admin adding a player, registering via an invite link, and approving a join request) now write their "Registered" history line inside the very same transaction that creates the registration, on the fallback path too — not as a separate step afterward.
+- **Note:** this prevents the issue from recurring on any new registration action from here on. Older history that was already lost before these fixes (e.g. an earlier register → remove → register sequence) cannot be recovered — the original text and timestamp were never captured anywhere to restore from.
+
+---
+
+## V0.16.12 — Fixes from real admin testing on the APK
 
 - **🐛 The "Me" bottom-nav tab didn't visibly show it was active** — the only difference was label text color, easy to miss against a profile photo. Home and Me now get a visible ring around their icon when active.
 - **🐛 The Back button on the Venues screen (reached from Settings) didn't work at all — neither the top-left arrow nor the phone's back button** — caused by using the same navigation call the root tabs use (which wipes the back history) instead of preserving a path back to Settings. Fixed.

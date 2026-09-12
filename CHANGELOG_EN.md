@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.17 (current) — 🐛 Fix: a foreground push notification vanished into thin air
+## V0.16.18 (current) — Deleting an event now shows up in the Feed for the admin and registered members
+
+- **Deleting an event made it vanish immediately with no trace in the Feed** — the admin who deleted it had no confirmation it actually happened there, and registered players had no way to know their event was cancelled. The deletion was only ever recorded in the Audit Trail, which most people never see.
+- Now: (1) the admin who deleted it sees "You deleted event X" in their own Feed, (2) every player who was registered sees "❌ Event cancelled (deleted by [admin])" in their Feed too, plus a notification.
+
+---
+
+## V0.16.17 — 🐛 Fix: a foreground push notification vanished into thin air
 
 - **"Send myself a test notification" only ever showed up in the in-app bell, never on the lock screen** — web push has two delivery paths, and only one was actually wired up. When the app is closed/backgrounded, the service worker (`firebase-messaging-sw.js`) receives the push and shows a real system notification — that part worked. But when the app is **open in front of you** (exactly the case when you tap the test button from Settings), Firebase routes the message through a completely different path inside the page itself (`onMessage`) instead of the service worker — and nothing was listening there at all, so the message vanished. The in-app bell still updated because that comes from a totally separate channel (a direct database update), unrelated to push.
 - There's now a listener on that same path, so any push that arrives while the app is open turns into a real system notification too, same as when it's closed. The native Android APK was never affected — its own plugin displays the system notification either way.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.17";
+const APP_VERSION = "V0.16.18";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1871,6 +1871,7 @@ function feedIconFor(note){
   if(/^Un-retired/.test(note)) return {icon:"↩", bg:"#34D39922", color:"#34D399"};
   if(/^Marked as paid/.test(note)) return {icon:"💰", bg:"#34D39922", color:"#34D399"};
   if(/^Marked as unpaid/.test(note)) return {icon:"💸", bg:"#F59E0B22", color:"#F59E0B"};
+  if(/^Event cancelled/.test(note)) return {icon:"🗑", bg:"#EF444422", color:"#EF4444"};
   return {icon:"🔀", bg:"#94A3B822", color:"#94A3B8"};
 }
 function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
@@ -1955,6 +1956,11 @@ function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
   (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.register" && /approved/i.test(a.summary||"") && !seenEventActivityTs.has(a.ts)).forEach(a => {
     const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
     items.push({ts:a.ts, icon:"✅", bg:"#8B5CF622", color:"#A78BFA", text:a.summary, nav: ev ? {cid:ev.communityId, eid:ev.id} : null});
+  });
+  // My own delete action, on any event — no `nav` since a deleted event is hidden from everyone
+  // but Platform Admin, so there's nowhere sensible left to tap through to.
+  (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.delete").forEach(a => {
+    items.push({ts:a.ts, icon:"🗑", bg:"#EF444422", color:"#EF4444", text:a.summary, nav:null});
   });
   // USR changes: real historical deltas — replays calcWeightedUSR at each prefix of the actual
   // stored history, so a delta can never be shown that doesn't match the number really on file.
@@ -6882,9 +6888,17 @@ export default function Matchkeeper() {
     if(!ev){toast2("Event not found (id "+eid+")","err");return;}
     if(!(ev.createdBy===me.id||(me.id===1&&godMode))){toast2("Only this event's creator (or the platform admin) can delete it","err");return;}
     if(ev.status==="completed"){toast2("Cannot delete a completed event — use Archive instead","err");return;}
+    const registeredIds = (ev.registrations||[]).map(r=>r.userId).filter(uid=>uid!==me.id);
     updEvent(cid,eid,e=>({...e,deleted:true,deletedAt:new Date().toISOString(),deletedBy:me.id,deletedByName:me.nickname}));
     toast2("Event deleted (id "+eid+")");
     logAudit("event.delete", `${me.nickname} deleted event "${ev.name}"`, "event", eid);
+    // Feed visibility for who this actually affects — the admin who did it (via the event.delete
+    // audit entry, see buildUserFeed's matching block) and every OTHER registered member (via
+    // their own regHistory — same mechanism every other registration-status change already uses
+    // to reach the Feed). Without this a deleted event just silently vanished from under
+    // registered players with no record anywhere they'd see it (admin request, 2026-09-13).
+    registeredIds.forEach(uid => logRegHistory(eid, uid, `Event cancelled (deleted by ${me.nickname})`));
+    notify(registeredIds, "eventDeleted", ev, `❌ ${ev.name} was cancelled`, `${me.nickname} deleted this event.`);
     goBack();
   };
   const restoreDeletedEvent=(cid,eid)=>{
@@ -14793,7 +14807,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
 function NotificationsSc({notifications,me,onBack,onMarkAllRead,onOpen}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗",lastMinuteCancel:"⚠️",eventNearMin:"⚠️",eventAtMin:"🔶",eventBelowMin:"🚨"};
+  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗",lastMinuteCancel:"⚠️",eventNearMin:"⚠️",eventAtMin:"🔶",eventBelowMin:"🚨",eventDeleted:"🗑"};
   return <><BBtn onBack={onBack} label="Back"/>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>

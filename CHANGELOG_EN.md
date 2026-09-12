@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.15 (current) — Follow-up to V0.16.14: "Cancel my registration" no longer looks like "Close Event"
+## V0.16.16 (current) — Join requests now show in the Feed + fixed player-row icon jitter
+
+- **A join request on your event (like Shiko's) only ever showed up as a notification (🔔), never in the Home screen's Feed** — if the admin hadn't enabled push yet (exactly what happened here), there was no other way to notice a request was waiting besides manually checking the bell. Join requests on events you created now show up in the Feed too, same as any other registration activity.
+- **🐛 A long status badge on a player row (e.g. "🎫 Event Guest · Approved") used to wrap onto the same line as the ▼/⋮ icons, pushing them down and crowding them against the card edge** — so the icons' position shifted from row to row depending on badge length. The badge and the icons are now always on two separate lines — icon position stays fixed regardless of badge length.
+- **The "Announcements" tab on both the Event and Community screens was icon-only, no text (📢)** — now reads "📢 Posts", matching every other tab (icon + word).
+
+---
+
+## V0.16.15 — Follow-up to V0.16.14: "Cancel my registration" no longer looks like "Close Event"
 
 - Admin feedback on the V0.16.14 redesign: "Cancel my registration" (a mild, reversible, personal action) and "🏁 Close & Finish Event" (a serious, irreversible, everyone-affecting admin action) had ended up with the exact same look (a pale-red filled card) stacked right on top of each other — impossible to tell apart by severity even though they're nowhere near the same weight.
 - **"Cancel my registration" is now red text on a neutral background**, not a full red fill — reads as a mild caution rather than matching the big admin action's visual weight.

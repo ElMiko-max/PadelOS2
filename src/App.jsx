@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.15";
+const APP_VERSION = "V0.16.16";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1935,6 +1935,16 @@ function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
       bg: isUnreg?"#EF444422":isApproval?"#8B5CF622":"#6366F122",
       color: isUnreg?"#EF4444":isApproval?"#A78BFA":"#818CF8",
       text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
+  });
+  // Pending join requests on events I created — the request itself never showed up anywhere in
+  // the Feed before this (only the eventual approval did, via the block below), so an admin who
+  // didn't happen to see the bell notification in time (real gap found live, 2026-09-12: push
+  // wasn't enabled yet when the request came in) had no other way to notice it needed a look.
+  // Same ev.createdBy-only scoping as the registration-activity block above — see its comment.
+  (auditLog||[]).filter(a=>a.action==="event.requestJoin").forEach(a=>{
+    const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
+    if(!ev || ev.createdBy!==me.id) return;
+    items.push({ts:a.ts, icon:"🙋", bg:"#FBBF2422", color:"#FBBF24", text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
   });
   // Admin actions taken ON OTHER players — "part of my admin journey too" (2026-09-10, admin
   // report, concrete example: approving someone's join request). Narrowly scoped to approvals
@@ -9135,7 +9145,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   // 0-100 scale team formation already uses, then read back as a letter via footballGradeLabel.
   const isFootballComm=comm.sports?.includes("Football");
   const avgFsr=regs.length?regs.reduce((s,m)=>{const u=users.find(u=>u.id===m.userId);return s+(u?(FOOTBALL_SKILL_RATING[u.footballSkill]??50):0);},0)/regs.length:0;
-  const tdefs=[["members","Members"],["events","Events"],["announcements","📢"],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
+  const tdefs=[["members","Members"],["events","Events"],["announcements","📢 Posts"],["stats","Reports"],...((comm.bookkeeping?.enabled||isAdmin)?[["ledger","💰 Ledger"]]:[]),...(isAdmin?[["requests",`Requests${comm.joinRequests.length>0?` (${comm.joinRequests.length})`:""}`]]:[])];
   const statusOrder={regular:0,casual:1,inactive:2,guest:3},roleOrder={owner:0,admin:1,member:2};
   const sortedMembersAll=[...comm.members].sort((a,b)=>{if(roleOrder[a.role]!==roleOrder[b.role])return roleOrder[a.role]-roleOrder[b.role];return(statusOrder[a.status]||0)-(statusOrder[b.status]||0);});
   const memberQ=memberSearch.trim().toLowerCase();
@@ -11931,7 +11941,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     ...(isCT?(plan?(plan.format==="ladder"?["teams","breaks","matches","standings"]:["teams","matches","standings"]):(isAdmin?["teams"]:[])):[]),
     "manage","photos","ann"
   ];
-  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:`${ev.sport==="Football"?"⚽":"🎾"} Matches`,photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`,ann:"📢"};
+  const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:`${ev.sport==="Football"?"⚽":"🎾"} Matches`,photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`,ann:"📢 Posts"};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
   function PChip({p,ri,matchBadge}){
@@ -12390,13 +12400,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 : <div style={{fontSize:10,color:"var(--po-dim)",marginTop:2}}>Break: {BREAK_PREF_LABELS[r.breakPrefOverride||u.breakPref||"none"]}{r.breakPrefOverride&&<span style={{color:"#F59E0B",marginLeft:3}}>📌 event-only</span>}</div>
               )}
             </div>
-            <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
-              {isGuestPerson
-                ? <Bdg label={addedByLabel?`Guest · ${addedByLabel}`:"Guest"} color="#F59E0B"/>
-                : isEventOnlyGuest
-                  ? <Bdg label={addedByLabel?`🎫 Event Guest · ${addedByLabel}`:"🎫 Event Guest"} color="#8B5CF6"/>
-                  : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
-              {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
+            {/* Two rows, not one wrappable flex line — a long status badge (e.g. "🎫 Event Guest
+                · Approved") used to wrap onto the same line as ▼/⋮, pushing them down and
+                crowding them against the card edge on that specific row while short-badge rows
+                stayed put — inconsistent position row-to-row (admin screenshot, 2026-09-12). The
+                icon row now always renders on its own line, same position regardless of badge length. */}
+            <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
+              <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                {isGuestPerson
+                  ? <Bdg label={addedByLabel?`Guest · ${addedByLabel}`:"Guest"} color="#F59E0B"/>
+                  : isEventOnlyGuest
+                    ? <Bdg label={addedByLabel?`🎫 Event Guest · ${addedByLabel}`:"🎫 Event Guest"} color="#8B5CF6"/>
+                    : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
+                {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
+              </div>
+              <div style={{display:"flex",gap:4,flexShrink:0,alignItems:"center"}}>
               <div onClick={()=>toggleRegHistory(u.id)} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
               {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
@@ -12419,6 +12437,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked)||!wasEverInPlan)&&<ListRow icon="✕" label="Remove" danger onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(wasEverInPlan?`Remove ${u.nickname} from this event?`:`Remove ${u.nickname} from this event?\n\nThey're registered but were never actually included in any round or match — this just cleans up the registration, no real match data is affected.`))act.removeFromEvent(u.id);}}/>}
                 </div>}
               </div>}
+              </div>
             </div>
           </div>
           {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.13";
+const APP_VERSION = "V0.16.14";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4033,6 +4033,18 @@ function ListRow({icon,label,sub,onClick,danger,muted,dim,trailing}){
     {sub&&<span style={{fontSize:12,color:"var(--po-dim)",flexShrink:0}}>{sub}</span>}
     {!muted&&<span style={{color:danger?"#F87171":"var(--po-dim)",flexShrink:0}}>{trailing||"›"}</span>}
   </div>;
+}
+// Shared on/off switch — was hand-rolled 3× with duplicated absolute-positioned dot code
+// (event registration pause, event-duplicate "keep players", others) before being pulled out here.
+function Toggle({on,onChange,onColor="#34D399"}){
+  return <div onClick={onChange} style={{width:44,height:24,borderRadius:12,background:on?onColor:"var(--po-bdr)",position:"relative",cursor:"pointer",flexShrink:0,transition:"background 0.15s"}}>
+    <div style={{position:"absolute",top:2,left:on?22:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+  </div>;
+}
+// Shared segmented picker — was copy-pasted as raw <button> pairs in the CT pool-size picker
+// (once for the pre-start form, once for the sim-mode form).
+function Seg({options,value,onChange}){
+  return <div style={{display:"flex",gap:6}}>{options.map(o=><button key={o.key} type="button" onClick={()=>onChange(o.key)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${value===o.key?"#6366F1":"var(--po-bdr)"}`,background:value===o.key?"#6366F122":"var(--po-inp)",color:value===o.key?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>{o.label}</button>)}</div>;
 }
 // Home screen stat tiles (2026-09-09) — counts up from 0 to `to` once on mount, easing out.
 // Skips the animation for prefers-reduced-motion, same convention as the CSS entrance classes.
@@ -11998,52 +12010,52 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>{regPaused?"🔒":"🔓"} Registration</div>
         <div style={{fontSize:11,color:"var(--po-dim)"}}>{regPaused?"Paused — players can't register yet":"Open — players can register now"}</div>
       </div>
-      <div onClick={()=>{
+      <Toggle on={!regPaused} onChange={()=>{
         if(regPaused){ onSetRegistrationOpen(true); }
         else if(window.confirm(`Pause registration for "${ev.name}"?\n\nPlayers won't be able to register or request to join until you open it again — anyone already registered stays registered.`)) onSetRegistrationOpen(false);
-      }} style={{width:44,height:24,borderRadius:12,background:regPaused?"var(--po-bdr)":"#34D399",position:"relative",cursor:"pointer",flexShrink:0,transition:"background 0.15s"}}>
-        <div style={{position:"absolute",top:2,left:regPaused?2:22,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
-      </div>
+      }}/>
     </div>}
     {isAdmin&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice Session</div><div style={{fontSize:11,color:"var(--po-dim)"}}>Try out registrations, matches & scores — nothing is saved</div></div><SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/></div>}
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
         <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
           {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
           <div>
             <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
-            {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2}}>👥 {comm.name}</div>}
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
+              {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
+              {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
+              {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
+              {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
+              {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
+              {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
+            </div>
+            {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2,textDecoration:"underline"}}>👥 {comm.name}</div>}
             {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
             <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
-            {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{creator.nickname}</span></div>:null;})()}
+            {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
             {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
           </div>
         </div>
-        <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
-          {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
-            <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
-            {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:150,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
-              <SmBtn label="✏️ Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}} color="#6366F1" style={{width:"100%"}}/>
-              <SmBtn label="⧉ Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}} color="#F59E0B" style={{width:"100%"}}/>
-              {ev.archived&&<SmBtn label="📤 Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}} color="#34D399" style={{width:"100%"}}/>}
-              {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"2px 0"}}/>}
-              {canDeleteOrArchive&&!isCompleted&&<SmBtn label="🗑 Delete Event" onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
-              {canDeleteOrArchive&&isCompleted&&!ev.archived&&<SmBtn label="📦 Archive" onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}} color="#EF4444" style={{width:"100%"}}/>}
-            </div>}
-          </div>}
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
           {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
           {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
-          {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
-          {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
-          {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
-          {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
-          {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
-          {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
+          {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+            <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
+            {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,width:200,padding:6,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+              <ListRow icon="✏️" label="Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}}/>
+              <ListRow icon="⧉" label="Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}}/>
+              {ev.archived&&<ListRow icon="📤" label="Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}}/>}
+              {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"4px 2px"}}/>}
+              {canDeleteOrArchive&&!isCompleted&&<ListRow icon="🗑" label="Delete Event" danger onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}}/>}
+              {canDeleteOrArchive&&isCompleted&&!ev.archived&&<ListRow icon="📦" label="Archive" danger onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}}/>}
+            </div>}
+          </div>}
         </div>
       </div>
-      {showDup&&<div style={{marginTop:-4,marginBottom:12,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
+      {showDup&&<div style={{marginTop:12,marginBottom:0,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
           <input type="text" value={dupName} onChange={e=>setDupName(e.target.value)} placeholder="Event name" className="po-inp"
@@ -12065,9 +12077,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </div>
         </div>
         <div onClick={()=>setDupKeepPlayers(o=>!o)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",borderRadius:8,background:"var(--po-card)",cursor:"pointer",marginBottom:10}}>
-          <div style={{width:40,height:22,borderRadius:11,background:dupKeepPlayers?"#6366F1":"#334155",position:"relative",transition:"background 0.2s",flexShrink:0}}>
-            <div style={{position:"absolute",top:2,left:dupKeepPlayers?20:2,width:18,height:18,borderRadius:"50%",background:"#fff",transition:"left 0.2s"}}/>
-          </div>
+          <Toggle on={dupKeepPlayers} onChange={()=>setDupKeepPlayers(o=>!o)} onColor="#6366F1"/>
           <div style={{flex:1}}>
             <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>Copy registered players too</div>
             <div style={{fontSize:10,color:"var(--po-dim)"}}>{dupKeepPlayers?"Same players will be pre-registered":"New event starts with no players"}</div>
@@ -12084,7 +12094,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
         {shareDiag.map((d,i)=><div key={i} style={{fontSize:10,color:"var(--po-dim)",fontFamily:"monospace",marginBottom:2}}>{d}</div>)}
       </div>}
+    </Card>
 
+    <Card>
       {(()=>{
         // Graduated Min/Max capacity indicator (approved design, replaces the old plain bar +
         // text) — a moving marker on a Min→Max track instead of a single number. Deliberately
@@ -12129,7 +12141,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               isCT?[["Teams",plan?.teams?.length||0],["Format",plan?.format||"—"]]:[])
         ].map(([l,val])=><div key={l} className="po-inp" style={{background:"var(--po-inp)",borderRadius:8,padding:"7px 4px",textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{val}</div><div style={{fontSize:9,color:"var(--po-dim)",marginTop:1}}>{l}</div></div>)}
       </div>
+    </Card>
 
+    <Card>
       {!isCompleted&&effEv.status==="registration_open"&&<>
         {canReg&&<Btn label={registering?"Registering…":(myWouldWaitlist?"⏳ Join Waitlist":"I'm In ✓")} primary disabled={registering} onClick={act.register} style={{width:"100%",marginBottom:6}}/>}
         {regPaused&&!myReg&&<div style={{padding:"9px",textAlign:"center",background:"#94A3B822",border:"0.5px solid #94A3B844",borderRadius:8,fontSize:13,fontWeight:500,color:"var(--po-dim)",marginBottom:6}}>🔒 Registration hasn't opened yet — check back soon.</div>}
@@ -12145,30 +12159,34 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             the admin's own remove button: locked once Round 1 is locked for CI/CT (would
             corrupt matches players are already slotted into); Open events have no plan to lock
             against, so this stays available for them right up to close. */}
-        {myReg&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<SmBtn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} color="#EF4444" style={{width:"100%",marginBottom:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+        {myReg&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" danger onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{width:"100%",marginBottom:6}}/>}
         {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
-        {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with Output PES (Performance Based)" onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"transparent",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
+        {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with Output PES (Performance Based)" onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
-      {/* Player-facing "who to pay" card — the admin-only Settlement card further down (isAdmin
-          gate) is invisible to regular players, so without this they'd have no way to see the
-          collector or an InstaPay link at all. Shown to any paying, non-exempt attendee who
-          isn't the collector themself, whenever a cost has actually been set. */}
-      {totC>0&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&me.id!==payerId&&!directIds.has(me.id)&&(()=>{
+    </Card>
+
+    {/* Player-facing "who to pay" card — the admin-only Settlement card further down (isAdmin
+        gate) is invisible to regular players, so without this they'd have no way to see the
+        collector or an InstaPay link at all. Shown to any paying, non-exempt attendee who isn't
+        the collector themself, whenever a cost has actually been set. Its own card, separate from
+        the primary action above, so it doesn't get mistaken for part of the registration status. */}
+    {totC>0&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&me.id!==payerId&&<Card>
+      {!directIds.has(me.id)&&(()=>{
         const payerU=users.find(u=>u.id===payerId);
         const iPaid=paidIds.has(me.id);
-        return <div style={{marginTop:8,padding:"9px 10px",background:iPaid?"#34D39922":"#6366F122",border:`0.5px solid ${iPaid?"#34D39944":"#6366F144"}`,borderRadius:8}}>
+        return <div style={{padding:"9px 10px",background:iPaid?"#34D39922":"#6366F122",border:`0.5px solid ${iPaid?"#34D39944":"#6366F144"}`,borderRadius:8}}>
           <div style={{fontSize:12,fontWeight:600,color:iPaid?"#34D399":"#A5B4FC"}}>{iPaid?`✓ You've paid your ${cpp} EGP share`:`💰 You owe ${cpp} EGP — pay ${payerU?.nickname||"the collector"}`}</div>
           {!iPaid&&payerU?.instapayLink&&<SmBtn label={`💳 ${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")} color="#6366F1" style={{width:"100%",marginTop:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
           {!iPaid&&venue?.instapayLink&&<SmBtn label={`🏟 Pay ${venue.name} via InstaPay`} onClick={()=>window.open(venue.instapayLink,"_blank")} color="#94A3B8" style={{width:"100%",marginTop:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
         </div>;
       })()}
-      {totC>0&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&me.id!==payerId&&directIds.has(me.id)&&
-        <div style={{marginTop:8,padding:"9px 10px",background:"#38BDF822",border:"0.5px solid #38BDF844",borderRadius:8}}>
+      {directIds.has(me.id)&&
+        <div style={{padding:"9px 10px",background:"#38BDF822",border:"0.5px solid #38BDF844",borderRadius:8}}>
           <div style={{fontSize:12,fontWeight:600,color:"#38BDF8"}}>↪ Marked as paid directly — nothing owed to the collector</div>
         </div>}
-    </Card>
+    </Card>}
 
     <CollapsibleSection label="ℹ️ Event Info" defaultOpen={false}>
       <Card><div style={{display:"flex",flexDirection:"column",gap:8}}>{[["Venue",venue?`${venue.name}, ${venue.area}`:"TBD"],
@@ -12374,23 +12392,23 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               <div onClick={()=>toggleRegHistory(u.id)} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
               {isAdmin&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
-                {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:170,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
-                  {isOpen&&!ci2&&isDay&&<SmBtn label="✓ Check In" onClick={()=>{act.checkIn(u.id);setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
-                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<SmBtn label="🔗 Invite" onClick={()=>{const label=`Join ${effEv.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label});setOpenPlayerMenu(null);}} color="#34D399" style={{width:"100%"}}/>}
-                  {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<SmBtn label={uIsEventAdmin?"🛡️ Demote":"🛡️ Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}} color={uIsEventAdmin?"#94A3B8":"#A78BFA"} style={{width:"100%"}}/>}
+                {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,width:210,padding:6,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+                  {isOpen&&!ci2&&isDay&&<ListRow icon="✓" label="Check In" onClick={()=>{act.checkIn(u.id);setOpenPlayerMenu(null);}}/>}
+                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<ListRow icon="🔗" label="Invite" onClick={()=>{const label=`Join ${effEv.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label});setOpenPlayerMenu(null);}}/>}
+                  {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<ListRow icon="🛡️" label={uIsEventAdmin?"Demote":"Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}}/>}
                   {/* Retired/no-show share one underlying state (retiredIds), so once a player is
                       in it there's a single combined undo button rather than two separate ones —
                       see retirePlayer's comment for why that's always safe. */}
                   {isRetired
-                    ? effEv.status!=="completed"&&<SmBtn label={isNoShow?"↩ Undo No-Show":"↩ Un-retire"} onClick={()=>{setOpenPlayerMenu(null);act.retirePlayer(u.id);}} color="#34D399" style={{width:"100%"}}/>
+                    ? effEv.status!=="completed"&&<ListRow icon="↩" label={isNoShow?"Undo No-Show":"Un-retire"} onClick={()=>{setOpenPlayerMenu(null);act.retirePlayer(u.id);}}/>
                     : <>
-                      {effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<SmBtn label="🚑 Retire" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}} color="#F59E0B" style={{width:"100%"}}/>}
+                      {effEv.plan&&((isCT&&ctR1Locked)||(isCI&&ciR1Locked))&&<ListRow icon="🚑" label="Retire" danger onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(isCT?`Mark ${u.nickname}'s whole team as retired from "${ev.name}"?\n\nClosed Teams is fixed doubles, so retiring one player retires their teammate(s) too — the team stops being scheduled in future matches (past results stay as-is). Finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`:`Mark ${u.nickname} as retired from "${ev.name}"?\n\nThey'll stop being scheduled in future rounds/matches (past results stay as-is). Their finance exemption is auto-set based on whether they're retiring before or after the event's midpoint — you can always override it yourself in the Finance tab.`))act.retirePlayer(u.id);}}/>}
                       {/* Unlike Retire, visible before match start too — marking someone no-show
                           before Start CI / Form Teams excludes them from formation entirely
                           (startCI/startCT filter by retiredIds), not just future rounds. */}
-                      <SmBtn label="🙈 Didn't Show Up" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(isCT&&effEv.plan?`Mark ${u.nickname}'s whole team as a no-show for "${ev.name}"?\n\nClosed Teams is fixed doubles, so this marks their teammate(s) too — the team stops being scheduled in future matches, and both get a visible "NO-SHOW" mark instead of the neutral "Retired" one. Finance exemption is auto-set based on whether it's before or after the event's midpoint — you can always override it in the Finance tab.`:`Mark ${u.nickname} as a no-show for "${ev.name}"?\n\nThey'll stop being scheduled (or excluded from team/round formation if it hasn't happened yet), and get a visible "NO-SHOW" mark instead of the neutral "Retired" one. Finance exemption is auto-set based on whether it's before or after the event's midpoint — you can always override it in the Finance tab.`))act.retirePlayer(u.id,true);}} color="#EF4444" style={{width:"100%"}}/>
+                      <ListRow icon="🙈" label="Didn't Show Up" danger onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(isCT&&effEv.plan?`Mark ${u.nickname}'s whole team as a no-show for "${ev.name}"?\n\nClosed Teams is fixed doubles, so this marks their teammate(s) too — the team stops being scheduled in future matches, and both get a visible "NO-SHOW" mark instead of the neutral "Retired" one. Finance exemption is auto-set based on whether it's before or after the event's midpoint — you can always override it in the Finance tab.`:`Mark ${u.nickname} as a no-show for "${ev.name}"?\n\nThey'll stop being scheduled (or excluded from team/round formation if it hasn't happened yet), and get a visible "NO-SHOW" mark instead of the neutral "Retired" one. Finance exemption is auto-set based on whether it's before or after the event's midpoint — you can always override it in the Finance tab.`))act.retirePlayer(u.id,true);}}/>
                     </>}
-                  {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked)||!wasEverInPlan)&&<SmBtn label="✕ Remove" onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(wasEverInPlan?`Remove ${u.nickname} from this event?`:`Remove ${u.nickname} from this event?\n\nThey're registered but were never actually included in any round or match — this just cleans up the registration, no real match data is affected.`))act.removeFromEvent(u.id);}} color="#EF4444" style={{width:"100%"}}/>}
+                  {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked)||!wasEverInPlan)&&<ListRow icon="✕" label="Remove" danger onClick={()=>{setOpenPlayerMenu(null);if(window.confirm(wasEverInPlan?`Remove ${u.nickname} from this event?`:`Remove ${u.nickname} from this event?\n\nThey're registered but were never actually included in any round or match — this just cleans up the registration, no real match data is affected.`))act.removeFromEvent(u.id);}}/>}
                 </div>}
               </div>}
             </div>
@@ -12871,10 +12889,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           const autoTop=autoPools[0]?.length, autoBottom=autoPools[1]?.length;
           return <div style={{marginBottom:16}}>
             <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Which group should be the top-ranked (elite) group?</div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>setCtTopPoolSize(null)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${!ctTopPoolSize?"#6366F1":"var(--po-bdr)"}`,background:!ctTopPoolSize?"#6366F122":"var(--po-inp)",color:!ctTopPoolSize?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {autoTop} <span style={{opacity:0.6}}>(default)</span></button>
-              <button onClick={()=>setCtTopPoolSize(alt)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${ctTopPoolSize===alt?"#6366F1":"var(--po-bdr)"}`,background:ctTopPoolSize===alt?"#6366F122":"var(--po-inp)",color:ctTopPoolSize===alt?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {alt}</button>
-            </div>
+            <Seg options={[{key:"auto",label:`Top ${autoTop} (default)`},{key:"alt",label:`Top ${alt}`}]} value={ctTopPoolSize?"alt":"auto"} onChange={k=>setCtTopPoolSize(k==="alt"?alt:null)}/>
             <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>{ctTopPoolSize?`Top ${alt} players → smaller elite group of ${alt} · remaining ${autoTop} → the other group`:`Top ${autoTop} players → the bigger group of ${autoTop} · remaining ${autoBottom} → the other group`}. The bigger group gets priority on courts each round.</div>
           </div>;
         })()}
@@ -12888,10 +12903,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           const autoTop=autoPools[0]?.length;
           return <Card style={{marginBottom:10}}>
             <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Top-ranked (elite) group size — change and hit Regenerate to apply:</div>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>setCtTopPoolSize(null)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${!ctTopPoolSize?"#6366F1":"var(--po-bdr)"}`,background:!ctTopPoolSize?"#6366F122":"var(--po-inp)",color:!ctTopPoolSize?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {autoTop} <span style={{opacity:0.6}}>(default)</span></button>
-              <button onClick={()=>setCtTopPoolSize(alt)} style={{flex:1,padding:"10px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${ctTopPoolSize===alt?"#6366F1":"var(--po-bdr)"}`,background:ctTopPoolSize===alt?"#6366F122":"var(--po-inp)",color:ctTopPoolSize===alt?"#A5B4FC":"var(--po-sub)",fontSize:12,fontWeight:600}}>Top {alt}</button>
-            </div>
+            <Seg options={[{key:"auto",label:`Top ${autoTop} (default)`},{key:"alt",label:`Top ${alt}`}]} value={ctTopPoolSize?"alt":"auto"} onChange={k=>setCtTopPoolSize(k==="alt"?alt:null)}/>
           </Card>;
         })()}
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>

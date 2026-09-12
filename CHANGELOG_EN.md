@@ -4,7 +4,20 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.13 (current) — Bug #20: closing the gap in the fallback write path too
+## V0.16.14 (current) — Event screen redesign: the cluttered header is now 4 clear cards, buttons unified
+
+- **The Event Detail header used to be one card doing 6 unrelated jobs at once** (name/badges, the admin ⋮ menu, the share button, the capacity bar, the primary action, and the payment nudge) — all stacked with no internal structure. It's now 4 separate cards: (1) event identity, (2) capacity & stats, (3) the primary action (register / open / close event), (4) the payment nudge (when relevant).
+- **The primary action now has its own card** instead of being the last thing at the bottom of a long block below badges and stats — the one thing you're most likely here to do is no longer buried.
+- **Both the header's admin menu (⋮) and each player's action menu (⋮) now use the same `ListRow` component already used elsewhere in the app**, instead of hand-rolled buttons — and destructive actions (Delete Event, Archive, Retire, No-show, Remove) now get a visibly red-tinted background, not just red text.
+- **"Cancel my registration" is now a real full-width red `Btn`** instead of a small button manually stretched to look big.
+- **The "Close with Output PES" button now has a solid purple-tinted background** instead of a transparent one that read as empty space.
+- **The registration-pause toggle and the "keep players" toggle in the duplicate-event form now share one `Toggle` component** instead of two separately hand-built switches.
+- **The team-formation "top group size" picker is now one shared `Seg` component** instead of two identical copies of the same buttons in different spots.
+- **No tabs, scoring, rounds, or match logic changed** — this pass is visual and structural only, no features added or removed.
+
+---
+
+## V0.16.13 — Bug #20: closing the gap in the fallback write path too
 
 - V0.16.09's fix for bug #20 only covered the Cloud Functions (server) side — if one of those ever fails or times out (or on Dev builds, which skip the server entirely), the app falls back to a direct write from the phone. That fallback was still writing the "Registered" history line in two separate steps, not one atomic operation, so the same drop-the-line race was still possible there.
 - All four registration paths (self-registering, an admin adding a player, registering via an invite link, and approving a join request) now write their "Registered" history line inside the very same transaction that creates the registration, on the fallback path too — not as a separate step afterward.

@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.16 (current) — Join requests now show in the Feed + fixed player-row icon jitter
+## V0.16.17 (current) — 🐛 Fix: a foreground push notification vanished into thin air
+
+- **"Send myself a test notification" only ever showed up in the in-app bell, never on the lock screen** — web push has two delivery paths, and only one was actually wired up. When the app is closed/backgrounded, the service worker (`firebase-messaging-sw.js`) receives the push and shows a real system notification — that part worked. But when the app is **open in front of you** (exactly the case when you tap the test button from Settings), Firebase routes the message through a completely different path inside the page itself (`onMessage`) instead of the service worker — and nothing was listening there at all, so the message vanished. The in-app bell still updated because that comes from a totally separate channel (a direct database update), unrelated to push.
+- There's now a listener on that same path, so any push that arrives while the app is open turns into a real system notification too, same as when it's closed. The native Android APK was never affected — its own plugin displays the system notification either way.
+
+---
+
+## V0.16.16 — Join requests now show in the Feed + fixed player-row icon jitter
 
 - **A join request on your event (like Shiko's) only ever showed up as a notification (🔔), never in the Home screen's Feed** — if the admin hadn't enabled push yet (exactly what happened here), there was no other way to notice a request was waiting besides manually checking the bell. Join requests on events you created now show up in the Feed too, same as any other registration activity.
 - **🐛 A long status badge on a player row (e.g. "🎫 Event Guest · Approved") used to wrap onto the same line as the ▼/⋮ icons, pushing them down and crowding them against the card edge** — so the icons' position shifted from row to row depending on badge length. The badge and the icons are now always on two separate lines — icon position stays fixed regardless of badge length.

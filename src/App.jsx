@@ -33,7 +33,7 @@ import {
 } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, collectionGroup, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch, arrayUnion } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getMessaging, getToken } from "firebase/messaging";
+import { getMessaging, getToken, onMessage } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
 
 // ── Firebase (Phase 1: auth. Phase 2: Firestore replaces localStorage as the
@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.16";
+const APP_VERSION = "V0.16.17";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4725,6 +4725,31 @@ export default function Matchkeeper() {
   }, [isAndroidWeb, isNativeAndroid]);
   const apkUrl = `https://padelos-6f999.web.app/releases/Matchkeeper-${apkVersion}-debug.apk`;
   const nativeUpdateAvailable = isNativeAndroid && apkVersionFetched && apkVersion !== APP_VERSION;
+  // Web push has two delivery paths and only one was ever wired up: the service worker's
+  // onBackgroundMessage (firebase-messaging-sw.js) fires when the tab is backgrounded/closed and
+  // was already showing a real system notification — but while the tab is in the FOREGROUND
+  // (which is exactly the case for "Send myself a test notification", since you have to be sat in
+  // Settings to tap it), Firebase routes the push through onMessage() in the page instead and
+  // never touches the service worker at all. With no onMessage listener registered anywhere,
+  // that foreground push was silently dropped at the transport layer — the in-app bell still
+  // updated because that comes from Firestore's own realtime listener, completely independent of
+  // FCM, which is why it looked like "only an in-app notification" (real gap, admin report,
+  // 2026-09-12). Native Android isn't affected — Capacitor's own PushNotifications plugin shows
+  // the system tray notification itself regardless of foreground/background.
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    let unsub;
+    try {
+      const messaging = getMessaging(firebaseApp);
+      unsub = onMessage(messaging, payload => {
+        const title = payload.notification?.title || "Matchkeeper";
+        const body = payload.notification?.body || "";
+        try { new Notification(title, {body, icon:"/logo-icon-192.png"}); } catch(e) { console.log("Foreground notification display failed", e); }
+      });
+    } catch(e) { console.log("Foreground FCM listener setup failed", e); }
+    return () => unsub && unsub();
+  }, []);
   const [dark,   setDark]   = useState(false);
   // Theme colors
   const TH = dark ? {

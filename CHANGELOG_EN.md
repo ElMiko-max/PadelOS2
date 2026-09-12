@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.14 (current) — Event screen redesign: the cluttered header is now 4 clear cards, buttons unified
+## V0.16.15 (current) — Follow-up to V0.16.14: "Cancel my registration" no longer looks like "Close Event"
+
+- Admin feedback on the V0.16.14 redesign: "Cancel my registration" (a mild, reversible, personal action) and "🏁 Close & Finish Event" (a serious, irreversible, everyone-affecting admin action) had ended up with the exact same look (a pale-red filled card) stacked right on top of each other — impossible to tell apart by severity even though they're nowhere near the same weight.
+- **"Cancel my registration" is now red text on a neutral background**, not a full red fill — reads as a mild caution rather than matching the big admin action's visual weight.
+- **A small "Admin" divider now separates your personal registration status from the admin Close-event controls** when you're both registered and an admin on the same event, so the two don't read as one block.
+
+---
+
+## V0.16.14 — Event screen redesign: the cluttered header is now 4 clear cards, buttons unified
 
 - **The Event Detail header used to be one card doing 6 unrelated jobs at once** (name/badges, the admin ⋮ menu, the share button, the capacity bar, the primary action, and the payment nudge) — all stacked with no internal structure. It's now 4 separate cards: (1) event identity, (2) capacity & stats, (3) the primary action (register / open / close event), (4) the payment nudge (when relevant).
 - **The primary action now has its own card** instead of being the last thing at the bottom of a long block below badges and stats — the one thing you're most likely here to do is no longer buried.

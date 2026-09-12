@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.14";
+const APP_VERSION = "V0.16.15";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12159,8 +12159,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             the admin's own remove button: locked once Round 1 is locked for CI/CT (would
             corrupt matches players are already slotted into); Open events have no plan to lock
             against, so this stays available for them right up to close. */}
-        {myReg&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" danger onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{width:"100%",marginBottom:6}}/>}
-        {isAdmin&&!sim&&<Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>}
+        {/* Deliberately NOT `danger` (the pale-red fill) — that's reserved for "Close & Finish
+            Event" below, an irreversible event-wide action. This is reversible and only affects
+            you, so it gets a milder red-text-on-neutral treatment instead of looking equally
+            alarming — two full-width red buttons stacked, identical weight, was flagged as
+            confusing (admin screenshot, 2026-09-12): can't tell which one is the "big" action. */}
+        {myReg&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{width:"100%",marginBottom:6,color:"#EF4444"}}/>}
+        {isAdmin&&!sim&&<>
+          {myReg&&<div style={{display:"flex",alignItems:"center",gap:8,margin:"10px 0"}}><div style={{flex:1,height:1,background:"var(--po-bdr)"}}/><span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Admin</span><div style={{flex:1,height:1,background:"var(--po-bdr)"}}/></div>}
+          <Btn label="🏁 Close & Finish Event" danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>
+        </>}
         {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label="🧪 Close with Output PES (Performance Based)" onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
         {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}

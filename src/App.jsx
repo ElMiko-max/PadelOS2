@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.18";
+const APP_VERSION = "V0.16.19";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9922,7 +9922,21 @@ function EvCard({ev,me,users,venues,onClick}){
 // ── Event Create Form ─────────────────────────────────
 function EventForm({venues,onBack,onCreate,commName,commSports}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:"",description:"",date:"",time:"18:00",timeTo:"22:00",venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false});
+  // Defaults to right now, not a fixed 18:00–22:00 — "From" rounds DOWN to the nearest 5 minutes
+  // (7:17 → 7:15, 4:23 → 4:20) since that's the admin's own stated rounding direction, and "To"
+  // is 30 minutes after that. Computed once, lazily, when the form first mounts — not on every
+  // render, and not a module-level constant, since it has to reflect the actual moment the admin
+  // opened this form (admin request, 2026-09-13).
+  const [f,setF]=useState(()=>{
+    const now=new Date();
+    const start=new Date(now); start.setMinutes(Math.floor(now.getMinutes()/5)*5,0,0);
+    const end=new Date(start.getTime()+30*60000);
+    const pad=n=>String(n).padStart(2,"0");
+    const dateStr=`${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}`;
+    const timeStr=`${pad(start.getHours())}:${pad(start.getMinutes())}`;
+    const timeToStr=`${pad(end.getHours())}:${pad(end.getMinutes())}`;
+    return {name:"",description:"",date:dateStr,time:timeStr,timeTo:timeToStr,venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false};
+  });
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
   const venuePitches=v?.pitches||[];
@@ -9966,6 +9980,10 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
       <Inp label="Start" value={f.time} onChange={v2=>set("time",v2)} type="time"/>
       <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
     </div>
+    {/* Blocks Create Event below, not just a passive warning — a Start at or after End is never
+        a valid booking window (admin request, 2026-09-13: "should not allow saving with wrong
+        duration"). */}
+    {f.time&&f.timeTo&&f.time>=f.timeTo&&<div style={{marginTop:6,marginBottom:8,fontSize:12,fontWeight:600,color:"#EF4444"}}>⚠️ End time must be after the start time.</div>}
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
     <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
@@ -9991,7 +10009,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     {!isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 5 = <b>{(parseInt(f.courts)||0)*5}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div>{getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}</div>
-    <Btn label="Create Event" primary onClick={()=>{if(f.name&&f.date&&f.venueId)onCreate(f);}} style={{width:"100%"}}/>
+    <Btn label="Create Event" primary disabled={!!(f.time&&f.timeTo&&f.time>=f.timeTo)} onClick={()=>{if(f.name&&f.date&&f.venueId&&f.time<f.timeTo)onCreate(f);}} style={{width:"100%"}}/>
   </Card></>;
 }
 

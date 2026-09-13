@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.18 (current) — Deleting an event now shows up in the Feed for the admin and registered members
+## V0.16.19 (current) — New Event: date/time now default to "right now" + invalid duration is blocked
+
+- **The "New Event" form always opened with a blank date and a fixed 18:00 → 22:00** — it now opens with today's date, a "Start" time that's the actual current time rounded DOWN to the nearest 5 minutes (e.g. 7:17 → 7:15, 4:23 → 4:20), and an "End" time defaulting to 30 minutes after that. You can still change either one.
+- **🐛 Saving with an invalid duration is now blocked** — if "Start" is at or after "End", the "Create Event" button disables and a clear red warning ("End time must be after the start time") shows until it's fixed.
+
+---
+
+## V0.16.18 — Deleting an event now shows up in the Feed for the admin and registered members
 
 - **Deleting an event made it vanish immediately with no trace in the Feed** — the admin who deleted it had no confirmation it actually happened there, and registered players had no way to know their event was cancelled. The deletion was only ever recorded in the Audit Trail, which most people never see.
 - Now: (1) the admin who deleted it sees "You deleted event X" in their own Feed, (2) every player who was registered sees "❌ Event cancelled (deleted by [admin])" in their Feed too, plus a notification.

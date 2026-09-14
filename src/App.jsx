@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.21";
+const APP_VERSION = "V0.16.22";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -7695,21 +7695,23 @@ export default function Matchkeeper() {
   // app-wide. This is what the Events-list LIVE badge relies on to never have to
   // disambiguate between two "current" events.
   const setMatchModeStart=(cid,eid,startAt,delayMin,roundEndTimes)=>{
-    // "Any other event with Match Mode live" is a scan of the in-memory events collection (every
-    // client already holds it all live, same as today's whole-blob download) — not a query, and
-    // not a platform-wide rewrite: only the target event plus whichever other single event (there
-    // can only ever be one) actually had it set get touched.
-    const target = eventsRef.current.find(e=>e.id===eid);
-    const targetUpdated = target && target.plan ? {...target,plan:{...target.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}} : target;
-    const others = eventsRef.current.filter(e=>e.id!==eid && e.plan?.matchModeStartAt).map(e=>({...e,plan:{...e.plan,matchModeStartAt:null,matchModeDelayMin:null}}));
-    const touched = [...(targetUpdated && targetUpdated!==target ? [targetUpdated] : []), ...others];
-    if (touched.length) {
-      const newEvents = eventsRef.current.map(e=>touched.find(t=>t.id===e.id) ?? e);
-      eventsRef.current = newEvents;
-      syncedRef.current.events = JSON.stringify(newEvents);
-      setEvents(newEvents);
-      batchWriteCommunitiesAndEvents([], touched.map(e=>({id:e.id, data:e}))).catch(e=>console.log("setMatchModeStart batch write failed", e));
-    }
+    // Real bug, confirmed live 2026-09-14 ("I press Start, it shows started for a second, then
+    // reverts as if I never pressed it — second press sticks but with no whistle"): this used to
+    // write via a raw batch.set() full-document replace, built from a plain in-memory snapshot
+    // (eventsRef.current) taken at call time — not a transaction. Firestore's own listener below
+    // re-applies whatever the SERVER ends up with the moment ANY other write on this doc lands in
+    // between our read and our write (there are several: the confirmOrder/waitlistOrder catch-up
+    // sync, the reminder engine, another admin's own action) — last-write-wins on a full-document
+    // replace means whichever write actually committed last silently erases the other's change
+    // entirely, with no error. A transaction (same pattern updEvent already uses for every other
+    // single-field change) reads the doc fresh at commit time instead of trusting a snapshot taken
+    // earlier, so it can never lose a concurrent change like this.
+    updEvent(cid, eid, e=>!e.plan?e:{...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}}).catch(e=>console.log("setMatchModeStart failed", e));
+    // "Any other event with Match Mode live" — a scan of the in-memory events collection (every
+    // client already holds it all live) to find the one other event (there can only ever be one)
+    // that still needs clearing, so at most one event is ever "live" app-wide.
+    const other = eventsRef.current.find(e=>e.id!==eid && e.plan?.matchModeStartAt);
+    if (other) updEvent(other.communityId, other.id, e=>!e.plan?e:{...e,plan:{...e.plan,matchModeStartAt:null,matchModeDelayMin:null}}).catch(e=>console.log("setMatchModeStart (clear other) failed", e));
     if (!roundEndTimes || !roundEndTimes.length) return;
     const comm = comms.find(c=>c.id===cid);
     const ev = comm?.events.find(e=>e.id===eid);
@@ -11718,7 +11720,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     // scheduled whistle on every single app reopen, permanently losing any round whose
     // alarm time fell inside that few-second window. isCompleted is a real, trustworthy
     // signal regardless, since an event doesn't flicker in and out of "completed".
-    if (isCompleted || (!started && mmEverStartedRef.current)) { MatchMode.stop().catch(()=>{}); mmRoundCountRef.current = 0; return; }
+    if (isCompleted || (!started && mmEverStartedRef.current)) {
+      // Diagnostic for the "Start flickers then reverts" report (2026-09-14) — if this fires
+      // right after a real Start tap, matchModeStartAt itself got wiped out from under us
+      // (see setMatchModeStart's comment on the write race this was most likely caused by),
+      // not a native-side problem. Safe to remove once that's confirmed fixed.
+      console.log("[MatchModeDiag] STOP triggered — isCompleted="+isCompleted+" started="+started+" mmEverStarted="+mmEverStartedRef.current+" matchModeStartAt="+plan.matchModeStartAt);
+      MatchMode.stop().catch(()=>{}); mmRoundCountRef.current = 0; return;
+    }
     if (!started) return;
     const ri = plan.rounds.length - 1;
     const round = plan.rounds[ri];

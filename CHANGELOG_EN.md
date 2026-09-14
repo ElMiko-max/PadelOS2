@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.21 (current) — 🐛 Real cause of the whistle/5-minute-warning going silent (happened a lot)
+## V0.16.22 (current) — 🐛 Found a second cause: the "Start" button reverted itself after a second
+
+- New observation from the admin: pressing "Start" for Match Mode looked like it started for about a second, then reverted as if nothing was pressed — needed a second tap to actually stick, and that time with no whistle.
+- **Real cause:** the code that writes Match Mode's start time was writing a full replacement of the event based on a snapshot it already had in memory — not a transaction that reads the latest real version first. If anything else wrote to that same event at nearly the same moment (the registration-order catch-up sync, the reminder engine), the two writes could race and one would silently wipe out the other with no error — if the one that got wiped was the Match Mode start time, that's exactly what would make the screen revert to "not started."
+- **The fix:** starting Match Mode now uses the same safe pattern (a transaction that reads the latest real version at save time) already used for every other event edit in the app — the same protection that has already prevented this exact class of data loss elsewhere.
+- **Also added a temporary diagnostic log line** in case this isn't the whole story — it'll help pin things down faster if it happens again.
+
+---
+
+## V0.16.21 — 🐛 Real cause of the whistle/5-minute-warning going silent (happened a lot)
 
 - **The admin reported: the whistle (and the "5 minutes remaining" warning) keep going silent, even though the countdown widget itself keeps working fine** — found the real cause: right when Match Mode starts, the code fired two back-to-back native calls to the same Android service (Start, then immediately Schedule every round's whistle) with no guarantee the first had actually finished — a genuine race condition, most exposed on the very first time Match Mode starts for an event (exactly what a fresh test event triggers). If that Schedule call failed because of the race, the code marked it "done successfully" at that same instant **without actually checking that it succeeded** — so a single transient failure right at the start permanently silenced every whistle for that whole event, with no retry and no warning to the admin.
 - **The fix:** (1) scheduling now waits for Start to actually finish first (closes the race at the source), (2) it's only marked "done" once it genuinely succeeds — if it still fails, it now automatically retries the next time the screen updates (a new round, or reopening the screen) instead of staying silent forever.

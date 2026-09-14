@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.19 (current) — New Event: date/time now default to "right now" + invalid duration is blocked
+## V0.16.20 (current) — Admin can move a player from the waitlist to active out of turn (if there's room)
+
+- **In the Players tab's Waitlist section, whenever there's a genuinely open seat in the active list, a "⚡ Promote" button now shows next to each waitlisted player** — it lets the admin move that specific person straight to an active seat immediately, even if it's not their turn in the normal waitlist order. The button never shows at all when the active list is already full, since this action deliberately never bumps anyone else off.
+- **Requires an explicit confirmation** before it happens, which clearly states this skips the normal order.
+- **Recorded in 4 places:** (1) the Audit Trail, with a clear line naming the admin, the player, and that it was out of turn; (2) that player's own Registration History; (3) that player's own Feed (⚡); (4) the acting admin's own Feed.
+
+---
+
+## V0.16.19 — New Event: date/time now default to "right now" + invalid duration is blocked
 
 - **The "New Event" form always opened with a blank date and a fixed 18:00 → 22:00** — it now opens with today's date, a "Start" time that's the actual current time rounded DOWN to the nearest 5 minutes (e.g. 7:17 → 7:15, 4:23 → 4:20), and an "End" time defaulting to 30 minutes after that. You can still change either one.
 - **🐛 Saving with an invalid duration is now blocked** — if "Start" is at or after "End", the "Create Event" button disables and a clear red warning ("End time must be after the start time") shows until it's fixed.

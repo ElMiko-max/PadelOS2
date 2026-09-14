@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.19";
+const APP_VERSION = "V0.16.20";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1872,6 +1872,7 @@ function feedIconFor(note){
   if(/^Marked as paid/.test(note)) return {icon:"💰", bg:"#34D39922", color:"#34D399"};
   if(/^Marked as unpaid/.test(note)) return {icon:"💸", bg:"#F59E0B22", color:"#F59E0B"};
   if(/^Event cancelled/.test(note)) return {icon:"🗑", bg:"#EF444422", color:"#EF4444"};
+  if(/^Moved to active list out of turn/.test(note)) return {icon:"⚡", bg:"#34D39922", color:"#34D399"};
   return {icon:"🔀", bg:"#94A3B822", color:"#94A3B8"};
 }
 function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
@@ -1961,6 +1962,12 @@ function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
   // but Platform Admin, so there's nowhere sensible left to tap through to.
   (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.delete").forEach(a => {
     items.push({ts:a.ts, icon:"🗑", bg:"#EF444422", color:"#EF4444", text:a.summary, nav:null});
+  });
+  // My own out-of-turn waitlist promotions — a deliberate override worth seeing in my own Feed
+  // too, not just buried in the Audit Trail (admin request, 2026-09-14).
+  (auditLog||[]).filter(a=>a.actorId===me.id && a.action==="event.force_promote").forEach(a=>{
+    const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
+    items.push({ts:a.ts, icon:"⚡", bg:"#34D39922", color:"#34D399", text:a.summary, nav: ev ? {cid:ev.communityId, eid:ev.id} : null});
   });
   // USR changes: real historical deltas — replays calcWeightedUSR at each prefix of the actual
   // stored history, so a delta can never be shown that doesn't match the number really on file.
@@ -6172,6 +6179,72 @@ export default function Matchkeeper() {
       });
     } catch(e) { console.log("syncOrdering failed", e); }
   };
+  // Admin override — deliberately skip the normal waitlist order and put one specific person
+  // straight into an active seat, as long as a seat is genuinely free. Never bumps anyone else
+  // off: gated on there being real open room (checked twice — once for the confirm prompt, once
+  // fresh inside the transaction against a race with another admin doing the same thing), and
+  // reuses computeOrderingUpdates (the same shared renumbering logic syncOrdering itself uses)
+  // by temporarily treating this one registration as already-confirmed for that computation —
+  // splitRegsByCapacity's "confirmed stays active unconditionally" rule then does the rest:
+  // assigns a real dense confirmOrder and closes the gap left behind on the waitlist, exactly
+  // like any other promotion. Confirmed via a real confirm() since this visibly cuts ahead of
+  // whoever the fair order would have promoted next (admin request, 2026-09-14).
+  const forcePromoteFromWaitlist = async (cid, eid, uid) => {
+    const ev = getEv(cid, eid);
+    if (!ev) { toast2("Event not found", "err"); return; }
+    const comm = comms.find(c=>c.id===cid);
+    const u = users.find(x=>x.id===uid);
+    const maxPlayers = getMaxPlayers(ev);
+    const {active, waitlisted} = splitRegsByCapacity(ev, comm);
+    if (maxPlayers!=null && active.length>=maxPlayers) { toast2("No open seat — the active list is already full", "err"); return; }
+    if (!waitlisted.some(r=>r.userId===uid)) { toast2("This player isn't on the waitlist", "err"); return; }
+    if (!window.confirm(`Move ${u?.nickname||uid} straight to an active seat in "${ev.name}"?\n\nThis skips everyone ahead of them on the waitlist — only do this if you have a specific reason to bypass the normal order.`)) return;
+    const colRef = collection(db,"padelos_events",String(eid),"registrations");
+    const preSnap = await getDocs(colRef);
+    const refs = preSnap.docs.map(d=>d.ref);
+    try {
+      await runTransaction(db, async (tx) => {
+        const snaps = await Promise.all(refs.map(r=>tx.get(r)));
+        const freshRegs = snaps.filter(s=>s.exists()).map(s=>s.data());
+        const target = freshRegs.find(r=>String(r.userId)===String(uid));
+        if (!target) throw new Error("Registration no longer exists");
+        if (target.confirmOrder!=null) throw new Error("Already on an active seat");
+        const {active:freshActive} = splitRegsByCapacity({...ev, registrations:freshRegs}, comm);
+        if (maxPlayers!=null && freshActive.length>=maxPlayers) throw new Error("No open seat — the active list is already full");
+        // Infinity sorts last among already-numbered confirmed seats (renumberSequence sorts by
+        // this field ascending) — this person should get the NEXT new number, never steal an
+        // earlier confirmed player's existing one.
+        const overriddenRegs = freshRegs.map(r => String(r.userId)===String(uid) ? {...r, confirmOrder:Infinity} : r);
+        const patches = computeOrderingUpdates(overriddenRegs, ev, comm);
+        const byId = new Map(freshRegs.map(r=>[String(r.userId), r]));
+        patches.forEach((patch, patchUid) => {
+          const ref = refs.find(rf=>rf.id===String(patchUid));
+          const prevReg = byId.get(String(patchUid));
+          if (!ref || !prevReg) return;
+          const data = {...prevReg, ...patch};
+          if (patch.confirmOrder === null) delete data.confirmOrder;
+          if (patch.waitlistOrder === null) delete data.waitlistOrder;
+          tx.set(ref, clean(data));
+          // One write per regHistory doc, never two — Firestore transactions don't allow a
+          // second write to the same document (real gap this session already learned the hard
+          // way with regHistory races, see BUGS.md #20). The explicit "why" line and the
+          // resulting position-change line both go in via one arrayUnion call when they're the
+          // same person (this target); everyone else just gets their own position-change line.
+          const note = describeOrderingChange(prevReg, data);
+          const entries = [];
+          if (String(patchUid)===String(uid)) entries.push({ts:new Date().toISOString(), note:`Moved to active list out of turn (by ${me.nickname})`});
+          if (note) entries.push({ts:new Date().toISOString(), note});
+          if (entries.length) tx.set(doc(db,"padelos_events",String(eid),"regHistory",String(patchUid)), {userId:prevReg.userId, entries:arrayUnion(...entries)}, {merge:true});
+        });
+      }, {maxAttempts:10});
+      logAudit("event.force_promote", `${me.nickname} moved ${u?.nickname||uid} from the waitlist to an active seat out of turn in "${ev.name}"`, "event", eid);
+      notify([uid], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}`, `An admin moved you up to an active seat.`);
+      toast2(`${u?.nickname||"Player"} moved to active ✓`);
+    } catch(e) {
+      console.log("forcePromoteFromWaitlist failed", e);
+      toast2(e?.message || "That didn't work — please try again", "err");
+    }
+  };
   // registerViaInvite / addGuest: atomically grant community membership AND event registration —
   // a crash between two separate writes could otherwise leave a registration with no membership,
   // or vice versa. Both target documents are either brand-new (registration) or a small,
@@ -8568,6 +8641,7 @@ export default function Matchkeeper() {
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
             onSetRegistrationOpen={open=>setEventRegistrationOpen(comm.id,event.id,open)}
             onSyncConfirmOrder={()=>syncOrdering(comm.id,event.id)}
+            onForcePromote={uid=>forcePromoteFromWaitlist(comm.id,event.id,uid)}
             onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}}
             onToggleExempt={uid=>toggleExempt(comm.id,event.id,uid)}
             onTogglePaid={uid=>togglePaid(comm.id,event.id,uid)}
@@ -11172,7 +11246,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -11334,6 +11408,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     removeFromEvent: (uid) => sim
       ? simMutate(e => ({...e, registrations:e.registrations.filter(r=>r.userId!==uid), checkedIn:e.checkedIn.filter(id=>id!==uid)}))
       : onRemoveFromEvent(uid),
+    forcePromote: (uid) => sim ? null /* not applicable in sim — no real waitlist fairness to override */ : onForcePromote(uid),
     editGuestUsr: (uid,usr) => sim ? null /* not applicable in sim */ : onEditGuestUsr(uid,usr),
     setFootballSkill: (uid,skill) => sim ? null /* not applicable in sim */ : onSetFootballSkill(uid,skill),
     retirePlayer: (uid,noShow) => sim ? null /* not applicable in sim */ : onRetirePlayer(uid,noShow),
@@ -12505,7 +12580,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {/* Sorted by the permanent waitlistOrder (not a recomputed array index) — same
             permanence rule as the active list's confirmOrder: fixed once assigned, only shifts
             down when someone ABOVE them leaves the waitlist (cancels, or gets promoted). */}
-        {[...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
+        {(()=>{
+          // "Promote" (out-of-turn override) only ever shows when a seat is genuinely free —
+          // there's no room to slip someone in without bumping an already-active player, which
+          // this action deliberately never does (admin request, 2026-09-14).
+          const maxP=getMaxPlayers(effEv);
+          const hasRoom = maxP==null || capActiveRegs.length<maxP;
+          return [...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
           const u=users.find(u=>u.id===r.userId); if(!u) return null;
           const wMStatus=comm.members?.find(m=>m.userId===u.id)?.status;
           return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08"}}>
@@ -12522,11 +12603,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
               <div onClick={e=>{e.stopPropagation();toggleRegHistory(u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
+              {isAdmin&&hasRoom&&<SmBtn label="⚡ Promote" onClick={(e)=>{e.stopPropagation();act.forcePromote(u.id);}} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
             {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}
           </Card>;
-        })}
+        });
+        })()}
       </>}
       </>;})()}
     </>}

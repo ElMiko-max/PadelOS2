@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.23 (current) — 🐛 Fix player-row layout stretching when a long badge is present ("Event Guest · Approved")
+## V0.16.24 (current) — Event notifications/Feed now reach any admin, not just the event's creator
+
+- **A join request, a player registering/unregistering, or a "near the minimum" warning only ever notified whoever created the event** — if a different admin (a community admin/owner, or someone specifically promoted as an admin on that one event) was the one actually watching Players that day, they had no way to know unless they happened to open the screen themselves.
+- **Now reaches any of:** the event's creator, any event-scoped admin promoted on that specific event, or any owner/admin of the community — not just the creator.
+- Covers: join requests (🙋), registration/unregistration Feed entries, near/at/below-minimum warnings, and last-minute cancellation alerts.
+- **Note:** the other thing you asked about ("let admins set each player's payment status — paid, direct, etc.") already exists — Financial tab → expand "🧮 Split This Event's Cost" if it's collapsed → the "💵 Settlement" section below it has a status button next to each player (Not Paid / Paid / Direct / Exempt), and it's already available to any admin on the event (including event-scoped admins), not just the creator. Let me know if that's not what you meant, or if it's not showing up for you.
+
+---
+
+## V0.16.23 — 🐛 Fix player-row layout stretching when a long badge is present ("Event Guest · Approved")
 
 - **A player row with a long badge (e.g. "🎫 Event Guest · Approved") looked stretched/misaligned**, with the ▼/⋮ icons sliding right up against the card edge — while ordinary rows looked fine. Cause: that badge is one long piece of unwrappable text, and when there wasn't enough room for it, it pushed the whole row wider than the card instead of fitting inside it.
 - **The fix:** (1) the name/USR column can now actually shrink to make room when it needs to (it couldn't before), (2) the long badge is now two short pieces ("🎫 Event Guest" and "Approved") that can wrap onto their own line if space is tight, instead of one long line that never wraps.

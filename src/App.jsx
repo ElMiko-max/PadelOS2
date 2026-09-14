@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.23";
+const APP_VERSION = "V0.16.24";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1917,17 +1917,27 @@ function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
     if(!ev || !myCommIds.has(ev.communityId)) return;
     items.push({ts:a.ts, icon:"🆕", bg:"#34D39922", color:"#34D399", text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
   });
-  // Registration activity on events I CREATED, from anyone — "Mister X registered in your event",
-  // "Mister W unregistered from your event" (2026-09-11 admin request). Skips my OWN plain
-  // self-register/self-unregister on it (that exact action is already the "Registered — EventName"
-  // backfill entry above); `seenEventActivityTs` then stops the existing "I approved someone
-  // else's request" rule right below from adding the same audit doc a second time when that
-  // approval happened to be on an event I own.
+  // Any event I actually help run — creator, event-scoped admin, or community owner/admin —
+  // not just whoever happened to create it. Widened 2026-09-15 (admin request: "any event
+  // admin, not only the creator") from the original creator-only checks below.
+  const isMyEventToManage = ev => {
+    if (ev.createdBy===me.id) return true;
+    if ((ev.eventAdmins||[]).includes(me.id)) return true;
+    const c = comms.find(c=>c.id===ev.communityId);
+    const role = c?.members?.find(m=>m.userId===me.id)?.role;
+    return role==="owner"||role==="admin";
+  };
+  // Registration activity on events I help run, from anyone — "Mister X registered in your
+  // event", "Mister W unregistered from your event" (2026-09-11 admin request). Skips my OWN
+  // plain self-register/self-unregister on it (that exact action is already the "Registered —
+  // EventName" backfill entry above); `seenEventActivityTs` then stops the existing "I approved
+  // someone else's request" rule right below from adding the same audit doc a second time when
+  // that approval happened to be on an event I manage.
   const seenEventActivityTs = new Set();
   const isSelfRegAction = s => /registered for "|unregistered themselves from "/i.test(s||"");
   (auditLog||[]).filter(a=>a.action==="event.register"||a.action==="event.unregister").forEach(a=>{
     const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
-    if(!ev || ev.createdBy!==me.id) return;
+    if(!ev || !isMyEventToManage(ev)) return;
     if(a.actorId===me.id && isSelfRegAction(a.summary)) return;
     seenEventActivityTs.add(a.ts);
     const isApproval = /approved/i.test(a.summary||"");
@@ -1938,14 +1948,14 @@ function buildUserFeed({me, comms, auditLog, regHistoryDocs, usrWindowSize}){
       color: isUnreg?"#EF4444":isApproval?"#A78BFA":"#818CF8",
       text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
   });
-  // Pending join requests on events I created — the request itself never showed up anywhere in
+  // Pending join requests on events I help run — the request itself never showed up anywhere in
   // the Feed before this (only the eventual approval did, via the block below), so an admin who
   // didn't happen to see the bell notification in time (real gap found live, 2026-09-12: push
   // wasn't enabled yet when the request came in) had no other way to notice it needed a look.
-  // Same ev.createdBy-only scoping as the registration-activity block above — see its comment.
+  // Same isMyEventToManage scoping as the registration-activity block above — see its comment.
   (auditLog||[]).filter(a=>a.action==="event.requestJoin").forEach(a=>{
     const ev = a.targetType==="event" ? allEvents.find(e=>e.id===a.targetId) : null;
-    if(!ev || ev.createdBy!==me.id) return;
+    if(!ev || !isMyEventToManage(ev)) return;
     items.push({ts:a.ts, icon:"🙋", bg:"#FBBF2422", color:"#FBBF24", text:a.summary, nav:{cid:ev.communityId, eid:ev.id}});
   });
   // Admin actions taken ON OTHER players — "part of my admin journey too" (2026-09-10, admin
@@ -6493,6 +6503,18 @@ export default function Matchkeeper() {
       ...ns,
     ]);
   };
+  // Every id with real admin standing on an event — creator, event-scoped admin (eventAdmins),
+  // or community owner/admin — not just whoever happened to create it. Widened 2026-09-15
+  // (admin request: "any event admin, not only the creator") from notify() calls that used to
+  // target [ev.createdBy] alone, e.g. a join request going to the creator only even when a
+  // co-admin was the one actually watching Players that day.
+  const eventAdminIds = (ev, cid) => {
+    const ids = new Set([ev?.createdBy].filter(Boolean));
+    (ev?.eventAdmins||[]).forEach(uid=>ids.add(uid));
+    const comm = comms.find(c=>c.id===(cid??ev?.communityId));
+    (comm?.members||[]).forEach(m=>{ if(m.role==="owner"||m.role==="admin") ids.add(m.userId); });
+    return [...ids];
+  };
   const markNotifRead = (id) => setNotifications(ns => ns.map(n => n.id===id?{...n,read:true}:n));
   const markAllNotifRead = () => setNotifications(ns => ns.map(n => n.userId===me.id?{...n,read:true}:n));
   // Enhancement #19 — a tapped notification takes you to whatever it's actually about,
@@ -7382,7 +7404,7 @@ export default function Matchkeeper() {
     const ev=getEv(cid,eid);
     updEvent(cid,eid,ev=>(ev.joinRequests||[]).some(r=>r.userId===me.id)?ev:{...ev,joinRequests:[...(ev.joinRequests||[]),{userId:me.id,requestedAt:new Date().toISOString()}]});
     toast2("Request sent ✓");
-    if (ev) notify([ev.createdBy].filter(Boolean), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
+    if (ev) notify(eventAdminIds(ev, cid), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
     logAudit("event.requestJoin", `${me.nickname} requested to join "${ev?.name||eid}"`, "event", eid);
     // Written here even though no registration doc exists yet (2026-09-10, admin request — "several
     // steps should be there on the same event" for the invite-link → approval flow) — regHistory
@@ -7522,7 +7544,7 @@ export default function Matchkeeper() {
     // Recipients shared by both alerts below (last-minute cancellation + falling toward the
     // minimum) — same "this event needs the admin's attention" reasoning either way, computed
     // once so both can reuse it without duplicating the filter.
-    const eventHealthRecipients = ev ? [...new Set([ev.createdBy, ...(ev.eventAdmins||[])])].filter(id=>id!==uid&&id!==me.id) : [];
+    const eventHealthRecipients = ev ? eventAdminIds(ev, cid).filter(id=>id!==uid&&id!==me.id) : [];
     // Last-minute cancellation alert — the creator/event admins should hear about a dropout
     // close to start time, not just find out when the roster comes up short. Fires regardless
     // of who removed the player (self-cancel or admin-removed), excluding the leaving player

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.22";
+const APP_VERSION = "V0.16.23";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12504,7 +12504,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             {r.confirmOrder!=null&&<div title={`Confirmed #${r.confirmOrder}`} style={{width:22,height:22,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,background:"var(--po-bdr)",color:"var(--po-dim)"}}>{r.confirmOrder}</div>}
             <Av u={u} size={34}/>
-            <div style={{flex:1}}>
+            {/* minWidth:0 is the actual fix — without it a flex:1 child refuses to shrink below
+                its own content's natural width, so a wide sibling (the "🎫 Event Guest ·
+                Approved" badge column, whose Bdg span never wraps) blew the whole row past the
+                card's edge instead of this name column compressing to make room (admin
+                screenshot, 2026-09-15: row looked visibly stretched/misaligned vs. plain rows). */}
+            <div style={{flex:1,minWidth:0}}>
               <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default"}}>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
                 {mStatus&&mStatus!=="guest"&&sBdg(mStatus)}
@@ -12570,12 +12575,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 crowding them against the card edge on that specific row while short-badge rows
                 stayed put — inconsistent position row-to-row (admin screenshot, 2026-09-12). The
                 icon row now always renders on its own line, same position regardless of badge length. */}
-            <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end"}}>
+            <div style={{display:"flex",flexDirection:"column",gap:4,alignItems:"flex-end",minWidth:0,maxWidth:"55%"}}>
+              {/* Two separate Bdg spans, not one long combined string — Bdg's own text never
+                  wraps (whiteSpace:nowrap), so a compound label like "🎫 Event Guest · Approved"
+                  had nowhere to go but push this whole row wider than the card. Two short badges
+                  in this already-flexWrap container can wrap onto their own line instead. */}
               <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}}>
                 {isGuestPerson
-                  ? <Bdg label={addedByLabel?`Guest · ${addedByLabel}`:"Guest"} color="#F59E0B"/>
+                  ? <><Bdg label="Guest" color="#F59E0B"/>{addedByLabel&&<Bdg label={addedByLabel} color="#F59E0B"/>}</>
                   : isEventOnlyGuest
-                    ? <Bdg label={addedByLabel?`🎫 Event Guest · ${addedByLabel}`:"🎫 Event Guest"} color="#8B5CF6"/>
+                    ? <><Bdg label="🎫 Event Guest" color="#8B5CF6"/>{addedByLabel&&<Bdg label={addedByLabel} color="#8B5CF6"/>}</>
                     : addedByLabel&&<Bdg label={addedByLabel} color="#6366F1"/>}
                 {isOpen&&ci2&&<Bdg label="✓ In" color="#34D399"/>}
               </div>

@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.22 (current) — 🐛 Found a second cause: the "Start" button reverted itself after a second
+## V0.16.23 (current) — 🐛 Fix player-row layout stretching when a long badge is present ("Event Guest · Approved")
+
+- **A player row with a long badge (e.g. "🎫 Event Guest · Approved") looked stretched/misaligned**, with the ▼/⋮ icons sliding right up against the card edge — while ordinary rows looked fine. Cause: that badge is one long piece of unwrappable text, and when there wasn't enough room for it, it pushed the whole row wider than the card instead of fitting inside it.
+- **The fix:** (1) the name/USR column can now actually shrink to make room when it needs to (it couldn't before), (2) the long badge is now two short pieces ("🎫 Event Guest" and "Approved") that can wrap onto their own line if space is tight, instead of one long line that never wraps.
+
+---
+
+## V0.16.22 — 🐛 Found a second cause: the "Start" button reverted itself after a second
 
 - New observation from the admin: pressing "Start" for Match Mode looked like it started for about a second, then reverted as if nothing was pressed — needed a second tap to actually stick, and that time with no whistle.
 - **Real cause:** the code that writes Match Mode's start time was writing a full replacement of the event based on a snapshot it already had in memory — not a transaction that reads the latest real version first. If anything else wrote to that same event at nearly the same moment (the registration-order catch-up sync, the reminder engine), the two writes could race and one would silently wipe out the other with no error — if the one that got wiped was the Match Mode start time, that's exactly what would make the screen revert to "not started."

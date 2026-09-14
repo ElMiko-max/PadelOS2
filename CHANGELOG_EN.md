@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.20 (current) — Admin can move a player from the waitlist to active out of turn (if there's room)
+## V0.16.21 (current) — 🐛 Real cause of the whistle/5-minute-warning going silent (happened a lot)
+
+- **The admin reported: the whistle (and the "5 minutes remaining" warning) keep going silent, even though the countdown widget itself keeps working fine** — found the real cause: right when Match Mode starts, the code fired two back-to-back native calls to the same Android service (Start, then immediately Schedule every round's whistle) with no guarantee the first had actually finished — a genuine race condition, most exposed on the very first time Match Mode starts for an event (exactly what a fresh test event triggers). If that Schedule call failed because of the race, the code marked it "done successfully" at that same instant **without actually checking that it succeeded** — so a single transient failure right at the start permanently silenced every whistle for that whole event, with no retry and no warning to the admin.
+- **The fix:** (1) scheduling now waits for Start to actually finish first (closes the race at the source), (2) it's only marked "done" once it genuinely succeeds — if it still fails, it now automatically retries the next time the screen updates (a new round, or reopening the screen) instead of staying silent forever.
+- **Important:** this fix is entirely in the app's JS code — nothing in the actual native Android whistle/alarm code itself (which took a lot of work to stabilize before) was touched. The fix is about timing and follow-through, not the alarm-ringing mechanism.
+- **Needs a real test on the phone** (not the web) — this feature is Android-only.
+
+---
+
+## V0.16.20 — Admin can move a player from the waitlist to active out of turn (if there's room)
 
 - **In the Players tab's Waitlist section, whenever there's a genuinely open seat in the active list, a "⚡ Promote" button now shows next to each waitlisted player** — it lets the admin move that specific person straight to an active seat immediately, even if it's not their turn in the normal waitlist order. The button never shows at all when the active list is already full, since this action deliberately never bumps anyone else off.
 - **Requires an explicit confirmation** before it happens, which clearly states this skips the normal order.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.20";
+const APP_VERSION = "V0.16.21";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -11730,13 +11730,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     const slot = Math.min(ri+1, tr);
     const whistleAt = new Date(plan.matchModeStartAt).getTime() + (offsets[slot]||slot*rd)*60000;
     const payload = { eventId: effEv.id, roundIndex: ri, roundNumber: round.round, whistleAt: String(whistleAt), isLastRound: (ri+1)>=tr, breakPlayers: mmBreakLabel(round), courts: mmBuildRoundPayload(round, comms||[], effEv.id) };
-    if (mmRoundCountRef.current === 0) {
-      MatchMode.start(payload).catch(e=>console.log("MatchMode.start failed", e));
-    } else {
-      console.log("[MatchModeDiag] pushing MatchMode.update, courts=", JSON.stringify(payload.courts));
-      MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
-    }
-    mmRoundCountRef.current = plan.rounds.length;
     // Schedule every round's whistle upfront, exactly once per real Match Mode start —
     // gated by a Firestore-durable flag (not the ref above, which resets on every app
     // reopen/remount and was causing a full re-schedule — and cancellation of
@@ -11744,13 +11737,37 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     // whistle is purely a function of (start time, round count, round duration); it
     // shouldn't need "a new round was generated" or "results came in" to know when the
     // next one rings, and it shouldn't repeat just because the screen reopened.
-    if (plan.mmScheduledFor !== plan.matchModeStartAt) {
+    //
+    // Real bug, confirmed 2026-09-14 ("whistle never rings, widget still updates fine"):
+    // this used to fire right alongside MatchMode.start() with no ordering between them,
+    // and marked mmScheduledFor unconditionally, immediately — not after the call actually
+    // succeeded. scheduleWhistles's native side can genuinely throw (its plain startService()
+    // call needs the service already in foreground state, which start()'s own
+    // startForegroundService() call may not have finished reaching yet on the very first
+    // start of a session), and that rejection only ever got logged to a console nobody sees
+    // on a real device — meanwhile mmScheduledFor was already set, so this whole block never
+    // ran again for that Match Mode session. A single transient failure, most likely right at
+    // this first start, permanently silenced every whistle for the rest of the event. Now:
+    // on first start, scheduling waits for start() to actually resolve first (removing the
+    // race); either way it only marks mmScheduledFor on real success, so any failure just
+    // leaves it unset and this same block retries on the next render instead of going silent.
+    const scheduleWhistlesIfNeeded = () => {
+      if (plan.mmScheduledFor === plan.matchModeStartAt) return;
       const startMs = new Date(plan.matchModeStartAt).getTime();
       const schedule = [];
       for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
-      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles failed", e));
-      onMarkWhistlesScheduled?.(plan.matchModeStartAt);
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule })
+        .then(()=>onMarkWhistlesScheduled?.(plan.matchModeStartAt))
+        .catch(e=>console.log("scheduleWhistles failed — will retry on next render", e));
+    };
+    if (mmRoundCountRef.current === 0) {
+      MatchMode.start(payload).then(scheduleWhistlesIfNeeded).catch(e=>console.log("MatchMode.start failed", e));
+    } else {
+      console.log("[MatchModeDiag] pushing MatchMode.update, courts=", JSON.stringify(payload.courts));
+      MatchMode.update(payload).catch(e=>console.log("MatchMode.update failed", e));
+      scheduleWhistlesIfNeeded();
     }
+    mmRoundCountRef.current = plan.rounds.length;
   }, [Capacitor.isNativePlatform() && isAdmin && isCI && plan?.matchModeStartAt, plan?.rounds?.length, JSON.stringify(plan?.rounds?.[plan?.rounds?.length-1]?.matches?.map(m=>m.winner)||[]), isCompleted]);
 
   // ── Match Mode for CT events (native Android, admin only) — schedule + whistle only ──
@@ -11796,14 +11813,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     const payload = { eventId: String(effEv.id), roundIndex: slot-1, roundNumber: slot, whistleAt: String(whistleAt), isLastRound: isLadder?ladderLastRound:(slot>=tr), breakPlayers, courts, interactive: isLadder };
     // TEMPORARY diagnostic for "widget doesn't know the round progressed" — remove once found.
     console.log("[MatchModeDiag CT] effect fired — plan.rounds.length="+plan.rounds.length+" slot="+slot+" courts="+courts.length+" winners="+JSON.stringify(courts.map(c=>c.winner))+" action="+(mmCTStartedRef.current===0?"START":"UPDATE"));
-    if (mmCTStartedRef.current === 0) MatchMode.start(payload).catch(e=>console.log("MatchMode.start (CT) failed", e));
-    else MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e));
-    mmCTStartedRef.current = slot;
-    if (plan.mmScheduledFor !== plan.matchModeStartAt) {
+    // Same fix as the CI effect above — schedule waits for a first start() to actually
+    // resolve (removing the race between it and scheduleWhistles's own native call), and
+    // only marks mmScheduledFor once scheduleWhistles itself actually succeeds, so a
+    // transient failure retries on the next render instead of silencing every whistle for
+    // the rest of the event.
+    const scheduleWhistlesIfNeededCT = () => {
+      if (plan.mmScheduledFor === plan.matchModeStartAt) return;
       const schedule = []; for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
-      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule }).catch(e=>console.log("scheduleWhistles (CT) failed", e));
-      onMarkWhistlesScheduled?.(plan.matchModeStartAt);
-    }
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule })
+        .then(()=>onMarkWhistlesScheduled?.(plan.matchModeStartAt))
+        .catch(e=>console.log("scheduleWhistles (CT) failed — will retry on next render", e));
+    };
+    if (mmCTStartedRef.current === 0) MatchMode.start(payload).then(scheduleWhistlesIfNeededCT).catch(e=>console.log("MatchMode.start (CT) failed", e));
+    else { MatchMode.update(payload).catch(e=>console.log("MatchMode.update (CT) failed", e)); scheduleWhistlesIfNeededCT(); }
+    mmCTStartedRef.current = slot;
   }, [Capacitor.isNativePlatform() && isAdmin && isCT && plan?.matchModeStartAt, isCompleted, mmCTTick, plan?.rounds?.length, JSON.stringify([...(plan?.rounds?.[plan?.rounds?.length-1]?.matchesA||[]),...(plan?.rounds?.[plan?.rounds?.length-1]?.matchesB||[])].map(m=>m.winner+":"+(m.live?1:0)))]);
 
   // Safety net: the native foreground service can get killed independently of this

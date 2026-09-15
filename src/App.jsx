@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.31";
+const APP_VERSION = "V0.16.32";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12274,27 +12274,25 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
-      {/* Badge now only shares a row with the event name — the one line it actually needs to sit
-          next to. Everything below (type/status badges, community link, venue, date, creator,
-          description) used to stay indented in that same narrow column, leaving the badge's own
-          height-worth of space to its left permanently empty once the name wrapped past it
-          (admin screenshot, 2026-09-15: "white area below the logo... not used"). Dropping
-          those rows to the card's full width instead reclaims that space and means fewer wrapped
-          lines overall for the exact same content. */}
+      {/* Badge shares its row with a single FLOWING text block — id chip, name, and community
+          link are inline siblings inside one wrapping paragraph (not three stacked divs), so
+          short content shares a line and long content wraps together, always indented to start
+          right after the badge (admin request, 2026-09-16, third pass on this header — exact
+          spec: "#id next to name... wrap to start right after the coin... community fills the
+          rest of the line after the name finishes"). ⋮/📤 are a vertical stack in the top-right
+          corner (kebab above share) instead of side-by-side, freeing more width for that text
+          block. Date/time, the sport+type badges, and the venue block are now separate full-
+          width lines below this row, in that order — not squeezed next to the badge anymore. */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
         <div style={{display:"flex",gap:10,alignItems:"flex-start",flex:1,minWidth:0}}>
           {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
-          <div style={{minWidth:0}}>
-            <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)"}}>{ev.name}</div>
-            {/* Date/time right under the name — was buried near the bottom of the card, well
-                below badges/community/venue (admin request, 2026-09-16: "the when" should be the
-                second thing you read, not the last). */}
-            <div style={{fontSize:12,color:"var(--po-sub)",fontWeight:600,marginTop:3}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+          <div style={{minWidth:0,lineHeight:1.5}}>
+            <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6,marginRight:7,display:"inline-block",verticalAlign:"middle"}}>#{ev.id}</span>
+            <span className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)"}}>{ev.name}</span>
+            {onOpenCommunity&&<span onClick={onOpenCommunity} style={{fontSize:13,fontWeight:600,color:"#6366F1",textDecoration:"underline",cursor:"pointer",marginLeft:8}}>👥 {comm.name}</span>}
           </div>
         </div>
-        <div style={{display:"flex",gap:6,flexShrink:0}}>
-          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
-          {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+        <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
             <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
             {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,width:200,padding:6,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -12306,14 +12304,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {canDeleteOrArchive&&isCompleted&&!ev.archived&&<ListRow icon="📦" label="Archive" danger onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}}/>}
             </div>}
           </div>}
+          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
         </div>
       </div>
       <div style={{marginTop:9}}>
-        {/* One consolidated badge row, short wording only here — used to be two rows (name-line
-            badges + a second wrapped row below) because "Closed Individuals"/"Padel Tennis"
-            never fit alongside everything else (admin request, 2026-09-16). */}
+        <div style={{fontSize:12,color:"var(--po-sub)",fontWeight:600,marginBottom:8}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
         <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
-          <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>
           <Bdg label={(ev.sport||DEFAULT_SPORT)==="Padel Tennis"?"🎾 Padel":sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>
           {ev.type&&<Bdg label={shortTl[ev.type]||tl[ev.type]} color="#6366F1"/>}
           {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
@@ -12324,7 +12321,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
           {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
         </div>
-        {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2,textDecoration:"underline"}}>👥 {comm.name}</div>}
         {venue&&<VenueLocationRow venue={venue}/>}
         {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
         {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}

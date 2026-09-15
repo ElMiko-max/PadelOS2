@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.31 (current) — Full event header redesign: cleanup, shorter labels, date moved up
+## V0.16.32 (current) — Event header: id + name + community now flow as one paragraph, kebab/share stacked
+
+- **The admin sent an annotated screenshot after V0.16.31 asking for a more precise layout:**
+- **`#101`, the event name, and the community link (👥) now flow together as one wrapping paragraph** next to the level badge, instead of three separate stacked lines. A short name lets the community link join the same line; a long one wraps within that same paragraph.
+- **The kebab (⋮) and share (📤) buttons are now stacked vertically** in the top-right corner instead of side by side — kebab on top, share below — freeing more width for the flowing text block next to it.
+- **Date/time now gets its own full-width line** after that flowing block (not squeezed into the narrow column next to the badge like in V0.16.31) — no more wrapping there.
+- **Sport/type badges (Padel / Individuals) get their own line** after the date, with the venue block unchanged below that.
+
+---
+
+## V0.16.31 — Full event header redesign: cleanup, shorter labels, date moved up
 
 - **The admin said the event header felt messy and needed organizing** — this implements the design we agreed on:
 - **Date and time now sit right under the event name** (instead of below all the badges, community link, and venue).

@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.26 (current) — 🐛 Waitlist said "event full" even when it genuinely wasn't
+## V0.16.27 (current) — 🐛 Critical fix: notifications (Android + in-app) had stopped entirely
+
+- **Admin report: no Android notifications at all, and even the in-app bell (🔔) had nothing new — only the Feed kept working.** Found the cause: every notification for every user, since the app began, lives in one array inside one Firestore document. That document had grown to 4897 entries (1,048,349 bytes) — right at Firestore's hard 1 MiB per-document limit. Any attempt to add a new notification after that was being silently rejected, with no error visible anywhere — which is exactly why both the Android push (which writes to that same document) and the in-app bell (which reads it) went dead at once, while the Feed kept working because it's built from an entirely separate place (the Audit Trail and Registration History).
+- **Immediate fix:** the array is now capped at 1500 entries every time a new one is added — older ones past that automatically drop off. This brings the document back down to a safe size the moment any real action (a registration, an event update) happens after this update installs.
+- **Note:** this is a real fix, sufficient for now — the proper long-term solution is moving notifications into their own collection (one document per notification, like the Audit Trail already does), so this can't recur once volume grows again. Happy to do that as a separate piece of work if you want.
+
+---
+
+## V0.16.26 — 🐛 Waitlist said "event full" even when it genuinely wasn't
 
 - **Admin report:** a Casual player could see open seats, but the screen told them they were on the waitlist "because the event is full" — confirmed live (event #101: only 6 of 15 spots registered, yet the player sat on the waitlist). Real cause: the rule that "for the first 24h after registration opens, only Regular members get real seats — Casual always waits, regardless of room" is deliberate, requested by the admin before — but the text shown ("event full") was simply wrong, and made it look like a capacity problem when it was actually a priority-window one.
 - **The fix:** the label now reflects the real reason — "event full" when there truly is no room, or "Regular members get priority for now" when there's an open seat but the priority window hasn't closed yet, including when that window ends for each waitlisted player.

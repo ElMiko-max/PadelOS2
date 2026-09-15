@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.26";
+const APP_VERSION = "V0.16.27";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6494,6 +6494,20 @@ export default function Matchkeeper() {
   // ── Notifications ──────────────────────────────────────
   // Event-scoped notifications only (registration, reminders, changes) — see Ch09.
   // Direct messaging / broadcasts / other categories are deferred.
+  //
+  // Real production outage, confirmed 2026-09-15: every notification for every user, forever,
+  // lives in ONE array inside ONE Firestore document (padelos/notifications) — no per-user or
+  // per-notification split. That document had grown to 4897 entries / 1,048,349 bytes, right at
+  // Firestore's hard 1 MiB per-document limit, so every further write was being silently
+  // rejected — no error surfaced anywhere the admin would see it, since the .catch() on the sync
+  // effect below only ever logs to a console nobody reads on a real device. That's why BOTH the
+  // Android push (which fires off a write to this same document) AND the in-app bell (which
+  // reads it) went completely silent at once, while the Feed kept working fine (it's built from
+  // the separate padelos_audit/regHistory collections, untouched by this). Capping the array on
+  // every write keeps the document safely under the limit going forward — a real fix (splitting
+  // this into its own per-notification collection, like padelos_audit already is) is worth doing
+  // properly later, but this stops the bleeding immediately without a schema migration.
+  const NOTIFICATIONS_CAP = 1500;
   const notify = (userIds, type, ev, title, body) => {
     const uniq = [...new Set((userIds||[]).filter(Boolean))];
     if (uniq.length===0) return;
@@ -6501,7 +6515,7 @@ export default function Matchkeeper() {
     setNotifications(ns => [
       ...uniq.map(uid => ({id:_nid++, userId:uid, type, eventId:ev?.id, communityId:ev?.communityId, eventName:ev?.name, profileUserId:ev?.profileUserId, announcementId:ev?.announcementId, title, body, createdAt:now, read:false})),
       ...ns,
-    ]);
+    ].slice(0, NOTIFICATIONS_CAP));
   };
   // Every id with real admin standing on an event — creator, event-scoped admin (eventAdmins),
   // or community owner/admin — not just whoever happened to create it. Widened 2026-09-15

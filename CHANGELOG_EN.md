@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.28 (current) — The real, permanent fix for notifications (not just a stopgap)
+## V0.16.29 (current) — Location pin and distance check now sit right on the venue line
+
+- **The "Open Location" and "How far is it?" buttons lived in their own card well below the venue name** — the admin asked for them to move closer so it reads clearly as one thing: the venue, its location, and the distance check.
+- **Now:** an icon-only 📍 pin sits directly on the venue name's line, and a second row right below it shows "📏 How far is it?" with the result (distance + time) right-aligned once you check it.
+- The separate standalone card that used to sit under "Event Info" is gone — same functionality, now part of the header.
+
+---
+
+## V0.16.28 — The real, permanent fix for notifications (not just a stopgap)
 
 - **Follow-up to V0.16.27** (which was a temporary patch — capping how many entries could live in the same old document). This is the real fix: a **completely new structure** — every notification is now its own document in a new collection (`padelos_notifications`), instead of every user's notifications ever sharing one array inside one document. Same approach already used successfully for the Audit Trail.
 - **What this means in practice:** the exact failure that happened (the document hitting the 1 MiB limit and every notification silently stopping) **can't happen again** — each notification is its own independent document, with no cumulative ceiling at all.

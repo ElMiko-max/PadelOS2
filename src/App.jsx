@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.28";
+const APP_VERSION = "V0.16.29";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4107,14 +4107,21 @@ function MapOpenPicker({venue,mapsUrl,label="📍 Open Location"}){
     <SmBtn label={label} color="#6366F1"/>
   </a>;
 }
-// Location card: app-picker link + a distance/ETA check from the player's current location.
-// Uses OSRM (a free, open-source, OpenStreetMap-based routing service — no API key) for a real
-// road-based estimate; if that request fails for any reason, falls back to a straight-line estimate.
-function VenueMapCard({venue}){
+// Inline replacement for the old standalone VenueMapCard, folded directly into the event
+// header's venue line instead of its own card several scrolls down (admin request, 2026-09-15:
+// "this is the venue, this is the venue link, this is how far — all near each other"). The pin
+// is icon-only, sitting at the end of the venue name's own line; "How far is it?" gets its own
+// row directly below with the result right-aligned, so it always lands in the same spot instead
+// of appearing as a separate block. Same OSRM distance/ETA logic VenueMapCard used — a free,
+// open-source, OpenStreetMap-based routing service (no API key); falls back to a straight-line
+// estimate if that request fails for any reason.
+function VenueLocationRow({venue}){
   const [status,setStatus] = useState("idle"); // idle | loading | done | error
   const [result,setResult] = useState(null);
-  if (!venue?.mapsUrl && !(typeof venue?.lat==="number"&&typeof venue?.lng==="number")) return null;
+  if (!venue) return null;
   const coords = getVenueCoords(venue);
+  const url = venue.mapsUrl;
+  const href = coords ? `geo:${coords.lat},${coords.lng}?q=${coords.lat},${coords.lng}` : url;
   const checkDistance = () => {
     if (!coords || !navigator.geolocation) { setStatus("error"); return; }
     setStatus("loading");
@@ -4122,19 +4129,19 @@ function VenueMapCard({venue}){
       async pos => {
         const {latitude, longitude} = pos.coords;
         try {
-          const url = `https://router.project-osrm.org/route/v1/driving/${longitude},${latitude};${coords.lng},${coords.lat}?overview=false`;
-          const res = await fetch(url);
+          const routeUrl = `https://router.project-osrm.org/route/v1/driving/${longitude},${latitude};${coords.lng},${coords.lat}?overview=false`;
+          const res = await fetch(routeUrl);
           const data = await res.json();
           const route = data?.routes?.[0];
           if (data.code==="Ok" && route) {
-            setResult({km:route.distance/1000, mins:Math.round(route.duration/60), real:true});
+            setResult({km:route.distance/1000, mins:Math.round(route.duration/60)});
           } else {
             const km = haversineKm(latitude, longitude, coords.lat, coords.lng);
-            setResult({km, mins:Math.round((km/25)*60), real:false});
+            setResult({km, mins:Math.round((km/25)*60)});
           }
         } catch(e) {
           const km = haversineKm(latitude, longitude, coords.lat, coords.lng);
-          setResult({km, mins:Math.round((km/25)*60), real:false});
+          setResult({km, mins:Math.round((km/25)*60)});
         }
         setStatus("done");
       },
@@ -4142,15 +4149,20 @@ function VenueMapCard({venue}){
       {timeout:10000}
     );
   };
-  return <Card style={{marginBottom:10}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
-      <MapOpenPicker venue={venue}/>
-      {coords&&status!=="loading"&&<SmBtn label={status==="done"?"↻ Recheck":"📏 How far is it?"} onClick={checkDistance} color="#34D399"/>}
-      {status==="loading"&&<span style={{fontSize:12,color:"var(--po-dim)"}}>Checking…</span>}
+  return <>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+      <div style={{fontSize:12,color:"var(--po-dim)",minWidth:0}}>🏟 {venue.name} · {venue.area}</div>
+      {href&&<a href={href} {...(coords?{}:{target:"_blank",rel:"noopener noreferrer"})} title="Open Location" style={{flexShrink:0,width:24,height:24,borderRadius:7,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,textDecoration:"none"}}>📍</a>}
     </div>
-    {status==="done"&&result&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:8}}>~{result.mins} min away (~{result.km.toFixed(1)} km{result.real?" driving, via OpenStreetMap routing":", straight line — routing service unavailable, rough estimate"})</div>}
-    {status==="error"&&<div style={{fontSize:12,color:"#F59E0B",marginTop:8}}>Couldn't get your location — check location permission is allowed for this site.</div>}
-  </Card>;
+    {coords&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginTop:6,paddingTop:6,borderTop:"0.5px dashed var(--po-bdr)"}}>
+      {status==="loading"
+        ? <span style={{fontSize:11,color:"var(--po-dim)"}}>📏 Checking…</span>
+        : <span onClick={checkDistance} style={{fontSize:11,fontWeight:600,color:"#34D399",cursor:"pointer"}}>{status==="done"?"↻ Recheck":"📏 How far is it?"}</span>}
+      {status==="done"&&result&&<span style={{fontSize:11,fontWeight:700,color:"var(--po-text)"}}>~{result.mins} min · ~{result.km.toFixed(1)} km</span>}
+      {status==="error"&&<span style={{fontSize:11,color:"#F59E0B"}}>Couldn't get location</span>}
+      {status==="idle"&&<span style={{fontSize:11,color:"var(--po-dim)",fontStyle:"italic"}}>tap to check</span>}
+    </div>}
+  </>;
 }
 function CollapsibleSection({label,children,defaultOpen=true}){
   const [open,setOpen]=useState(defaultOpen);
@@ -12262,8 +12274,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
             </div>
             {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2,textDecoration:"underline"}}>👥 {comm.name}</div>}
-            {venue&&<div style={{fontSize:12,color:"var(--po-dim)"}}>🏟 {venue.name} · {venue.area}</div>}
-            <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+            {venue&&<VenueLocationRow venue={venue}/>}
+            <div style={{fontSize:12,color:"var(--po-dim)",marginTop:venue?6:0}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
             {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
             {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
           </div>
@@ -12432,8 +12444,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         ["Duration",durationLabel(ev.time, ev.timeTo)],
         ["Created by",(()=>{const u=users.find(u=>u.id===ev.createdBy);return u?<span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{cursor:onViewProfile?"pointer":"default",color:onViewProfile?"#6366F1":"inherit"}}>{u.nickname} ({u.name})</span>:"—";})()],...(isCI?[["Scoring",Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")+` · Break=${bp}pts`],["Round Duration",`${plan?.roundDuration||roundDur} min`]]:isOpen?[["Rotation",`Every ${effEv.rotationMin} min`],["Check-in","Required · cost split by attendees"]]:isCT?[["Formation",isFootballEv?"Snake Draft (Football Skill)":"Multi-Pool Snake (USR)"],["Competition",plan?.format==="ladder"?"Ladder":isFootballEv?"League":"League + Promotion/Relegation"],[plan?.format==="ladder"?"Scoring":"Ranking",plan?.format==="ladder"?`${isFootballEv?"Pitch":"Court"} ${tc}=1pt ... ${isFootballEv?"Pitch":"Court"} 1=${tc}pts · Break=${ctLadderBreakPts(tc)}pts`:(isFootballEv?"Wins → Score Diff":"Group A first · Wins → Score Diff")],["Match Duration",`${plan?.matchDuration||20} min`]]:[])].map(([k,val])=><div key={k} style={{display:"flex",gap:8,paddingBottom:7,borderBottom:"0.5px solid var(--po-bdr)"}}><span className="po-dim" style={{fontSize:12,color:"var(--po-dim)",minWidth:110}}>{k}</span><span className="po-sub" style={{fontSize:12,color:"var(--po-sub)"}}>{val}</span></div>)}</div></Card>
     </CollapsibleSection>
-
-    <VenueMapCard venue={venue}/>
 
     {/* Closed Teams Ladder events stack up to 7 tabs (players/teams/breaks/matches/standings/
         manage/photos) — same >5 overflow rule as Community, using the same TwoRowTabs component

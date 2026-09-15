@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.29";
+const APP_VERSION = "V0.16.30";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4149,12 +4149,15 @@ function VenueLocationRow({venue}){
       {timeout:10000}
     );
   };
-  return <>
+  // Own light-tinted frame (sky blue, distinct from every other accent already used in this
+  // header) so the location block reads as one clearly-bounded area at a glance, instead of
+  // blending into the plain rows around it (admin request, 2026-09-15).
+  return <div style={{background:"#38BDF814",border:"1px solid #38BDF84a",borderRadius:10,padding:"9px 11px",marginTop:6,marginBottom:6}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
-      <div style={{fontSize:12,color:"var(--po-dim)",minWidth:0}}>🏟 {venue.name} · {venue.area}</div>
-      {href&&<a href={href} {...(coords?{}:{target:"_blank",rel:"noopener noreferrer"})} title="Open Location" style={{flexShrink:0,width:24,height:24,borderRadius:7,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,textDecoration:"none"}}>📍</a>}
+      <div style={{fontSize:12,color:"#7DD3FC",fontWeight:600,minWidth:0}}>🏟 {venue.name} · {venue.area}</div>
+      {href&&<a href={href} {...(coords?{}:{target:"_blank",rel:"noopener noreferrer"})} title="Open Location" style={{flexShrink:0,width:24,height:24,borderRadius:7,background:"var(--po-card)",border:"0.5px solid #38BDF84a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,textDecoration:"none"}}>📍</a>}
     </div>
-    {coords&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginTop:6,paddingTop:6,borderTop:"0.5px dashed var(--po-bdr)"}}>
+    {coords&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginTop:6,paddingTop:6,borderTop:"1px dashed #38BDF84a"}}>
       {status==="loading"
         ? <span style={{fontSize:11,color:"var(--po-dim)"}}>📏 Checking…</span>
         : <span onClick={checkDistance} style={{fontSize:11,fontWeight:600,color:"#34D399",cursor:"pointer"}}>{status==="done"?"↻ Recheck":"📏 How far is it?"}</span>}
@@ -4162,7 +4165,7 @@ function VenueLocationRow({venue}){
       {status==="error"&&<span style={{fontSize:11,color:"#F59E0B"}}>Couldn't get location</span>}
       {status==="idle"&&<span style={{fontSize:11,color:"var(--po-dim)",fontStyle:"italic"}}>tap to check</span>}
     </div>}
-  </>;
+  </div>;
 }
 function CollapsibleSection({label,children,defaultOpen=true}){
   const [open,setOpen]=useState(defaultOpen);
@@ -12260,25 +12263,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
+      {/* Badge now only shares a row with the event name — the one line it actually needs to sit
+          next to. Everything below (type/status badges, community link, venue, date, creator,
+          description) used to stay indented in that same narrow column, leaving the badge's own
+          height-worth of space to its left permanently empty once the name wrapped past it
+          (admin screenshot, 2026-09-15: "white area below the logo... not used"). Dropping
+          those rows to the card's full width instead reclaims that space and means fewer wrapped
+          lines overall for the exact same content. */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
-        <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+        <div style={{display:"flex",gap:10,alignItems:"flex-start",flex:1,minWidth:0}}>
           {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
-          <div>
-            <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",marginBottom:4,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
-            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
-              {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
-              {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
-              {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
-              {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
-              {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
-              {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
-            </div>
-            {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2,textDecoration:"underline"}}>👥 {comm.name}</div>}
-            {venue&&<VenueLocationRow venue={venue}/>}
-            <div style={{fontSize:12,color:"var(--po-dim)",marginTop:venue?6:0}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
-            {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
-            {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
-          </div>
+          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",minWidth:0}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
         </div>
         <div style={{display:"flex",gap:6,flexShrink:0}}>
           {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
@@ -12295,6 +12290,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>}
           </div>}
         </div>
+      </div>
+      <div style={{marginTop:8}}>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
+          {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
+          {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
+          {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
+          {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
+          {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
+          {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
+        </div>
+        {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2,textDecoration:"underline"}}>👥 {comm.name}</div>}
+        {venue&&<VenueLocationRow venue={venue}/>}
+        <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+        {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
+        {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
       </div>
       {showDup&&<div style={{marginTop:12,marginBottom:0,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
         <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>

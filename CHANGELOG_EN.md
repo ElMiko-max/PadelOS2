@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.29 (current) — Location pin and distance check now sit right on the venue line
+## V0.16.30 (current) — Shorter event header + a distinct frame around the location block
+
+- **The admin noticed an empty white area under the event's level badge (the circle)** — cause: everything below the event name (badges, community link, venue, date) was still squeezed into that same narrow column next to the badge, even once the name had finished wrapping, leaving the badge's own reserved space empty underneath it.
+- **The fix:** the badge now only shares one row with the event name. Everything below it (badges, community link, venue, date, creator, description) now uses the card's full width — same content, fewer wrapped lines, shorter header overall.
+- **Also:** the location block (venue name + pin + How far) now has its own light sky-blue background and border, so it reads as one distinct area instead of blending into the plain rows around it.
+
+---
+
+## V0.16.29 — Location pin and distance check now sit right on the venue line
 
 - **The "Open Location" and "How far is it?" buttons lived in their own card well below the venue name** — the admin asked for them to move closer so it reads clearly as one thing: the venue, its location, and the distance check.
 - **Now:** an icon-only 📍 pin sits directly on the venue name's line, and a second row right below it shows "📏 How far is it?" with the result (distance + time) right-aligned once you check it.

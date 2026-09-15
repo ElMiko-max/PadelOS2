@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.25";
+const APP_VERSION = "V0.16.26";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12657,18 +12657,26 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}
         </Card>;
       })}
-      {capWaitlistedRegs.length>0&&<>
-        <ST>⏳ Waitlist ({capWaitlistedRegs.length}) — event full</ST>
+      {capWaitlistedRegs.length>0&&(()=>{
+        // The waitlist header used to always say "event full", even when there were genuinely
+        // open seats and the real reason was the Regular-priority window (splitRegsByCapacity:
+        // during the first `regularUntil` hours, a Casual/Guest self-registrant always lands on
+        // the waitlist regardless of room, by design) — actively misleading both the admin and
+        // the waitlisted player into thinking capacity was the blocker (admin report, 2026-09-15,
+        // confirmed live: 6/15 registered, waitlisted player was Casual inside the window).
+        const maxP=getMaxPlayers(effEv);
+        const hasRoom = maxP==null || capActiveRegs.length<maxP;
+        const windowActive = effEv.regularUntil && Date.now() < new Date(effEv.regularUntil).getTime();
+        const reason = !hasRoom ? "event full" : windowActive ? "Regular members get priority for now" : "waiting for a spot";
+        return <>
+        <ST>⏳ Waitlist ({capWaitlistedRegs.length}) — {reason}</ST>
         {/* Sorted by the permanent waitlistOrder (not a recomputed array index) — same
             permanence rule as the active list's confirmOrder: fixed once assigned, only shifts
             down when someone ABOVE them leaves the waitlist (cancels, or gets promoted). */}
-        {(()=>{
-          // "Promote" (out-of-turn override) only ever shows when a seat is genuinely free —
-          // there's no room to slip someone in without bumping an already-active player, which
-          // this action deliberately never does (admin request, 2026-09-14).
-          const maxP=getMaxPlayers(effEv);
-          const hasRoom = maxP==null || capActiveRegs.length<maxP;
-          return [...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
+        {/* "Promote" (out-of-turn override) only ever shows when a seat is genuinely free —
+            there's no room to slip someone in without bumping an already-active player, which
+            this action deliberately never does (admin request, 2026-09-14). */}
+        {[...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
           const u=users.find(u=>u.id===r.userId); if(!u) return null;
           const wMStatus=comm.members?.find(m=>m.userId===u.id)?.status;
           return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08"}}>
@@ -12682,7 +12690,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   {u.isGuest&&<span style={{fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
                   {suspendedIds.has(u.id)&&<span style={{fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 </div>
-                <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)?"Subscription expired — moved to waitlist until renewed":`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
+                <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)
+                  ?"Subscription expired — moved to waitlist until renewed"
+                  :(hasRoom&&windowActive)
+                    ?`#${r.waitlistOrder??"—"} on the waitlist — Regular members get priority until ${new Date(effEv.regularUntil).toLocaleString([], {hour:"numeric",minute:"2-digit",hour12:true})}, then you'll be considered`
+                    :`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
               <div onClick={e=>{e.stopPropagation();toggleRegHistory(u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
               {isAdmin&&hasRoom&&<SmBtn label="⚡ Promote" onClick={(e)=>{e.stopPropagation();act.forcePromote(u.id);}} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
@@ -12690,9 +12702,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>
             {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}
           </Card>;
-        });
-        })()}
-      </>}
+        })}
+        </>;
+      })()}
       </>;})()}
     </>}
 

@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.25 (current) — Event invite link message now includes date/time and open-spot count
+## V0.16.26 (current) — 🐛 Waitlist said "event full" even when it genuinely wasn't
+
+- **Admin report:** a Casual player could see open seats, but the screen told them they were on the waitlist "because the event is full" — confirmed live (event #101: only 6 of 15 spots registered, yet the player sat on the waitlist). Real cause: the rule that "for the first 24h after registration opens, only Regular members get real seats — Casual always waits, regardless of room" is deliberate, requested by the admin before — but the text shown ("event full") was simply wrong, and made it look like a capacity problem when it was actually a priority-window one.
+- **The fix:** the label now reflects the real reason — "event full" when there truly is no room, or "Regular members get priority for now" when there's an open seat but the priority window hasn't closed yet, including when that window ends for each waitlisted player.
+- **Note:** the "⚡ Promote" action (move a player to active out of turn) already worked correctly here — the admin can use it right now to bring Zizo in immediately if they want to.
+
+---
+
+## V0.16.25 — Event invite link message now includes date/time and open-spot count
 
 - **The event "Invite Link" share message (e.g. sent via WhatsApp) only ever said "Join [event name] on Matchkeeper"** — no details at all, so the recipient had to tap the link just to find out when the event was or whether there was still room.
 - **The message now also includes:** the date and time, and how many spots are open (or "Full — waitlist only" if there aren't any). Example: "Join Monday Night Padel Hustle on Matchkeeper — Mon, 15 Sept · 8:00 PM · 3 spots left — tap the link...".

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.30";
+const APP_VERSION = "V0.16.31";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4152,10 +4152,16 @@ function VenueLocationRow({venue}){
   // Own light-tinted frame (sky blue, distinct from every other accent already used in this
   // header) so the location block reads as one clearly-bounded area at a glance, instead of
   // blending into the plain rows around it (admin request, 2026-09-15).
+  // Pin leads the venue text (left side) instead of trailing it, and stands in for the old 🏟
+  // building emoji entirely — one icon doing both jobs (label + "open map" action) instead of
+  // two competing ones (admin request, 2026-09-16).
+  const pinIcon = <div style={{flexShrink:0,width:24,height:24,borderRadius:7,background:"var(--po-card)",border:"0.5px solid #38BDF84a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12}}>📍</div>;
   return <div style={{background:"#38BDF814",border:"1px solid #38BDF84a",borderRadius:10,padding:"9px 11px",marginTop:6,marginBottom:6}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
-      <div style={{fontSize:12,color:"#7DD3FC",fontWeight:600,minWidth:0}}>🏟 {venue.name} · {venue.area}</div>
-      {href&&<a href={href} {...(coords?{}:{target:"_blank",rel:"noopener noreferrer"})} title="Open Location" style={{flexShrink:0,width:24,height:24,borderRadius:7,background:"var(--po-card)",border:"0.5px solid #38BDF84a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,textDecoration:"none"}}>📍</a>}
+    <div style={{display:"flex",alignItems:"center",gap:9}}>
+      {href
+        ? <a href={href} {...(coords?{}:{target:"_blank",rel:"noopener noreferrer"})} title="Open Location" style={{flexShrink:0,textDecoration:"none"}}>{pinIcon}</a>
+        : pinIcon}
+      <div style={{fontSize:12,color:"#7DD3FC",fontWeight:600,minWidth:0}}>{venue.name} · {venue.area}</div>
     </div>
     {coords&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginTop:6,paddingTop:6,borderTop:"1px dashed #38BDF84a"}}>
       {status==="loading"
@@ -11999,6 +12005,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
 
   const tl     = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
+  // Shorter wording for the header's single compact badge row only (admin request, 2026-09-16:
+  // "closed individuals can be just individuals") — every other screen (Event Info below, the
+  // create/edit forms) keeps the full tl[] labels above, since there's more room there and no
+  // ambiguity risk.
+  const shortTl = {open:"Open",closed_ind:"Individuals",closed_teams:"Teams"};
 
   // CT calc — active (non-waitlisted) registrants only, matching what startCT will actually use
   const activeRegCount = splitRegsByCapacity(effEv,comm).active.length;
@@ -12273,7 +12284,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
         <div style={{display:"flex",gap:10,alignItems:"flex-start",flex:1,minWidth:0}}>
           {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
-          <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",minWidth:0}}>{ev.name} <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span><Bdg label={sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}</div>
+          <div style={{minWidth:0}}>
+            <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)"}}>{ev.name}</div>
+            {/* Date/time right under the name — was buried near the bottom of the card, well
+                below badges/community/venue (admin request, 2026-09-16: "the when" should be the
+                second thing you read, not the last). */}
+            <div style={{fontSize:12,color:"var(--po-sub)",fontWeight:600,marginTop:3}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+          </div>
         </div>
         <div style={{display:"flex",gap:6,flexShrink:0}}>
           {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
@@ -12291,18 +12308,24 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </div>}
         </div>
       </div>
-      <div style={{marginTop:8}}>
-        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
-          {ev.type&&<Bdg label={tl[ev.type]} color="#6366F1"/>}
+      <div style={{marginTop:9}}>
+        {/* One consolidated badge row, short wording only here — used to be two rows (name-line
+            badges + a second wrapped row below) because "Closed Individuals"/"Padel Tennis"
+            never fit alongside everything else (admin request, 2026-09-16). */}
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
+          <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6}}>#{ev.id}</span>
+          <Bdg label={(ev.sport||DEFAULT_SPORT)==="Padel Tennis"?"🎾 Padel":sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>
+          {ev.type&&<Bdg label={shortTl[ev.type]||tl[ev.type]} color="#6366F1"/>}
           {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
+          {ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}
+          {ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}
           {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
-          {!isCompleted&&regPaused&&<Bdg label="🔒 Registration Paused" color="#94A3B8"/>}
+          {!isCompleted&&regPaused&&<Bdg label="🔒 Paused" color="#94A3B8"/>}
           {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
           {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
         </div>
         {onOpenCommunity&&<div onClick={onOpenCommunity} style={{fontSize:12,color:"#6366F1",fontWeight:600,cursor:"pointer",marginBottom:2,textDecoration:"underline"}}>👥 {comm.name}</div>}
         {venue&&<VenueLocationRow venue={venue}/>}
-        <div style={{fontSize:12,color:"var(--po-dim)"}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
         {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
         {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
       </div>

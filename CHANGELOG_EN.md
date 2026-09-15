@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.30 (current) — Shorter event header + a distinct frame around the location block
+## V0.16.31 (current) — Full event header redesign: cleanup, shorter labels, date moved up
+
+- **The admin said the event header felt messy and needed organizing** — this implements the design we agreed on:
+- **Date and time now sit right under the event name** (instead of below all the badges, community link, and venue).
+- **All badges now fit in a single row** instead of two — achieved by shortening the wording: "Padel Tennis" → "Padel", "Closed Individuals" → "Individuals", "Closed Teams" → "Teams", "Open Day" → "Open" (this shortening is header-only — every other screen in the app still shows the full name).
+- **The 🏟 building emoji is gone from the location block** — the 📍 pin itself now sits on the left of the venue name, doing both jobs (icon + "open map" button) instead of two separate icons.
+
+---
+
+## V0.16.30 — Shorter event header + a distinct frame around the location block
 
 - **The admin noticed an empty white area under the event's level badge (the circle)** — cause: everything below the event name (badges, community link, venue, date) was still squeezed into that same narrow column next to the badge, even once the name had finished wrapping, leaving the badge's own reserved space empty underneath it.
 - **The fix:** the badge now only shares one row with the event name. Everything below it (badges, community link, venue, date, creator, description) now uses the card's full width — same content, fewer wrapped lines, shorter header overall.

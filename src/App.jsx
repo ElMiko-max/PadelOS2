@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.27";
+const APP_VERSION = "V0.16.28";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2552,7 +2552,7 @@ const INIT_EVENTS = INIT_COMMS.flatMap(c => c.events.map(ev => ({...ev, communit
 // matches the real one exactly.
 const INIT_REGISTRATIONS = INIT_EVENTS.flatMap(ev => (ev.registrations||[]).map(r => ({...r, eventId: ev.id})));
 
-let _uid=13,_cid=2,_eid=4,_vid=2,_nid=1,_invid=1;
+let _uid=13,_cid=2,_eid=4,_vid=2,_invid=1;
 
 // ── Helpers ───────────────────────────────────────────
 const usrLv  = u => u>=80?{l:"A",c:"#C084FC"}:u>=65?{l:"B",c:"#38BDF8"}:u>=50?{l:"C",c:"#34D399"}:u>=35?{l:"D",c:"#FBBF24"}:{l:"E",c:"#F87171"};
@@ -5043,30 +5043,29 @@ export default function Matchkeeper() {
     setDoc(doc(db,"padelos","usrWindowSize"), {value:JSON.stringify(usrWindowSize)}).catch(e=>console.log("Firestore write error (usrWindowSize)", e));
   }, [usrWindowSize]);
 
-  // notifications
+  // notifications — real production outage, 2026-09-15: this used to be one shared array for
+  // every notification, every user, forever, inside a SINGLE Firestore document
+  // (padelos/notifications). That document grew to 4897 entries / 1,048,349 bytes — right at
+  // Firestore's hard 1 MiB per-document limit — so every further write was silently rejected,
+  // killing both Android push (which wrote to that doc) and the in-app bell (which read it) at
+  // once. V0.16.27 shipped an emergency cap as a stopgap; this is the real fix: one Firestore
+  // document PER notification (padelos_notifications/{id}), scoped to its own recipient via a
+  // `where("userId","==",me.id)` query — the exact same shape padelos_audit already uses
+  // successfully, so no single document can ever hit a size ceiling again regardless of volume.
+  // Deliberately NOT migrating the old doc's 4897 historical entries into this collection —
+  // notifications are a rolling read-history, not a permanent record like the Audit Trail, and a
+  // one-time bulk migration coordinated across whichever client happens to load first after this
+  // ships is real complexity for something with no lasting value. The old doc is simply never
+  // read or written again from here on.
   useEffect(() => {
-    if (!authUser) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
-    const unsub = onSnapshot(doc(db,"padelos","notifications"), snap => {
-      if (snap.exists()) {
-        const raw = snap.data().value; const remote = typeof raw==="string" ? JSON.parse(raw) : raw; // tolerate old pre-stringify docs
-        const json = JSON.stringify(remote);
-        if (json !== syncedRef.current.notifications) { syncedRef.current.notifications = json; setNotifications(remote);
-          _nid = Math.max(_nid, ...remote.map(n=>n.id), 0) + 1;
-        }
-        everRealRef.current.notifications = true;
-      } else if (!everRealRef.current.notifications) { syncedRef.current.notifications = JSON.stringify([]); setNotifications([]); } // local fallback only — never auto-write seed data to Firestore
+    if (!authUser || !me?.id) return; // don't attach Firestore listeners before auth has settled — avoids a permission-denied race on cold start
+    const q = query(collection(db,"padelos_notifications"), where("userId","==",me.id), orderBy("createdAt","desc"), limit(300));
+    const unsub = onSnapshot(q, snap => {
+      setNotifications(snap.docs.map(d => ({id:d.id, ...d.data()})));
       markLoaded("notifications");
     }, e => { console.log("Firestore notifications error", e); recordDiag("notifications", `${e.code||"error"}: ${e.message||e}`); markLoaded("notifications"); });
     return unsub;
-  }, [authUser]);
-  useEffect(() => {
-    if (!dataLoaded) return;
-    if (!everRealRef.current.notifications) { console.log("Blocked write: haven't confirmed real notifications data this session yet"); return; }
-    const json = JSON.stringify(notifications);
-    if (json === syncedRef.current.notifications) return;
-    syncedRef.current.notifications = json;
-    setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify(notifications)}).catch(e=>console.log("Firestore write error (notifications)", e));
-  }, [notifications, dataLoaded]);
+  }, [authUser, me?.id]);
 
   // uidLinks — one Firestore document PER identity link (padelos_links/{firebaseUid} = {userId}).
   // Deliberately NOT part of the users blob: this is the exact data that was getting lost
@@ -5800,10 +5799,20 @@ export default function Matchkeeper() {
       INIT_EVENTS.forEach(e=>resetBatch.set(doc(db,"padelos_events",String(e.id)), packEventForFirestore(e)));
       INIT_REGISTRATIONS.forEach(r=>resetBatch.set(doc(db,"padelos_events",String(r.eventId),"registrations",String(r.userId)), clean(r)));
       await resetBatch.commit();
+      // Notifications moved to one-document-per-notification (padelos_notifications/{id}, see
+      // notify()'s comment) — deletes every doc there instead of writing an empty array to the
+      // old abandoned padelos/notifications blob, same chunked-delete pattern as registrations
+      // above since there's no bound on how many notification docs might exist.
+      const existingNotifsSnap = await getDocs(collection(db,"padelos_notifications"));
+      for (let i=0;i<existingNotifsSnap.docs.length;i+=450) {
+        const chunk = existingNotifsSnap.docs.slice(i,i+450);
+        const notifDeleteBatch = writeBatch(db);
+        chunk.forEach(d=>notifDeleteBatch.delete(d.ref));
+        await notifDeleteBatch.commit();
+      }
       await Promise.all([
         setDoc(doc(db,"padelos","users"), {value:JSON.stringify(INIT_USERS)}),
         setDoc(doc(db,"padelos","venues"), {value:JSON.stringify(INIT_VENUES)}),
-        setDoc(doc(db,"padelos","notifications"), {value:JSON.stringify([])}),
       ]);
     } catch(e) {}
     window.location.reload();
@@ -6495,27 +6504,21 @@ export default function Matchkeeper() {
   // Event-scoped notifications only (registration, reminders, changes) — see Ch09.
   // Direct messaging / broadcasts / other categories are deferred.
   //
-  // Real production outage, confirmed 2026-09-15: every notification for every user, forever,
-  // lives in ONE array inside ONE Firestore document (padelos/notifications) — no per-user or
-  // per-notification split. That document had grown to 4897 entries / 1,048,349 bytes, right at
-  // Firestore's hard 1 MiB per-document limit, so every further write was being silently
-  // rejected — no error surfaced anywhere the admin would see it, since the .catch() on the sync
-  // effect below only ever logs to a console nobody reads on a real device. That's why BOTH the
-  // Android push (which fires off a write to this same document) AND the in-app bell (which
-  // reads it) went completely silent at once, while the Feed kept working fine (it's built from
-  // the separate padelos_audit/regHistory collections, untouched by this). Capping the array on
-  // every write keeps the document safely under the limit going forward — a real fix (splitting
-  // this into its own per-notification collection, like padelos_audit already is) is worth doing
-  // properly later, but this stops the bleeding immediately without a schema migration.
-  const NOTIFICATIONS_CAP = 1500;
+  // One Firestore document PER notification (padelos_notifications/{id}), not one shared array
+  // for every notification/every user forever — see the read-side listener's comment above for
+  // the real production outage (1 MiB document limit hit) this replaces. Each recipient gets
+  // their own doc, written in one batch; the local optimistic append is gone too — the
+  // where("userId","==",me.id) listener echoes a same-client write back almost instantly, same
+  // latency-compensation guarantee Firestore already gives every other write in this app.
   const notify = (userIds, type, ev, title, body) => {
     const uniq = [...new Set((userIds||[]).filter(Boolean))];
     if (uniq.length===0) return;
     const now = new Date().toISOString();
-    setNotifications(ns => [
-      ...uniq.map(uid => ({id:_nid++, userId:uid, type, eventId:ev?.id, communityId:ev?.communityId, eventName:ev?.name, profileUserId:ev?.profileUserId, announcementId:ev?.announcementId, title, body, createdAt:now, read:false})),
-      ...ns,
-    ].slice(0, NOTIFICATIONS_CAP));
+    const batch = writeBatch(db);
+    uniq.forEach(uid => {
+      batch.set(doc(collection(db,"padelos_notifications")), {userId:uid, type, eventId:ev?.id??null, communityId:ev?.communityId??null, eventName:ev?.name??null, profileUserId:ev?.profileUserId??null, announcementId:ev?.announcementId??null, title, body, createdAt:now, read:false});
+    });
+    batch.commit().catch(e=>console.log("notify write failed", e));
   };
   // Every id with real admin standing on an event — creator, event-scoped admin (eventAdmins),
   // or community owner/admin — not just whoever happened to create it. Widened 2026-09-15
@@ -6529,8 +6532,18 @@ export default function Matchkeeper() {
     (comm?.members||[]).forEach(m=>{ if(m.role==="owner"||m.role==="admin") ids.add(m.userId); });
     return [...ids];
   };
-  const markNotifRead = (id) => setNotifications(ns => ns.map(n => n.id===id?{...n,read:true}:n));
-  const markAllNotifRead = () => setNotifications(ns => ns.map(n => n.userId===me.id?{...n,read:true}:n));
+  const markNotifRead = (id) => {
+    setNotifications(ns => ns.map(n => n.id===id?{...n,read:true}:n));
+    updateDoc(doc(db,"padelos_notifications",String(id)), {read:true}).catch(e=>console.log("markNotifRead failed", e));
+  };
+  const markAllNotifRead = () => {
+    const unread = notifications.filter(n=>n.userId===me.id && !n.read);
+    if (!unread.length) return;
+    setNotifications(ns => ns.map(n => n.userId===me.id?{...n,read:true}:n));
+    const batch = writeBatch(db);
+    unread.forEach(n => batch.update(doc(db,"padelos_notifications",String(n.id)), {read:true}));
+    batch.commit().catch(e=>console.log("markAllNotifRead failed", e));
+  };
   // Enhancement #19 — a tapped notification takes you to whatever it's actually about,
   // instead of leaving you wherever you happened to be. Covers every notify() call site:
   // event+community context (most types) already carries both ids; community-only context

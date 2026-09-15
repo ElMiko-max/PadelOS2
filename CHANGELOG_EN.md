@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.27 (current) — 🐛 Critical fix: notifications (Android + in-app) had stopped entirely
+## V0.16.28 (current) — The real, permanent fix for notifications (not just a stopgap)
+
+- **Follow-up to V0.16.27** (which was a temporary patch — capping how many entries could live in the same old document). This is the real fix: a **completely new structure** — every notification is now its own document in a new collection (`padelos_notifications`), instead of every user's notifications ever sharing one array inside one document. Same approach already used successfully for the Audit Trail.
+- **What this means in practice:** the exact failure that happened (the document hitting the 1 MiB limit and every notification silently stopping) **can't happen again** — each notification is its own independent document, with no cumulative ceiling at all.
+- **What changed:** the app code, the Cloud Function that sends push notifications (also got simpler), and Firestore's security rules plus a new index — all of this has already been deployed to production.
+- **One honest note:** the old 4897 accumulated notifications are **not** carried over to the new structure — notifications are a rolling read-history (like read WhatsApp messages), not a permanent record like the Audit Trail, so you won't see old ones in the bell after this — but every new notification from here on will work reliably.
+
+---
+
+## V0.16.27 — 🐛 Critical fix: notifications (Android + in-app) had stopped entirely
 
 - **Admin report: no Android notifications at all, and even the in-app bell (🔔) had nothing new — only the Feed kept working.** Found the cause: every notification for every user, since the app began, lives in one array inside one Firestore document. That document had grown to 4897 entries (1,048,349 bytes) — right at Firestore's hard 1 MiB per-document limit. Any attempt to add a new notification after that was being silently rejected, with no error visible anywhere — which is exactly why both the Android push (which writes to that same document) and the in-app bell (which reads it) went dead at once, while the Feed kept working because it's built from an entirely separate place (the Audit Trail and Registration History).
 - **Immediate fix:** the array is now capped at 1500 entries every time a new one is added — older ones past that automatically drop off. This brings the document back down to a safe size the moment any real action (a registration, an event update) happens after this update installs.

@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.24 (current) — Event notifications/Feed now reach any admin, not just the event's creator
+## V0.16.25 (current) — Event invite link message now includes date/time and open-spot count
+
+- **The event "Invite Link" share message (e.g. sent via WhatsApp) only ever said "Join [event name] on Matchkeeper"** — no details at all, so the recipient had to tap the link just to find out when the event was or whether there was still room.
+- **The message now also includes:** the date and time, and how many spots are open (or "Full — waitlist only" if there aren't any). Example: "Join Monday Night Padel Hustle on Matchkeeper — Mon, 15 Sept · 8:00 PM · 3 spots left — tap the link...".
+- Covers both the event's general "🔗 Invite Link" button and the per-player "🔗 Invite" action. The details also show in the preview screen before you send the link.
+
+---
+
+## V0.16.24 — Event notifications/Feed now reach any admin, not just the event's creator
 
 - **A join request, a player registering/unregistering, or a "near the minimum" warning only ever notified whoever created the event** — if a different admin (a community admin/owner, or someone specifically promoted as an admin on that one event) was the one actually watching Players that day, they had no way to know unless they happened to open the screen themselves.
 - **Now reaches any of:** the event's creator, any event-scoped admin promoted on that specific event, or any owner/admin of the community — not just the creator.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.24";
+const APP_VERSION = "V0.16.25";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9107,7 +9107,11 @@ function CommStatsTab({comm, users, onViewProfile}){
 // `label` describing exactly that (createInvite's label — "Join {event}", "Join {community}",
 // "Join Matchkeeper as {nickname}") but it was only ever stored, never shown to the sender or
 // put in the shared message. Now it drives both the on-screen heading and the share text.
-function InviteModal({url,label,onClose}){
+// `details` — event date/time + open-spot count (admin request, 2026-09-15: recipients
+// couldn't tell from the shared message alone when the event was or whether there was still
+// room, without opening the link first) — folds into the shared TEXT only, never the on-screen
+// heading/share title, so those stay a clean, short "Join {name}" regardless.
+function InviteModal({url,label,details,onClose}){
   const [copied,setCopied]=useState(false);
   const copy=async()=>{
     try{ await navigator.clipboard.writeText(url); setCopied(true); setTimeout(()=>setCopied(false),1500); }
@@ -9115,7 +9119,7 @@ function InviteModal({url,label,onClose}){
   };
   const shareTitle = label ? `${label} on Matchkeeper` : "Join me on Matchkeeper";
   const shareText = label
-    ? `${label} on Matchkeeper — tap the link to jump straight in, no account hassle if you don't have one yet:`
+    ? `${label} on Matchkeeper${details?` — ${details}`:""} — tap the link to jump straight in, no account hassle if you don't have one yet:`
     : "Join me on Matchkeeper — tap to open:";
   const share=async()=>{
     try{ await Share.share({title:shareTitle,text:shareText,url}); }
@@ -9124,6 +9128,7 @@ function InviteModal({url,label,onClose}){
   return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:360,width:"100%",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
       <div style={{fontSize:16,fontWeight:700,color:"var(--po-text)",marginBottom:4}}>🔗 {label||"Invite Link"}</div>
+      {details&&<div style={{fontSize:12,color:"#818CF8",fontWeight:600,marginBottom:6}}>{details}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14}}>Share this with anyone — works whether they already have Matchkeeper or not.</div>
       <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",fontSize:12,color:"var(--po-text)",wordBreak:"break-all",marginBottom:14,fontFamily:"monospace"}}>{url}</div>
       <div style={{display:"flex",gap:8}}>
@@ -12417,7 +12422,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {isCT&&!ctR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players and regenerate teams until Round 1 has results.</div>}
       {isCI&&ciR1Locked&&<div style={{marginBottom:10,padding:"8px 12px",background:"#EF444411",border:"0.5px solid #EF444433",borderRadius:8,fontSize:12,color:"#EF4444"}}>🔒 Round 1 has results — player list is now frozen.</div>}
       {isCI&&!ciR1Locked&&plan&&<div style={{marginBottom:10,padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399"}}>✓ You can still add/remove players until Round 1 has results.</div>}
-      {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} onClose={()=>setInviteUrl(null)}/>}
+      {inviteUrl&&<InviteModal url={inviteUrl.url} label={inviteUrl.label} details={inviteUrl.details} onClose={()=>setInviteUrl(null)}/>}
       {isAdmin&&(effEv.joinRequests||[]).length>0&&<Card style={{marginBottom:10,borderColor:"#FBBF2466",background:"#FBBF240A"}}>
         <ST>🙋 Requests to Join ({effEv.joinRequests.length})</ST>
         {effEv.joinRequests.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return <div key={r.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
@@ -12426,7 +12431,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <SmBtn label="✕" onClick={()=>act.rejectEventJoin(u.id)} color="#EF4444"/>
         </div>;})}
       </Card>}
-      {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>{const label=`Join ${effEv.name}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label})}`,label});}} color="#34D399" style={{flex:1}}/>}<Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
+      {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>{
+        const label=`Join ${effEv.name}`;
+        // Date/time + open-spot count folded into the shared message text (admin request,
+        // 2026-09-15) — the recipient could otherwise only see this after tapping the link.
+        const spotsLeft = getMaxPlayers(effEv)!=null ? Math.max(0, getMaxPlayers(effEv)-splitRegsByCapacity(effEv,comm).active.length) : null;
+        const details = `${fmtD(effEv.date)} · ${fmtT(effEv.time)}${spotsLeft!=null?` · ${spotsLeft>0?`${spotsLeft} spot${spotsLeft===1?"":"s"} left`:"Full — waitlist only"}`:""}`;
+        setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({communityId:comm.id,eventId:effEv.id,label})}`,label,details});
+      }} color="#34D399" style={{flex:1}}/>}<Btn label="+ Add Member" onClick={()=>{setSAM(o=>!o);setSAG(false);}} style={{flex:1}}/>{!sim&&<Btn label="+ Add Guest" onClick={()=>{setSAG(o=>!o);setSAM(false);}} style={{flex:1}}/>}</div>
       {showAddM&&<div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>{setSAM(false);setAddMemberSearch("");}}>
         <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:380,width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
           <div style={{fontWeight:700,fontSize:14,marginBottom:10,color:"var(--po-text)"}}>Add Member</div>
@@ -12616,7 +12628,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <div onClick={()=>setOpenPlayerMenu(o=>o===u.id?null:u.id)} style={{width:28,height:28,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openPlayerMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,width:210,padding:6,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
                   {isOpen&&!ci2&&isDay&&<ListRow icon="✓" label="Check In" onClick={()=>{act.checkIn(u.id);setOpenPlayerMenu(null);}}/>}
-                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<ListRow icon="🔗" label="Invite" onClick={()=>{const label=`Join ${effEv.name} as ${u.nickname}`;setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label});setOpenPlayerMenu(null);}}/>}
+                  {onCreateInvite&&!Object.values(uidLinks||{}).includes(u.id)&&<ListRow icon="🔗" label="Invite" onClick={()=>{
+                    const label=`Join ${effEv.name} as ${u.nickname}`;
+                    const spotsLeft = getMaxPlayers(effEv)!=null ? Math.max(0, getMaxPlayers(effEv)-splitRegsByCapacity(effEv,comm).active.length) : null;
+                    const details = `${fmtD(effEv.date)} · ${fmtT(effEv.time)}${spotsLeft!=null?` · ${spotsLeft>0?`${spotsLeft} spot${spotsLeft===1?"":"s"} left`:"Full — waitlist only"}`:""}`;
+                    setInviteUrl({url:`${INVITE_BASE_URL}/?invite=${onCreateInvite({targetUserId:u.id,communityId:comm.id,eventId:effEv.id,label})}`,label,details});
+                    setOpenPlayerMenu(null);
+                  }}/>}
                   {isRealAdmin&&!uIsCommAdmin&&effEv.status!=="completed"&&<ListRow icon="🛡️" label={uIsEventAdmin?"Demote":"Make Admin"} onClick={()=>{setOpenPlayerMenu(null);if(uIsEventAdmin||window.confirm(`Make ${u.nickname} an admin for "${ev.name}" only?\n\nThey'll get full admin controls (check-in, close event, generate rounds, etc.) inside this one event — no community-wide admin access.`))act.toggleEventAdmin(u.id);}}/>}
                   {/* Retired/no-show share one underlying state (retiredIds), so once a player is
                       in it there's a single combined undo button rather than two separate ones —

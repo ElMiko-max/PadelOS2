@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.39 (current) — New "Performance" report (Padel only) in Community Reports and the personal profile
+## V0.16.40 (current) — Fixed a blank white screen on the personal profile's Reports tab
+
+- **The admin tested V0.16.39 on their phone and hit a completely blank white screen** when tapping the Reports tab on the profile.
+- **Cause:** the new "Performance" report used the full `users` list inside the profile screen, but that screen was never actually given `users` as a prop — a `ReferenceError` crashed the render the instant the Reports tab tried to draw, with nothing visible except a white screen.
+- **Fix:** the users list is now passed into the profile screen explicitly, like every other screen that needs it.
+
+---
+
+## V0.16.39 — New "Performance" report (Padel only) in Community Reports and the personal profile
 
 - **A new report built from the same "Delta Standings" data that used to live inside one event at a time** — now rolled up across every completed event (Closed Individuals + Closed Teams Ladder) into one report.
 - **In Community Reports:** a new 5th option in the leaderboard dropdown, "🎯 Performance" — ranks members by their average performance score (0–100, 50 = exactly as their USR predicted), plus each member's best and worst event.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.36";
+const APP_VERSION = "V0.16.37";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12467,7 +12467,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           </div>}
           {isAdmin&&!sim&&<div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
             <Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🏁 Close (Court-Based)":"🏁 Close & Finish Event"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}}/>
-            {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Performance-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
+            {/* "Performance-Based" (18 chars) was overflowing this half-width button on real
+                devices — admin follow-up, 2026-09-16: "the problem was with the word
+                performance". Shortened to "Perf-Based" here; "Court-Based" above wasn't
+                flagged so it's untouched. */}
+            {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Perf-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
           </div>}
         </div>
         {isAdmin&&sim&&<div style={{marginTop:6,padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}

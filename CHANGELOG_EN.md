@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.36 (current) — "Admin" becomes a vertical divider between the registration/close columns instead of a top row
+## V0.16.37 (current) — Shortened "Performance-Based" on the close button so it stays inside its bounds
+
+- **The admin clarified the vertical "Admin" divider was actually fine** — the real problem was the word "Performance" inside "🧪 Close (Performance-Based)" (Padel only) overflowing the button's bounds on a real phone.
+- **Shortened it to "🧪 Close (Perf-Based)"** — "🏁 Close (Court-Based)" next to it is untouched since that one wasn't the problem.
+
+---
+
+## V0.16.36 — "Admin" becomes a vertical divider between the registration/close columns instead of a top row
 
 - **The admin noticed the two columns (registration status and admin close tools) weren't aligned** — cause: "Admin" was a full horizontal row sitting above the right column only, which pushed its buttons down while the left column's "✓ Registered" started higher up.
 - **Fix: "Admin" is now a thin vertical strip in the middle between the two columns** (text runs top-to-bottom instead of a horizontal row) — both sides now start flush at the exact same height.

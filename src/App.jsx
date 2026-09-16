@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.32";
+const APP_VERSION = "V0.16.33";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12274,24 +12274,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
-      {/* Badge shares its row with a single FLOWING text block — id chip, name, and community
-          link are inline siblings inside one wrapping paragraph (not three stacked divs), so
-          short content shares a line and long content wraps together, always indented to start
-          right after the badge (admin request, 2026-09-16, third pass on this header — exact
-          spec: "#id next to name... wrap to start right after the coin... community fills the
-          rest of the line after the name finishes"). ⋮/📤 are a vertical stack in the top-right
-          corner (kebab above share) instead of side-by-side, freeing more width for that text
-          block. Date/time, the sport+type badges, and the venue block are now separate full-
-          width lines below this row, in that order — not squeezed next to the badge anymore. */}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
-        <div style={{display:"flex",gap:10,alignItems:"flex-start",flex:1,minWidth:0}}>
-          {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
-          <div style={{minWidth:0,lineHeight:1.5}}>
-            <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6,marginRight:7,display:"inline-block",verticalAlign:"middle"}}>#{ev.id}</span>
-            <span className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)"}}>{ev.name}</span>
-            {onOpenCommunity&&<span onClick={onOpenCommunity} style={{fontSize:13,fontWeight:600,color:"#6366F1",textDecoration:"underline",cursor:"pointer",marginLeft:8}}>👥 {comm.name}</span>}
-          </div>
-        </div>
+      {/* Line 1 is #id + name ONLY, leftmost to rightmost — nothing else shares it (admin
+          request, 2026-09-16, fourth pass: circled the badge and the ⋮/📤 stack and asked for
+          both to drop to their own row so the title gets the card's full width). Row 2 puts the
+          level badge back on the left and the ⋮/📤 stack on the right, same as before, but now
+          date/time sits centered in the gap between them instead of wasting that space or
+          getting its own separate full-width line (fifth pass: "shift the date and time into
+          this to fill this area"). Community moved down to sit next to the creator line,
+          per the admin's "thinking of" note from the fourth pass. */}
+      <div className="po-text" style={{fontWeight:700,fontSize:17,color:"var(--po-text)",lineHeight:1.35}}>
+        <span style={{fontSize:11,fontWeight:500,color:"var(--po-dim)",background:"var(--po-inp)",padding:"2px 8px",borderRadius:6,marginRight:7,display:"inline-block",verticalAlign:"middle"}}>#{ev.id}</span>
+        {ev.name}
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginTop:10}}>
+        {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
+        <div style={{flex:1,minWidth:0,textAlign:"center",fontSize:12,color:"var(--po-sub)",fontWeight:600,lineHeight:1.4}}>🗓 {fmtD(ev.date)}<br/>{fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
         <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
             <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
@@ -12309,7 +12306,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
       </div>
       <div style={{marginTop:9}}>
-        <div style={{fontSize:12,color:"var(--po-sub)",fontWeight:600,marginBottom:8}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
         <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
           <Bdg label={(ev.sport||DEFAULT_SPORT)==="Padel Tennis"?"🎾 Padel":sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>
           {ev.type&&<Bdg label={shortTl[ev.type]||tl[ev.type]} color="#6366F1"/>}
@@ -12322,7 +12318,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
         </div>
         {venue&&<VenueLocationRow venue={venue}/>}
-        {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></div>:null;})()}
+        <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<span>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",fontWeight:600,cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></span>:null;})()}
+          {onOpenCommunity&&<>{users.find(u=>u.id===ev.createdBy)&&<span>·</span>}<span onClick={onOpenCommunity} style={{color:"#6366F1",fontWeight:600,cursor:"pointer",textDecoration:"underline"}}>👥 {comm.name}</span></>}
+        </div>
         {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
       </div>
       {showDup&&<div style={{marginTop:12,marginBottom:0,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>

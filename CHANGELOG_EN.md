@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.32 (current) — Event header: id + name + community now flow as one paragraph, kebab/share stacked
+## V0.16.33 (current) — Event header: title line stands alone full-width, date/time fills the badge/icon gap
+
+- **The admin sent another annotated screenshot after V0.16.32:**
+- **Line 1 is now `#id` + event name only, spanning the full card width** — the level badge and the kebab/share buttons no longer share that line.
+- **The level badge and the ⋮/📤 buttons dropped to their own row right below the title** — badge on the left, buttons on the right, same relative positions as before, just off the title line.
+- **Date/time now sits centered in the gap between the badge and the buttons** on that same row, instead of taking its own full-width line — filling space that used to sit empty.
+- **The community link (👥) moved down to sit next to "Created by"** instead of next to the event name up top.
+
+---
+
+## V0.16.32 — Event header: id + name + community now flow as one paragraph, kebab/share stacked
 
 - **The admin sent an annotated screenshot after V0.16.31 asking for a more precise layout:**
 - **`#101`, the event name, and the community link (👥) now flow together as one wrapping paragraph** next to the level badge, instead of three separate stacked lines. A short name lets the community link join the same line; a long one wraps within that same paragraph.

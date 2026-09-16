@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.35 (current) — Header: date back to one line with badges above it, plus two more compact rows
+## V0.16.36 (current) — "Admin" becomes a vertical divider between the registration/close columns instead of a top row
+
+- **The admin noticed the two columns (registration status and admin close tools) weren't aligned** — cause: "Admin" was a full horizontal row sitting above the right column only, which pushed its buttons down while the left column's "✓ Registered" started higher up.
+- **Fix: "Admin" is now a thin vertical strip in the middle between the two columns** (text runs top-to-bottom instead of a horizontal row) — both sides now start flush at the exact same height.
+- **Also shortened "Admin" to "Adm"** after the admin flagged the tall vertical word overflowing the strip's bounds in some cases.
+
+---
+
+## V0.16.35 — Header: date back to one line with badges above it, plus two more compact rows
 
 - **The admin sent three annotated screenshots in one message, asking for three changes:**
 - **1) Date/time is back to one line, and the Padel/Individuals badges moved up to sit right below it** — still in the same middle column between the level badge and the kebab/share stack, not a separate full-width row underneath everything.

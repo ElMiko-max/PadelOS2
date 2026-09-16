@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.37 (current) — Shortened "Performance-Based" on the close button so it stays inside its bounds
+## V0.16.38 (current) — "Admin" back to a full word, right column now wider than the left
+
+- **The admin clarified "Adm" didn't need shortening after all** — reverted back to the full "Admin".
+- **The two columns are no longer equal width** — left (Registered/Cancel) is now 42%, right (close buttons) is 58% — since "Cancel my registration" and "Close (Court-Based)" were both competing for the same cramped half-width space and only one was winning.
+- **Also trimmed the padding and font-size slightly on all three buttons** (Cancel, Close (Court-Based), Close (Perf-Based)) so they stay on one line.
+
+---
+
+## V0.16.37 — Shortened "Performance-Based" on the close button so it stays inside its bounds
 
 - **The admin clarified the vertical "Admin" divider was actually fine** — the real problem was the word "Performance" inside "🧪 Close (Performance-Based)" (Padel only) overflowing the button's bounds on a real phone.
 - **Shortened it to "🧪 Close (Perf-Based)"** — "🏁 Close (Court-Based)" next to it is untouched since that one wasn't the problem.

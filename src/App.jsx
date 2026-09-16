@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.37";
+const APP_VERSION = "V0.16.38";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12444,11 +12444,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             horizontal row atop the right column (which pushed its buttons down relative to the
             left column's content, misaligning the two sides — admin screenshot, 2026-09-16,
             seventh pass) into a thin vertical divider between the two columns instead, so both
-            start flush at the same height. Shortened "Admin"→"Adm" there too since the tall,
-            widely-spaced vertical word could overflow a short divider (admin follow-up: "make
-            text shorter"). */}
+            start flush at the same height. "Adm" reverted back to the full "Admin" — turned out
+            the divider itself wasn't the overflow problem (admin follow-up, eighth pass: "Adm
+            should be admin... no need to shorten"). The two columns are no longer equal width
+            either — left is narrower, right wider (~42/58) — plus tighter padding/font-size on
+            the three close/cancel buttons, since "Cancel my registration" and "Close
+            (Court-Based)" were both fighting for the same cramped half-width space and only one
+            of them was winning (admin: "shorten the left and make the right wider... to have
+            all as 1 line button"). */}
         <div style={{display:"flex",gap:8,alignItems:"stretch"}}>
-          {myReg&&<div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+          {myReg&&<div style={{flex:"0 1 42%",minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
             {isSubscriptionLocked(me,subscriptionSettings)&&<div style={{padding:"8px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#F59E0B"}}>🚫 Suspended</div>}
             {!isSubscriptionLocked(me,subscriptionSettings)&&isRegWaitlisted(effEv,me.id,comm)&&<div style={{padding:"8px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#F59E0B"}}>⏳ Waitlisted</div>}
             {!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&isOpen&&(isDay?(!isCIn?<><div style={{padding:"8px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)}/></>:<div style={{padding:"8px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#A5B4FC"}}>✓ Checked In</div>):<div style={{padding:"8px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#34D399"}}>✓ Registered</div>)}
@@ -12460,18 +12465,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 against, so this stays available for them right up to close. Deliberately NOT
                 `danger` (the pale-red fill) — that's reserved for the irreversible event-wide
                 close action opposite it. */}
-            {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{color:"#EF4444"}}/>}
+            {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{color:"#EF4444",padding:"8px 6px",fontSize:11.5}}/>}
           </div>}
           {myReg&&isAdmin&&!sim&&<div style={{width:20,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden",borderLeft:"1px solid var(--po-bdr)",borderRight:"1px solid var(--po-bdr)"}}>
-            <span style={{writingMode:"vertical-rl",textOrientation:"mixed",fontSize:9.5,fontWeight:800,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:1,whiteSpace:"nowrap"}}>Adm</span>
+            <span style={{writingMode:"vertical-rl",textOrientation:"mixed",fontSize:9.5,fontWeight:800,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:1,whiteSpace:"nowrap"}}>Admin</span>
           </div>}
-          {isAdmin&&!sim&&<div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
-            <Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🏁 Close (Court-Based)":"🏁 Close & Finish Event"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}}/>
+          {isAdmin&&!sim&&<div style={{flex:"0 1 58%",minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+            <Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🏁 Close (Court-Based)":"🏁 Close & Finish Event"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{padding:"8px 6px",fontSize:11.5}}/>
             {/* "Performance-Based" (18 chars) was overflowing this half-width button on real
                 devices — admin follow-up, 2026-09-16: "the problem was with the word
                 performance". Shortened to "Perf-Based" here; "Court-Based" above wasn't
                 flagged so it's untouched. */}
-            {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Perf-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
+            {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Perf-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA",padding:"8px 6px",fontSize:11.5}}/>}
           </div>}
         </div>
         {isAdmin&&sim&&<div style={{marginTop:6,padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}

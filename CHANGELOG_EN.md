@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.38 (current) — "Admin" back to a full word, right column now wider than the left
+## V0.16.39 (current) — New "Performance" report (Padel only) in Community Reports and the personal profile
+
+- **A new report built from the same "Delta Standings" data that used to live inside one event at a time** — now rolled up across every completed event (Closed Individuals + Closed Teams Ladder) into one report.
+- **In Community Reports:** a new 5th option in the leaderboard dropdown, "🎯 Performance" — ranks members by their average performance score (0–100, 50 = exactly as their USR predicted), plus each member's best and worst event.
+- **In the personal profile (Reports tab):** a new "🎯 Performance" card above the existing Partners/Opponents cards, showing your average, plus a direct link to your best and worst event.
+- **Padel only** (like everything else on the Reports tab) — and respects the existing "Recent only (last 6 months)" filter on the profile.
+
+---
+
+## V0.16.38 — "Admin" back to a full word, right column now wider than the left
 
 - **The admin clarified "Adm" didn't need shortening after all** — reverted back to the full "Admin".
 - **The two columns are no longer equal width** — left (Registered/Cancel) is now 42%, right (close buttons) is 58% — since "Cancel my registration" and "Close (Court-Based)" were both competing for the same cramped half-width space and only one was winning.

@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.33 (current) — Event header: title line stands alone full-width, date/time fills the badge/icon gap
+## V0.16.34 (current) — Shorter event-close button captions, Padel only
+
+- **For Padel events only** (not Football): "🏁 Close & Finish Event" shortens to "🏁 Close (Court-Based)", and "🧪 Close with Output PES (Performance Based)" shortens to "🧪 Close (Performance-Based)".
+- **Football events are unchanged** — this shortening is tied to the event's own sport.
+
+---
+
+## V0.16.33 — Event header: title line stands alone full-width, date/time fills the badge/icon gap
 
 - **The admin sent another annotated screenshot after V0.16.32:**
 - **Line 1 is now `#id` + event name only, spanning the full card width** — the level badge and the kebab/share buttons no longer share that line.

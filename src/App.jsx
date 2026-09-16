@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.42";
+const APP_VERSION = "V0.16.43";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2267,27 +2267,35 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
 // history (admin follow-up, 2026-09-16: "I want to capture best match and worst match also") —
 // each event's own per-match xPts already existed inside calcXCIPreview/calcXCTLadderPreview's
 // `matches` array, just never carried forward past that one event before.
+// Some old matches only ever recorded win/lose, no real score (calcXCIPreview/
+// calcXCTLadderPreview's own hasRealScore flag) — showing the stored 0–0 for those here would
+// read as a genuine 0–0 tie, which padel doesn't have. Per the admin (2026-09-16): assume a
+// plausible 4-2 (2-4 if lost) for display instead, tagged with a single-letter "A" marker so
+// it's clearly flagged as assumed, not real — this same assumed-score/"A" convention should
+// carry into any future report built on this match data too, not just this one.
 // Live-computed from event plans already held in memory, nothing persisted — same as the
 // partner/opponent reports above.
 function calcPerformanceDeltaByUser(events, users, comms){
-  const perUser = {}; // userId -> {eventScores:[{eventId,eventName,date,score}], matches:[{eventId,eventName,date,round,court,won,score,partnerName,oppNames,scoreFor,scoreAgainst}]}
+  const perUser = {}; // userId -> {eventScores:[{eventId,eventName,date,score}], matches:[{eventId,eventName,date,round,court,won,score,partnerName,oppNames,scoreFor,scoreAgainst,assumedScore}]}
   const record = (userId, eventScore, matchRows) => {
     if (!perUser[userId]) perUser[userId] = {eventScores:[], matches:[]};
     perUser[userId].eventScores.push(eventScore);
     perUser[userId].matches.push(...matchRows);
   };
+  const matchRow = (ev, m, partnerName) => ({eventId:ev.id, eventName:ev.name, date:ev.date, round:m.round, court:m.court, won:m.won, score:Math.round(m.xPts*10)/10, partnerName, oppNames:m.oppNames,
+    scoreFor: m.hasRealScore ? m.scoreA : (m.won?4:2), scoreAgainst: m.hasRealScore ? m.scoreB : (m.won?2:4), assumedScore: !m.hasRealScore});
   events.forEach(ev=>{
     if (ev.status!=="completed" || !ev.plan || (ev.sport||DEFAULT_SPORT)!=="Padel Tennis") return;
     if (ev.type==="closed_ind") {
       calcXCIPreview(ev.plan, users, comms, ev).forEach(p=>{
         if (p.xPES==null || !Number.isFinite(p.xPES)) return;
-        const matchRows = p.matches.filter(m=>Number.isFinite(m.xPts)).map(m=>({eventId:ev.id, eventName:ev.name, date:ev.date, round:m.round, court:m.court, won:m.won, score:Math.round(m.xPts*10)/10, partnerName:m.partnerName, oppNames:m.oppNames, scoreFor:m.scoreA, scoreAgainst:m.scoreB}));
+        const matchRows = p.matches.filter(m=>Number.isFinite(m.xPts)).map(m=>matchRow(ev, m, m.partnerName));
         record(p.userId, {eventId:ev.id, eventName:ev.name, date:ev.date, score:p.xPES}, matchRows);
       });
     } else if (ev.type==="closed_teams" && ev.plan.format==="ladder") {
       calcXCTLadderPreview(ev.plan, users, comms, ev).forEach(t=>{
         if (t.xTES==null || !Number.isFinite(t.xTES)) return;
-        const matchRows = t.matches.filter(m=>Number.isFinite(m.xPts)).map(m=>({eventId:ev.id, eventName:ev.name, date:ev.date, round:m.round, court:m.court, won:m.won, score:Math.round(m.xPts*10)/10, partnerName:null, oppNames:m.oppNames, scoreFor:m.scoreA, scoreAgainst:m.scoreB}));
+        const matchRows = t.matches.filter(m=>Number.isFinite(m.xPts)).map(m=>matchRow(ev, m, null));
         (t.team.players||[]).forEach(p=>record(p.userId, {eventId:ev.id, eventName:ev.name, date:ev.date, score:t.xTES}, matchRows));
       });
     }
@@ -14365,7 +14373,7 @@ function ProfileSc({user,me,users,comms,onBack,viewedByAdmin,onEditUser,isMeTab,
             {[["🔥 Best Match",myPerf.bestMatch,"#34D399"],["🥶 Worst Match",myPerf.worstMatch,"#EF4444"]].map(([label,m,color])=>m&&<div key={label} style={{flex:1,padding:"8px 10px",borderRadius:8,background:`${color}22`,border:`0.5px solid ${color}44`}}>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{label}</div>
               <div style={{fontSize:15,fontWeight:700,color}}>{m.score}</div>
-              <div style={{fontSize:10,color:"var(--po-text)",marginTop:2}}>{m.won?"Won":"Lost"} {m.scoreFor}–{m.scoreAgainst}{m.partnerName?` w/ ${m.partnerName}`:""} vs {m.oppNames.join(" & ")}</div>
+              <div style={{fontSize:10,color:"var(--po-text)",marginTop:2}}>{m.won?"Won":"Lost"} {m.scoreFor}–{m.scoreAgainst}{m.assumedScore&&<span title="Assumed score — this old match only recorded win/lose, no real score" style={{color:"var(--po-dim)",fontWeight:700}}>ᴬ</span>}{m.partnerName?` w/ ${m.partnerName}`:""} vs {m.oppNames.join(" & ")}</div>
               <div onClick={()=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===m.eventId));if(hc)onOpenEvent&&onOpenEvent(hc.id,m.eventId);}} style={{fontSize:10,color:"#6366F1",cursor:onOpenEvent?"pointer":"default",textDecoration:onOpenEvent?"underline":"none",marginTop:2}}>{m.eventName} · R{m.round}{m.court?` C${m.court}`:""}</div>
             </div>)}
           </div>}

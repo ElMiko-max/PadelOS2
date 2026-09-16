@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.42 (current) — Payment amount is now impossible to miss in the shared message
+## V0.16.43 (current) — Old win/lose-only matches now show an assumed score flagged with a letter
+
+- **The admin said:** old matches that only ever recorded win/lose (no real score) should show as an assumed 4-2 (or 2-4 if lost) in the Best/Worst Match report — **but marked with a single letter** so it's clearly flagged as assumed, not real.
+- **Implementation:** the "🔥 Best Match" / "🥶 Worst Match" cards in the profile's Performance report now show "4–2ᴬ" (or "2–4ᴬ") for these old matches — the small ᴬ means "Assumed" — instead of a misleading "0-0".
+- **Verified against real dev-database data** — 328 of 672 matches were this old win/lose-only type, and the assumed score + letter came out correctly in every case.
+
+---
+
+## V0.16.42 — Payment amount is now impossible to miss in the shared message
 
 - **The admin said the amount was "hidden" in the "📤 Share Payment Info" message** — not clear, people had to search for it.
 - **The amount is now its own bold line right under the title** (`💰 *{amount} EGP per person*`), **and repeated next to each payment link** (the collector's and the venue's) — so it's the first thing anyone reading the message sees, and it's right there again next to whichever button they actually tap to pay.

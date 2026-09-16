@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.34 (current) — Shorter event-close button captions, Padel only
+## V0.16.35 (current) — Header: date back to one line with badges above it, plus two more compact rows
+
+- **The admin sent three annotated screenshots in one message, asking for three changes:**
+- **1) Date/time is back to one line, and the Padel/Individuals badges moved up to sit right below it** — still in the same middle column between the level badge and the kebab/share stack, not a separate full-width row underneath everything.
+- **2) Practice Session and the Registration toggle now share one row instead of two separate cards** — Practice on the left, Registration (lock + toggle) on the right. Long sentences were shortened to fit half-width ("Try out registrations, matches & scores — nothing is saved" → "nothing saved", "Open — players can register now" → "Open").
+- **3) Your registration status/cancel area and the admin close tools now sit side by side, half-width each** — instead of one stacked full-width under the other. Text here was shortened too ("✓ Registered — attendance via match results" → "✓ Registered", etc.) to fit the narrower column.
+
+---
+
+## V0.16.34 — Shorter event-close button captions, Padel only
 
 - **For Padel events only** (not Football): "🏁 Close & Finish Event" shortens to "🏁 Close (Court-Based)", and "🧪 Close with Output PES (Performance Based)" shortens to "🧪 Close (Performance-Based)".
 - **Football events are unchanged** — this shortening is tied to the event's own sport.

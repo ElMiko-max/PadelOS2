@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.34";
+const APP_VERSION = "V0.16.35";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12260,17 +12260,28 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     <BBtn onBack={onBack} label="Back" sticky eventLabel={`${ev.name} #${ev.id}`} subLabel={tLabels[tab]}/>
     {/* A real switch, not a menu item buried in "⋮" — direct, one-tap, matches how the admin
         actually wants to use it in the moment (e.g. flip it open right at kickoff time). */}
-    {isAdmin&&!isCompleted&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-      <div>
-        <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>{regPaused?"🔒":"🔓"} Registration</div>
-        <div style={{fontSize:11,color:"var(--po-dim)"}}>{regPaused?"Paused — players can't register yet":"Open — players can register now"}</div>
+    {/* Practice (left) and the Registration lock/toggle (right) now share one compact row
+        instead of two full-width cards stacked (admin request, 2026-09-16, sixth pass) — each
+        card's descriptive sentence is dropped to a short caption to fit half-width. */}
+    {isAdmin&&!sim&&<div style={{display:"flex",gap:10,marginBottom:12}}>
+      <div className="po-card" style={{flex:1,minWidth:0,padding:"9px 11px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",gap:8}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice</div>
+          <div style={{fontSize:10,color:"var(--po-dim)"}}>nothing saved</div>
+        </div>
+        <SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/>
       </div>
-      <Toggle on={!regPaused} onChange={()=>{
-        if(regPaused){ onSetRegistrationOpen(true); }
-        else if(window.confirm(`Pause registration for "${ev.name}"?\n\nPlayers won't be able to register or request to join until you open it again — anyone already registered stays registered.`)) onSetRegistrationOpen(false);
-      }}/>
+      {!isCompleted&&<div className="po-card" style={{flex:1,minWidth:0,padding:"9px 11px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",gap:8}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>{regPaused?"🔒":"🔓"} Registration</div>
+          <div style={{fontSize:10,color:"var(--po-dim)"}}>{regPaused?"Paused":"Open"}</div>
+        </div>
+        <Toggle on={!regPaused} onChange={()=>{
+          if(regPaused){ onSetRegistrationOpen(true); }
+          else if(window.confirm(`Pause registration for "${ev.name}"?\n\nPlayers won't be able to register or request to join until you open it again — anyone already registered stays registered.`)) onSetRegistrationOpen(false);
+        }}/>
+      </div>}
     </div>}
-    {isAdmin&&!sim&&<div className="po-card" style={{marginBottom:12,padding:"10px 14px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🧪 Practice Session</div><div style={{fontSize:11,color:"var(--po-dim)"}}>Try out registrations, matches & scores — nothing is saved</div></div><SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/></div>}
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
@@ -12288,7 +12299,23 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </div>
       <div style={{display:"flex",alignItems:"center",gap:10,marginTop:10}}>
         {eventAvgUsr!=null&&<EventLevelBadge avg={eventAvgUsr} size="lg" sport={effEv.sport||DEFAULT_SPORT}/>}
-        <div style={{flex:1,minWidth:0,textAlign:"center",fontSize:12,color:"var(--po-sub)",fontWeight:600,lineHeight:1.4}}>🗓 {fmtD(ev.date)}<br/>{fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+        {/* Date/time is back on one line — it only wrapped when the badges below were still
+            crammed into this same column; now that they're the only other thing sharing this
+            middle column, both fit (admin request, 2026-09-16, sixth pass). */}
+        <div style={{flex:1,minWidth:0,textAlign:"center"}}>
+          <div style={{fontSize:12,color:"var(--po-sub)",fontWeight:600}}>🗓 {fmtD(ev.date)} · {fmtT(ev.time)}{ev.timeTo?` → ${fmtT(ev.timeTo)}`:""}</div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"center",marginTop:6}}>
+            <Bdg label={(ev.sport||DEFAULT_SPORT)==="Padel Tennis"?"🎾 Padel":sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>
+            {ev.type&&<Bdg label={shortTl[ev.type]||tl[ev.type]} color="#6366F1"/>}
+            {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
+            {ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}
+            {ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}
+            {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
+            {!isCompleted&&regPaused&&<Bdg label="🔒 Paused" color="#94A3B8"/>}
+            {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
+            {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
+          </div>
+        </div>
         <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
           {isAdmin&&<div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
             <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
@@ -12306,17 +12333,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
       </div>
       <div style={{marginTop:9}}>
-        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
-          <Bdg label={(ev.sport||DEFAULT_SPORT)==="Padel Tennis"?"🎾 Padel":sportLabel(ev.sport||DEFAULT_SPORT)} color="#A78BFA"/>
-          {ev.type&&<Bdg label={shortTl[ev.type]||tl[ev.type]} color="#6366F1"/>}
-          {!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}
-          {ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}
-          {ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}
-          {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
-          {!isCompleted&&regPaused&&<Bdg label="🔒 Paused" color="#94A3B8"/>}
-          {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
-          {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
-        </div>
         {venue&&<VenueLocationRow venue={venue}/>}
         <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
           {(()=>{const creator=users.find(u=>u.id===ev.createdBy);return creator?<span>👤 Created by <span onClick={()=>onViewProfile&&onViewProfile(creator.id)} style={{color:onViewProfile?"#6366F1":"inherit",fontWeight:600,cursor:onViewProfile?"pointer":"default",textDecoration:onViewProfile?"underline":"none"}}>{creator.nickname}</span></span>:null;})()}
@@ -12419,27 +12435,34 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {!canReg&&!myReg&&!regPaused&&(myEventJoinPending
           ? <div style={{padding:"9px",textAlign:"center",background:"#FBBF2422",border:"0.5px solid #FBBF2444",borderRadius:8,fontSize:13,fontWeight:500,color:"#FBBF24",marginBottom:6}}>⏳ Request sent — waiting for admin approval</div>
           : <Btn label="🙋 Request to Join" onClick={act.requestEventJoin} style={{width:"100%",marginBottom:6}}/>)}
-        {myReg&&isSubscriptionLocked(me,subscriptionSettings)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>🚫 Suspended — your subscription expired, so you've been moved to the waitlist. Renew to reclaim your spot.</div>}
-        {myReg&&!isSubscriptionLocked(me,subscriptionSettings)&&isRegWaitlisted(effEv,me.id,comm)&&<div style={{padding:"9px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:13,fontWeight:500,color:"#F59E0B",marginBottom:6}}>⏳ You're on the waitlist — we'll notify you if a spot opens up</div>}
-        {myReg&&!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&isOpen&&(isDay?(!isCIn?<div style={{display:"flex",gap:6,marginBottom:6}}><div style={{flex:1,padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)} style={{flex:1}}/></div>:<div style={{padding:"9px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:13,fontWeight:500,color:"#A5B4FC",marginBottom:6}}>✓ Checked In</div>):<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — check-in on event day</div>)}
-        {myReg&&!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&(isCI||isCT)&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:500,color:"#34D399",marginBottom:6}}>✓ Registered — attendance via match results</div>}
-        {/* Self-service unregister — was admin-only before (removeFromEvent's "✕" in Players),
-            leaving a registered player with no way to back out themselves. Same safety gate as
-            the admin's own remove button: locked once Round 1 is locked for CI/CT (would
-            corrupt matches players are already slotted into); Open events have no plan to lock
-            against, so this stays available for them right up to close. */}
-        {/* Deliberately NOT `danger` (the pale-red fill) — that's reserved for "Close & Finish
-            Event" below, an irreversible event-wide action. This is reversible and only affects
-            you, so it gets a milder red-text-on-neutral treatment instead of looking equally
-            alarming — two full-width red buttons stacked, identical weight, was flagged as
-            confusing (admin screenshot, 2026-09-12): can't tell which one is the "big" action. */}
-        {myReg&&(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{width:"100%",marginBottom:6,color:"#EF4444"}}/>}
-        {isAdmin&&!sim&&<>
-          {myReg&&<div style={{display:"flex",alignItems:"center",gap:8,margin:"10px 0"}}><div style={{flex:1,height:1,background:"var(--po-bdr)"}}/><span style={{fontSize:10,fontWeight:700,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5}}>Admin</span><div style={{flex:1,height:1,background:"var(--po-bdr)"}}/></div>}
-          <Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🏁 Close (Court-Based)":"🏁 Close & Finish Event"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{width:"100%"}}/>
-        </>}
-        {isAdmin&&!sim&&isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Performance-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{width:"100%",marginTop:6,background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
-        {isAdmin&&sim&&<div style={{padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
+        {/* Your registration status (left) and the admin close tools (right) now sit side by
+            side, half-width each, instead of stacked one under the other (admin request,
+            2026-09-16, sixth pass: "compact it to half the width... lift up the event closing
+            tools also compacted in width and next to it on the right"). Banner text is
+            shortened to fit — "✓ Registered — attendance via match results" etc. all collapse
+            to "✓ Registered" now that the column is half as wide. */}
+        <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+          {myReg&&<div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+            {isSubscriptionLocked(me,subscriptionSettings)&&<div style={{padding:"8px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#F59E0B"}}>🚫 Suspended</div>}
+            {!isSubscriptionLocked(me,subscriptionSettings)&&isRegWaitlisted(effEv,me.id,comm)&&<div style={{padding:"8px",textAlign:"center",background:"#F59E0B22",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#F59E0B"}}>⏳ Waitlisted</div>}
+            {!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&isOpen&&(isDay?(!isCIn?<><div style={{padding:"8px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#34D399"}}>✓ Registered</div><Btn label="Check In" primary onClick={()=>act.checkIn(me.id)}/></>:<div style={{padding:"8px",textAlign:"center",background:"#6366F122",border:"0.5px solid #6366F144",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#A5B4FC"}}>✓ Checked In</div>):<div style={{padding:"8px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#34D399"}}>✓ Registered</div>)}
+            {!isSubscriptionLocked(me,subscriptionSettings)&&!isRegWaitlisted(effEv,me.id,comm)&&(isCI||isCT)&&<div style={{padding:"8px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:11.5,fontWeight:500,color:"#34D399"}}>✓ Registered</div>}
+            {/* Self-service unregister — was admin-only before (removeFromEvent's "✕" in Players),
+                leaving a registered player with no way to back out themselves. Same safety gate as
+                the admin's own remove button: locked once Round 1 is locked for CI/CT (would
+                corrupt matches players are already slotted into); Open events have no plan to lock
+                against, so this stays available for them right up to close. Deliberately NOT
+                `danger` (the pale-red fill) — that's reserved for the irreversible event-wide
+                close action opposite it. */}
+            {(!effEv.plan||(isCT&&!ctR1Locked)||(isCI&&!ciR1Locked))&&<Btn label="Cancel my registration" onClick={()=>{if(window.confirm(`Cancel your registration for "${ev.name}"?\n\nIf you're on the waitlist, this just removes you. If you have an active spot, the next person on the waitlist (if any) will automatically take it.`))act.removeFromEvent(me.id);}} style={{color:"#EF4444"}}/>}
+          </div>}
+          {isAdmin&&!sim&&<div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+            <div style={{fontSize:9.5,fontWeight:800,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:0.5,textAlign:"center"}}>Admin</div>
+            <Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🏁 Close (Court-Based)":"🏁 Close & Finish Event"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}}/>
+            {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Performance-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA"}}/>}
+          </div>}
+        </div>
+        {isAdmin&&sim&&<div style={{marginTop:6,padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
     </Card>

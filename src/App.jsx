@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.41";
+const APP_VERSION = "V0.16.42";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12220,14 +12220,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setSharing(true);
     try{
       const payerU = users.find(u=>u.id===payerId);
+      // The amount used to be one line buried in the middle (admin, 2026-09-16: "the amount
+      // is hidden in the message... I wanted to make it clear so that nobody searches for
+      // it") — now it's its own bold line right under the title, AND repeated next to each
+      // payment link, so it's impossible to miss regardless of where someone's eye lands.
       const shareText = [
         `🏆 ${effEv.name} — Payment`,
+        `💰 *${cpp} EGP per person*`,
         `📅 ${fmtD(effEv.date)}`,
         `📍 ${venue?.name||"—"}`,
         `👥 ${comm.name}`,
-        `💰 ${cpp} EGP per person`,
-        ...(payerU?.instapayLink?[`💳 Pay ${payerU.nickname}: ${payerU.instapayLink}`]:[]),
-        ...(venue?.instapayLink?[`🏟 Or pay ${venue.name} directly: ${venue.instapayLink}`]:[]),
+        ...(payerU?.instapayLink?[`💳 Pay ${payerU.nickname} *${cpp} EGP*: ${payerU.instapayLink}`]:[]),
+        ...(venue?.instapayLink?[`🏟 Or pay ${venue.name} *${cpp} EGP* directly: ${venue.instapayLink}`]:[]),
       ].join("\n");
       const result = await shareImages([], effEv.name.replace(/\s+/g,"_")+"_payment", shareText);
       if(result.status==="copied") onToast&&onToast("Sharing isn't available here — copied to clipboard instead ✓");

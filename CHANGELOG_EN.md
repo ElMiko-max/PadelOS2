@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.41 (current) — Personal Performance report now also shows best/worst match, not just best/worst event
+## V0.16.42 (current) — Payment amount is now impossible to miss in the shared message
+
+- **The admin said the amount was "hidden" in the "📤 Share Payment Info" message** — not clear, people had to search for it.
+- **The amount is now its own bold line right under the title** (`💰 *{amount} EGP per person*`), **and repeated next to each payment link** (the collector's and the venue's) — so it's the first thing anyone reading the message sees, and it's right there again next to whichever button they actually tap to pay.
+
+---
+
+## V0.16.41 — Personal Performance report now also shows best/worst match, not just best/worst event
 
 - **The admin asked for "best match" and "worst match" alongside the existing best/worst event.**
 - **The "🎯 Performance" card in the personal profile's Reports tab now has two more cards below** — "🔥 Best Match" and "🥶 Worst Match" — showing the result (won/lost and the score), who you played with and against, and a direct link to that event.

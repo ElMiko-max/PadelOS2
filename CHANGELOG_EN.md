@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.40 (current) — Fixed a blank white screen on the personal profile's Reports tab
+## V0.16.41 (current) — Personal Performance report now also shows best/worst match, not just best/worst event
+
+- **The admin asked for "best match" and "worst match" alongside the existing best/worst event.**
+- **The "🎯 Performance" card in the personal profile's Reports tab now has two more cards below** — "🔥 Best Match" and "🥶 Worst Match" — showing the result (won/lost and the score), who you played with and against, and a direct link to that event.
+- **Not a new number** — the same per-match xPts each match already carries inside that event's own "Delta Standings", just surfaced here as the single standout across your whole history.
+- **Verified against real data pulled from the dev database** before shipping — every community and every user checked with no crashes.
+
+---
+
+## V0.16.40 — Fixed a blank white screen on the personal profile's Reports tab
 
 - **The admin tested V0.16.39 on their phone and hit a completely blank white screen** when tapping the Reports tab on the profile.
 - **Cause:** the new "Performance" report used the full `users` list inside the profile screen, but that screen was never actually given `users` as a prop — a `ReferenceError` crashed the render the instant the Reports tab tried to draw, with nothing visible except a white screen.

@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.40";
+const APP_VERSION = "V0.16.41";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -2263,27 +2263,44 @@ function calcXCTLadderPreview(plan, users, comms, ev) {
 // = over/underperformed — not a new metric, just this one aggregated. CT League isn't included
 // since delta isn't computed there either (no court/margin concept — same reason the live
 // Delta Standings view skips it). Padel-only, matching every other Reports-tab feature.
+// Also tracks the single best/worst individual MATCH (not just event) across that same
+// history (admin follow-up, 2026-09-16: "I want to capture best match and worst match also") —
+// each event's own per-match xPts already existed inside calcXCIPreview/calcXCTLadderPreview's
+// `matches` array, just never carried forward past that one event before.
 // Live-computed from event plans already held in memory, nothing persisted — same as the
 // partner/opponent reports above.
 function calcPerformanceDeltaByUser(events, users, comms){
-  const perUser = {};
+  const perUser = {}; // userId -> {eventScores:[{eventId,eventName,date,score}], matches:[{eventId,eventName,date,round,court,won,score,partnerName,oppNames,scoreFor,scoreAgainst}]}
+  const record = (userId, eventScore, matchRows) => {
+    if (!perUser[userId]) perUser[userId] = {eventScores:[], matches:[]};
+    perUser[userId].eventScores.push(eventScore);
+    perUser[userId].matches.push(...matchRows);
+  };
   events.forEach(ev=>{
     if (ev.status!=="completed" || !ev.plan || (ev.sport||DEFAULT_SPORT)!=="Padel Tennis") return;
-    let rows=[];
-    if (ev.type==="closed_ind") rows = calcXCIPreview(ev.plan, users, comms, ev).map(p=>({userId:p.userId, score:p.xPES}));
-    else if (ev.type==="closed_teams" && ev.plan.format==="ladder") calcXCTLadderPreview(ev.plan, users, comms, ev).forEach(t=>(t.team.players||[]).forEach(p=>rows.push({userId:p.userId, score:t.xTES})));
-    rows.forEach(({userId,score})=>{
-      if (score==null || !Number.isFinite(score)) return;
-      if (!perUser[userId]) perUser[userId] = [];
-      perUser[userId].push({eventId:ev.id, eventName:ev.name, date:ev.date, score});
-    });
+    if (ev.type==="closed_ind") {
+      calcXCIPreview(ev.plan, users, comms, ev).forEach(p=>{
+        if (p.xPES==null || !Number.isFinite(p.xPES)) return;
+        const matchRows = p.matches.filter(m=>Number.isFinite(m.xPts)).map(m=>({eventId:ev.id, eventName:ev.name, date:ev.date, round:m.round, court:m.court, won:m.won, score:Math.round(m.xPts*10)/10, partnerName:m.partnerName, oppNames:m.oppNames, scoreFor:m.scoreA, scoreAgainst:m.scoreB}));
+        record(p.userId, {eventId:ev.id, eventName:ev.name, date:ev.date, score:p.xPES}, matchRows);
+      });
+    } else if (ev.type==="closed_teams" && ev.plan.format==="ladder") {
+      calcXCTLadderPreview(ev.plan, users, comms, ev).forEach(t=>{
+        if (t.xTES==null || !Number.isFinite(t.xTES)) return;
+        const matchRows = t.matches.filter(m=>Number.isFinite(m.xPts)).map(m=>({eventId:ev.id, eventName:ev.name, date:ev.date, round:m.round, court:m.court, won:m.won, score:Math.round(m.xPts*10)/10, partnerName:null, oppNames:m.oppNames, scoreFor:m.scoreA, scoreAgainst:m.scoreB}));
+        (t.team.players||[]).forEach(p=>record(p.userId, {eventId:ev.id, eventName:ev.name, date:ev.date, score:t.xTES}, matchRows));
+      });
+    }
   });
   const out = {};
-  Object.entries(perUser).forEach(([userId,evs])=>{
-    const avg = Math.round((evs.reduce((s,e)=>s+e.score,0)/evs.length) * 10) / 10;
-    const best = evs.reduce((a,b)=>b.score>a.score?b:a);
-    const worst = evs.reduce((a,b)=>b.score<a.score?b:a);
-    out[userId] = {count:evs.length, avg, best, worst, events:evs};
+  Object.entries(perUser).forEach(([userId,{eventScores,matches}])=>{
+    if (eventScores.length===0) return;
+    const avg = Math.round((eventScores.reduce((s,e)=>s+e.score,0)/eventScores.length) * 10) / 10;
+    const best = eventScores.reduce((a,b)=>b.score>a.score?b:a);
+    const worst = eventScores.reduce((a,b)=>b.score<a.score?b:a);
+    const bestMatch = matches.length ? matches.reduce((a,b)=>b.score>a.score?b:a) : null;
+    const worstMatch = matches.length ? matches.reduce((a,b)=>b.score<a.score?b:a) : null;
+    out[userId] = {count:eventScores.length, avg, best, worst, bestMatch, worstMatch, events:eventScores, matches};
   });
   return out;
 }
@@ -9150,7 +9167,7 @@ function CommStatsTab({comm, users, onViewProfile}){
     events:{label:"📅 Participations", sort:(a,b)=>b.participations-a.participations, val:s=>`${s.participations} events`, sub:()=>"", hasPerEvent:false},
     wins:{label:"⚡ Most Wins", sort:(a,b)=>perEvent?perEv(b.wins,b)-perEv(a.wins,a):b.wins-a.wins, val:s=>perEvent?`${perEv(s.wins,s).toFixed(1)} wins/ev`:`${s.wins} wins`, sub:s=>perEvent?`${s.wins} total over ${s.participations} events`:"", hasPerEvent:true},
     pts:{label:"💯 Most Points", sort:(a,b)=>perEvent?perEv(b.totalPts,b)-perEv(a.totalPts,a):b.totalPts-a.totalPts, val:s=>perEvent?`${perEv(s.totalPts,s).toFixed(1)} pts/ev`:`${s.totalPts} pts`, sub:s=>perEvent?`${s.totalPts} total over ${s.participations} events`:"", hasPerEvent:true},
-    perf:{label:"🎯 Performance", sort:(a,b)=>(b.perf?.avg??-Infinity)-(a.perf?.avg??-Infinity), val:s=>s.perf?`${s.perf.avg}`:"—", sub:s=>s.perf?`${s.perf.count} event${s.perf.count!==1?"s":""} · best ${s.perf.best.score} · worst ${s.perf.worst.score} (50=expected)`:"No Closed Individuals/Ladder data yet", hasPerEvent:false},
+    perf:{label:"🎯 Performance", sort:(a,b)=>(b.perf?.avg??-Infinity)-(a.perf?.avg??-Infinity), val:s=>s.perf?`${s.perf.avg}`:"—", sub:s=>s.perf?`${s.perf.count} event${s.perf.count!==1?"s":""} · best event ${s.perf.best.score} · worst event ${s.perf.worst.score} (50=expected)`:"No Closed Individuals/Ladder data yet", hasPerEvent:false},
   };
 
   const sorted=[...stats].sort(views[view].sort);
@@ -14326,15 +14343,27 @@ function ProfileSc({user,me,users,comms,onBack,viewedByAdmin,onEditUser,isMeTab,
           </div>
           {myPerf.count>1&&<div style={{display:"flex",gap:8}}>
             <div style={{flex:1,padding:"8px 10px",borderRadius:8,background:"#34D39922",border:"0.5px solid #34D39944"}}>
-              <div style={{fontSize:10,color:"var(--po-dim)"}}>🔥 Best</div>
+              <div style={{fontSize:10,color:"var(--po-dim)"}}>🔥 Best Event</div>
               <div style={{fontSize:15,fontWeight:700,color:"#34D399"}}>{myPerf.best.score}</div>
               <div onClick={()=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===myPerf.best.eventId));if(hc)onOpenEvent&&onOpenEvent(hc.id,myPerf.best.eventId);}} style={{fontSize:10,color:"#6366F1",cursor:onOpenEvent?"pointer":"default",textDecoration:onOpenEvent?"underline":"none",marginTop:2}}>{myPerf.best.eventName}</div>
             </div>
             <div style={{flex:1,padding:"8px 10px",borderRadius:8,background:"#EF444422",border:"0.5px solid #EF444444"}}>
-              <div style={{fontSize:10,color:"var(--po-dim)"}}>🥶 Worst</div>
+              <div style={{fontSize:10,color:"var(--po-dim)"}}>🥶 Worst Event</div>
               <div style={{fontSize:15,fontWeight:700,color:"#EF4444"}}>{myPerf.worst.score}</div>
               <div onClick={()=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===myPerf.worst.eventId));if(hc)onOpenEvent&&onOpenEvent(hc.id,myPerf.worst.eventId);}} style={{fontSize:10,color:"#6366F1",cursor:onOpenEvent?"pointer":"default",textDecoration:onOpenEvent?"underline":"none",marginTop:2}}>{myPerf.worst.eventName}</div>
             </div>
+          </div>}
+          {/* Best/worst single MATCH, not just event — admin follow-up, 2026-09-16: "I want to
+              capture best match and worst match also". Same xPts number each match already
+              carries inside the event's own live Delta Standings, just surfaced here as the
+              single standout instead of buried in a per-round list. */}
+          {(myPerf.bestMatch||myPerf.worstMatch)&&<div style={{display:"flex",gap:8,marginTop:8}}>
+            {[["🔥 Best Match",myPerf.bestMatch,"#34D399"],["🥶 Worst Match",myPerf.worstMatch,"#EF4444"]].map(([label,m,color])=>m&&<div key={label} style={{flex:1,padding:"8px 10px",borderRadius:8,background:`${color}22`,border:`0.5px solid ${color}44`}}>
+              <div style={{fontSize:10,color:"var(--po-dim)"}}>{label}</div>
+              <div style={{fontSize:15,fontWeight:700,color}}>{m.score}</div>
+              <div style={{fontSize:10,color:"var(--po-text)",marginTop:2}}>{m.won?"Won":"Lost"} {m.scoreFor}–{m.scoreAgainst}{m.partnerName?` w/ ${m.partnerName}`:""} vs {m.oppNames.join(" & ")}</div>
+              <div onClick={()=>{const hc=comms.find(c=>c.events.some(ev=>ev.id===m.eventId));if(hc)onOpenEvent&&onOpenEvent(hc.id,m.eventId);}} style={{fontSize:10,color:"#6366F1",cursor:onOpenEvent?"pointer":"default",textDecoration:onOpenEvent?"underline":"none",marginTop:2}}>{m.eventName} · R{m.round}{m.court?` C${m.court}`:""}</div>
+            </div>)}
           </div>}
         </>}
       </Card>

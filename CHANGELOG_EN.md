@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.43 (current) — Old win/lose-only matches now show an assumed score flagged with a letter
+## V0.16.44 (current) — Match Mode: fixed the Start flicker + the whistle now self-verifies and self-heals
+
+- **The admin said the flicker (start... reverts... starts itself) was still happening, and the real problem was that the whistle sometimes just didn't ring at all, randomly — and asked for real confirmation from the code that it will ring every time, not just a fire-and-forget schedule.**
+- **Root cause of the flicker (newly found):** `setMatchModeStart` updates the screen optimistically right away, then commits the real write via a Firestore transaction (a genuine network round-trip, not instant). If the events listener (which re-syncs on any change to any event — very frequent during a live event) happened to fire in that window, it wiped the optimistic update back to "not started" until the real write landed a moment later and it flipped back on its own. Fixed by having the screen remember what it just set until the real write is actually confirmed one way or the other, so it can't be reverted by a stale in-flight snapshot.
+- **The whistle now genuinely verifies itself (not just assumes scheduling succeeded):** once every round's whistles are scheduled, the code asks Android itself, 5 seconds later, "is this alarm actually registered?" (the standard Android way to check) — and for any round where the answer is no, **it reschedules it automatically, with no intervention needed.** This check repeats every 2 minutes for the rest of the match, not just once, so anything that disappears mid-match gets caught and fixed too.
+
+---
+
+## V0.16.43 — Old win/lose-only matches now show an assumed score flagged with a letter
 
 - **The admin said:** old matches that only ever recorded win/lose (no real score) should show as an assumed 4-2 (or 2-4 if lost) in the Best/Worst Match report — **but marked with a single letter** so it's clearly flagged as assumed, not real.
 - **Implementation:** the "🔥 Best Match" / "🥶 Worst Match" cards in the profile's Performance report now show "4–2ᴬ" (or "2–4ᴬ") for these old matches — the small ᴬ means "Assumed" — instead of a misleading "0-0".

@@ -9,7 +9,9 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.View;
 import android.widget.RemoteViews;
@@ -59,6 +61,9 @@ public class MatchModeService extends Service {
     // from the Intent (CI, Ladder) defaults to true via the plugin bridge.
     private boolean currentInteractive = true;
     private final List<CourtInfo> currentCourts = new ArrayList<>();
+    // Drives the self-healing "is this alarm actually still registered" checkpoint loop —
+    // see scheduleAllWhistles/verifyAndReschedule below.
+    private final Handler verifyHandler = new Handler(Looper.getMainLooper());
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
@@ -147,6 +152,7 @@ public class MatchModeService extends Service {
         clearFiredFlags(eventId);
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (am == null) { android.util.Log.e("MatchModeDiag", "AlarmManager service unavailable"); return; }
+        List<PendingRoundSchedule> scheduled = new ArrayList<>();
         try {
             JSONArray arr = new JSONArray(scheduleJson);
             for (int i = 0; i < arr.length(); i++) {
@@ -159,51 +165,100 @@ public class MatchModeService extends Service {
                     android.util.Log.w("MatchModeDiag", "skipping round " + round + " — whistleAt=" + whistleAt + " now=" + now + " (already past or invalid)");
                     continue;
                 }
-                PendingIntent pi = whistlePendingIntent(round, eventId, "final");
-                try {
-                    AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(whistleAt, contentPendingIntent());
-                    am.setAlarmClock(info, pi);
-                    android.util.Log.i("MatchModeDiag", "setAlarmClock OK for round " + round + " at " + whistleAt + " (in " + ((whistleAt-now)/1000) + "s)");
-                } catch (Exception e) {
-                    android.util.Log.e("MatchModeDiag", "setAlarmClock FAILED for round " + round + ": " + e, e);
-                    // Extremely rare fallback path, in case setAlarmClock itself is refused.
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, whistleAt, pi);
-                        } else {
-                            am.setExact(AlarmManager.RTC_WAKEUP, whistleAt, pi);
-                        }
-                        android.util.Log.i("MatchModeDiag", "fallback setExactAndAllowWhileIdle OK for round " + round);
-                    } catch (SecurityException se) {
-                        am.set(AlarmManager.RTC_WAKEUP, whistleAt, pi);
-                        android.util.Log.w("MatchModeDiag", "fallback plain set() used for round " + round + " (no exact-alarm permission): " + se);
-                    }
-                }
-
+                scheduleOneAlarm(am, round, eventId, "final", whistleAt);
                 // 5-minute-before warning — silent, separate notification. Only scheduled
                 // if that moment is still in the future (skip it for an already-compressed
                 // round shorter than 5 minutes, or if we're starting late into the round).
                 long warnAt = whistleAt - 5*60*1000;
-                if (warnAt > now) {
-                    PendingIntent warnPi = whistlePendingIntent(round, eventId, "warning");
-                    try {
-                        AlarmManager.AlarmClockInfo warnInfo = new AlarmManager.AlarmClockInfo(warnAt, contentPendingIntent());
-                        am.setAlarmClock(warnInfo, warnPi);
-                    } catch (Exception e) {
-                        try {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, warnAt, warnPi);
-                            } else {
-                                am.setExact(AlarmManager.RTC_WAKEUP, warnAt, warnPi);
-                            }
-                        } catch (SecurityException se) {
-                            am.set(AlarmManager.RTC_WAKEUP, warnAt, warnPi);
-                        }
-                    }
-                }
+                if (warnAt > now) scheduleOneAlarm(am, round, eventId, "warning", warnAt);
+                scheduled.add(new PendingRoundSchedule(round, eventId, whistleAt, warnAt > now ? warnAt : -1));
             }
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "scheduleAllWhistles: malformed schedule payload", e);
+        }
+        // Self-healing checkpoint (admin request, 2026-09-18: "make sure 100% that it will fire
+        // every time... put a four or five second delayed checkpoint to check that this is
+        // scheduled or not, if not it should autonomously reschedule... don't just do the action
+        // once and leave it"). setAlarmClock essentially never fails silently in normal operation
+        // (any real failure already throws and falls back above), but this closes the gap for
+        // anything that could still quietly drop the registration afterward — checks every round
+        // that's still ahead of us, actually re-verifies with AlarmManager itself (not just
+        // trusting the earlier call succeeded), and re-schedules on the spot if missing. Repeats
+        // every 2 minutes for as long as any round is still in the future, not just once, so a
+        // later drop mid-match gets caught too, not only right after Start.
+        if (!scheduled.isEmpty()) verifyHandler.postDelayed(() -> verifyAndReschedule(scheduled), 5000);
+    }
+
+    private void scheduleOneAlarm(AlarmManager am, int round, String eventId, String type, long atMs) {
+        PendingIntent pi = whistlePendingIntent(round, eventId, type);
+        try {
+            AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(atMs, contentPendingIntent());
+            am.setAlarmClock(info, pi);
+            android.util.Log.i("MatchModeDiag", "setAlarmClock OK round=" + round + " type=" + type + " at=" + atMs);
+        } catch (Exception e) {
+            android.util.Log.e("MatchModeDiag", "setAlarmClock FAILED round=" + round + " type=" + type + ": " + e, e);
+            // Extremely rare fallback path, in case setAlarmClock itself is refused.
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMs, pi);
+                } else {
+                    am.setExact(AlarmManager.RTC_WAKEUP, atMs, pi);
+                }
+                android.util.Log.i("MatchModeDiag", "fallback setExactAndAllowWhileIdle OK round=" + round + " type=" + type);
+            } catch (SecurityException se) {
+                am.set(AlarmManager.RTC_WAKEUP, atMs, pi);
+                android.util.Log.w("MatchModeDiag", "fallback plain set() used round=" + round + " type=" + type + " (no exact-alarm permission): " + se);
+            }
+        }
+    }
+
+    // Real, not assumed, confirmation: FLAG_NO_CREATE returns null unless a PendingIntent with
+    // this exact request code is already registered with the system — this is the standard
+    // Android pattern for "did I actually schedule this," since AlarmManager has no direct
+    // "list my pending alarms" API. requestCode (base+round) is what identity is keyed on;
+    // the extras on the Intent here don't affect the match (Android ignores extras when
+    // comparing PendingIntents), so they're only for readability/logging parity with the
+    // real registration.
+    private boolean isAlarmRegistered(int round, String eventId, String type) {
+        Intent intent = new Intent(this, MatchModeWhistleReceiver.class);
+        intent.putExtra("round", round);
+        intent.putExtra("eventId", eventId);
+        intent.putExtra("type", type);
+        int flags = PendingIntent.FLAG_NO_CREATE;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_IMMUTABLE;
+        int base = "warning".equals(type) ? 3500 : 3000;
+        return PendingIntent.getBroadcast(this, base + round, intent, flags) != null;
+    }
+
+    private void verifyAndReschedule(List<PendingRoundSchedule> scheduled) {
+        AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (am == null) { verifyHandler.postDelayed(() -> verifyAndReschedule(scheduled), 2*60*1000); return; }
+        long now = System.currentTimeMillis();
+        boolean anyFutureLeft = false;
+        for (PendingRoundSchedule s : scheduled) {
+            if (s.whistleAt > now) {
+                anyFutureLeft = true;
+                if (!isAlarmRegistered(s.round, s.eventId, "final")) {
+                    android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " final whistle MISSING — rescheduling autonomously");
+                    scheduleOneAlarm(am, s.round, s.eventId, "final", s.whistleAt);
+                }
+            }
+            if (s.warnAt > now) {
+                anyFutureLeft = true;
+                if (!isAlarmRegistered(s.round, s.eventId, "warning")) {
+                    android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " warning MISSING — rescheduling autonomously");
+                    scheduleOneAlarm(am, s.round, s.eventId, "warning", s.warnAt);
+                }
+            }
+        }
+        if (anyFutureLeft) verifyHandler.postDelayed(() -> verifyAndReschedule(scheduled), 2*60*1000);
+        else android.util.Log.i("MatchModeDiag", "checkpoint: all rounds past — stopping self-check loop");
+    }
+
+    private static class PendingRoundSchedule {
+        final int round; final String eventId; final long whistleAt; final long warnAt; // warnAt<=0 means "not scheduled, don't check"
+        PendingRoundSchedule(int round, String eventId, long whistleAt, long warnAt) {
+            this.round = round; this.eventId = eventId; this.whistleAt = whistleAt; this.warnAt = warnAt;
         }
     }
 
@@ -215,6 +270,7 @@ public class MatchModeService extends Service {
     }
 
     private void cancelAllWhistles() {
+        verifyHandler.removeCallbacksAndMessages(null); // stop any running checkpoint loop — a fresh schedule or a real Stop both make it stale
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
         for (int round = 1; round <= MAX_ROUNDS; round++) {

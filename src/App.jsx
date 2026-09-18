@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.43";
+const APP_VERSION = "V0.16.44";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -4876,6 +4876,20 @@ export default function Matchkeeper() {
   // the document genuinely exists — this flag is what stops that from being mistaken for
   // "first-time setup" and destructively overwriting live data with empty seed defaults.
   const everRealRef = useRef({communities:false, events:false, users:false, venues:false, notifications:false, egypt:false, expenseCategories:false, usrWindowSize:false});
+  // Guards against the Match Mode "Start flickers off then self-recovers" bug (admin,
+  // 2026-09-18: "started for one second then reverted... then it started alone... the same
+  // old flickering"). Root cause: setMatchModeStart's updEvent sets matchModeStartAt
+  // OPTIMISTICALLY in local state, then commits it via a Firestore transaction — a genuine
+  // server round-trip, not an instant local-cache write like setDoc/updateDoc get. If the
+  // events onSnapshot listener below fires with ANY snapshot while that transaction is still
+  // in flight (very likely on a live event — confirmOrder syncs, the reminder engine, other
+  // admins' own writes all touch the same collection), it does a wholesale setEvents(remote)
+  // from whatever the server had a moment ago, silently reverting our own not-yet-committed
+  // change — then flips back to "started" once our transaction actually lands and the next
+  // snapshot reflects it. Tracking exactly the field we just optimistically set per event lets
+  // the listener keep showing it instead of a stale revert, until either the real write
+  // resolves (cleared explicitly, success or failure) or 15s pass (safety net).
+  const pendingMatchModeRef = useRef({}); // eid -> {matchModeStartAt, matchModeDelayMin, until}
   const [loadedKeys, setLoadedKeys] = useState([]);
   const markLoaded = (k) => setLoadedKeys(ks => ks.includes(k) ? ks : [...ks, k]);
   const dataLoaded = ["communities","events","registrations","users","venues","notifications","uidLinks","invites","egypt","subscriptionSettings","subscriptionTransactions"].every(k => loadedKeys.includes(k));
@@ -4910,7 +4924,20 @@ export default function Matchkeeper() {
   useEffect(() => {
     if (!authUser) return;
     const unsub = onSnapshot(collection(db,"padelos_events"), snap => {
-      const remote = snap.docs.map(d => unpackEventFromFirestore(d.data()));
+      let remote = snap.docs.map(d => unpackEventFromFirestore(d.data()));
+      // See pendingMatchModeRef's own comment above — keep showing our just-set
+      // matchModeStartAt/matchModeDelayMin instead of a stale value this snapshot happened to
+      // catch mid-transaction, for any event with an active pending entry.
+      const pending = pendingMatchModeRef.current;
+      const now = Date.now();
+      Object.keys(pending).forEach(eid=>{ if (pending[eid].until < now) delete pending[eid]; });
+      if (Object.keys(pending).length) {
+        remote = remote.map(e => {
+          const p = pending[e.id];
+          if (!p || !e.plan) return e;
+          return {...e, plan:{...e.plan, matchModeStartAt:p.matchModeStartAt, matchModeDelayMin:p.matchModeDelayMin}};
+        });
+      }
       if (remote.length > 0) {
         const json = JSON.stringify(remote);
         if (json !== syncedRef.current.events) { syncedRef.current.events = json; setEvents(remote);
@@ -7834,12 +7861,25 @@ export default function Matchkeeper() {
     // entirely, with no error. A transaction (same pattern updEvent already uses for every other
     // single-field change) reads the doc fresh at commit time instead of trusting a snapshot taken
     // earlier, so it can never lose a concurrent change like this.
-    updEvent(cid, eid, e=>!e.plan?e:{...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}}).catch(e=>console.log("setMatchModeStart failed", e));
+    // STILL flickered after that fix (admin, 2026-09-18) because the transaction only protects
+    // the SERVER write from being lost — it does nothing about the events onSnapshot listener
+    // clobbering our LOCAL optimistic state with a stale snapshot while the transaction is still
+    // in flight (see pendingMatchModeRef's own comment). Recording our intent there BEFORE the
+    // write starts, and clearing it once the write actually settles either way, closes that gap.
+    pendingMatchModeRef.current[eid] = {matchModeStartAt:startAt, matchModeDelayMin:delayMin, until: Date.now()+15000};
+    updEvent(cid, eid, e=>!e.plan?e:{...e,plan:{...e.plan,matchModeStartAt:startAt,matchModeDelayMin:delayMin}})
+      .then(()=>{delete pendingMatchModeRef.current[eid];})
+      .catch(e=>{delete pendingMatchModeRef.current[eid]; console.log("setMatchModeStart failed", e);});
     // "Any other event with Match Mode live" — a scan of the in-memory events collection (every
     // client already holds it all live) to find the one other event (there can only ever be one)
     // that still needs clearing, so at most one event is ever "live" app-wide.
     const other = eventsRef.current.find(e=>e.id!==eid && e.plan?.matchModeStartAt);
-    if (other) updEvent(other.communityId, other.id, e=>!e.plan?e:{...e,plan:{...e.plan,matchModeStartAt:null,matchModeDelayMin:null}}).catch(e=>console.log("setMatchModeStart (clear other) failed", e));
+    if (other) {
+      pendingMatchModeRef.current[other.id] = {matchModeStartAt:null, matchModeDelayMin:null, until: Date.now()+15000};
+      updEvent(other.communityId, other.id, e=>!e.plan?e:{...e,plan:{...e.plan,matchModeStartAt:null,matchModeDelayMin:null}})
+        .then(()=>{delete pendingMatchModeRef.current[other.id];})
+        .catch(e=>{delete pendingMatchModeRef.current[other.id]; console.log("setMatchModeStart (clear other) failed", e);});
+    }
     if (!roundEndTimes || !roundEndTimes.length) return;
     const comm = comms.find(c=>c.id===cid);
     const ev = comm?.events.find(e=>e.id===eid);
@@ -7861,7 +7901,12 @@ export default function Matchkeeper() {
   // effect picks up as a real stop signal (cancels the notification + all scheduled
   // whistles). Useful for cutting a test run short without closing the whole event.
   const stopMatchMode=(cid,eid)=>{
-    updEvent(cid,eid,ev=>!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}});
+    // Same optimistic-vs-listener race as setMatchModeStart (see pendingMatchModeRef) — guard
+    // Stop the same way so it can't flicker back to "started" mid-transaction either.
+    pendingMatchModeRef.current[eid] = {matchModeStartAt:null, matchModeDelayMin:null, until: Date.now()+15000};
+    updEvent(cid,eid,ev=>!ev.plan?ev:{...ev,plan:{...ev.plan,matchModeStartAt:null,matchModeDelayMin:null}})
+      .then(()=>{delete pendingMatchModeRef.current[eid];})
+      .catch(e=>{delete pendingMatchModeRef.current[eid]; console.log("stopMatchMode failed", e);});
     toast2("Match Mode stopped");
   };
   // Records "whistles are already scheduled for this exact Match Mode start time" durably

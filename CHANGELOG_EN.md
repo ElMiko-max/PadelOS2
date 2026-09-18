@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.47 (current) — "Round started" notification is now pre-scheduled, no tap needed at all
+## V0.16.48 (current) — Manual admin break swaps are now clearly tagged in history
+
+- **Why:** while doing a detailed round-by-round audit of the Dynamic Break Engine on a past event, it turned out there was no way to tell an engine-chosen break apart from one the admin set manually (e.g. swapping a late-arriving player onto break from the Rounds tab). That meant any later reading of the history — including by the admin themselves — could easily misread a deliberate manual call as an unexplained engine exception, or even a bug.
+- **Fixed:** every time an admin uses the Swap tool (CI or CT Ladder events) and it moves someone onto break, that specific break is now tagged with who did it and when. If they're later swapped back onto court, the tag is automatically cleared since it no longer applies.
+- **In the Breaks tab:** any break cell that came from a manual swap now shows a small 🔧 icon with a tooltip reading "Manually swapped onto break by an admin — not a break-engine pick" — so anyone looking at the table later (the admin, or a future analysis) can immediately tell it was a deliberate human call, not the engine's own decision.
+
+---
+
+## V0.16.47 — "Round started" notification is now pre-scheduled, no tap needed at all
 
 - **The admin clarified what V0.16.46's notification was actually for:** it needs to reach a smartwatch, and it needs to be **guaranteed** to arrive the moment each round starts **with zero dependency on any tap, or even on the app being alive at that moment** — exactly like the whistle itself, since every round's start and end time is already known from the instant Match Mode begins.
 - **The problem with the V0.16.46 implementation:** it relied entirely on the JS side pushing an update to the native code at the exact moment a round started — either an admin tapping "Generate Next Round," or (CT League) a 30-second timer that only runs while the app happens to be alive. That's the same class of problem fixed for the checkpoint in V0.16.45 (a plain timer with no guarantee under Doze).

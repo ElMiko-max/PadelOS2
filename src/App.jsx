@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.47";
+const APP_VERSION = "V0.16.48";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8039,7 +8039,21 @@ export default function Matchkeeper() {
       function loc(uid){for(let mi=0;mi<r.matches.length;mi++)for(const t of["teamA","teamB"]){const pi=r.matches[mi][t].findIndex(p=>p.userId===uid);if(pi!==-1)return{w:"court",mi,t,pi};}const bi=r.onBreak.findIndex(p=>p.userId===uid);if(bi!==-1)return{w:"break",bi};return null;}
       function get(l){return l.w==="court"?r.matches[l.mi][l.t][l.pi]:r.onBreak[l.bi];}
       function set(l,p){if(l.w==="court")r.matches[l.mi][l.t][l.pi]=p;else r.onBreak[l.bi]=p;}
-      const lA=loc(uidA),lB=loc(uidB);if(!lA||!lB)return ev;const pA=get(lA),pB=get(lB);set(lA,pB);set(lB,pA);
+      const lA=loc(uidA),lB=loc(uidB);if(!lA||!lB)return ev;const pA=get(lA),pB=get(lB);
+      // Admin request (2026-09-19, after a break-fairness audit couldn't tell a manual swap
+      // from a real break-engine pick after the fact): whichever of the two players ends up
+      // ON BREAK as a direct result of THIS swap gets tagged manualSwap — so reading the
+      // round's history later (Breaks tab, an audit, this exact conversation) immediately
+      // shows "an admin did this on purpose" instead of looking like an unexplained engine
+      // pick. Only a swap that actually crosses the court/break line changes anyone's break
+      // status; a break<->break or court<->court swap leaves both players' tags untouched.
+      // Landing on COURT always clears any prior tag — it no longer describes their situation.
+      const crossesLine=lA.w!==lB.w;
+      const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
+      const clearTag=(p)=>{const{manualSwap,manualSwapAt,manualSwapBy,...rest}=p;return rest;};
+      const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...pA,...manualStamp}:pA);
+      const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...pB,...manualStamp}:pB);
+      set(lA,pBOut);set(lB,pAOut);
       r.onBreakIds=r.onBreak.map(p=>p.userId);
       // Sync breakPlan[ri] with the updated onBreakIds
       const newBreakPlan=ev.plan.breakPlan.map((bp,bri)=>bri===ri?[...r.onBreakIds]:bp);
@@ -8417,7 +8431,16 @@ export default function Matchkeeper() {
       function setT(l,t){if(l.w==="match")r.matchesA[l.mi][l.side]=t;else r.onBreak[l.bi]=t;}
       const lA=locT(tidA),lB=locT(tidB);
       if(!lA||!lB)return ev;
-      const tA=getT(lA),tB=getT(lB);setT(lA,tB);setT(lB,tA);
+      const tA=getT(lA),tB=getT(lB);
+      // Same manual-swap tagging as swapCI above — flag whichever team lands on break as a
+      // direct result of this swap, so history reads it as an admin override, not an
+      // engine pick. See swapCI's comment for the full reasoning.
+      const crossesLine=lA.w!==lB.w;
+      const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
+      const clearTag=(t)=>{const{manualSwap,manualSwapAt,manualSwapBy,...rest}=t;return rest;};
+      const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...tA,...manualStamp}:tA);
+      const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...tB,...manualStamp}:tB);
+      setT(lA,tBOut);setT(lB,tAOut);
       r.onBreakIds=r.onBreak.map(t=>t.id);
       return{...ev,plan:{...ev.plan,rounds}};
     });
@@ -10703,13 +10726,19 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
               // Not a lock — just a "this is a live prediction, may change" marker (see the
               // Dynamic Break Engine plan). Firm cells are exempt since a lock always wins.
               const isLivePrediction = isOpen && !isFirm && breakEngine==="dynamic";
+              // Admin request (2026-09-19): a break placed here via the Rounds tab's manual
+              // swap (see swapCI's manualSwap tag) is an admin override, not an engine pick —
+              // surfaced here so it reads as an intentional exception at a glance, without
+              // needing to dig through round history to tell the two apart.
+              const isManual = onB && (plan.rounds[ri]?.onBreak||[]).find(x=>x.userId===p.userId)?.manualSwap;
               return <td key={ri} style={{padding:"3px 4px",textAlign:"center"}}>
                 <div
                   onClick={()=>canEdit&&setCellMenuFor({ri,uid:p.userId,label:p.nickname,current:cellState})}
-                  title={isLivePrediction?"Live prediction — decided for real once this round is generated":undefined}
-                  style={{position:"relative",width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
+                  title={isManual?"Manually swapped onto break by an admin — not a break-engine pick":isLivePrediction?"Live prediction — decided for real once this round is generated":undefined}
+                  style={{position:"relative",width:32,height:32,borderRadius:6,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"center",fontSize:onB?14:11,background:bg,border:`0.5px solid ${isManual?"#3B82F6AA":bdr}`,cursor:canEdit?"pointer":"default",transition:"all 0.15s",opacity:isFrozen?0.5:1}}>
                   {icon}
                   {isLivePrediction&&<span style={{position:"absolute",top:-2,right:-2,fontSize:9}}>⚡</span>}
+                  {isManual&&<span style={{position:"absolute",bottom:-3,right:-3,fontSize:9}}>🔧</span>}
                 </div>
               </td>;
             })}
@@ -10922,12 +10951,15 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
               const canInteract=!isGenerated&&isAdmin;
               const cellState=isFirm?"firm":onBreak?"suggested":"none";
               const isLivePrediction=!isGenerated&&!isFirm&&breakEngine==="dynamic";
+              // Same manual-swap tag as CI's BreaksTab (see swapCTLadder) — a break placed
+              // here via a Rounds tab swap is an admin override, not an engine pick.
+              const isManual=onBreak&&(plan.rounds[ri]?.onBreak||[]).find(x=>x.id===t.id)?.manualSwap;
               return <td key={ri}
                 onClick={()=>canInteract&&setCellMenuFor({ri,tid:t.id,label:teamLabel(t),current:cellState})}
-                title={isLivePrediction?"Live prediction — decided for real once this round is generated":undefined}
-                style={{position:"relative",padding:"6px 4px",textAlign:"center",borderBottom:"0.5px solid var(--po-bdr)",cursor:canInteract?"pointer":"default",background:isFirm?"#8B5CF622":onBreak&&!isGenerated?"#F59E0B11":"transparent"}}>
+                title={isManual?"Manually swapped onto break by an admin — not a break-engine pick":isLivePrediction?"Live prediction — decided for real once this round is generated":undefined}
+                style={{position:"relative",padding:"6px 4px",textAlign:"center",borderBottom:isManual?"1.5px solid #3B82F6AA":"0.5px solid var(--po-bdr)",cursor:canInteract?"pointer":"default",background:isFirm?"#8B5CF622":onBreak&&!isGenerated?"#F59E0B11":"transparent"}}>
                 {onBreak
-                  ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":"#F59E0B"}}>{isFirm?"🔐":"☕"}</span>
+                  ? <span style={{fontSize:13,opacity:isGenerated?1:0.65,color:isFirm?"#8B5CF6":"#F59E0B"}}>{isFirm?"🔐":"☕"}{isManual?"🔧":""}</span>
                   : <span style={{color:"var(--po-dim)",fontSize:11}}>·</span>
                 }
                 {isLivePrediction&&<span style={{position:"absolute",top:0,right:1,fontSize:8}}>⚡</span>}

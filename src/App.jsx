@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.46";
+const APP_VERSION = "V0.16.47";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -11950,7 +11950,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       const startMs = new Date(plan.matchModeStartAt).getTime();
       const schedule = [];
       for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
-      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule })
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule, startAt: String(startMs) })
         .then(()=>onMarkWhistlesScheduled?.(plan.matchModeStartAt))
         .catch(e=>console.log("scheduleWhistles failed — will retry on next render", e));
     };
@@ -12015,7 +12015,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     const scheduleWhistlesIfNeededCT = () => {
       if (plan.mmScheduledFor === plan.matchModeStartAt) return;
       const schedule = []; for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
-      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule })
+      MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule, startAt: String(startMs) })
         .then(()=>onMarkWhistlesScheduled?.(plan.matchModeStartAt))
         .catch(e=>console.log("scheduleWhistles (CT) failed — will retry on next render", e));
     };

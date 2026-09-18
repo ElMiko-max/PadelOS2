@@ -52,6 +52,17 @@ public class MatchModeService extends Service {
     // never actually do the job. setExactAndAllowWhileIdle carries the same idle-exemption the
     // real whistles rely on, so the checkpoint itself can now no longer go silent the same way.
     public static final String ACTION_VERIFY_CHECKPOINT = "com.trimachine.padelos.MM_VERIFY_CHECKPOINT";
+    // Fires the "Round X started" alert (see postRoundStartNotification) — scheduled as its own
+    // AlarmManager alarm per round, exactly like the final whistle/warning, rather than posted
+    // reactively from onStartCommand alone. Reactive-only was the gap the admin flagged
+    // (2026-09-19): "starts autonomously" rounds (CT League, no Generate button, purely
+    // clock-driven) only ever pushed a fresh ACTION_UPDATE via a 30s JS polling tick — which
+    // depends on the JS/WebView being alive and the tick actually running on schedule, the same
+    // class of fragility the Handler-based checkpoint bug above was fixed for. Since every
+    // round's start/end time is already fully known the moment Match Mode starts (round r's
+    // start is round r-1's end), this alarm is pre-scheduled up front for every round, just like
+    // the whistles — it fires with zero dependency on any tap or on the app being alive at all.
+    public static final String ACTION_ANNOUNCE_ROUND = "com.trimachine.padelos.MM_ANNOUNCE_ROUND";
     public static final String CHANNEL_ID = "matchkeeper_match_mode";
     private static final String ANNOUNCE_CHANNEL_ID = "matchkeeper_round_announce";
     public static final int NOTIF_ID = 4201;
@@ -59,6 +70,7 @@ public class MatchModeService extends Service {
     public static final int MAX_COURTS = 6;
     public static final int MAX_ROUNDS = 40; // generous ceiling for cancelling stale alarms
     private static final int CHECKPOINT_REQUEST_CODE = 3900;
+    private static final int ANNOUNCE_ROUND_REQUEST_BASE = 4000;
     private static final long CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
 
     // In-memory snapshot of "what the notification is currently showing" — this is the
@@ -99,7 +111,19 @@ public class MatchModeService extends Service {
         } else if (ACTION_SCHEDULE_ALL.equals(action)) {
             String eventId = intent.getStringExtra("eventId");
             String scheduleJson = intent.getStringExtra("scheduleJson");
-            scheduleAllWhistles(eventId != null ? eventId : "", scheduleJson != null ? scheduleJson : "[]");
+            long matchModeStartAt = intent.getLongExtra("matchModeStartAt", 0L);
+            scheduleAllWhistles(eventId != null ? eventId : "", scheduleJson != null ? scheduleJson : "[]", matchModeStartAt);
+        } else if (ACTION_ANNOUNCE_ROUND.equals(action)) {
+            // Fired by our own pre-scheduled AlarmManager alarm (see scheduleRoundStartAlarm) —
+            // this is what makes the announcement independent of any tap or of the JS/WebView
+            // being alive to notice the round boundary. maybeAnnounceRoundStart's own durable
+            // flag means this is a harmless no-op if ACTION_START/ACTION_UPDATE above already
+            // announced this exact round first (e.g. an admin's manual Generate tap landed
+            // before this alarm's moment arrived).
+            String eventId = intent.getStringExtra("eventId");
+            int round = intent.getIntExtra("round", 0);
+            long whistleAt = intent.getLongExtra("whistleAt", 0L);
+            maybeAnnounceRoundStart(eventId, round, whistleAt);
         } else if (ACTION_VERIFY_CHECKPOINT.equals(action)) {
             // Fired by our own AlarmManager alarm (see scheduleCheckpoint) — reloads the
             // persisted schedule rather than trusting any in-memory list, since this can
@@ -164,12 +188,18 @@ public class MatchModeService extends Service {
     // rely on to ring reliably. The regular "exact and allow while idle" alarms we used
     // before are still subject to some throttling on aggressive devices (like Samsung) —
     // this is a stronger guarantee.
-    private void scheduleAllWhistles(String eventId, String scheduleJson) {
+    private void scheduleAllWhistles(String eventId, String scheduleJson, long matchModeStartAt) {
         cancelAllWhistles();
         clearFiredFlags(eventId);
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (am == null) { android.util.Log.e("MatchModeDiag", "AlarmManager service unavailable"); return; }
         List<PendingRoundSchedule> scheduled = new ArrayList<>();
+        // Round r's start is round r-1's end (rounds run back-to-back — see
+        // computeRoundEndOffsets on the JS side); round 1's start is matchModeStartAt
+        // itself. Walking the schedule in order and carrying the previous round's
+        // whistleAt forward gives every round's start time for free, with no extra data
+        // needed from JS beyond the one matchModeStartAt value.
+        long prevEnd = matchModeStartAt;
         try {
             JSONArray arr = new JSONArray(scheduleJson);
             for (int i = 0; i < arr.length(); i++) {
@@ -178,6 +208,21 @@ public class MatchModeService extends Service {
                 long whistleAt = 0L;
                 try { whistleAt = Long.parseLong(o.optString("whistleAt", "0")); } catch (NumberFormatException ignored) {}
                 long now = System.currentTimeMillis();
+                long roundStartAt = prevEnd;
+                if (whistleAt > 0) prevEnd = whistleAt; // keep the chain going even if this round itself gets skipped below
+
+                if (roundStartAt > 0) {
+                    if (roundStartAt > now) {
+                        scheduleRoundStartAlarm(am, round, eventId, roundStartAt, whistleAt);
+                    } else if (whistleAt > now) {
+                        // Scheduling is (re)running mid-round (e.g. app reopened after Match
+                        // Mode was already started elsewhere) — that round's start moment has
+                        // already passed, so there's no future instant to arm an alarm for.
+                        // Announce it right now instead of silently never showing it at all.
+                        maybeAnnounceRoundStart(eventId, round, whistleAt);
+                    }
+                }
+
                 if (whistleAt <= 0 || whistleAt <= now) {
                     android.util.Log.w("MatchModeDiag", "skipping round " + round + " — whistleAt=" + whistleAt + " now=" + now + " (already past or invalid)");
                     continue;
@@ -188,7 +233,7 @@ public class MatchModeService extends Service {
                 // round shorter than 5 minutes, or if we're starting late into the round).
                 long warnAt = whistleAt - 5*60*1000;
                 if (warnAt > now) scheduleOneAlarm(am, round, eventId, "warning", warnAt);
-                scheduled.add(new PendingRoundSchedule(round, eventId, whistleAt, warnAt > now ? warnAt : -1));
+                scheduled.add(new PendingRoundSchedule(round, eventId, whistleAt, warnAt > now ? warnAt : -1, roundStartAt));
             }
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "scheduleAllWhistles: malformed schedule payload", e);
@@ -252,6 +297,48 @@ public class MatchModeService extends Service {
         return PendingIntent.getBroadcast(this, base + round, intent, flags) != null;
     }
 
+    // Doze-exempt "Round X started" alarm — same category/fallback chain as scheduleOneAlarm
+    // above, just targeting this Service directly (like the checkpoint) instead of a broadcast
+    // receiver, since posting the alert is a couple of lines and doesn't need its own file.
+    private void scheduleRoundStartAlarm(AlarmManager am, int round, String eventId, long atMs, long whistleAt) {
+        PendingIntent pi = announceRoundPendingIntent(round, eventId, whistleAt);
+        try {
+            AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(atMs, contentPendingIntent());
+            am.setAlarmClock(info, pi);
+            android.util.Log.i("MatchModeDiag", "setAlarmClock OK round=" + round + " type=round_start at=" + atMs);
+        } catch (Exception e) {
+            android.util.Log.e("MatchModeDiag", "setAlarmClock FAILED round=" + round + " type=round_start: " + e, e);
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMs, pi);
+                } else {
+                    am.setExact(AlarmManager.RTC_WAKEUP, atMs, pi);
+                }
+            } catch (SecurityException se) {
+                am.set(AlarmManager.RTC_WAKEUP, atMs, pi);
+            }
+        }
+    }
+
+    private PendingIntent announceRoundPendingIntent(int round, String eventId, long whistleAt) {
+        Intent intent = new Intent(this, MatchModeService.class);
+        intent.setAction(ACTION_ANNOUNCE_ROUND);
+        intent.putExtra("round", round);
+        intent.putExtra("eventId", eventId);
+        intent.putExtra("whistleAt", whistleAt);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getService(this, ANNOUNCE_ROUND_REQUEST_BASE + round, intent, flags);
+    }
+
+    private boolean isRoundStartAlarmRegistered(int round, String eventId) {
+        Intent intent = new Intent(this, MatchModeService.class);
+        intent.setAction(ACTION_ANNOUNCE_ROUND);
+        int flags = PendingIntent.FLAG_NO_CREATE;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getService(this, ANNOUNCE_ROUND_REQUEST_BASE + round, intent, flags) != null;
+    }
+
     private void verifyAndReschedule(List<PendingRoundSchedule> scheduled) {
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (am == null) { android.util.Log.e("MatchModeDiag", "checkpoint: AlarmManager unavailable, skipping this pass"); scheduleCheckpoint(CHECKPOINT_INTERVAL_MS); return; }
@@ -270,6 +357,13 @@ public class MatchModeService extends Service {
                 if (!isAlarmRegistered(s.round, s.eventId, "warning")) {
                     android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " warning MISSING — rescheduling autonomously");
                     scheduleOneAlarm(am, s.round, s.eventId, "warning", s.warnAt);
+                }
+            }
+            if (s.roundStartAt > now) {
+                anyFutureLeft = true;
+                if (!isRoundStartAlarmRegistered(s.round, s.eventId)) {
+                    android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " start announcement MISSING — rescheduling autonomously");
+                    scheduleRoundStartAlarm(am, s.round, s.eventId, s.roundStartAt, s.whistleAt);
                 }
             }
         }
@@ -317,7 +411,7 @@ public class MatchModeService extends Service {
             JSONArray arr = new JSONArray();
             for (PendingRoundSchedule s : scheduled) {
                 JSONObject o = new JSONObject();
-                o.put("round", s.round); o.put("eventId", s.eventId); o.put("whistleAt", s.whistleAt); o.put("warnAt", s.warnAt);
+                o.put("round", s.round); o.put("eventId", s.eventId); o.put("whistleAt", s.whistleAt); o.put("warnAt", s.warnAt); o.put("roundStartAt", s.roundStartAt);
                 arr.put(o);
             }
             getSharedPreferences("matchmode_whistles", MODE_PRIVATE).edit().putString("checkpoint_schedule", arr.toString()).apply();
@@ -334,7 +428,7 @@ public class MatchModeService extends Service {
             JSONArray arr = new JSONArray(json);
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject o = arr.getJSONObject(i);
-                list.add(new PendingRoundSchedule(o.optInt("round"), o.optString("eventId"), o.optLong("whistleAt"), o.optLong("warnAt")));
+                list.add(new PendingRoundSchedule(o.optInt("round"), o.optString("eventId"), o.optLong("whistleAt"), o.optLong("warnAt"), o.optLong("roundStartAt", -1)));
             }
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "loadCheckpointSchedule failed", e);
@@ -348,8 +442,9 @@ public class MatchModeService extends Service {
 
     private static class PendingRoundSchedule {
         final int round; final String eventId; final long whistleAt; final long warnAt; // warnAt<=0 means "not scheduled, don't check"
-        PendingRoundSchedule(int round, String eventId, long whistleAt, long warnAt) {
-            this.round = round; this.eventId = eventId; this.whistleAt = whistleAt; this.warnAt = warnAt;
+        final long roundStartAt; // <=0 means "not scheduled, don't check" (matches warnAt's convention)
+        PendingRoundSchedule(int round, String eventId, long whistleAt, long warnAt, long roundStartAt) {
+            this.round = round; this.eventId = eventId; this.whistleAt = whistleAt; this.warnAt = warnAt; this.roundStartAt = roundStartAt;
         }
     }
 
@@ -368,6 +463,7 @@ public class MatchModeService extends Service {
         for (int round = 1; round <= MAX_ROUNDS; round++) {
             am.cancel(whistlePendingIntent(round, currentEventId, "final"));
             am.cancel(whistlePendingIntent(round, currentEventId, "warning"));
+            am.cancel(announceRoundPendingIntent(round, currentEventId, 0));
         }
     }
 
@@ -447,21 +543,22 @@ public class MatchModeService extends Service {
         return PendingIntent.getActivity(this, 998, launchIntent, flags);
     }
 
-    // Rebuilds the notification purely from our in-memory state (currentCourts etc.) —
-    // no JS/network round-trip needed, which is what makes button taps feel instant.
-    // Own-line, one-shot "round started" alert — separate from the persistent ongoing
-    // Match Mode notification above, which most people learn to tune out since it's
-    // always sitting there. This one pops up fresh (heads-up) exactly once per round,
-    // for both the very first Start and every later round change, whether that change
-    // came from an admin tapping "Generate Next Round" or (CT League) advancing purely
-    // on the schedule with nobody touching anything.
+    // Own-line, one-shot "round started" alert — separate from the persistent ongoing Match
+    // Mode notification, which most people learn to tune out since it's always sitting
+    // there. Called from two places, both funnelling through this same dedup: (1)
+    // onStartCommand for ACTION_START/ACTION_UPDATE — instant feedback right when Match
+    // Mode starts or an admin taps "Generate Next Round"; (2) the pre-scheduled
+    // ACTION_ANNOUNCE_ROUND alarm (see scheduleRoundStartAlarm) — the real source of truth
+    // for a round that starts with nobody touching anything (e.g. CT League), since that
+    // has no tap to react to at all and can't depend on the JS/WebView being alive to
+    // notice the boundary.
     //
     // Dedup is durable (SharedPreferences, same "matchmode_whistles" prefs file the
-    // fired-whistle flags already live in) rather than an in-memory flag, on purpose:
-    // onStartCommand's ACTION_UPDATE also fires for same-round refreshes (e.g. a court
-    // winner being recorded), which must NOT re-announce, and the whole service can be
-    // recreated by Android mid-match — an in-memory "have I announced this round"
-    // wouldn't survive that the same way the SharedPreferences flag does.
+    // fired-whistle flags already live in) rather than an in-memory flag: it's what lets
+    // whichever of the two triggers above happens first "win" without double-posting, it
+    // must ALSO ignore onStartCommand's ACTION_UPDATE firing again for a same-round
+    // refresh (e.g. a court winner being recorded), and the whole service can be recreated
+    // by Android mid-match — an in-memory flag wouldn't survive any of that.
     private void maybeAnnounceRoundStart(String eventId, int round, long whistleAt) {
         if (eventId == null || eventId.isEmpty() || round <= 0 || whistleAt <= 0) return;
         android.content.SharedPreferences prefs = getSharedPreferences("matchmode_whistles", Context.MODE_PRIVATE);

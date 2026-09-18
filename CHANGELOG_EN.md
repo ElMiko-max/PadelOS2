@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.46 (current) — New mobile notification announcing when each round ends
+## V0.16.47 (current) — "Round started" notification is now pre-scheduled, no tap needed at all
+
+- **The admin clarified what V0.16.46's notification was actually for:** it needs to reach a smartwatch, and it needs to be **guaranteed** to arrive the moment each round starts **with zero dependency on any tap, or even on the app being alive at that moment** — exactly like the whistle itself, since every round's start and end time is already known from the instant Match Mode begins.
+- **The problem with the V0.16.46 implementation:** it relied entirely on the JS side pushing an update to the native code at the exact moment a round started — either an admin tapping "Generate Next Round," or (CT League) a 30-second timer that only runs while the app happens to be alive. That's the same class of problem fixed for the checkpoint in V0.16.45 (a plain timer with no guarantee under Doze).
+- **Fixed:** the "round started" alert is now **pre-scheduled for every round, all at once, the moment Match Mode starts** — using the same Doze-exempt AlarmManager mechanism the whistle itself uses — instead of waiting for the round to visibly start on screen. It now arrives exactly on time even with the phone fully locked in a pocket, with no tap involved at all.
+- **Extra protection:** the self-healing checkpoint that already re-verifies the whistle alarms now also re-verifies these "round started" alarms the same way — if one goes missing mid-match for any reason, it's silently reinstated.
+- Verified the code compiles cleanly — the actual on-device test happens once this APK is delivered.
+
+---
+
+## V0.16.46 — New mobile notification announcing when each round ends
 
 - **The admin asked:** as soon as Match Mode starts, send a clear, short mobile notification saying exactly when this round will end (e.g. 9:24pm). And as soon as that time comes and the next round starts automatically, send the same kind of notification for the new round.
 - **Implementation:** a separate one-shot alert, distinct from the persistent ongoing Match Mode notification (which people tend to tune out since it's always sitting there). It pops up exactly once per round — the very first Start, and every later round change, whether an admin tapped "Generate Next Round" or the round advanced entirely on its own (e.g. CT League) — titled "▶️ Round X started" with "Ends at 9:24 PM", and auto-dismisses.

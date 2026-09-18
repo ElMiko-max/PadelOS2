@@ -61,6 +61,8 @@ public class MatchModePlugin extends Plugin {
         intent.putExtra("eventId", readEventIdAsString(call));
         JSArray schedule = call.getArray("schedule");
         intent.putExtra("scheduleJson", schedule != null ? schedule.toString() : "[]");
+        String startAt = call.getString("startAt");
+        if (startAt != null) { try { intent.putExtra("matchModeStartAt", Long.parseLong(startAt)); } catch (NumberFormatException ignored) {} }
         getContext().startService(intent);
         call.resolve();
     }

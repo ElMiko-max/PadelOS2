@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.45 (current) — The whistle's self-check (checkpoint) silently stopped when the screen locked — now fixed
+## V0.16.46 (current) — New mobile notification announcing when each round ends
+
+- **The admin asked:** as soon as Match Mode starts, send a clear, short mobile notification saying exactly when this round will end (e.g. 9:24pm). And as soon as that time comes and the next round starts automatically, send the same kind of notification for the new round.
+- **Implementation:** a separate one-shot alert, distinct from the persistent ongoing Match Mode notification (which people tend to tune out since it's always sitting there). It pops up exactly once per round — the very first Start, and every later round change, whether an admin tapped "Generate Next Round" or the round advanced entirely on its own (e.g. CT League) — titled "▶️ Round X started" with "Ends at 9:24 PM", and auto-dismisses.
+- **Duplicate-proofed:** the alert is tied to a durable per-round flag (same pattern as the whistle-fired flags), so if the same round gets refreshed more than once (e.g. a court result being recorded without the round changing), it won't fire again — exactly one alert per real round.
+- Verified the code compiles cleanly — the actual on-device test happens once this APK is delivered.
+
+---
+
+## V0.16.45 — The whistle's self-check (checkpoint) silently stopped when the screen locked — now fixed
 
 - **The admin tested V0.16.44 on a real device and both the warning and the whistle fired correctly this time — but explicitly asked for a full pass through the log to find "any screw that needs tightening," not just confirmation that this one test passed.**
 - **A real bug was found in the log even though the test itself succeeded:** the "self-verifying checkpoint" added in V0.16.44 (which re-checks periodically that the whistle alarms are still registered with Android) was using a plain timer (`Handler.postDelayed`) — and that kind of timer has **no exemption from Android's Doze battery-saving mode**, unlike the real whistle alarms themselves (which correctly use the Doze-exempt `AlarmManager`). The moment the phone's screen turns off and it goes to sleep, the checkpoint silently froze with no error at all — exactly the unattended-phone-during-a-match scenario it was built to protect against.

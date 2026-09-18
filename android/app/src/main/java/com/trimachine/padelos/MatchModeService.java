@@ -53,7 +53,9 @@ public class MatchModeService extends Service {
     // real whistles rely on, so the checkpoint itself can now no longer go silent the same way.
     public static final String ACTION_VERIFY_CHECKPOINT = "com.trimachine.padelos.MM_VERIFY_CHECKPOINT";
     public static final String CHANNEL_ID = "matchkeeper_match_mode";
+    private static final String ANNOUNCE_CHANNEL_ID = "matchkeeper_round_announce";
     public static final int NOTIF_ID = 4201;
+    private static final int ANNOUNCE_NOTIF_ID = 4230;
     public static final int MAX_COURTS = 6;
     public static final int MAX_ROUNDS = 40; // generous ceiling for cancelling stale alarms
     private static final int CHECKPOINT_REQUEST_CODE = 3900;
@@ -93,6 +95,7 @@ public class MatchModeService extends Service {
             // TEMPORARY diagnostic for "widget doesn't know the round progressed" — remove once found.
             android.util.Log.i("MatchModeDiag", "onStartCommand action=" + action + " round=" + currentRoundNumber + " courts=" + currentCourts.size());
             startForeground(NOTIF_ID, buildNotification());
+            maybeAnnounceRoundStart(currentEventId, currentRoundNumber, currentWhistleAt);
         } else if (ACTION_SCHEDULE_ALL.equals(action)) {
             String eventId = intent.getStringExtra("eventId");
             String scheduleJson = intent.getStringExtra("scheduleJson");
@@ -446,6 +449,49 @@ public class MatchModeService extends Service {
 
     // Rebuilds the notification purely from our in-memory state (currentCourts etc.) —
     // no JS/network round-trip needed, which is what makes button taps feel instant.
+    // Own-line, one-shot "round started" alert — separate from the persistent ongoing
+    // Match Mode notification above, which most people learn to tune out since it's
+    // always sitting there. This one pops up fresh (heads-up) exactly once per round,
+    // for both the very first Start and every later round change, whether that change
+    // came from an admin tapping "Generate Next Round" or (CT League) advancing purely
+    // on the schedule with nobody touching anything.
+    //
+    // Dedup is durable (SharedPreferences, same "matchmode_whistles" prefs file the
+    // fired-whistle flags already live in) rather than an in-memory flag, on purpose:
+    // onStartCommand's ACTION_UPDATE also fires for same-round refreshes (e.g. a court
+    // winner being recorded), which must NOT re-announce, and the whole service can be
+    // recreated by Android mid-match — an in-memory "have I announced this round"
+    // wouldn't survive that the same way the SharedPreferences flag does.
+    private void maybeAnnounceRoundStart(String eventId, int round, long whistleAt) {
+        if (eventId == null || eventId.isEmpty() || round <= 0 || whistleAt <= 0) return;
+        android.content.SharedPreferences prefs = getSharedPreferences("matchmode_whistles", Context.MODE_PRIVATE);
+        String key = "announced_" + eventId + "_" + round;
+        if (prefs.getBoolean(key, false)) return;
+        prefs.edit().putBoolean(key, true).apply();
+        postRoundStartNotification(round, whistleAt);
+    }
+
+    private void postRoundStartNotification(int round, long whistleAt) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm.getNotificationChannel(ANNOUNCE_CHANNEL_ID) == null) {
+                nm.createNotificationChannel(new NotificationChannel(
+                        ANNOUNCE_CHANNEL_ID, "Round Started", NotificationManager.IMPORTANCE_HIGH));
+            }
+        }
+        String clockStr = new SimpleDateFormat("h:mm a", Locale.getDefault()).format(new Date(whistleAt));
+        Notification n = new NotificationCompat.Builder(this, ANNOUNCE_CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("▶️ Round " + round + " started")
+                .setContentText("Ends at " + clockStr)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setAutoCancel(true)
+                .setTimeoutAfter(60000)
+                .build();
+        ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE)).notify(ANNOUNCE_NOTIF_ID, n);
+    }
+
     private Notification buildNotification() {
         ensureChannel();
         String eventId = currentEventId;

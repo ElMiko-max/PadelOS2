@@ -9,9 +9,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.view.View;
 import android.widget.RemoteViews;
@@ -44,10 +42,22 @@ public class MatchModeService extends Service {
     public static final String ACTION_SCHEDULE_ALL = "com.trimachine.padelos.MM_SCHEDULE_ALL";
     public static final String ACTION_COURT_WINNER = "com.trimachine.padelos.MM_COURT_WINNER";
     public static final String ACTION_GENERATE = "com.trimachine.padelos.MM_GENERATE";
+    // Fires the self-healing checkpoint (see verifyAndReschedule) — deliberately its own
+    // AlarmManager alarm, not a Handler.postDelayed() timer (2026-09-18/19, real bug found live
+    // via logcat: a full match ran, both the real warning and final whistle fired exactly on
+    // time, yet not one "checkpoint" log line appeared anywhere in the capture — the Handler
+    // timer this used to run on has NO Doze exemption, unlike AlarmManager.setAlarmClock(), so
+    // the system was silently deferring it indefinitely the moment the screen went off. That's
+    // exactly the unattended-phone scenario this safety net exists for, so a Handler timer could
+    // never actually do the job. setExactAndAllowWhileIdle carries the same idle-exemption the
+    // real whistles rely on, so the checkpoint itself can now no longer go silent the same way.
+    public static final String ACTION_VERIFY_CHECKPOINT = "com.trimachine.padelos.MM_VERIFY_CHECKPOINT";
     public static final String CHANNEL_ID = "matchkeeper_match_mode";
     public static final int NOTIF_ID = 4201;
     public static final int MAX_COURTS = 6;
     public static final int MAX_ROUNDS = 40; // generous ceiling for cancelling stale alarms
+    private static final int CHECKPOINT_REQUEST_CODE = 3900;
+    private static final long CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
 
     // In-memory snapshot of "what the notification is currently showing" — this is the
     // source of truth for instant local updates on button taps.
@@ -61,9 +71,6 @@ public class MatchModeService extends Service {
     // from the Intent (CI, Ladder) defaults to true via the plugin bridge.
     private boolean currentInteractive = true;
     private final List<CourtInfo> currentCourts = new ArrayList<>();
-    // Drives the self-healing "is this alarm actually still registered" checkpoint loop —
-    // see scheduleAllWhistles/verifyAndReschedule below.
-    private final Handler verifyHandler = new Handler(Looper.getMainLooper());
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
@@ -90,6 +97,13 @@ public class MatchModeService extends Service {
             String eventId = intent.getStringExtra("eventId");
             String scheduleJson = intent.getStringExtra("scheduleJson");
             scheduleAllWhistles(eventId != null ? eventId : "", scheduleJson != null ? scheduleJson : "[]");
+        } else if (ACTION_VERIFY_CHECKPOINT.equals(action)) {
+            // Fired by our own AlarmManager alarm (see scheduleCheckpoint) — reloads the
+            // persisted schedule rather than trusting any in-memory list, since this can
+            // legitimately run in a freshly re-created process after Android killed the old one.
+            List<PendingRoundSchedule> scheduled = loadCheckpointSchedule();
+            if (scheduled.isEmpty()) android.util.Log.i("MatchModeDiag", "checkpoint fired with no persisted schedule — nothing to verify");
+            else verifyAndReschedule(scheduled);
         } else if (ACTION_COURT_WINNER.equals(action)) {
             handleCourtWinnerTap(intent);
         } else if (ACTION_GENERATE.equals(action)) {
@@ -185,8 +199,13 @@ public class MatchModeService extends Service {
         // that's still ahead of us, actually re-verifies with AlarmManager itself (not just
         // trusting the earlier call succeeded), and re-schedules on the spot if missing. Repeats
         // every 2 minutes for as long as any round is still in the future, not just once, so a
-        // later drop mid-match gets caught too, not only right after Start.
-        if (!scheduled.isEmpty()) verifyHandler.postDelayed(() -> verifyAndReschedule(scheduled), 5000);
+        // later drop mid-match gets caught too, not only right after Start. Persisted to disk and
+        // driven by its own AlarmManager alarm (not a Handler timer — see ACTION_VERIFY_CHECKPOINT's
+        // own comment for the real bug that caused) so it survives both process death and Doze.
+        if (!scheduled.isEmpty()) {
+            persistCheckpointSchedule(scheduled);
+            scheduleCheckpoint(5000);
+        }
     }
 
     private void scheduleOneAlarm(AlarmManager am, int round, String eventId, String type, long atMs) {
@@ -232,7 +251,7 @@ public class MatchModeService extends Service {
 
     private void verifyAndReschedule(List<PendingRoundSchedule> scheduled) {
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (am == null) { verifyHandler.postDelayed(() -> verifyAndReschedule(scheduled), 2*60*1000); return; }
+        if (am == null) { android.util.Log.e("MatchModeDiag", "checkpoint: AlarmManager unavailable, skipping this pass"); scheduleCheckpoint(CHECKPOINT_INTERVAL_MS); return; }
         long now = System.currentTimeMillis();
         boolean anyFutureLeft = false;
         for (PendingRoundSchedule s : scheduled) {
@@ -251,8 +270,77 @@ public class MatchModeService extends Service {
                 }
             }
         }
-        if (anyFutureLeft) verifyHandler.postDelayed(() -> verifyAndReschedule(scheduled), 2*60*1000);
-        else android.util.Log.i("MatchModeDiag", "checkpoint: all rounds past — stopping self-check loop");
+        android.util.Log.i("MatchModeDiag", "checkpoint: ran, anyFutureLeft=" + anyFutureLeft);
+        if (anyFutureLeft) scheduleCheckpoint(CHECKPOINT_INTERVAL_MS);
+        else { clearCheckpointSchedule(); android.util.Log.i("MatchModeDiag", "checkpoint: all rounds past — stopping self-check loop"); }
+    }
+
+    // Doze-exempt re-arm for the checkpoint above — same setExactAndAllowWhileIdle exemption
+    // the real whistle alarms fall back to (see scheduleOneAlarm), targeting this Service
+    // directly via ACTION_VERIFY_CHECKPOINT rather than a broadcast receiver.
+    private void scheduleCheckpoint(long delayMs) {
+        AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return;
+        long atMs = System.currentTimeMillis() + delayMs;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMs, checkpointPendingIntent());
+            } else {
+                am.setExact(AlarmManager.RTC_WAKEUP, atMs, checkpointPendingIntent());
+            }
+        } catch (SecurityException se) {
+            am.set(AlarmManager.RTC_WAKEUP, atMs, checkpointPendingIntent());
+        }
+    }
+
+    private void cancelCheckpoint() {
+        AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (am != null) am.cancel(checkpointPendingIntent());
+    }
+
+    private PendingIntent checkpointPendingIntent() {
+        Intent intent = new Intent(this, MatchModeService.class);
+        intent.setAction(ACTION_VERIFY_CHECKPOINT);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getService(this, CHECKPOINT_REQUEST_CODE, intent, flags);
+    }
+
+    // Persisted (not just held in a local variable) so the checkpoint alarm — which can fire in
+    // a freshly re-created process after the original one was killed — always has the real
+    // schedule to verify against, not a copy that died with the old process.
+    private void persistCheckpointSchedule(List<PendingRoundSchedule> scheduled) {
+        try {
+            JSONArray arr = new JSONArray();
+            for (PendingRoundSchedule s : scheduled) {
+                JSONObject o = new JSONObject();
+                o.put("round", s.round); o.put("eventId", s.eventId); o.put("whistleAt", s.whistleAt); o.put("warnAt", s.warnAt);
+                arr.put(o);
+            }
+            getSharedPreferences("matchmode_whistles", MODE_PRIVATE).edit().putString("checkpoint_schedule", arr.toString()).apply();
+        } catch (Exception e) {
+            android.util.Log.e("MatchModeDiag", "persistCheckpointSchedule failed", e);
+        }
+    }
+
+    private List<PendingRoundSchedule> loadCheckpointSchedule() {
+        List<PendingRoundSchedule> list = new ArrayList<>();
+        String json = getSharedPreferences("matchmode_whistles", MODE_PRIVATE).getString("checkpoint_schedule", null);
+        if (json == null) return list;
+        try {
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.getJSONObject(i);
+                list.add(new PendingRoundSchedule(o.optInt("round"), o.optString("eventId"), o.optLong("whistleAt"), o.optLong("warnAt")));
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MatchModeDiag", "loadCheckpointSchedule failed", e);
+        }
+        return list;
+    }
+
+    private void clearCheckpointSchedule() {
+        getSharedPreferences("matchmode_whistles", MODE_PRIVATE).edit().remove("checkpoint_schedule").apply();
     }
 
     private static class PendingRoundSchedule {
@@ -270,7 +358,8 @@ public class MatchModeService extends Service {
     }
 
     private void cancelAllWhistles() {
-        verifyHandler.removeCallbacksAndMessages(null); // stop any running checkpoint loop — a fresh schedule or a real Stop both make it stale
+        cancelCheckpoint(); // stop any pending checkpoint alarm — a fresh schedule or a real Stop both make it stale
+        clearCheckpointSchedule();
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
         for (int round = 1; round <= MAX_ROUNDS; round++) {

@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.44 (current) — Match Mode: fixed the Start flicker + the whistle now self-verifies and self-heals
+## V0.16.45 (current) — The whistle's self-check (checkpoint) silently stopped when the screen locked — now fixed
+
+- **The admin tested V0.16.44 on a real device and both the warning and the whistle fired correctly this time — but explicitly asked for a full pass through the log to find "any screw that needs tightening," not just confirmation that this one test passed.**
+- **A real bug was found in the log even though the test itself succeeded:** the "self-verifying checkpoint" added in V0.16.44 (which re-checks periodically that the whistle alarms are still registered with Android) was using a plain timer (`Handler.postDelayed`) — and that kind of timer has **no exemption from Android's Doze battery-saving mode**, unlike the real whistle alarms themselves (which correctly use the Doze-exempt `AlarmManager`). The moment the phone's screen turns off and it goes to sleep, the checkpoint silently froze with no error at all — exactly the unattended-phone-during-a-match scenario it was built to protect against.
+- **Fixed:** the checkpoint now uses the same Doze-exempt `AlarmManager` mechanism the real whistle alarms already use, **and also persists its state to disk** so it survives even if Android kills the app process entirely, not just a screen-off nap.
+- Verified the fix compiles cleanly — the actual on-device retest happens once this APK is delivered.
+
+---
+
+## V0.16.44 — Match Mode: fixed the Start flicker + the whistle now self-verifies and self-heals
 
 - **The admin said the flicker (start... reverts... starts itself) was still happening, and the real problem was that the whistle sometimes just didn't ring at all, randomly — and asked for real confirmation from the code that it will ring every time, not just a fire-and-forget schedule.**
 - **Root cause of the flicker (newly found):** `setMatchModeStart` updates the screen optimistically right away, then commits the real write via a Firestore transaction (a genuine network round-trip, not instant). If the events listener (which re-syncs on any change to any event — very frequent during a live event) happened to fire in that window, it wiped the optimistic update back to "not started" until the real write landed a moment later and it flipped back on its own. Fixed by having the screen remember what it just set until the real write is actually confirmed one way or the other, so it can't be reverted by a stale in-flight snapshot.

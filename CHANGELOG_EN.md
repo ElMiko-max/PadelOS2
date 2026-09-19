@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.50 (current) — Pick event duration instead of end time + fixed a midnight-crossing bug
+## V0.16.51 (current) — Quick update to the "event duration" quick-pick options
+
+- **The admin asked** for the duration quick-picks (added in V0.16.50) to be: 30 minutes, 1 hour, 2 hours — replacing the longer list that was there before.
+- Updated across all three screens (Create, Edit, Duplicate) together.
+
+---
+
+## V0.16.50 — Pick event duration instead of end time + fixed a midnight-crossing bug
 
 - **The admin asked:** to be able to pick an event's "duration" instead of always having to type an end time — and pointed out that events starting close to midnight (so the end time falls on the next calendar day) were incorrectly failing a "clock validation," and asked for that fixed.
 - **The real bug found:** the Create Event screen had a check saying "end time must be after start time" that blocked saving outright whenever the end time was numerically smaller than the start time — but that's wrong for an event crossing midnight (e.g. starting 11pm, ending 1am the next day), since "1:00" is numerically smaller than "11:00" even though it's genuinely later in real time. The rest of the app (duration math, pricing) already handled this correctly — only this one check on the creation screen got it wrong.

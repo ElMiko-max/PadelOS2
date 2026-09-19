@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.50";
+const APP_VERSION = "V0.16.51";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -10569,7 +10569,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     {f.endMode==="duration"
       ? <div style={{marginBottom:8}}>
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
-            {[1,1.5,2,2.5,3,3.5,4].map(h=><SmBtn key={h} label={h%1===0?`${h}h`:`${h}h`} onClick={()=>setF(p=>({...p, durationHrs:h, timeTo:addHoursToTime(p.time,h)}))} active={f.durationHrs===h} color="#F59E0B"/>)}
+            {[0.5,1,2].map(h=><SmBtn key={h} label={h<1?`${h*60}min`:`${h}h`} onClick={()=>setF(p=>({...p, durationHrs:h, timeTo:addHoursToTime(p.time,h)}))} active={f.durationHrs===h} color="#F59E0B"/>)}
           </div>
           <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(f.timeTo)}{f.timeTo<=f.time?" — 🌙 after midnight, next day":""}</div>
         </div>
@@ -10652,7 +10652,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
       {f.endMode==="duration"
         ? <div style={{marginBottom:8}}>
             <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
-              {[1,1.5,2,2.5,3,3.5,4].map(h=><SmBtn key={h} label={`${h}h`} onClick={()=>setF(p=>({...p, durationHrs:h, timeTo:addHoursToTime(p.time,h)}))} active={f.durationHrs===h} color="#F59E0B"/>)}
+              {[0.5,1,2].map(h=><SmBtn key={h} label={h<1?`${h*60}min`:`${h}h`} onClick={()=>setF(p=>({...p, durationHrs:h, timeTo:addHoursToTime(p.time,h)}))} active={f.durationHrs===h} color="#F59E0B"/>)}
             </div>
             <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(f.timeTo)}{f.timeTo<=f.time?" — 🌙 after midnight, next day":""}</div>
           </div>
@@ -12851,7 +12851,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {dupEndMode==="duration"
           ? <div style={{marginBottom:10}}>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
-                {[1,1.5,2,2.5,3,3.5,4].map(h=><SmBtn key={h} label={`${h}h`} onClick={()=>{setDupDurationHrs(h);setDupTimeTo(addHoursToTime(dupTime,h));}} active={dupDurationHrs===h} color="#F59E0B"/>)}
+                {[0.5,1,2].map(h=><SmBtn key={h} label={h<1?`${h*60}min`:`${h}h`} onClick={()=>{setDupDurationHrs(h);setDupTimeTo(addHoursToTime(dupTime,h));}} active={dupDurationHrs===h} color="#F59E0B"/>)}
               </div>
               <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(dupTimeTo)}{dupTimeTo<=dupTime?" — 🌙 after midnight, next day":""}</div>
             </div>

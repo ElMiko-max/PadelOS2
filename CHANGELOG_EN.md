@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.57 (current) — Decision Trail: why a player broke, and why they returned where they did
+## V0.16.58 (current) — Real Classic-engine bug: unfair break distribution + a short round, plus a Concentrate/Avoid UI fix
+
+- **Found while the admin was testing Avoid on a real DEV event (Monday Night Padel Hustle #101)** — the initial break schedule showed "R12: 2 breaks (needs 3)" and "Unequal breaks: max=3, min=1," even though everyone's guaranteed floor should have been 2.
+- **Root cause:** the Classic engine (`buildBreakPlan`/`regenerateBreakPlan`) computes the entire event's break schedule in one upfront pass, picking the highest-priority still-eligible players each round. Concentrate/Avoid were winning that priority order in *every* round, not just as a tiebreaker — so an avoided player stayed last in line round after round until there weren't enough rounds left to fit their full guaranteed share, producing both a short final round and a player stuck below their floor.
+- **Fixed** with an urgency tier that outranks Concentrate/Avoid: a player whose remaining entitlement is at least as large as their remaining rounds now MUST be picked immediately, or they mathematically can't finish on time — the same "the harder rule wins" principle Dynamic v2 already uses (anti-consecutive beating the entitlement cap there).
+- **Verified with 300 randomized simulations:** short rounds are eliminated entirely (was 34% of cases, now 0%), and unfair-spread cases dropped from 34% to 7.7% (the remaining rare cases — 3 simultaneously-avoided players in a very tight schedule — would need a substantially more complex scheduling algorithm to fully close; logged as a known limitation).
+- **Also fixed, as requested:** in the Concentrate/Avoid picker, a player already on the *other* list is now genuinely unselectable (checkbox disabled, labeled "in Avoid"/"in Concentrate") instead of being allowed onto both and silently stripped from one on save.
+- **UI polish:** the Decision Trail modal's title is now compact (e.g. "Jimmy R2 Break" or "Boudy R3 C2") instead of the old full sentence.
+
+---
+
+## V0.16.57 — Decision Trail: why a player broke, and why they returned where they did
 
 - **Requested by the admin: "I want an answer to why this player went to break, and why this player returned to break at this exact spot" — a short decision trail, not a raw log dump.**
 - **New feature:** a small ℹ️ button next to any player/team who's on break (Rounds tab for CI, the ladder match screen for CT), and next to any player/team who just returned to a court this round — tapping it opens a short bullet-point explanation: why the break decision was made (fair-share entitlement, Concentrate/Avoid priority, break-time preference, etc.), and why they landed on this specific court (which court they'd earned, and — on Dynamic v2 — exactly who got evicted to open that seat and why, or why the search cascaded to a different court if their earned one was full).

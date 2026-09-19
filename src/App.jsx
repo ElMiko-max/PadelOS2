@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.57";
+const APP_VERSION = "V0.16.58";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -739,12 +739,33 @@ function buildBreakPlan(players, courts, totalRounds, concentrateOn=[], avoidOn=
   const assigned = {}, lastB = {}; players.forEach(p => { assigned[p.userId] = 0; lastB[p.userId] = -99; });
   const plan = [];
   for (let r = 0; r < totalRounds; r++) {
-    const eligible = players.filter(p => assigned[p.userId] < ent[p.userId]);
     // <=0.5 (not ===0): early/late's distance is always a whole number so this only ever
     // matches an exact 0 for them, but "mid" on an even totalRounds sits at distance 0.5 from
     // its two nearest rounds — both count as an anchor match, see prefDist's comment above.
     const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)<=0.5;
-    eligible.sort((a, b) => {
+    // Real bug, confirmed on a live dev event (2026-09-2X): Concentrate/Avoid winning the
+    // per-round tiebreak in EVERY round (not just when it's a genuine toss-up) let an avoided
+    // player's entire remaining entitlement get pushed later and later — since bpr slots almost
+    // always have enough higher-priority candidates to fill them first, an avoided player only
+    // ever got picked once the pool ran dry near the very end, by which point there weren't
+    // enough rounds left to fit their full remaining share. Confirmed case: an avoided player
+    // ended with 1 break against a guaranteed floor of 2, and the final round came up one seat
+    // short with nobody else eligible to fill it.
+    //
+    // Fixed with an urgency tier that outranks Concentrate/Avoid: a player whose remaining
+    // entitlement is at least as large as their remaining rounds MUST be picked now, or they
+    // mathematically can't finish on time — this is the same "the harder rule wins" principle
+    // Dynamic v2 already applies (anti-consecutive beats the entitlement cap there); here,
+    // finishing everyone's fair share beats Concentrate/Avoid's discretionary tiebreak. A first
+    // attempt just relaxed the entitlement cap for a short final round instead — real bug, caught
+    // before shipping: without urgency, that relaxed pool still had no way to prefer someone who
+    // was genuinely still owed a break over someone who'd already used their full share, and (once
+    // sorted by Concentrate/Avoid again) let an already-over-quota concentrated player jump the
+    // queue a 4th time on the very event that exposed the original bug.
+    const roundsLeft = totalRounds - r; // this round counts as one of the remaining ones
+    const isUrgent = p => (ent[p.userId]-assigned[p.userId]) >= roundsLeft;
+    const sortFn = (a, b) => {
+      const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if (ua!==ub) return ub-ua; // must-break-now beats every discretionary tiebreak below, including Concentrate/Avoid
       const pa=breakPriority(a.userId,concSet,avoidSet), pb=breakPriority(b.userId,concSet,avoidSet); if (pa!==pb) return pb-pa; // concentrated players get first claim on the round's pick too, not just the "extra" entitlement above; avoided players get last claim
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
       if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first, regardless of entitlement
@@ -752,7 +773,13 @@ function buildBreakPlan(players, courts, totalRounds, concentrateOn=[], avoidOn=
       const pd = prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); if (pd!==0) return pd; // among non-anchor-matches, closer preference still wins ties
       const spacing = (r-lastB[b.userId])-(r-lastB[a.userId]); if (spacing!==0) return spacing;
       return 0;
-    });
+    };
+    const strictEligible = players.filter(p => assigned[p.userId] < ent[p.userId]).sort(sortFn);
+    // Defense-in-depth only: with urgency in place, the strict pool should always cover bpr by
+    // construction (total remaining entitlement across everyone always equals bpr*roundsLeft) —
+    // this fallback exists purely so a round can never come up physically short if that
+    // invariant is ever broken by an edge case (e.g. mid-event roster changes).
+    const eligible = strictEligible.length >= bpr ? strictEligible : players.slice().sort(sortFn);
     const noC = eligible.filter(p => r - lastB[p.userId] > 1);
     const pool = noC.length >= bpr ? noC : eligible;
     const chosen = pool.slice(0, bpr).map(p => p.userId);
@@ -1316,12 +1343,25 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
     firmHere.forEach(uid => { lastBreak[uid] = r; }); // firm players occupy this round's break slot(s), fixed
     const slotsLeft = Math.max(0, bpr - firmHere.length);
 
-    const eligible = players.filter(p => remaining[p.userId] > 0 && !firmHere.includes(p.userId));
-    eligible.sort((a,b) => {
+    // Real bug, confirmed on a live dev event (2026-09-2X), fixed the same way as
+    // buildBreakPlan's identical issue: Concentrate/Avoid winning the per-round tiebreak in
+    // EVERY round let an avoided player's remaining entitlement get pushed later and later,
+    // until there weren't enough rounds left to fit their full remaining share — an avoided
+    // player ended with 1 break against a guaranteed floor of 2, and the final round came up
+    // one seat short with nobody eligible to fill it. Fixed with an urgency tier that outranks
+    // Concentrate/Avoid: a player whose remaining entitlement is at least as large as their
+    // remaining rounds MUST be picked now, or they mathematically can't finish on time — same
+    // "the harder rule wins" principle Dynamic v2 already applies (anti-consecutive beats the
+    // entitlement cap there); here, finishing everyone's fair share beats Concentrate/Avoid's
+    // discretionary tiebreak.
+    const roundsLeft = totalRounds - r; // this round counts as one of the remaining ones
+    const isUrgent = p => remaining[p.userId] >= roundsLeft;
+    const sortFn = (a,b) => {
       // <=0.5 (not ===0): early/late's distance is always a whole number so this only ever
     // matches an exact 0 for them, but "mid" on an even totalRounds sits at distance 0.5 from
     // its two nearest rounds — both count as an anchor match, see prefDist's comment above.
     const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)<=0.5;
+      const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if (ua!==ub) return ub-ua; // must-break-now beats every discretionary tiebreak below, including Concentrate/Avoid
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
       if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first
       const pa = breakPriority(a.userId,concSet,avoidSet), pb = breakPriority(b.userId,concSet,avoidSet);
@@ -1333,7 +1373,12 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
       const consecB = r - lastBreak[b.userId] <= 1 ? 1 : 0;
       if (consecA !== consecB) return consecA - consecB; // avoid consecutive
       return a.usr - b.usr; // lower USR priority
-    });
+    };
+    const strictEligible = players.filter(p => remaining[p.userId] > 0 && !firmHere.includes(p.userId)).sort(sortFn);
+    // Defense-in-depth only: with urgency in place, the strict pool should always cover
+    // slotsLeft by construction — this fallback exists purely so a round can never come up
+    // physically short if that invariant is ever broken by an edge case.
+    const eligible = strictEligible.length >= slotsLeft ? strictEligible : players.filter(p => !firmHere.includes(p.userId)).sort(sortFn);
     const noConsec = eligible.filter(p => r - lastBreak[p.userId] > 1);
     const pool = noConsec.length >= slotsLeft ? noConsec : eligible;
     const chosenExtra = pool.slice(0, slotsLeft).map(p => p.userId);
@@ -1980,13 +2025,29 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
     const firmHere = firmBreaks[r] || [];
     firmHere.forEach(id=>{ lastB[id]=r; });
     const slotsLeft = Math.max(0, bpr - firmHere.length);
-    const eligible = teams.filter(t => assigned[t.id] < ent[t.id] && !firmHere.includes(t.id));
-    eligible.sort((a,b) => {
+    // Real bug fix, same as buildBreakPlan's CI equivalent (2026-09-2X, confirmed on a live dev
+    // event): Concentrate/Avoid winning the per-round tiebreak in EVERY round let an avoided
+    // team's remaining entitlement get pushed later and later, until there weren't enough rounds
+    // left to fit their full remaining share. Fixed with an urgency tier that outranks
+    // Concentrate/Avoid: a team whose remaining entitlement is at least as large as their
+    // remaining rounds MUST be picked now, or they mathematically can't finish on time — same
+    // "the harder rule wins" principle Dynamic v2 already applies (anti-consecutive beats the
+    // entitlement cap there); here, finishing everyone's fair share beats Concentrate/Avoid's
+    // discretionary tiebreak.
+    const roundsLeft = totalRounds - r; // this round counts as one of the remaining ones
+    const isUrgent = t => (ent[t.id]-assigned[t.id]) >= roundsLeft;
+    const sortFn = (a,b) => {
+      const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if(ua!==ub) return ub-ua; // must-break-now beats every discretionary tiebreak below, including Concentrate/Avoid
       const pa=teamBreakPriority(a,concSet,avoidSet), pb=teamBreakPriority(b,concSet,avoidSet); if(pa!==pb) return pb-pa; // concentrated teams get first claim on a break, every round; avoided teams get last claim
       const rd=(ent[b.id]-assigned[b.id])-(ent[a.id]-assigned[a.id]); if(rd!==0)return rd;
       const spacing=(r-lastB[b.id])-(r-lastB[a.id]); if(spacing!==0)return spacing;
       return prefDist(a.breakPref,r,totalRounds)-prefDist(b.breakPref,r,totalRounds); // team break preference: last-resort tiebreak
-    });
+    };
+    const strictEligible = teams.filter(t => assigned[t.id] < ent[t.id] && !firmHere.includes(t.id)).sort(sortFn);
+    // Defense-in-depth only: with urgency in place, the strict pool should always cover
+    // slotsLeft by construction — this fallback exists purely so a round can never come up
+    // physically short if that invariant is ever broken by an edge case.
+    const eligible = strictEligible.length >= slotsLeft ? strictEligible : teams.filter(t => !firmHere.includes(t.id)).sort(sortFn);
     const noC = eligible.filter(t => r-lastB[t.id]>1);
     const pool = noC.length>=slotsLeft ? noC : eligible;
     const chosenExtra = pool.slice(0,slotsLeft).map(t=>t.id);
@@ -11247,12 +11308,14 @@ function BreakStateModal({title,subtitle,current,onPick,onClose}){
 // whole component). `players` is the roster with {userId,nickname,...} shape (works for both CI's
 // own registrations and CT's, since teams don't exist before Start CT — see buildCTBreakPlan's
 // concentrateOn comment).
-function ConcentrateBreaksModal({players,selectedIds,onSave,onClose,mode="concentrate"}){
+function ConcentrateBreaksModal({players,selectedIds,onSave,onClose,mode="concentrate",otherListIds=[]}){
   const [sel,setSel]=useState(new Set(selectedIds));
   const toggle=id=>setSel(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n;});
   const isAvoid=mode==="avoid";
   const icon=isAvoid?"🚫":"🎯";
   const title=isAvoid?"Avoid Breaks":"Concentrate Extra Breaks";
+  const otherSet=new Set(otherListIds);
+  const otherLabel=isAvoid?"Concentrate":"Avoid";
   const desc=isAvoid
     ? `Whoever you pick here gets the LAST claim on each round's "extra" break slot, instead of the usual fairness order — if some players end up with zero breaks, the people you pick here are prioritized to be among them. Can't push anyone below the event's guaranteed minimum. Doesn't touch rounds already generated — tap Regenerate after saving to apply.`
     : `When the break count doesn't split evenly, the leftover "extra" break(s) each round go to whoever you pick here first, instead of the usual fairness order. Doesn't touch rounds already generated — tap Regenerate after saving to apply.`;
@@ -11261,13 +11324,15 @@ function ConcentrateBreaksModal({players,selectedIds,onSave,onClose,mode="concen
       <div style={{fontWeight:700,fontSize:14,marginBottom:2,color:"var(--po-text)"}}>{icon} {title}</div>
       <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14}}>{desc}</div>
       <div style={{overflowY:"auto",marginBottom:14,flex:1,borderTop:"0.5px solid var(--po-bdr)",borderBottom:"0.5px solid var(--po-bdr)"}}>
-        {players.map(p=>
-          <label key={p.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 4px",cursor:"pointer"}}>
-            <input type="checkbox" checked={sel.has(p.userId)} onChange={()=>toggle(p.userId)}/>
+        {players.map(p=>{
+          const lockedByOther=otherSet.has(p.userId);
+          return <label key={p.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 4px",cursor:lockedByOther?"default":"pointer",opacity:lockedByOther?0.4:1}}>
+            <input type="checkbox" checked={sel.has(p.userId)} disabled={lockedByOther} onChange={()=>toggle(p.userId)}/>
             <Av u={p} size={20}/>
             <span style={{fontSize:13,color:"var(--po-text)"}}>{p.nickname}</span>
-          </label>
-        )}
+            {lockedByOther&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:"auto"}}>in {otherLabel}</span>}
+          </label>;
+        })}
       </div>
       <Btn label={sel.size?`Save — ${sel.size} selected`:"Save — off (no one selected)"} primary onClick={()=>onSave([...sel])} style={{width:"100%",marginBottom:8}}/>
       <Btn label="Cancel" onClick={onClose} style={{width:"100%"}}/>
@@ -11467,6 +11532,7 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
     {concOpen&&<ConcentrateBreaksModal
       players={activeRegistrations}
       selectedIds={concentrateIds}
+      otherListIds={avoidIds}
       onSave={ids=>{onSetConcentrateIds&&onSetConcentrateIds(ids);setConcOpen(false);}}
       onClose={()=>setConcOpen(false)}
     />}
@@ -11474,6 +11540,7 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
       mode="avoid"
       players={activeRegistrations}
       selectedIds={avoidIds}
+      otherListIds={concentrateIds}
       onSave={ids=>{onSetAvoidIds&&onSetAvoidIds(ids);setAvoidOpen(false);}}
       onClose={()=>setAvoidOpen(false)}
     />}
@@ -11697,6 +11764,7 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
     {concOpen&&<ConcentrateBreaksModal
       players={rosterPlayers}
       selectedIds={concentrateIds}
+      otherListIds={avoidIds}
       onSave={ids=>{onSetConcentrateIds&&onSetConcentrateIds(ids);setConcOpen(false);}}
       onClose={()=>setConcOpen(false)}
     />}
@@ -11704,6 +11772,7 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
       mode="avoid"
       players={rosterPlayers}
       selectedIds={avoidIds}
+      otherListIds={concentrateIds}
       onSave={ids=>{onSetAvoidIds&&onSetAvoidIds(ids);setAvoidOpen(false);}}
       onClose={()=>setAvoidOpen(false)}
     />}
@@ -11812,13 +11881,13 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
         return <div style={{marginBottom:5}}>
           <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
             <div style={{flex:1,textAlign:"center"}}>
-              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}{cameFromBreakOrNew(m.teamA?.id,ri)&&<button onClick={()=>setReasonModal({title:`Round ${ri+1} — Why did ${m.teamA?.name} return here?`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamA?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
+              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}{cameFromBreakOrNew(m.teamA?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamA?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamA?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
               <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
             </div>
             <div style={{fontSize:12,color:"#334155",fontWeight:700,marginTop:2}}>—</div>
             <div style={{flex:1,textAlign:"center"}}>
-              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}{cameFromBreakOrNew(m.teamB?.id,ri)&&<button onClick={()=>setReasonModal({title:`Round ${ri+1} — Why did ${m.teamB?.name} return here?`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamB?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
+              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}{cameFromBreakOrNew(m.teamB?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamB?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamB?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
               <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
             </div>
@@ -11850,7 +11919,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
           const oppTeam=team===m.teamA?m.teamB:m.teamA;
           const myIds=(team?.players||[]).map(p=>p.userId), oppIds=(oppTeam?.players||[]).map(p=>p.userId);
           return <div onClick={()=>{if(!isAdmin||!onSwapCTLadder||isLeague)return;if(selT&&selT.ri===ri2&&selT.tid!==team?.id){onSwapCTLadder(ri2,selT.tid,team.id);setSelT(null);}else setSelT({ri:ri2,tid:team?.id});}} style={{textAlign:"center",padding:"3px",borderRadius:8,border:`1.5px solid ${isSel?"#FBBF24":"transparent"}`,background:isSel?"#FBBF2411":"transparent",cursor:isAdmin&&!isLeague&&onSwapCTLadder?"pointer":"default"}}>
-            <div style={{fontSize:12,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:1}}>{team?.name} <span style={{fontSize:10,color:"var(--po-dim)"}}>({teamRatingLabel(team?.avgUsr)})</span>{cameFromBreakOrNew(team?.id,ri2)&&<button onClick={e=>{e.stopPropagation();setReasonModal({title:`Round ${ri2+1} — Why did ${team?.name} return here?`, bullets:plan.rounds[ri2]?.returnReasons?.[team?.id]});}} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
+            <div style={{fontSize:12,fontWeight:600,color:isSel?"#FBBF24":"var(--po-text)",marginBottom:1}}>{team?.name} <span style={{fontSize:10,color:"var(--po-dim)"}}>({teamRatingLabel(team?.avgUsr)})</span>{cameFromBreakOrNew(team?.id,ri2)&&<button onClick={e=>{e.stopPropagation();setReasonModal({title:`${team?.name} R${ri2+1} C${m.court}`, bullets:plan.rounds[ri2]?.returnReasons?.[team?.id]});}} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
             <div style={{fontSize:10,color:"var(--po-dim)",display:"flex",flexWrap:"wrap",justifyContent:"center",gap:4}}>
               {(team?.players||[]).map((p,pi)=>{const badge=personalMatchBadge(comms||[],p.userId,myIds,oppIds);return <span key={p.userId}>{pi>0&&"& "}{p.nickname} ({isFootballEv?(p.footballSkill||"?"):p.usr}){badge.isDream&&" 🔥"}{badge.isFunny&&" 😂"}</span>;})}
             </div>
@@ -11926,7 +11995,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
         {onBreak.length>0&&<div style={{background:"#F59E0B0D",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:12}}>
           <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{isAdmin&&onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{onBreak.map(t=>{const isSel=selT?.ri===lastRound.roundNum-1&&selT?.tid===t.id;return <div key={t.id} onClick={()=>{if(!isAdmin||!onSwapCTLadder)return;if(selT&&selT.ri===lastRound.roundNum-1&&selT.tid!==t.id){onSwapCTLadder(lastRound.roundNum-1,selT.tid,t.id);setSelT(null);}else setSelT({ri:lastRound.roundNum-1,tid:t.id});}} style={{padding:"6px 10px",background:isSel?"#FBBF2422":"#F59E0B11",border:`1.5px solid ${isSel?"#FBBF24":"#F59E0B44"}`,borderRadius:8,cursor:isAdmin&&onSwapCTLadder?"pointer":"default"}}>
-            <div style={{fontSize:12,color:isSel?"#FBBF24":"#F59E0B",fontWeight:600}}>{t.name} ({teamRatingLabel(t.avgUsr)}){<button onClick={e=>{e.stopPropagation();setReasonModal({title:`Round ${lastRound.roundNum} — Why did ${t.name} break?`, bullets:lastRound.breakReasons?.[t.id]});}} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
+            <div style={{fontSize:12,color:isSel?"#FBBF24":"#F59E0B",fontWeight:600}}>{t.name} ({teamRatingLabel(t.avgUsr)}){<button onClick={e=>{e.stopPropagation();setReasonModal({title:`${t.name} R${lastRound.roundNum} Break`, bullets:lastRound.breakReasons?.[t.id]});}} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
             <div style={{fontSize:10,color:"var(--po-sub)"}}>{t.players?.map(p=>p.nickname).join(" & ")}</div>
           </div>;})}</div>
         </div>}
@@ -14015,12 +14084,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {preStartConcOpen&&<ConcentrateBreaksModal
           players={splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,userId:r.userId}:null;}).filter(Boolean)}
           selectedIds={effEv.breakConcentrateIds||[]}
+          otherListIds={effEv.breakAvoidIds||[]}
           onSave={ids=>{act.setBreakConcentrateIds(ids);setPreStartConcOpen(false);}}
           onClose={()=>setPreStartConcOpen(false)}/>}
         {preStartAvoidOpen&&<ConcentrateBreaksModal
           mode="avoid"
           players={splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,userId:r.userId}:null;}).filter(Boolean)}
           selectedIds={effEv.breakAvoidIds||[]}
+          otherListIds={effEv.breakConcentrateIds||[]}
           onSave={ids=>{act.setBreakAvoidIds(ids);setPreStartAvoidOpen(false);}}
           onClose={()=>setPreStartAvoidOpen(false)}/>}
       </Card>}
@@ -14059,7 +14130,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>
             {effCollapsed?null:<>
             {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode} isCompleted={isCompleted}/>}
-            {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri} reasonInfo={{title:`Round ${ri+1} — Why did ${p.nickname} break?`, bullets:round.breakReasons?.[p.userId]}}/>)}</div></div>}
+            {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri} reasonInfo={{title:`${p.nickname} R${ri+1} Break`, bullets:round.breakReasons?.[p.userId]}}/>)}</div></div>}
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
               const gap=Math.abs(avgA-avgB);
@@ -14080,13 +14151,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <div style={{background:m.winner==="A"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="A"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM A <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length)})</span></div>
                   {ctComboLabel(m.teamA)&&<div style={{fontSize:9,fontWeight:700,color:"#F59E0B",textAlign:"center",marginTop:-3,marginBottom:5}}>🏷 {ctComboLabel(m.teamA)}</div>}
-                  {m.teamA.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamA.map(x=>x.userId),m.teamB.map(x=>x.userId))} reasonInfo={cameFromBreakOrNew(p.userId,ri)?{title:`Round ${ri+1} — Why did ${p.nickname} return here?`, bullets:round.returnReasons?.[p.userId]}:undefined}/>)}
+                  {m.teamA.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamA.map(x=>x.userId),m.teamB.map(x=>x.userId))} reasonInfo={cameFromBreakOrNew(p.userId,ri)?{title:`${p.nickname} R${ri+1} C${m.court}`, bullets:round.returnReasons?.[p.userId]}:undefined}/>)}
                 </div>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",paddingTop:24}}><span style={{fontSize:10,color:"#334155",fontWeight:700}}>VS</span></div>
                 <div style={{background:m.winner==="B"?"#34D39911":"var(--po-inp)",border:`0.5px solid ${m.winner==="B"?"#34D39944":"var(--po-bdr)"}`,borderRadius:10,padding:"8px"}}>
                   <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:6,fontWeight:600,textAlign:"center"}}>TEAM B <span style={{color:"var(--po-dim)"}}>({Math.round(m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length)})</span></div>
                   {ctComboLabel(m.teamB)&&<div style={{fontSize:9,fontWeight:700,color:"#F59E0B",textAlign:"center",marginTop:-3,marginBottom:5}}>🏷 {ctComboLabel(m.teamB)}</div>}
-                  {m.teamB.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamB.map(x=>x.userId),m.teamA.map(x=>x.userId))} reasonInfo={cameFromBreakOrNew(p.userId,ri)?{title:`Round ${ri+1} — Why did ${p.nickname} return here?`, bullets:round.returnReasons?.[p.userId]}:undefined}/>)}
+                  {m.teamB.map(p=><PChip key={p.userId} p={p} ri={ri} matchBadge={personalMatchBadge(comms||[],p.userId,m.teamB.map(x=>x.userId),m.teamA.map(x=>x.userId))} reasonInfo={cameFromBreakOrNew(p.userId,ri)?{title:`${p.nickname} R${ri+1} C${m.court}`, bullets:round.returnReasons?.[p.userId]}:undefined}/>)}
                 </div>
               </div>
               <WinCI m={m} ri={ri} mi={mi}/>
@@ -14196,12 +14267,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {preStartConcOpen&&<ConcentrateBreaksModal
             players={splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,userId:r.userId}:null;}).filter(Boolean)}
             selectedIds={effEv.breakConcentrateIds||[]}
+            otherListIds={effEv.breakAvoidIds||[]}
             onSave={ids=>{act.setBreakConcentrateIds(ids);setPreStartConcOpen(false);}}
             onClose={()=>setPreStartConcOpen(false)}/>}
           {preStartAvoidOpen&&<ConcentrateBreaksModal
             mode="avoid"
             players={splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,userId:r.userId}:null;}).filter(Boolean)}
             selectedIds={effEv.breakAvoidIds||[]}
+            otherListIds={effEv.breakConcentrateIds||[]}
             onSave={ids=>{act.setBreakAvoidIds(ids);setPreStartAvoidOpen(false);}}
             onClose={()=>setPreStartAvoidOpen(false)}/>}
         </div>}

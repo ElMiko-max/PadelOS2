@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.54";
+const APP_VERSION = "V0.16.55";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -896,10 +896,21 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
 
   const evicted = []; // {p, court} — this round's real break picks, tagged with where they were evicted from
   const stillBenched = []; // uids who found no eligible seat anywhere this round — see below
+  // Real bug found replaying a real historical event through v2 (2026-09-20): a bench player
+  // with no computable target — findExpectedReturnCourt only knows a match result or a
+  // Round-1 wouldBeCourt, neither of which existed for events recorded before that field was
+  // added — used to be dropped from `bench` entirely, on the assumption the generic "late
+  // joiner" pass further down would catch them. It doesn't: that pass only ever fills a bucket
+  // that ALREADY has room, and a returning player needs an actual eviction to CREATE that room
+  // in the first place — with every bucket already at its natural 4-per-court from the plain
+  // win/loss movement, "late joiner" finds nowhere to go and silently drops them, the exact
+  // vanishing-player failure mode this engine is supposed to never produce. A USR-rank fallback
+  // (same formula Round 1's own seeding uses) guarantees everyone has SOME target and goes
+  // through the full eviction cascade — worst case they land in stillBenched, never silently gone.
+  const usrRankTarget = uid => Math.min(courts, Math.floor(sorted.findIndex(x=>x.userId===uid)/4)+1);
   const bench = (lastRound.onBreakIds||[])
     .filter(uid=>!retiredIds.includes(uid)&&!firmHere.includes(uid)) // firm-locked-to-stay-on-break players aren't trying to return this round
-    .map(uid=>({ uid, target: findExpectedReturnCourt(uid) }))
-    .filter(b=>b.target); // no history at all (shouldn't normally happen) — falls through to the late-joiner safety net instead
+    .map(uid=>({ uid, target: findExpectedReturnCourt(uid) ?? usrRankTarget(uid) }));
   bench.sort((a,b) => (a.target-b.target) || ((sorted.find(p=>p.userId===b.uid)?.usr||0) - (sorted.find(p=>p.userId===a.uid)?.usr||0)));
 
   bench.forEach(({uid,target}) => {
@@ -1883,10 +1894,13 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
 
   const evicted = [];
   const stillBenched = [];
+  // Same fallback as genDynamic2CI above, same reasoning — a team with no computable target
+  // must still go through the full eviction cascade (an actual seat has to be freed for a
+  // returning team, "late joiner" placement alone can't do that), never silently dropped.
+  const usrRankTarget = tid => Math.min(courts, Math.floor(sorted.findIndex(x=>x.id===tid)/2)+1);
   const bench = (lastRound.onBreakIds||[])
     .filter(tid=>!retiredTeamIds.includes(tid)&&!firmHere.includes(tid))
-    .map(tid=>({ tid, target: findExpectedReturnCourtCT(tid) }))
-    .filter(b=>b.target);
+    .map(tid=>({ tid, target: findExpectedReturnCourtCT(tid) ?? usrRankTarget(tid) }));
   bench.sort((a,b) => (a.target-b.target) || ((sorted.find(t=>t.id===b.tid)?.avgUsr||0) - (sorted.find(t=>t.id===a.tid)?.avgUsr||0)));
 
   bench.forEach(({tid,target}) => {

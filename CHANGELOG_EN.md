@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.54 (current) — The real bug in "Clone FROM Production": it was connecting to DEV itself, never production
+## V0.16.55 (current) — Another real Dynamic v2 bug: a player from an old event could vanish after returning from break
+
+- **Found while replaying the real "Monday Padel Rally" event through Dynamic v2 (at the admin's request) to compare it against what actually happened.**
+- **The bug:** a player who was on break in Round 1 of an old event (recorded before the new "target court" field even existed) would vanish completely from every round after that — not playing, not on break, just gone from the data. Root cause: without that field, the engine had no idea which court they were due to return to, so it excluded them from the return process entirely, hoping a separate "late joiner" fallback would seat them — but that fallback only ever fills a seat that's already empty, and there never was one, since nobody had been evicted to make room for them.
+- **Fixed:** a player in this situation now gets a fallback target court (based on their original seeding rank, the same way Round 1 itself computes it), so they always go through the full seat-finding process like everyone else — worst case they stay benched one extra round, never silently disappear.
+- **Verified by re-running all previous simulation tests (90 trials) clean, plus successfully re-simulating the real event.**
+
+---
+
+## V0.16.54 — The real bug in "Clone FROM Production": it was connecting to DEV itself, never production
 
 - **After the V0.16.53 fix (forcing a server read), the admin retried and hit the exact same problem** — meaning the previous diagnosis was wrong. Dug in again, more carefully this time.
 - **The actual bug:** the code reused the app's own current configuration to open a "second connection to production" — but inside an actual DEV build, that configuration already points at DEV itself (its own environment variables are set and always win over any fallback value). So the "connection to production" was really just a second connection back to DEV, reading DEV's own existing 24 events and writing them right back onto themselves — it never reached real production at all, not once.

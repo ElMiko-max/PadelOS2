@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.55 (current) — Another real Dynamic v2 bug: a player from an old event could vanish after returning from break
+## V0.16.56 (current) — New "🚫 Avoid" button: the exact opposite of Concentrate
+
+- **Requested by the admin: a way to pick players who should be deprioritized for breaks, the mirror image of the existing "🎯 Concentrate" feature.**
+- **New feature:** a "🚫 Avoid" button sits right next to "🎯 Concentrate" in all four places (the "Generate Round 1" and "Form Teams & Start" pre-start cards, and the Breaks tab for both CI and CT once the event is running). Anyone picked here gets the LAST claim on each round's "extra" break slot (the leftover break that doesn't split evenly across everyone) — if some players are going to end up at zero breaks for the event, the people picked here are prioritized to be among them.
+- **Same limits as Concentrate:** it can never push someone below the event's own guaranteed minimum — if everyone's guaranteed at least one break, Avoid can't take anyone below that floor, only down to it.
+- **A player can never be on both lists at once** — picking someone for one automatically removes them from the other.
+- **Works across all 3 break engines** (Classic, Dynamic, Dynamic v2) — verified with real simulation (both a zero-floor and a one-floor scenario) before shipping.
+
+---
+
+## V0.16.55 — Another real Dynamic v2 bug: a player from an old event could vanish after returning from break
 
 - **Found while replaying the real "Monday Padel Rally" event through Dynamic v2 (at the admin's request) to compare it against what actually happened.**
 - **The bug:** a player who was on break in Round 1 of an old event (recorded before the new "target court" field even existed) would vanish completely from every round after that — not playing, not on break, just gone from the data. Root cause: without that field, the engine had no idea which court they were due to return to, so it excluded them from the return process entirely, hoping a separate "late joiner" fallback would seat them — but that fallback only ever fills a seat that's already empty, and there never was one, since nobody had been evicted to make room for them.

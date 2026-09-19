@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.56 (current) — New "🚫 Avoid" button: the exact opposite of Concentrate
+## V0.16.57 (current) — Decision Trail: why a player broke, and why they returned where they did
+
+- **Requested by the admin: "I want an answer to why this player went to break, and why this player returned to break at this exact spot" — a short decision trail, not a raw log dump.**
+- **New feature:** a small ℹ️ button next to any player/team who's on break (Rounds tab for CI, the ladder match screen for CT), and next to any player/team who just returned to a court this round — tapping it opens a short bullet-point explanation: why the break decision was made (fair-share entitlement, Concentrate/Avoid priority, break-time preference, etc.), and why they landed on this specific court (which court they'd earned, and — on Dynamic v2 — exactly who got evicted to open that seat and why, or why the search cascaded to a different court if their earned one was full).
+- **The explanation is captured at the exact moment the real decision is made**, not reconstructed afterward — so it always matches reality exactly, including manual admin overrides (firm locks, manual swaps). Works across all 3 break engines (Classic, Dynamic, Dynamic v2) for both CI and CT Ladder.
+- **⚠️ Important limitation:** this does **not** work retroactively for rounds generated before this version — the button still appears, but says "not available — this round was generated before the Decision Trail feature shipped" instead of guessing at a reason.
+
+---
+
+## V0.16.56 — New "🚫 Avoid" button: the exact opposite of Concentrate
 
 - **Requested by the admin: a way to pick players who should be deprioritized for breaks, the mirror image of the existing "🎯 Concentrate" feature.**
 - **New feature:** a "🚫 Avoid" button sits right next to "🎯 Concentrate" in all four places (the "Generate Round 1" and "Form Teams & Start" pre-start cards, and the Breaks tab for both CI and CT once the event is running). Anyone picked here gets the LAST claim on each round's "extra" break slot (the leftover break that doesn't split evenly across everyone) — if some players are going to end up at zero breaks for the event, the people picked here are prioritized to be among them.

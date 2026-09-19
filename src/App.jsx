@@ -31,7 +31,7 @@ import {
   signInWithCredential,
   updateProfile,
 } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, collectionGroup, getDocs, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch, arrayUnion } from "firebase/firestore";
+import { getFirestore, doc, setDoc, getDoc, getDocFromServer, updateDoc, onSnapshot, collection, collectionGroup, getDocs, getDocsFromServer, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch, arrayUnion } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getMessaging, getToken, onMessage } from "firebase/messaging";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.52";
+const APP_VERSION = "V0.16.53";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6302,15 +6302,23 @@ export default function Matchkeeper() {
       const prodAuth = getAuth(prodApp);
       const prodDb = getFirestore(prodApp);
       if (!prodAuth.currentUser) await signInWithPopup(prodAuth, new GoogleAuthProvider());
+      // Real bug, confirmed 2026-09-20: a plain getDocs()/getDoc() can silently resolve from
+      // this named app instance's own local IndexedDB cache instead of forcing a real network
+      // round-trip — the app's security rules allow any signed-in user to read every one of
+      // these documents (no rule could be filtering anything out), so a partial/stale result
+      // (24 of 40 real production events, confirmed by hand against production's own service-
+      // account read) could only be a caching artifact, not a permissions gap. Forcing a genuine
+      // server read on every one of these is the whole point of this tool — a clone that might
+      // secretly be cloning yesterday's snapshot is worse than no tool at all.
       const [commsSnap, eventsSnap, regsSnap, usersDoc, venuesDoc, egyptDoc, expCatDoc, usrWinDoc] = await Promise.all([
-        getDocs(collection(prodDb,"padelos_communities")),
-        getDocs(collection(prodDb,"padelos_events")),
-        getDocs(collectionGroup(prodDb,"registrations")),
-        getDoc(doc(prodDb,"padelos","users")),
-        getDoc(doc(prodDb,"padelos","venues")),
-        getDoc(doc(prodDb,"padelos","egypt")),
-        getDoc(doc(prodDb,"padelos","expenseCategories")),
-        getDoc(doc(prodDb,"padelos","usrWindowSize")),
+        getDocsFromServer(collection(prodDb,"padelos_communities")),
+        getDocsFromServer(collection(prodDb,"padelos_events")),
+        getDocsFromServer(collectionGroup(prodDb,"registrations")),
+        getDocFromServer(doc(prodDb,"padelos","users")),
+        getDocFromServer(doc(prodDb,"padelos","venues")),
+        getDocFromServer(doc(prodDb,"padelos","egypt")),
+        getDocFromServer(doc(prodDb,"padelos","expenseCategories")),
+        getDocFromServer(doc(prodDb,"padelos","usrWindowSize")),
       ]);
       const chunkedCommit = async (ops) => {
         for (let i=0;i<ops.length;i+=450) {

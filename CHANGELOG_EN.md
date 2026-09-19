@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.52 (current) — Fixed H2H in the Delta report + a new tool to pull production data into DEV
+## V0.16.53 (current) — Fixed a real bug in "Clone FROM Production": it was pulling a stale/partial copy
+
+- **The bug:** the admin tried the new "Clone FROM Production" button (V0.16.52) and got a success message, but the data that landed in DEV was incomplete — checking DEV's and production's databases directly showed the tool had only pulled 24 events instead of the real 40 that existed in production at the time.
+- **Root cause:** the code used a plain read (getDocs/getDoc) from the temporary connection to production — and that kind of read can silently return an old locally-cached copy instead of confirming it actually reached the server for the latest version. The security rules themselves were checked and are fine (any signed-in user can read everything) — so this was a caching issue, not a permissions one.
+- **Fixed:** every read from production in this tool now forces a genuine server read (getDocsFromServer / getDocFromServer) instead of a plain read that could settle for a stale cached copy.
+
+---
+
+## V0.16.52 — Fixed H2H in the Delta report + a new tool to pull production data into DEV
 
 - **The bug fixed (H2H):** the admin noticed the "Delta Standings" report's (PES Performance Based) "H2H adj" column was stuck at ×1 even on matches that were a genuine rematch of the exact same partnership. Root cause: the code required at least 2 prior meetings (not 1) before applying any effect at all — and with only 3 players cycling through the same partnerships, each exact pairing can only ever repeat once per event, so a second meeting only ever has exactly 1 prior meeting behind it. The threshold was simply unreachable for this event shape — not a detection bug.
 - **Fixed:** a single prior meeting is now enough to activate the effect — but only at half strength, since one data point is a weaker signal than two or more (which still get the full effect exactly as before).

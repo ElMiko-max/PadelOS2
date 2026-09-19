@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.53 (current) — Fixed a real bug in "Clone FROM Production": it was pulling a stale/partial copy
+## V0.16.54 (current) — The real bug in "Clone FROM Production": it was connecting to DEV itself, never production
+
+- **After the V0.16.53 fix (forcing a server read), the admin retried and hit the exact same problem** — meaning the previous diagnosis was wrong. Dug in again, more carefully this time.
+- **The actual bug:** the code reused the app's own current configuration to open a "second connection to production" — but inside an actual DEV build, that configuration already points at DEV itself (its own environment variables are set and always win over any fallback value). So the "connection to production" was really just a second connection back to DEV, reading DEV's own existing 24 events and writing them right back onto themselves — it never reached real production at all, not once.
+- **Fixed:** there's now a completely separate, hardcoded configuration dedicated only to production (mirroring the existing hardcoded configuration the other direction, Clone Data to DEV, already used) — not driven by environment variables at all, so it can't get confused again no matter which build is running it.
+
+---
+
+## V0.16.53 — Fixed a real bug in "Clone FROM Production": it was pulling a stale/partial copy
 
 - **The bug:** the admin tried the new "Clone FROM Production" button (V0.16.52) and got a success message, but the data that landed in DEV was incomplete — checking DEV's and production's databases directly showed the tool had only pulled 24 events instead of the real 40 that existed in production at the time.
 - **Root cause:** the code used a plain read (getDocs/getDoc) from the temporary connection to production — and that kind of read can silently return an old locally-cached copy instead of confirming it actually reached the server for the latest version. The security rules themselves were checked and are fine (any signed-in user can read everything) — so this was a caching issue, not a permissions one.

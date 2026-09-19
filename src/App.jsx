@@ -66,6 +66,25 @@ const DEV_CLONE_TARGET_CONFIG = {
   messagingSenderId: "993368973916",
   appId: "1:993368973916:web:a2696733d7de63748b7c99",
 };
+// Mirror of DEV_CLONE_TARGET_CONFIG above, for the reverse tool ("Clone FROM Production", DEV
+// build only). Real bug, confirmed 2026-09-20: cloneFromProd originally reused `firebaseConfig`
+// for this, wrongly assuming its hardcoded fallback values (padelos-6f999) would apply — but
+// those are only fallbacks for when a VITE_FIREBASE_* env var is MISSING, and a dev build's own
+// .env.development sets every one of them (to padelos-dev's own values). So in an actual dev
+// build, `firebaseConfig` IS padelos-dev's config — the "second connection to production" was
+// silently a second connection to padelos-dev itself, reading and rewriting dev's own existing
+// data back onto itself every time, forever missing anything only real production ever had.
+// This constant is hardcoded unconditionally, exactly like DEV_CLONE_TARGET_CONFIG, so it can
+// never accidentally resolve to whatever project the current build happens to target.
+const PROD_CLONE_TARGET_CONFIG = {
+  apiKey: "AIzaSyAldFg5ofZgXfgn_JSORc_uqkWuq5sGnIY",
+  authDomain: "padelos-6f999.firebaseapp.com",
+  projectId: "padelos-6f999",
+  storageBucket: "padelos-6f999.firebasestorage.app",
+  messagingSenderId: "807847071392",
+  appId: "1:807847071392:web:b104417c7af0f5967f43c5",
+  measurementId: "G-H6DLLT7Q7C",
+};
 const firebaseApp = initializeApp(firebaseConfig);
 const VAPID_KEY = "BDjCxodsXfmCwv1dPsSgssbLFMh-K9vW4JRJb-zoOweEy6cxpXtPoHVDtkydh56tnDOdSJfa5FrY7cMLirnHXyw";
 // iOS Safari has no push support at all in a plain browser tab — Notification/Push only
@@ -220,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.53";
+const APP_VERSION = "V0.16.54";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -6290,15 +6309,16 @@ export default function Matchkeeper() {
   // already the padelos-dev connection (a dev build always targets padelos-dev — see
   // firebaseConfig's env-driven setup at the top of the file), so unlike cloneToDev there's no
   // need to reconstruct Firestore docs from live in-memory state — production's raw stored
-  // documents are read via a second, independent connection (the same firebaseConfig this file
-  // already falls back to when no env var is set) and written into `db` byte-for-byte, using
-  // the identical wipe-then-reseed/chunked-batch pattern.
+  // documents are read via a second, independent connection (PROD_CLONE_TARGET_CONFIG,
+  // hardcoded unconditionally — see its own comment for the real bug that requires this rather
+  // than reusing firebaseConfig) and written into `db` byte-for-byte, using the identical
+  // wipe-then-reseed/chunked-batch pattern.
   const [cloningFromProd, setCloningFromProd] = useState(false);
   const cloneFromProd = async () => {
     if (!IS_DEV_ENV) return;
     setCloningFromProd(true);
     try {
-      const prodApp = getApps().find(a=>a.name==="prodClone") || initializeApp(firebaseConfig, "prodClone");
+      const prodApp = getApps().find(a=>a.name==="prodClone") || initializeApp(PROD_CLONE_TARGET_CONFIG, "prodClone");
       const prodAuth = getAuth(prodApp);
       const prodDb = getFirestore(prodApp);
       if (!prodAuth.currentUser) await signInWithPopup(prodAuth, new GoogleAuthProvider());

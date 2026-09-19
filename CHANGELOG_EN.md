@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.51 (current) — Quick update to the "event duration" quick-pick options
+## V0.16.52 (current) — Fixed H2H in the Delta report + a new tool to pull production data into DEV
+
+- **The bug fixed (H2H):** the admin noticed the "Delta Standings" report's (PES Performance Based) "H2H adj" column was stuck at ×1 even on matches that were a genuine rematch of the exact same partnership. Root cause: the code required at least 2 prior meetings (not 1) before applying any effect at all — and with only 3 players cycling through the same partnerships, each exact pairing can only ever repeat once per event, so a second meeting only ever has exactly 1 prior meeting behind it. The threshold was simply unreachable for this event shape — not a detection bug.
+- **Fixed:** a single prior meeting is now enough to activate the effect — but only at half strength, since one data point is a weaker signal than two or more (which still get the full effect exactly as before).
+- **New tool (admin request):** in the DEV environment only, under Platform Admin → Data & Backup → Other Tools, there's now a "⬇️ Clone FROM Production" button — the reverse of the existing "☁️ Clone Data to DEV" button, which only ever worked from the production side. This new one pulls the latest production data (all users, communities, events, venues) into the current DEV environment, without touching production at all (read-only there).
+
+---
+
+## V0.16.51 — Quick update to the "event duration" quick-pick options
 
 - **The admin asked** for the duration quick-picks (added in V0.16.50) to be: 30 minutes, 1 hour, 2 hours — replacing the longer list that was there before.
 - Updated across all three screens (Create, Edit, Duplicate) together.

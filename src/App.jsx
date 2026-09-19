@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.51";
+const APP_VERSION = "V0.16.52";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -593,11 +593,19 @@ function xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h}) {
   const marginRatio = hasRealScore ? Math.abs(myScore - oppScore) / (myScore + oppScore) : 0.5;
   const S = won ? 0.5 + 0.5 * marginRatio : 0.5 - 0.5 * marginRatio;
   const delta = S - E;
+  // Admin request (2026-09-20), after a real 6-round event showed ×1 on every single match:
+  // with only 3 players rotating exact partnerships, no pairing can ever repeat more than
+  // twice within one event, so the old ">= 2 prior meetings" gate could never activate at
+  // all — not a detection bug, just an unreachable threshold for this common event shape.
+  // Now: a single prior meeting already counts, but only at half strength (blended halfway
+  // back to the neutral 1x) since one data point is a much weaker signal than two or more,
+  // which still get the full, unblended factor exactly as before.
   let h2hFactor = 1;
-  if (h2h && h2h.meetings >= 2) {
+  if (h2h && h2h.meetings >= 1) {
     const dominance = h2h.sideAWinRate;
     const surprise = delta > 0 ? (1 - dominance) : dominance;
-    h2hFactor = 0.85 + 0.3 * surprise;
+    const rawFactor = 0.85 + 0.3 * surprise;
+    h2hFactor = h2h.meetings === 1 ? 1 + (rawFactor - 1) * 0.5 : rawFactor;
   }
   const xPts = Math.max(0, Math.min(100, 50 + 50 * (delta * h2hFactor)));
   return {E: Math.round(E * 1000) / 1000, S: Math.round(S * 1000) / 1000, delta: Math.round(delta * 1000) / 1000, h2hFactor: Math.round(h2hFactor * 1000) / 1000, xPts: Math.round(xPts * 10) / 10, hasRealScore};
@@ -6277,6 +6285,67 @@ export default function Matchkeeper() {
     } catch(e) { console.log("Clone to DEV failed", e); window.alert(`Clone to DEV failed:\n\n${e.code||""} ${e.message||e}`); }
     setCloningToDev(false);
   };
+  // Reverse of cloneToDev above (admin request, 2026-09-20) — dev-build only (IS_DEV_ENV
+  // gating on the button, mirrored from cloneToDev's own !IS_DEV_ENV). This session's `db` is
+  // already the padelos-dev connection (a dev build always targets padelos-dev — see
+  // firebaseConfig's env-driven setup at the top of the file), so unlike cloneToDev there's no
+  // need to reconstruct Firestore docs from live in-memory state — production's raw stored
+  // documents are read via a second, independent connection (the same firebaseConfig this file
+  // already falls back to when no env var is set) and written into `db` byte-for-byte, using
+  // the identical wipe-then-reseed/chunked-batch pattern.
+  const [cloningFromProd, setCloningFromProd] = useState(false);
+  const cloneFromProd = async () => {
+    if (!IS_DEV_ENV) return;
+    setCloningFromProd(true);
+    try {
+      const prodApp = getApps().find(a=>a.name==="prodClone") || initializeApp(firebaseConfig, "prodClone");
+      const prodAuth = getAuth(prodApp);
+      const prodDb = getFirestore(prodApp);
+      if (!prodAuth.currentUser) await signInWithPopup(prodAuth, new GoogleAuthProvider());
+      const [commsSnap, eventsSnap, regsSnap, usersDoc, venuesDoc, egyptDoc, expCatDoc, usrWinDoc] = await Promise.all([
+        getDocs(collection(prodDb,"padelos_communities")),
+        getDocs(collection(prodDb,"padelos_events")),
+        getDocs(collectionGroup(prodDb,"registrations")),
+        getDoc(doc(prodDb,"padelos","users")),
+        getDoc(doc(prodDb,"padelos","venues")),
+        getDoc(doc(prodDb,"padelos","egypt")),
+        getDoc(doc(prodDb,"padelos","expenseCategories")),
+        getDoc(doc(prodDb,"padelos","usrWindowSize")),
+      ]);
+      const chunkedCommit = async (ops) => {
+        for (let i=0;i<ops.length;i+=450) {
+          const batch = writeBatch(db);
+          ops.slice(i,i+450).forEach(op=>op(batch));
+          await batch.commit();
+        }
+      };
+      const [existingCommsSnap, existingEventsSnap, existingRegsSnap] = await Promise.all([
+        getDocs(collection(db,"padelos_communities")),
+        getDocs(collection(db,"padelos_events")),
+        getDocs(collectionGroup(db,"registrations")),
+      ]);
+      await chunkedCommit([
+        ...existingRegsSnap.docs.map(d=>b=>b.delete(d.ref)),
+        ...existingCommsSnap.docs.map(d=>b=>b.delete(d.ref)),
+        ...existingEventsSnap.docs.map(d=>b=>b.delete(d.ref)),
+      ]);
+      await chunkedCommit([
+        ...commsSnap.docs.map(d=>b=>b.set(doc(db,"padelos_communities",d.id), d.data())),
+        ...eventsSnap.docs.map(d=>b=>b.set(doc(db,"padelos_events",d.id), d.data())),
+        ...regsSnap.docs.map(d=>b=>b.set(doc(db,"padelos_events",d.ref.parent.parent.id,"registrations",d.id), d.data())),
+      ]);
+      await Promise.all([
+        usersDoc.exists() && setDoc(doc(db,"padelos","users"), usersDoc.data()),
+        venuesDoc.exists() && setDoc(doc(db,"padelos","venues"), venuesDoc.data()),
+        egyptDoc.exists() && setDoc(doc(db,"padelos","egypt"), egyptDoc.data()),
+        expCatDoc.exists() && setDoc(doc(db,"padelos","expenseCategories"), expCatDoc.data()),
+        usrWinDoc.exists() && setDoc(doc(db,"padelos","usrWindowSize"), usrWinDoc.data()),
+      ]);
+      logAudit("admin.cloneFromProd", `${me.nickname} cloned production data INTO the DEV environment`, null, null);
+      toast2(`Cloned from production ✓ (${commsSnap.size} communities, ${eventsSnap.size} events)`);
+    } catch(e) { console.log("Clone from prod failed", e); window.alert(`Clone from production failed:\n\n${e.code||""} ${e.message||e}`); }
+    setCloningFromProd(false);
+  };
   // ────────────────────────────────────────────────────
 
   const toast2 = (msg,t="ok") => { setToast({msg,t}); setTimeout(()=>setToast(null),2600); };
@@ -9236,6 +9305,7 @@ export default function Matchkeeper() {
           onOpenCommunity={goComm} onOpenEvent={goEvent}
           onExport={exportData} onRepairIds={repairDuplicateIds} onFactoryReset={factoryReset} onBackfillGuests={backfillGuestMemberships} onCleanOrphanedLinks={cleanOrphanedLinks} onMergeDuplicateUser={mergeDuplicateUser} onSuspendUser={suspendUser} usrWindowSize={usrWindowSize} onSetUsrWindowSize={setUsrWindowSize} auditLog={[...auditLog,...auditOlder]} onRefreshAudit={refreshAudit} auditRefreshing={auditRefreshing} auditHasMore={auditHasMore} auditLoadingMore={auditLoadingMore} onLoadMoreAudit={loadMoreAudit}
           onCloneToDev={cloneToDev} cloningToDev={cloningToDev}
+          onCloneFromProd={cloneFromProd} cloningFromProd={cloningFromProd}
           backups={backups} backupsLoading={backupsLoading} onRefreshBackups={refreshBackups}
           onCreateBackup={createBackup} onRestoreBackup={restoreBackup} onDeleteBackup={deleteBackup}
         />}
@@ -14877,7 +14947,7 @@ const SEEDED_COMM_IDS = new Set([1]);
 const SEEDED_VENUE_IDS = new Set([1]);
 const SEEDED_EVENT_IDS = new Set([1,2,3]);
 
-function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast,onLogAudit,onRestoreDeletedEvent}){
+function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,onTabChange,onBack,onAddUser,onEditUser,onRecalcUsr,onDeleteUser,onUnlinkUser,onSuspendUser,onViewProfile,onOpenCommunity,onOpenEvent,onExport,onRepairIds,onFactoryReset,onBackfillGuests,onCleanOrphanedLinks,onMergeDuplicateUser,backups=[],backupsLoading,onRefreshBackups,onCreateBackup,onRestoreBackup,onDeleteBackup,egypt,onSaveEgypt,auditLog=[],onRefreshAudit,auditRefreshing,auditHasMore,auditLoadingMore,onLoadMoreAudit,expenseCategories=[],onSaveExpenseCategories,usrWindowSize=5,onSetUsrWindowSize,onCloneToDev,cloningToDev,onCloneFromProd,cloningFromProd,subscriptionSettings,onSaveSubscriptionSettings,onSetUserSubscription,subscriptionTransactions=[],onConfirmPayment,onToast,onLogAudit,onRestoreDeletedEvent}){
   const toast2 = onToast || (()=>{});
   const [tab,setTab]=useState(initialTab||"audit");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
@@ -15475,6 +15545,10 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <ListRow icon="📧" label={`Find Duplicate Emails${dupEmailGroups.length>0?` (${dupEmailGroups.length})`:""}`} dim={dupEmailGroups.length===0} trailing={showDupEmails?"⌄":"›"} onClick={()=>setShowDupEmails(o=>!o)}/>
       <ListRow icon="⚠️" label="Factory Reset (Erase Everything)" danger onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}}/>
       {!IS_DEV_ENV&&<ListRow icon="☁️" label={cloningToDev?"Cloning to DEV…":"Clone Data to DEV"} dim={cloningToDev} onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}}/>}
+      {/* Reverse direction of the button above — only ever shown inside a DEV build, since this
+          is the one tool in the app that deliberately overwrites whatever's already here (dev's
+          own data) with a copy of real production data (admin request, 2026-09-20). */}
+      {IS_DEV_ENV&&<ListRow icon="⬇️" label={cloningFromProd?"Cloning from production…":"Clone FROM Production"} dim={cloningFromProd} onClick={()=>{if(cloningFromProd)return;if(window.confirm("⬇️ Clone production data INTO this DEV environment?\n\nThis copies every current production user, community, event, venue, and setting here, OVERWRITING everything currently in this DEV environment.\n\nThis does NOT touch production — it's a one-way copy FROM production, read-only on that side. You may be asked to sign into the production account once (first time only)."))onCloneFromProd();}}/>}
     </div>
     {showDupEmails&&<Card style={{marginBottom:16}}>
       {dupEmailGroups.length===0&&<div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"10px 0"}}>No duplicate emails found ✓</div>}

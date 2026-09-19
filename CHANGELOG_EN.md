@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.49 (current) — Dynamic Break Engine v2: a whole new design for who sits out
+## V0.16.50 (current) — Pick event duration instead of end time + fixed a midnight-crossing bug
+
+- **The admin asked:** to be able to pick an event's "duration" instead of always having to type an end time — and pointed out that events starting close to midnight (so the end time falls on the next calendar day) were incorrectly failing a "clock validation," and asked for that fixed.
+- **The real bug found:** the Create Event screen had a check saying "end time must be after start time" that blocked saving outright whenever the end time was numerically smaller than the start time — but that's wrong for an event crossing midnight (e.g. starting 11pm, ending 1am the next day), since "1:00" is numerically smaller than "11:00" even though it's genuinely later in real time. The rest of the app (duration math, pricing) already handled this correctly — only this one check on the creation screen got it wrong.
+- **Fixed:**
+  - Removed the incorrect blocking check, replaced with a calm informational note ("🌙 Ends after midnight, the next day") whenever this happens — not a red error blocking the save.
+  - **Added a choice between "🕐 End Time" or "⏱ Duration"** on the Create, Edit, and Duplicate event screens — pick Duration and tap a ready-made length (1, 1.5, 2, 2.5, 3, 3.5, 4 hours), and the app computes the end time itself, correctly even when that pushes past midnight.
+
+---
+
+## V0.16.49 — Dynamic Break Engine v2: a whole new design for who sits out
 
 - **Why:** after a detailed audit of the current Dynamic Break Engine (V1) on a real match, the admin designed a completely different second engine (V2) with fundamentally different logic, to test it live next Monday alongside V1 and compare — without touching or removing V1 at all (still there, still selectable as "Dynamic").
 - **The core idea behind V2:** instead of picking who sits out from an abstract priority list (V1's approach), it works backward — it takes whoever's currently on the bench along with the court they're actually owed (the same "target court" idea already tracked today), and tries to open them a seat at exactly that court by sending someone else to break in their place — always at whichever court the seat actually opens up at, never the bench player's original target if that's not where it ends up.

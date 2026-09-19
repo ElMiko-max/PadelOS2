@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.49";
+const APP_VERSION = "V0.16.50";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -3365,6 +3365,17 @@ function durationLabel(time, timeTo){
   let m=(eh*60+em)-(sh*60+sm); if(m<=0) m+=24*60; // crosses midnight, not invalid
   const h=Math.floor(m/60), rm=m%60;
   return h>0?(rm>0?`${h}h ${rm}min`:`${h}h`):`${rm}min`;
+}
+// "HH:MM" + a duration in hours -> "HH:MM", wrapping past midnight the same way every other
+// duration calc in this file already treats it (durationLabel, getLiveMatchInfo, etc.) — the
+// result naturally reads as "earlier" than `time` when it wraps, which is the established
+// convention the rest of the codebase already relies on (timeTo<=time == crosses midnight).
+function addHoursToTime(time, hours){
+  const [h,m]=time.split(":").map(Number);
+  let total=((h*60+m)+Math.round(hours*60))%(24*60);
+  if(total<0) total+=24*60;
+  const eh=Math.floor(total/60), em=total%60;
+  return `${String(eh).padStart(2,"0")}:${String(em).padStart(2,"0")}`;
 }
 const EVENT_TYPE_LABELS = {open:"Open Day",closed_ind:"Closed Individuals",closed_teams:"Closed Teams"};
 
@@ -10507,7 +10518,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     const dateStr=`${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}`;
     const timeStr=`${pad(start.getHours())}:${pad(start.getMinutes())}`;
     const timeToStr=`${pad(end.getHours())}:${pad(end.getMinutes())}`;
-    return {name:"",description:"",date:dateStr,time:timeStr,timeTo:timeToStr,venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false};
+    return {name:"",description:"",date:dateStr,time:timeStr,timeTo:timeToStr,endMode:"time",durationHrs:0.5,venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false};
   });
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
@@ -10547,15 +10558,30 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
       <button type="button" onClick={doSuggestName} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
     </div>
     <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls, court 3 booked separately" multiline/>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
       <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
-      <Inp label="Start" value={f.time} onChange={v2=>set("time",v2)} type="time"/>
-      <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
+      <Inp label="Start" value={f.time} onChange={v2=>{ const t=v2; setF(p=>({...p, time:t, timeTo:p.endMode==="duration"?addHoursToTime(t,p.durationHrs):p.timeTo})); }} type="time"/>
     </div>
-    {/* Blocks Create Event below, not just a passive warning — a Start at or after End is never
-        a valid booking window (admin request, 2026-09-13: "should not allow saving with wrong
-        duration"). */}
-    {f.time&&f.timeTo&&f.time>=f.timeTo&&<div style={{marginTop:6,marginBottom:8,fontSize:12,fontWeight:600,color:"#EF4444"}}>⚠️ End time must be after the start time.</div>}
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+      <SmBtn label="🕐 End Time" onClick={()=>set("endMode","time")} active={f.endMode!=="duration"} color="#6366F1"/>
+      <SmBtn label="⏱ Duration" onClick={()=>setF(p=>({...p, endMode:"duration", timeTo:addHoursToTime(p.time,p.durationHrs)}))} active={f.endMode==="duration"} color="#6366F1"/>
+    </div>
+    {f.endMode==="duration"
+      ? <div style={{marginBottom:8}}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+            {[1,1.5,2,2.5,3,3.5,4].map(h=><SmBtn key={h} label={h%1===0?`${h}h`:`${h}h`} onClick={()=>setF(p=>({...p, durationHrs:h, timeTo:addHoursToTime(p.time,h)}))} active={f.durationHrs===h} color="#F59E0B"/>)}
+          </div>
+          <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(f.timeTo)}{f.timeTo<=f.time?" — 🌙 after midnight, next day":""}</div>
+        </div>
+      : <>
+          <Inp label="End" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
+          {/* Crossing midnight is a valid booking window (e.g. 11pm–1am), not an error — the rest
+              of the app already treats timeTo<=time as "ends the next day" (see durationLabel,
+              getLiveMatchInfo). Only an exact match (zero-length or full-24h, genuinely
+              ambiguous either way) is actually blocked below. */}
+          {f.time&&f.timeTo&&f.timeTo<=f.time&&<div style={{marginTop:6,marginBottom:8,fontSize:12,color:"#38BDF8"}}>🌙 Ends after midnight, the next day — {durationLabel(f.time,f.timeTo)}</div>}
+          {f.time&&f.timeTo&&f.time===f.timeTo&&<div style={{marginTop:6,marginBottom:8,fontSize:12,fontWeight:600,color:"#EF4444"}}>⚠️ Start and end time can't be the same.</div>}
+        </>}
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
     <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
@@ -10581,14 +10607,14 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     {!isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = courts × 5 = <b>{(parseInt(f.courts)||0)*5}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     {isFootball&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>Max players = team size × number of teams = <b>{(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0)}</b>. Once full, new registrations automatically go to a waitlist and move up if someone cancels.</div>}
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Event Type</div>{getEventTypesForSport(f.sport).map(t=><div key={t.key} onClick={()=>set("eventType",t.key)} className="po-inp" style={{padding:"10px 12px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`0.5px solid ${f.eventType===t.key?"#6366F1":"var(--po-bdr)"}`,background:f.eventType===t.key?"#6366F122":"var(--po-inp)"}}><div style={{fontWeight:600,fontSize:13,color:f.eventType===t.key?"#A5B4FC":"var(--po-text)"}}>{t.label}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>{t.desc}</div></div>)}</div>
-    <Btn label="Create Event" primary disabled={!!(f.time&&f.timeTo&&f.time>=f.timeTo)} onClick={()=>{if(f.name&&f.date&&f.venueId&&f.time<f.timeTo)onCreate(f);}} style={{width:"100%"}}/>
+    <Btn label="Create Event" primary disabled={!!(f.time&&f.timeTo&&f.time===f.timeTo)} onClick={()=>{if(f.name&&f.date&&f.venueId&&f.time!==f.timeTo)onCreate(f);}} style={{width:"100%"}}/>
   </Card></>;
 }
 
 // ── Event Edit Form (courts + times only) ─────────────
 function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance});
+  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",endMode:"time",durationHrs:durationLabel(ev.time,ev.timeTo)==="—"?2:(()=>{const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=(ev.timeTo||"").split(":").map(Number);let mins=(eh*60+em)-(sh*60+sm);if(mins<=0)mins+=24*60;return mins/60;})(),eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance});
   const set=(k,val)=>setF(p=>({...p,[k]:val}));
   const v=venues.find(x=>x.id===parseInt(f.venueId));
   const maxC=v?v.courts.length:10;
@@ -10615,11 +10641,27 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
         <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,sport:f.sport}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
       </div>
       <Inp label="Description / Remark (optional)" value={f.description} onChange={v2=>set("description",v2)} placeholder="e.g. Bring extra balls" multiline/>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:0}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
         <Inp label="Date" value={f.date} onChange={v2=>set("date",v2)} type="date"/>
-        <Inp label="Start Time" value={f.time} onChange={v2=>set("time",v2)} type="time"/>
-        <Inp label="End Time" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
+        <Inp label="Start Time" value={f.time} onChange={v2=>{ const t=v2; setF(p=>({...p, time:t, timeTo:p.endMode==="duration"?addHoursToTime(t,p.durationHrs):p.timeTo})); }} type="time"/>
       </div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <SmBtn label="🕐 End Time" onClick={()=>set("endMode","time")} active={f.endMode!=="duration"} color="#6366F1"/>
+        <SmBtn label="⏱ Duration" onClick={()=>setF(p=>({...p, endMode:"duration", timeTo:addHoursToTime(p.time,p.durationHrs)}))} active={f.endMode==="duration"} color="#6366F1"/>
+      </div>
+      {f.endMode==="duration"
+        ? <div style={{marginBottom:8}}>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+              {[1,1.5,2,2.5,3,3.5,4].map(h=><SmBtn key={h} label={`${h}h`} onClick={()=>setF(p=>({...p, durationHrs:h, timeTo:addHoursToTime(p.time,h)}))} active={f.durationHrs===h} color="#F59E0B"/>)}
+            </div>
+            <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(f.timeTo)}{f.timeTo<=f.time?" — 🌙 after midnight, next day":""}</div>
+          </div>
+        : <>
+            <Inp label="End Time" value={f.timeTo} onChange={v2=>set("timeTo",v2)} type="time"/>
+            {/* Crossing midnight (e.g. 11pm–1am) is a valid booking window, not an error — see
+                the matching comment on the Create Event form. */}
+            {f.time&&f.timeTo&&f.timeTo<=f.time&&<div style={{marginTop:6,marginBottom:8,fontSize:12,color:"#38BDF8"}}>🌙 Ends after midnight, the next day — {durationLabel(f.time,f.timeTo)}</div>}
+          </>}
       {/* Venue stays editable even after the event is completed — unlike courts/type, changing
           it can't corrupt historical match/break records, it's just correcting where the
           event actually happened. */}
@@ -12478,6 +12520,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [dupDate,setDupDate] = useState(()=>{const d=new Date(ev.date);d.setDate(d.getDate()+7);return d.toISOString().split("T")[0];});
   const [dupTime,setDupTime] = useState(ev.time);
   const [dupTimeTo,setDupTimeTo] = useState(ev.timeTo||"");
+  const [dupEndMode,setDupEndMode] = useState("time");
+  const [dupDurationHrs,setDupDurationHrs] = useState(()=>{
+    if(!ev.time||!ev.timeTo) return 2;
+    const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=ev.timeTo.split(":").map(Number);
+    let mins=(eh*60+em)-(sh*60+sm); if(mins<=0) mins+=24*60;
+    return mins/60;
+  });
   const [dupKeepPlayers,setDupKeepPlayers] = useState(false);
   const [dupName,setDupName] = useState(ev.name);
   const [shareDiag,setShareDiag] = useState(null);
@@ -12790,18 +12839,28 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
         <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
           style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,marginBottom:10,boxSizing:"border-box"}}/>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-          <div>
-            <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:3}}>Start time</div>
-            <input type="time" value={dupTime} onChange={e=>setDupTime(e.target.value)} className="po-inp"
-              style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-          </div>
-          <div>
-            <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:3}}>End time</div>
-            <input type="time" value={dupTimeTo} onChange={e=>setDupTimeTo(e.target.value)} className="po-inp"
-              style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-          </div>
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:3}}>Start time</div>
+          <input type="time" value={dupTime} onChange={e=>{ const t=e.target.value; setDupTime(t); if(dupEndMode==="duration") setDupTimeTo(addHoursToTime(t,dupDurationHrs)); }} className="po-inp"
+            style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
         </div>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <SmBtn label="🕐 End Time" onClick={()=>setDupEndMode("time")} active={dupEndMode!=="duration"} color="#6366F1"/>
+          <SmBtn label="⏱ Duration" onClick={()=>{setDupEndMode("duration");setDupTimeTo(addHoursToTime(dupTime,dupDurationHrs));}} active={dupEndMode==="duration"} color="#6366F1"/>
+        </div>
+        {dupEndMode==="duration"
+          ? <div style={{marginBottom:10}}>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+                {[1,1.5,2,2.5,3,3.5,4].map(h=><SmBtn key={h} label={`${h}h`} onClick={()=>{setDupDurationHrs(h);setDupTimeTo(addHoursToTime(dupTime,h));}} active={dupDurationHrs===h} color="#F59E0B"/>)}
+              </div>
+              <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(dupTimeTo)}{dupTimeTo<=dupTime?" — 🌙 after midnight, next day":""}</div>
+            </div>
+          : <div style={{marginBottom:10}}>
+              <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:3}}>End time</div>
+              <input type="time" value={dupTimeTo} onChange={e=>setDupTimeTo(e.target.value)} className="po-inp"
+                style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
+              {dupTime&&dupTimeTo&&dupTimeTo<=dupTime&&<div style={{marginTop:6,fontSize:11,color:"#38BDF8"}}>🌙 Ends after midnight, the next day — {durationLabel(dupTime,dupTimeTo)}</div>}
+            </div>}
         <div onClick={()=>setDupKeepPlayers(o=>!o)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",borderRadius:8,background:"var(--po-card)",cursor:"pointer",marginBottom:10}}>
           <Toggle on={dupKeepPlayers} onChange={()=>setDupKeepPlayers(o=>!o)} onColor="#6366F1"/>
           <div style={{flex:1}}>

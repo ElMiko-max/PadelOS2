@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.58 (current) — Real Classic-engine bug: unfair break distribution + a short round, plus a Concentrate/Avoid UI fix
+## V0.16.59 (current) — The real "remaining" number now shows up in the Decision Trail
+
+- **Requested by the admin:** the remaining-entitlement number ("rem") should be visible directly in the modal, instead of having to ask for it to be traced manually — as happened with "why did you jump from Court 1 to Court 3, why not Court 2?"
+- **Added:**
+  - The "⚖️ Fair share" bullet now states the remaining count explicitly (not just entitled/used, leaving you to do the subtraction), on every break explanation (Round 1, Classic, Dynamic).
+  - Dynamic v2's return explanation (CI and CT) now lists every court that was tried and passed over before landing on the one that worked — who was sitting there, and why they didn't qualify (0 remaining, or broke last round).
+  - Dynamic v2's break explanation for the evicted player now states how many breaks they still had remaining before being picked.
+
+---
+
+## V0.16.58 — Real Classic-engine bug: unfair break distribution + a short round, plus a Concentrate/Avoid UI fix
 
 - **Found while the admin was testing Avoid on a real DEV event (Monday Night Padel Hustle #101)** — the initial break schedule showed "R12: 2 breaks (needs 3)" and "Unequal breaks: max=3, min=1," even though everyone's guaranteed floor should have been 2.
 - **Root cause:** the Classic engine (`buildBreakPlan`/`regenerateBreakPlan`) computes the entire event's break schedule in one upfront pass, picking the highest-priority still-eligible players each round. Concentrate/Avoid were winning that priority order in *every* round, not just as a tiebreaker — so an avoided player stayed last in line round after round until there weren't enough rounds left to fit their full guaranteed share, producing both a short final round and a player stuck below their floor.

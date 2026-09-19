@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.58";
+const APP_VERSION = "V0.16.59";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -685,7 +685,8 @@ function fairShareBullets(entVal, beforeCount, {isConc, isAvoid, breakPref, ri, 
   const bullets = [];
   if (isConc) bullets.push("🎯 Concentrated — gets first claim on the round's extra break slot");
   if (isAvoid) bullets.push("🚫 Avoided — normally last in line for a break, but was still needed to hit the fair-share floor");
-  bullets.push(`⚖️ Fair share: entitled to ${entVal??0} break${entVal===1?"":"s"} across the event, ${beforeCount||0} used before this round`);
+  const remVal = Math.max(0, (entVal??0) - (beforeCount||0));
+  bullets.push(`⚖️ Fair share: entitled to ${entVal??0} break${entVal===1?"":"s"} across the event, ${beforeCount||0} used before this round — ${remVal} remaining`);
   if (breakPref && breakPref!=="none" && prefDist(breakPref,ri,totalRounds)<=0.5) bullets.push(`⏱ Matches their "${breakPref}" break preference for this round`);
   return bullets;
 }
@@ -1045,10 +1046,30 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     buckets[court].splice(buckets[court].indexOf(entry), 1, {p:benchPlayer, via:"bench"});
     evicted.push({p:entry.p, court});
 
+    // Requested by the admin (2026-09-2X) after having to ask why the search skipped a specific
+    // court: show it directly instead of making them ask — for every court tried and passed over
+    // before the one that worked, list who was sitting there and why they didn't qualify,
+    // including the actual remaining-entitlement number, not just a vague "already used their
+    // share." Uses the SAME eligibility function that actually succeeded (strict or relaxed).
+    const eligFnUsed = usedRelaxed ? isEligibleRelaxed : isEligibleStrict;
+    const describeCourtSkip = (c, protectedPhase) => {
+      const occupants = buckets[c].filter(e => protectedPhase ? isProtected(e) : !isProtected(e));
+      const named = occupants.filter(e=>!eligFnUsed(e.p.userId)).map(e => {
+        const rem = remaining[e.p.userId]||0;
+        return rem<=0 ? `${e.p.nickname||("player #"+e.p.userId)} (${rem} remaining)` : `${e.p.nickname||("player #"+e.p.userId)} (broke last round)`;
+      });
+      return named.length ? `🔍 Court ${c}${protectedPhase?"":" (momentum)"} skipped — ${named.join(", ")}` : null;
+    };
+    const foundInProtected = isProtected(entry);
+    const skipBullets = (foundInProtected ? protectedOrder.slice(0, protectedOrder.indexOf(court)) : protectedOrder)
+      .map(c => describeCourtSkip(c, true)).filter(Boolean);
+    if (!foundInProtected) skipBullets.push(...momentumOrder.slice(0, momentumOrder.indexOf(court)).map(c => describeCourtSkip(c, false)).filter(Boolean));
+
     const targetSrc = findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[uid] = [
       `🎯 Target Court ${target}, earned from ${targetSrc}`,
       court===target ? `✅ A seat was opened right at Court ${target}` : `↪️ Court ${target} had no eligible seat to open — the search cascaded to Court ${court} instead`,
+      ...skipBullets,
       `🔓 Seat opened by moving ${entry.p.nickname||("player #"+entry.p.userId)} to break — they'd arrived at Court ${court} by ${viaLabel(entry.via)}`,
       isProtected(entry) ? `🛡️ Found in the "protected" pool (a loser, or a Court-1 winner who stayed) — momentum players (fresh winners) are never touched while a protected candidate is available` : `⚠️ Had to reach into the "momentum" pool (a fresh winner) — no protected candidate was eligible anywhere`,
     ];
@@ -1058,6 +1079,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     breakReasons[evUid] = [
       `🪑 Evicted from Court ${court} to free a seat for ${benchPlayer.nickname||("player #"+uid)}, who was due back there`,
       isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
+      `⚖️ Had ${Math.max(0,remaining[evUid]||0)} break(s) remaining this event before this pick`,
     ];
     if (breakPriority(evUid,concSet,avoidSet)===1) breakReasons[evUid].push("🎯 Concentrated — was prioritized as the pick among eligible candidates at this court");
     if (breakPriority(evUid,concSet,avoidSet)===-1) breakReasons[evUid].push("🚫 Avoided — was still the most eligible candidate at this court despite being deprioritized");
@@ -2148,10 +2170,27 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     buckets[court].splice(buckets[court].indexOf(entry), 1, {t:benchTeam, via:"bench"});
     evicted.push({t:entry.t, court});
 
+    // Same "show the skip reasoning with real numbers" addition as genDynamic2CI — see its
+    // comment for why.
+    const eligFnUsed = usedRelaxed ? isEligibleRelaxed : isEligibleStrict;
+    const describeCourtSkip = (c, protectedPhase) => {
+      const occupants = buckets[c].filter(e => protectedPhase ? isProtected(e) : !isProtected(e));
+      const named = occupants.filter(e=>!eligFnUsed(e.t.id)).map(e => {
+        const rem = remaining[e.t.id]||0;
+        return rem<=0 ? `${e.t.name||("Team #"+e.t.id)} (${rem} remaining)` : `${e.t.name||("Team #"+e.t.id)} (broke last round)`;
+      });
+      return named.length ? `🔍 Court ${c}${protectedPhase?"":" (momentum)"} skipped — ${named.join(", ")}` : null;
+    };
+    const foundInProtected = isProtected(entry);
+    const skipBullets = (foundInProtected ? protectedOrder.slice(0, protectedOrder.indexOf(court)) : protectedOrder)
+      .map(c => describeCourtSkip(c, true)).filter(Boolean);
+    if (!foundInProtected) skipBullets.push(...momentumOrder.slice(0, momentumOrder.indexOf(court)).map(c => describeCourtSkip(c, false)).filter(Boolean));
+
     const targetSrc = findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[tid] = [
       `🎯 Target Court ${target}, earned from ${targetSrc}`,
       court===target ? `✅ A seat was opened right at Court ${target}` : `↪️ Court ${target} had no eligible seat to open — the search cascaded to Court ${court} instead`,
+      ...skipBullets,
       `🔓 Seat opened by moving ${entry.t.name||("Team #"+entry.t.id)} to break — they'd arrived at Court ${court} by ${viaLabel(entry.via)}`,
       isProtected(entry) ? `🛡️ Found in the "protected" pool (a loser, or a Court-1 winner who stayed) — momentum teams (fresh winners) are never touched while a protected candidate is available` : `⚠️ Had to reach into the "momentum" pool (a fresh winner) — no protected candidate was eligible anywhere`,
     ];
@@ -2161,6 +2200,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     breakReasons[evTid] = [
       `🪑 Evicted from Court ${court} to free a seat for ${benchTeam.name||("Team #"+tid)}, who was due back there`,
       isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
+      `⚖️ Had ${Math.max(0,remaining[evTid]||0)} break(s) remaining this event before this pick`,
     ];
     if (teamBreakPriority(entry.t,concSet,avoidSet)===1) breakReasons[evTid].push("🎯 Concentrated — was prioritized as the pick among eligible candidates at this court");
     if (teamBreakPriority(entry.t,concSet,avoidSet)===-1) breakReasons[evTid].push("🚫 Avoided — was still the most eligible candidate at this court despite being deprioritized");

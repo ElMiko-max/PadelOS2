@@ -4,7 +4,20 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.48 (current) — Manual admin break swaps are now clearly tagged in history
+## V0.16.49 (current) — Dynamic Break Engine v2: a whole new design for who sits out
+
+- **Why:** after a detailed audit of the current Dynamic Break Engine (V1) on a real match, the admin designed a completely different second engine (V2) with fundamentally different logic, to test it live next Monday alongside V1 and compare — without touching or removing V1 at all (still there, still selectable as "Dynamic").
+- **The core idea behind V2:** instead of picking who sits out from an abstract priority list (V1's approach), it works backward — it takes whoever's currently on the bench along with the court they're actually owed (the same "target court" idea already tracked today), and tries to open them a seat at exactly that court by sending someone else to break in their place — always at whichever court the seat actually opens up at, never the bench player's original target if that's not where it ends up.
+- **Selection order:** it prefers pulling from people "relegating down as losers" or "staying as winners" (the "protected" group) before ever touching anyone who just won their way up (that group is touched dead last of all, especially Court 1's own winners). If the owed court can't be freed, it reaches for a better court first, then a worse one only as a last resort.
+- **Every other rule stays a hard requirement:** fair distribution (everyone gets roughly their equal share of breaks across the event) and never two breaks in a row for the same person — both exactly as strict as in V1, unless the admin does a manual swap.
+- **It's now the default choice for every new event** (so it's never forgotten) — Classic or Dynamic (V1) are still one tap away, before Start or live during play from the Breaks tab.
+- **Concentrate (who gets priority for breaks) can now be picked before the very first round is even generated** — no need to wait until the match has started.
+- **Real bugs found and fixed along the way (benefit every engine, not just V2):** CI events never gave Concentrate any priority at all for Round 1 (CT Ladder already had this). CT Ladder also never actually passed its Concentrate list through to Round 1 despite the code supporting it. And a break player's "owed court" calculation from the very start of an event could compute a court number that doesn't actually exist if more people are on the bench than there are courts.
+- **The new engine was tested with dozens of simulated matches** (random results, both CI and CT Ladder, varied sizes) confirming nobody ever vanishes, no consecutive breaks slip through, and the distribution stays genuinely fair — before this delivery. The real test happens Monday.
+
+---
+
+## V0.16.48 — Manual admin break swaps are now clearly tagged in history
 
 - **Why:** while doing a detailed round-by-round audit of the Dynamic Break Engine on a past event, it turned out there was no way to tell an engine-chosen break apart from one the admin set manually (e.g. swapping a late-arriving player onto break from the Rounds tab). That meant any later reading of the history — including by the admin themselves — could easily misread a deliberate manual call as an unexplained engine exception, or even a bug.
 - **Fixed:** every time an admin uses the Swap tool (CI or CT Ladder events) and it moves someone onto break, that specific break is now tagged with who did it and when. If they're later swapped back onto court, the tag is automatically cleared since it no longer applies.

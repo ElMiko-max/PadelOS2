@@ -220,7 +220,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.48";
+const APP_VERSION = "V0.16.49";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -648,12 +648,19 @@ function pickFromTiers(tiers, needed, {getId, remaining, lastBreak, ri, concentr
 }
 
 // ── CI Break Plan ─────────────────────────────────────
-function buildBreakPlan(players, courts, totalRounds) {
+// concentrateOn: player userIds that get first claim on each round's "extra" (base+1)
+// entitlement slot — real gap found 2026-09-20 while designing Dynamic v2: the CT Ladder
+// equivalent of this function (buildCTBreakPlan) has honored concentrate here since it was
+// added, but this one never did, so a CI event's very first round never gave concentrated
+// players any priority at all — only rounds 2+ under the (separate) live Dynamic engine did.
+function buildBreakPlan(players, courts, totalRounds, concentrateOn=[]) {
   const N = players.length, bpr = N - courts * 4;
   if (bpr <= 0) return Array.from({ length: totalRounds }, () => []);
   const totalSlots = bpr * totalRounds, base = Math.floor(totalSlots / N), extras = totalSlots % N;
-  // Priority: most historical breaks = lower priority; equal history = lowest USR first
+  const concSet = new Set(concentrateOn);
+  // Priority: concentrated first, then most historical breaks = lower priority, then lowest USR
   const sorted = [...players].sort((a, b) => {
+    const ca=concSet.has(a.userId)?1:0, cb=concSet.has(b.userId)?1:0; if (ca!==cb) return cb-ca;
     const hDiff = (b.histBreaks||0) - (a.histBreaks||0);
     if (hDiff !== 0) return hDiff;
     return a.usr - b.usr; // lower USR gets break first
@@ -668,6 +675,7 @@ function buildBreakPlan(players, courts, totalRounds) {
     // its two nearest rounds — both count as an anchor match, see prefDist's comment above.
     const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,r,totalRounds)<=0.5;
     eligible.sort((a, b) => {
+      const ca=concSet.has(a.userId)?1:0, cb=concSet.has(b.userId)?1:0; if (ca!==cb) return cb-ca; // concentrated players get first claim on the round's pick too, not just the "extra" entitlement above
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
       if (anchA!==anchB) return anchB-anchA; // anchor match at this exact round wins first, regardless of entitlement
       const rd = (ent[b.userId]-assigned[b.userId])-(ent[a.userId]-assigned[a.userId]); if (rd!==0) return rd;
@@ -760,12 +768,153 @@ function syncCIPlanRoster(plan, ev, regsForEvent, comm, users) {
   if (!newcomers.length && prunedSorted.length===plan.sorted.length) return plan;
   return {...plan, sorted:[...prunedSorted, ...newcomers]};
 }
-function genRound1(players, courts, totalRounds) {
-  const sorted = [...players].sort((a,b)=>b.usr-a.usr), breakPlan = buildBreakPlan(sorted,courts,totalRounds), onBreakIds=breakPlan[0]||[];
+function genRound1(players, courts, totalRounds, concentrateOn=[]) {
+  const sorted = [...players].sort((a,b)=>b.usr-a.usr), breakPlan = buildBreakPlan(sorted,courts,totalRounds,concentrateOn), onBreakIds=breakPlan[0]||[];
   const playing=sorted.filter(p=>!onBreakIds.includes(p.userId));
-  const onBreak=sorted.filter(p=>onBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: Math.floor(sorted.findIndex(x=>x.userId===p.userId)/4)+1}));
+  // Real bug found via v2 simulation (2026-09-20): with more bench players than courts (e.g. 2
+  // extra players on a 4-court event, indices 16-17 of an 18-player list), the raw index/4 math
+  // computes a "would-be court" beyond the last real court (e.g. Court 5 on a 4-court event) —
+  // harmless as a purely cosmetic label in v1, but a hard crash in v2 once this value is used as
+  // an actual search bound. Clamped to the real range for everyone, not just v2.
+  const onBreak=sorted.filter(p=>onBreakIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: Math.min(courts, Math.floor(sorted.findIndex(x=>x.userId===p.userId)/4)+1)}));
   const matches=[]; for(let c=0;c<courts;c++){const cp=playing.slice(c*4,(c+1)*4);if(cp.length<4)break;const pair=snakePairCI(cp);matches.push({court:c+1,teamA:pair.teamA,teamB:pair.teamB,winner:null});}
   return {rounds:[{round:1,matches,onBreak,onBreakIds}],courts,totalRounds,breakPlan,partnerHistory:{},sorted};
+}
+// ── Dynamic Break Engine v2 — "target-court cascade" (2026-09-20, full spec from the admin
+// after auditing v1's fairness on a real event) ─────────────────────────────────────────────
+// v1 picks who sits out from an abstract court-priority list each round, then patches any
+// resulting court-capacity overflow with a generic "whichever court has room" fallback — that
+// fallback is what let a returning player occasionally land further from their earned court
+// than intended (confirmed on real event #80 data: a player's own recorded expected-return-court
+// didn't match where they actually landed).
+//
+// v2 inverts the process: it starts from WHO's on the bench and WHERE they're due (their target
+// court — computed exactly the same way returners always have been, see
+// findExpectedReturnCourt), and works court-by-court to open them a seat, evicting whoever's
+// found to break at THAT SAME court. Because the eviction and the insertion always happen at
+// the identical court, no bucket can ever drift out of balance the way v1's two-pass approach
+// could — there's no overflow to patch after the fact.
+//
+// Eviction candidates at a court split into two pools:
+//  - "protected": arrived by losing from the court above, OR (Court 1 only) arrived by winning
+//    and staying, since nobody relegates into the top court.
+//  - "momentum": arrived by winning/promoting from the court below (the bottom court has none —
+//    nothing promotes into it).
+// The search always exhausts every court's protected pool — target first, then walking toward
+// Court 1, then toward the bottom — before touching any momentum pool anywhere. If a momentum
+// pool is genuinely unavoidable, it's tried target-first, then toward the bottom, saving Court
+// 1's winners for the absolute last resort (disrupting someone who just won their way to the
+// top is the costliest outcome this system can produce).
+// Fair-distribution entitlement and the no-consecutive-break rule remain hard eligibility gates
+// throughout, identical to v1's — this only changes WHICH eligible candidate gets picked and
+// WHERE, never whether someone's eligible at all.
+function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retiredIds, concentrateOn, firmHere, findExpectedReturnCourt) {
+  const concSet = new Set(concentrateOn);
+  const excludeIds = new Set([...firmHere, ...retiredIds]);
+
+  // Fair-distribution entitlement — identical math to v1's dynamic engine (same rule, just
+  // still needed here to gate who's an eligible eviction candidate).
+  const activePlayers = sorted.filter(p=>!retiredIds.includes(p.userId));
+  const bpr = Math.max(0, activePlayers.length - courts*4);
+  const breakCounts = {}, lastBreak = {};
+  activePlayers.forEach(p => { breakCounts[p.userId]=0; lastBreak[p.userId]=-99; });
+  rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(uid => { if(breakCounts[uid]!==undefined){ breakCounts[uid]++; lastBreak[uid]=rr; } }));
+  const totalSlots = bpr*totalRounds;
+  const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
+  const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
+  const sortedByNeed = [...activePlayers].sort((a,b) => {
+    const ca=concSet.has(a.userId)?1:0, cb=concSet.has(b.userId)?1:0; if(ca!==cb) return cb-ca;
+    const needDiff=(breakCounts[b.userId]||0)-(breakCounts[a.userId]||0); if(needDiff!==0) return needDiff;
+    return a.usr-b.usr;
+  });
+  const ent = {}; sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
+  const remaining = {}; activePlayers.forEach(p => { remaining[p.userId] = Math.max(0, ent[p.userId]-(breakCounts[p.userId]||0)); });
+
+  // Two tiers, not one: entitlement (remaining>0) and the no-consecutive-break rule are both
+  // supposed to be hard rules, but with enough bench players relative to court count, deep
+  // enough into a long event, they can mathematically collide — every occupant everywhere has
+  // either already used their fair share or just broke last round, so satisfying BOTH rules for
+  // every eviction becomes impossible (found via stress-testing: 17 players/3 courts/8 rounds,
+  // 11 players/2 courts/6 rounds). Between the two, anti-consecutive wins: a strict tier tries
+  // both rules together first, and only if that finds nobody anywhere does a second, relaxed
+  // tier drop the entitlement cap (letting someone go slightly over their fair share once) —
+  // never the reverse, since a forced multi-round-in-a-row break for the same person is a much
+  // more visible unfairness than one player's count being off by one for a single event.
+  const isEligibleStrict = uid => !excludeIds.has(uid) && (remaining[uid]||0) > 0 && ri-(lastBreak[uid]??-99) > 1;
+  const isEligibleRelaxed = uid => !excludeIds.has(uid) && ri-(lastBreak[uid]??-99) > 1;
+  const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref, ri, totalRounds)<=0.5;
+
+  // Buckets built purely from win/loss movement — always exactly 4 per court on their own
+  // (every match's 2 winners + 2 losers land in exactly one bucket each, and the top/bottom
+  // clamp folds boundary transitions back into the same court) — tagged with how each player
+  // arrived so the protected/momentum split above can be applied. Firm-locked and retired
+  // players are excluded here too, the same as v1, since they're not real occupants this round.
+  const buckets={}; for(let c=1;c<=courts;c++) buckets[c]=[];
+  lastRound.matches.forEach(m=>{
+    if(!m.winner) return;
+    const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+    W.forEach(p=>{ if(!excludeIds.has(p.userId)) buckets[Math.max(1,m.court-1)].push({p, via: m.court===1?"stay":"win"}); });
+    L.forEach(p=>{ if(!excludeIds.has(p.userId)) buckets[Math.min(courts,m.court+1)].push({p, via:"loss"}); });
+  });
+  const isProtected = entry => entry.via!=="win";
+
+  const pickBest = pool => {
+    pool.sort((x,y) => {
+      const cx=concSet.has(x.p.userId)?1:0, cy=concSet.has(y.p.userId)?1:0; if(cx!==cy) return cy-cx;
+      const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
+      return x.p.usr - y.p.usr;
+    });
+    return pool[0];
+  };
+
+  const evicted = []; // {p, court} — this round's real break picks, tagged with where they were evicted from
+  const stillBenched = []; // uids who found no eligible seat anywhere this round — see below
+  const bench = (lastRound.onBreakIds||[])
+    .filter(uid=>!retiredIds.includes(uid)&&!firmHere.includes(uid)) // firm-locked-to-stay-on-break players aren't trying to return this round
+    .map(uid=>({ uid, target: findExpectedReturnCourt(uid) }))
+    .filter(b=>b.target); // no history at all (shouldn't normally happen) — falls through to the late-joiner safety net instead
+  bench.sort((a,b) => (a.target-b.target) || ((sorted.find(p=>p.userId===b.uid)?.usr||0) - (sorted.find(p=>p.userId===a.uid)?.usr||0)));
+
+  bench.forEach(({uid,target}) => {
+    const benchPlayer = sorted.find(p=>p.userId===uid);
+    if (!benchPlayer) return;
+    const protectedOrder = [target];
+    for (let c=target-1;c>=1;c--) protectedOrder.push(c);
+    for (let c=target+1;c<=courts;c++) protectedOrder.push(c);
+    const momentumOrder = [target];
+    for (let c=target+1;c<=courts;c++) momentumOrder.push(c);
+    for (let c=target-1;c>=1;c--) momentumOrder.push(c);
+
+    const findWith = eligibleFn => {
+      for (const c of protectedOrder) {
+        const pool = buckets[c].filter(e=>isProtected(e)&&eligibleFn(e.p.userId));
+        if (pool.length) return {court:c, entry:pickBest(pool)};
+      }
+      for (const c of momentumOrder) {
+        const pool = buckets[c].filter(e=>!isProtected(e)&&eligibleFn(e.p.userId));
+        if (pool.length) return {court:c, entry:pickBest(pool)};
+      }
+      return null;
+    };
+    // Strict pass (both hard rules) first; only if that finds nobody anywhere does the relaxed
+    // pass (anti-consecutive only, entitlement cap dropped) get a turn — see isEligibleRelaxed's
+    // comment for why anti-consecutive wins when the two hard rules can't both be satisfied.
+    const found = findWith(isEligibleStrict) || findWith(isEligibleRelaxed);
+    // Real bug found via stress-testing (2026-09-20, higher break-ratio events, later rounds):
+    // even the relaxed pass can still come up empty in extreme cases (bpr close to or exceeding
+    // court count) — every occupant of every court already broke last round too. Simply
+    // skipping this bench player here (the original code) silently deleted them from the round
+    // entirely — not playing AND not marked on break. The only consistent outcome when there's
+    // truly no legal seat to open anywhere is that they stay benched another round.
+    if (!found) { stillBenched.push(uid); return; }
+    const {court, entry} = found;
+    buckets[court].splice(buckets[court].indexOf(entry), 1, {p:benchPlayer, via:"bench"});
+    evicted.push({p:entry.p, court});
+  });
+
+  const plainBuckets = {}; for (let c=1;c<=courts;c++) plainBuckets[c]=buckets[c].map(e=>e.p);
+  const newBreakIds = [...firmHere, ...evicted.map(e=>e.p.userId), ...stillBenched];
+  return { newBreakIds, buckets: plainBuckets };
 }
 // retiredIds: players marked retired mid-event (Enhancement #24) — dropped from every future
 // round's matches AND break list from here on (they stop accruing anything, matches or break
@@ -774,6 +923,7 @@ function genRound1(players, courts, totalRounds) {
 // priority order buildBreakPlan itself uses) rather than leaving a court empty.
 function genNextRoundCI(plan, retiredIds=[], concentrateOn=[]) {
   const {rounds,courts,breakPlan,sorted}=plan, ri=rounds.length, lastRound=rounds[ri-1];
+  const totalRounds = plan.totalRounds;
   const ph=JSON.parse(JSON.stringify(plan.partnerHistory||{}));
   const lastRoundPairs=new Set();
   lastRound.matches.forEach(m=>{[m.teamA,m.teamB].forEach(team=>{const[a,b]=team;if(!a||!b)return;if(!ph[a.userId])ph[a.userId]={};if(!ph[b.userId])ph[b.userId]={};ph[a.userId][b.userId]=(ph[a.userId][b.userId]||0)+1;ph[b.userId][a.userId]=(ph[b.userId][a.userId]||0)+1;lastRoundPairs.add(pairKey(a.userId,b.userId));});});
@@ -783,55 +933,14 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[]) {
   // duplicate of regenerateBreakPlan's (not a shared refactor) — that function is Classic-only,
   // already hardened through several real production bugs this session, and is left untouched
   // on purpose. See pickFromTiers above and the Dynamic Break Engine plan for the full design.
+  // v2 (2026-09-20, see genDynamic2CI's own header) is a third, independent option — same
+  // firm-lock/entitlement/anti-consecutive rules, different selection mechanism.
   const firmHere = (plan.firmBreaks||{})[ri] || [];
-  let newBreakIds;
-  if (plan.breakEngine === "dynamic") {
-    const activePlayers = sorted.filter(p=>!retiredIds.includes(p.userId));
-    const bpr = Math.max(0, activePlayers.length - courts*4);
-    const totalRounds = plan.totalRounds;
-    const breakCounts = {}, lastBreak = {};
-    activePlayers.forEach(p => { breakCounts[p.userId]=0; lastBreak[p.userId]=-99; });
-    rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(uid => { if(breakCounts[uid]!==undefined){ breakCounts[uid]++; lastBreak[uid]=rr; } }));
-    for (let r=ri; r<totalRounds; r++) (plan.firmBreaks?.[r]||[]).forEach(uid => { if(breakCounts[uid]!==undefined) breakCounts[uid]++; });
-    const totalSlots = bpr*totalRounds;
-    const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
-    const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
-    const concSet = new Set(concentrateOn);
-    const sortedByNeed = [...activePlayers].sort((a,b) => {
-      const ca=concSet.has(a.userId)?1:0, cb=concSet.has(b.userId)?1:0; if(ca!==cb) return cb-ca;
-      const needDiff=(breakCounts[b.userId]||0)-(breakCounts[a.userId]||0); if(needDiff!==0) return needDiff;
-      return a.usr-b.usr;
-    });
-    const ent = {};
-    sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
-    const remaining = {};
-    activePlayers.forEach(p => { remaining[p.userId] = Math.max(0, ent[p.userId]-(breakCounts[p.userId]||0)); });
-
-    const losersByCourt={}, winnersByCourt={};
-    lastRound.matches.forEach(m=>{
-      if(!m.winner) return;
-      const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
-      losersByCourt[m.court]=L; winnersByCourt[m.court]=W;
-    });
-    const excludeIds = new Set([...firmHere, ...retiredIds]);
-    const tiers=[];
-    for(let c=1;c<=courts;c++) if(losersByCourt[c]) tiers.push(losersByCourt[c].filter(p=>!excludeIds.has(p.userId)));
-    for(let c=1;c<=courts;c++) if(winnersByCourt[c]) tiers.push(winnersByCourt[c].filter(p=>!excludeIds.has(p.userId)));
-    const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,ri,totalRounds)<=0.5;
-    const needed = Math.max(0, bpr-firmHere.length);
-    const dynamicPicks = pickFromTiers(tiers, needed, {getId:p=>p.userId, remaining, lastBreak, ri, concentrateSet:concSet, isAnchor});
-    newBreakIds = [...firmHere, ...dynamicPicks.map(p=>p.userId)];
-  } else {
-    newBreakIds = breakPlan[ri]||[];
-  }
-  const buckets={};
-  for(let c=1;c<=courts;c++) buckets[c]=[];
-  lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
-  for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
   // Where a player belongs (whether returning from break, or newly going on break this round)
   // is not "the court they last sat on" — it's the court their last ACTUAL result would have
   // earned them (win promotes, loss relegates), applying the same movement rule as everyone
-  // else. Scans backward since they may have broken for more than one round in a row.
+  // else. Scans backward since they may have broken for more than one round in a row. Moved
+  // above the engine branch since v2 needs it up front, not just for the returning-list below.
   const findExpectedReturnCourt=(uid)=>{
     for(let i=rounds.length-1;i>=0;i--){
       for(const m of rounds[i].matches){
@@ -842,25 +951,84 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[]) {
           return won ? Math.max(1,m.court-1) : Math.min(courts,m.court+1);
         }
       }
+      // Real bug found via v2 simulation (2026-09-20): a player on break since Round 1 has
+      // never appeared in ANY match, so the loop above never finds them and always returned
+      // null — silently dropping them from every round from R2 onward (missing from both the
+      // matches AND the break list). Round 1's own onBreak entries already carry a wouldBeCourt
+      // (see genRound1) — fall back to that the moment a round with no match for this player
+      // also has no result to derive one from.
+      const onB=(rounds[i].onBreak||[]).find(p=>p.userId===uid);
+      if(onB&&onB.wouldBeCourt) return onB.wouldBeCourt;
     }
     return null;
   };
+  let newBreakIds, buckets;
+  if (plan.breakEngine === "dynamic2") {
+    ({newBreakIds, buckets} = genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retiredIds, concentrateOn, firmHere, findExpectedReturnCourt));
+  } else {
+    if (plan.breakEngine === "dynamic") {
+      const activePlayers = sorted.filter(p=>!retiredIds.includes(p.userId));
+      const bpr = Math.max(0, activePlayers.length - courts*4);
+      const breakCounts = {}, lastBreak = {};
+      activePlayers.forEach(p => { breakCounts[p.userId]=0; lastBreak[p.userId]=-99; });
+      rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(uid => { if(breakCounts[uid]!==undefined){ breakCounts[uid]++; lastBreak[uid]=rr; } }));
+      for (let r=ri; r<totalRounds; r++) (plan.firmBreaks?.[r]||[]).forEach(uid => { if(breakCounts[uid]!==undefined) breakCounts[uid]++; });
+      const totalSlots = bpr*totalRounds;
+      const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
+      const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
+      const concSet = new Set(concentrateOn);
+      const sortedByNeed = [...activePlayers].sort((a,b) => {
+        const ca=concSet.has(a.userId)?1:0, cb=concSet.has(b.userId)?1:0; if(ca!==cb) return cb-ca;
+        const needDiff=(breakCounts[b.userId]||0)-(breakCounts[a.userId]||0); if(needDiff!==0) return needDiff;
+        return a.usr-b.usr;
+      });
+      const ent = {};
+      sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
+      const remaining = {};
+      activePlayers.forEach(p => { remaining[p.userId] = Math.max(0, ent[p.userId]-(breakCounts[p.userId]||0)); });
+
+      const losersByCourt={}, winnersByCourt={};
+      lastRound.matches.forEach(m=>{
+        if(!m.winner) return;
+        const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+        losersByCourt[m.court]=L; winnersByCourt[m.court]=W;
+      });
+      const excludeIds = new Set([...firmHere, ...retiredIds]);
+      const tiers=[];
+      for(let c=1;c<=courts;c++) if(losersByCourt[c]) tiers.push(losersByCourt[c].filter(p=>!excludeIds.has(p.userId)));
+      for(let c=1;c<=courts;c++) if(winnersByCourt[c]) tiers.push(winnersByCourt[c].filter(p=>!excludeIds.has(p.userId)));
+      const isAnchor = p => p.breakPref && p.breakPref!=="none" && prefDist(p.breakPref,ri,totalRounds)<=0.5;
+      const needed = Math.max(0, bpr-firmHere.length);
+      const dynamicPicks = pickFromTiers(tiers, needed, {getId:p=>p.userId, remaining, lastBreak, ri, concentrateSet:concSet, isAnchor});
+      newBreakIds = [...firmHere, ...dynamicPicks.map(p=>p.userId)];
+    } else {
+      newBreakIds = breakPlan[ri]||[];
+    }
+    buckets={};
+    for(let c=1;c<=courts;c++) buckets[c]=[];
+    lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
+    for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
+  }
   const onBreak=sorted.filter(p=>newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId)).map(p=>({...p, wouldBeCourt: findExpectedReturnCourt(p.userId)}));
-  const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
-  // Requested 2026-09-07: process returners one target-court group at a time, in court order —
-  // every Court-1-bound returner is placed before any Court-2-bound returner is even
-  // considered, and so on — rather than in whatever order they happen to sit in the roster.
-  // Within a group, a returner who can't reclaim their own court's gap cascades DOWNWARD
-  // through the higher-numbered (lower-tier) courts in order, never to a "whichever court
-  // currently has the most empty seats" pick — that's what let someone land somewhere
-  // unrelated to their own court instead of the next one down.
-  const returningWithTarget = returning.map(rp=>({rp, targetCourt:findExpectedReturnCourt(rp.userId)}));
-  returningWithTarget.sort((a,b)=>(a.targetCourt??999)-(b.targetCourt??999));
-  returningWithTarget.forEach(({rp,targetCourt})=>{
-    if (targetCourt) { for(let c=targetCourt;c<=courts;c++){ if(buckets[c].length<4){ buckets[c].push(rp); return; } } }
-    const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
-    if(needy)buckets[parseInt(needy[0])].push(rp);
-  });
+  // v2 already placed every returner while building its own buckets above (see genDynamic2CI) —
+  // running this generic "whichever court has room" pass for it too would double-place them.
+  if (plan.breakEngine !== "dynamic2") {
+    const returning=sorted.filter(p=>(lastRound.onBreakIds||[]).includes(p.userId)&&!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
+    // Requested 2026-09-07: process returners one target-court group at a time, in court order —
+    // every Court-1-bound returner is placed before any Court-2-bound returner is even
+    // considered, and so on — rather than in whatever order they happen to sit in the roster.
+    // Within a group, a returner who can't reclaim their own court's gap cascades DOWNWARD
+    // through the higher-numbered (lower-tier) courts in order, never to a "whichever court
+    // currently has the most empty seats" pick — that's what let someone land somewhere
+    // unrelated to their own court instead of the next one down.
+    const returningWithTarget = returning.map(rp=>({rp, targetCourt:findExpectedReturnCourt(rp.userId)}));
+    returningWithTarget.sort((a,b)=>(a.targetCourt??999)-(b.targetCourt??999));
+    returningWithTarget.forEach(({rp,targetCourt})=>{
+      if (targetCourt) { for(let c=targetCourt;c<=courts;c++){ if(buckets[c].length<4){ buckets[c].push(rp); return; } } }
+      const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
+      if(needy)buckets[parseInt(needy[0])].push(rp);
+    });
+  }
   // Late joiners: registered after Start CI (see syncCIPlanRoster), so they have no history in
   // lastRound.matches/onBreakIds at all — buckets/onBreak/returning above have no record of
   // them. Treated the same as a "returning" player: dropped into whichever court has room.
@@ -1549,11 +1717,17 @@ function generateCTPlan(players, courts, format, ev=null, matchDuration=20, topP
   if (format === "ladder") {
     // Ladder: build break plan like CI, court points + break points
     const bpr = Math.max(0, teams.length - courts*2);
-    const ladderBreakPlan = buildCTBreakPlan(teams, courts, 999); // pre-compute
+    // Real gap found 2026-09-20 while designing Dynamic v2: this call never actually passed
+    // concentrateOn through even though buildCTBreakPlan has supported it since 2026-09-02 —
+    // Round 1 of a CT Ladder event never gave concentrated teams any priority at all.
+    const ladderBreakPlan = buildCTBreakPlan(teams, courts, 999, [], {}, ev?.breakConcentrateIds||[]); // pre-compute
     const sorted = [...teams].sort((a,b) => b.avgUsr - a.avgUsr);
     const onBreakIds = ladderBreakPlan[0] || [];
     const playing = sorted.filter(t => !onBreakIds.includes(t.id));
-    const onBreak  = sorted.filter(t =>  onBreakIds.includes(t.id));
+    // Real gap found 2026-09-20: unlike CI's genRound1, this never recorded a wouldBeCourt for
+    // Round 1's break teams at all — harmless for v1 (display-only), but Dynamic v2 needs it as
+    // the target-court search's starting point for a team that's never yet played a match.
+    const onBreak  = sorted.filter(t =>  onBreakIds.includes(t.id)).map(t=>({...t, wouldBeCourt: Math.min(courts, Math.floor(sorted.findIndex(x=>x.id===t.id)/2)+1)}));
     const matches = [];
     for (let c = 0; c < courts; c++) {
       const tA=playing[c*2], tB=playing[c*2+1];
@@ -1634,6 +1808,91 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
   return plan;
 }
 
+// Dynamic Break Engine v2 for CT Ladder — identical design to genDynamic2CI, just at team
+// granularity (a team is the atomic unit in Ladder — always moves, breaks, and returns as one,
+// unlike CI's individually-reshuffled partners), and 2 teams per court instead of 4 players.
+// See genDynamic2CI's own header comment for the full protected/momentum cascade rationale.
+function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retiredTeamIds, concentrateOn, firmHere, findExpectedReturnCourtCT) {
+  const excludeIds = new Set([...firmHere, ...retiredTeamIds]);
+  const isConcTeam = t => (t.players||[]).some(p=>concentrateOn.includes(p.userId!=null?p.userId:p.id));
+
+  const activeTeams = sorted.filter(t=>!retiredTeamIds.includes(t.id));
+  const bpr = Math.max(0, activeTeams.length - courts*2);
+  const breakCounts = {}, lastBreak = {};
+  activeTeams.forEach(t => { breakCounts[t.id]=0; lastBreak[t.id]=-99; });
+  rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(id => { if(breakCounts[id]!==undefined){ breakCounts[id]++; lastBreak[id]=rr; } }));
+  const totalSlots = bpr*totalRounds;
+  const base = activeTeams.length ? Math.floor(totalSlots/activeTeams.length) : 0;
+  const extras = activeTeams.length ? totalSlots%activeTeams.length : 0;
+  const sortedByNeed = [...activeTeams].sort((a,b) => {
+    const ca=isConcTeam(a)?1:0, cb=isConcTeam(b)?1:0; if(ca!==cb) return cb-ca;
+    const needDiff=(breakCounts[b.id]||0)-(breakCounts[a.id]||0); if(needDiff!==0) return needDiff;
+    return (a.avgUsr||0)-(b.avgUsr||0);
+  });
+  const ent = {}; sortedByNeed.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
+  const remaining = {}; activeTeams.forEach(t => { remaining[t.id] = Math.max(0, ent[t.id]-(breakCounts[t.id]||0)); });
+
+  const isEligibleStrict = tid => !excludeIds.has(tid) && (remaining[tid]||0) > 0 && ri-(lastBreak[tid]??-99) > 1;
+  const isEligibleRelaxed = tid => !excludeIds.has(tid) && ri-(lastBreak[tid]??-99) > 1;
+  const isAnchor = t => t.breakPref && t.breakPref!=="none" && prefDist(t.breakPref, ri, totalRounds)<=0.5;
+
+  const buckets={}; for(let c=1;c<=courts;c++) buckets[c]=[];
+  lastRound.matchesA.forEach(m=>{
+    if(!m.winner) return;
+    const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+    if(!excludeIds.has(W.id)) buckets[Math.max(1,m.court-1)].push({t:W, via: m.court===1?"stay":"win"});
+    if(!excludeIds.has(L.id)) buckets[Math.min(courts,m.court+1)].push({t:L, via:"loss"});
+  });
+  const isProtected = entry => entry.via!=="win";
+
+  const pickBest = pool => {
+    pool.sort((x,y) => {
+      const cx=isConcTeam(x.t)?1:0, cy=isConcTeam(y.t)?1:0; if(cx!==cy) return cy-cx;
+      const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
+      return (x.t.avgUsr||0) - (y.t.avgUsr||0);
+    });
+    return pool[0];
+  };
+
+  const evicted = [];
+  const stillBenched = [];
+  const bench = (lastRound.onBreakIds||[])
+    .filter(tid=>!retiredTeamIds.includes(tid)&&!firmHere.includes(tid))
+    .map(tid=>({ tid, target: findExpectedReturnCourtCT(tid) }))
+    .filter(b=>b.target);
+  bench.sort((a,b) => (a.target-b.target) || ((sorted.find(t=>t.id===b.tid)?.avgUsr||0) - (sorted.find(t=>t.id===a.tid)?.avgUsr||0)));
+
+  bench.forEach(({tid,target}) => {
+    const benchTeam = sorted.find(t=>t.id===tid);
+    if (!benchTeam) return;
+    const protectedOrder = [target];
+    for (let c=target-1;c>=1;c--) protectedOrder.push(c);
+    for (let c=target+1;c<=courts;c++) protectedOrder.push(c);
+    const momentumOrder = [target];
+    for (let c=target+1;c<=courts;c++) momentumOrder.push(c);
+    for (let c=target-1;c>=1;c--) momentumOrder.push(c);
+    const findWith = eligibleFn => {
+      for (const c of protectedOrder) {
+        const pool = buckets[c].filter(e=>isProtected(e)&&eligibleFn(e.t.id));
+        if (pool.length) return {court:c, entry:pickBest(pool)};
+      }
+      for (const c of momentumOrder) {
+        const pool = buckets[c].filter(e=>!isProtected(e)&&eligibleFn(e.t.id));
+        if (pool.length) return {court:c, entry:pickBest(pool)};
+      }
+      return null;
+    };
+    const found = findWith(isEligibleStrict) || findWith(isEligibleRelaxed);
+    if (!found) { stillBenched.push(tid); return; }
+    const {court, entry} = found;
+    buckets[court].splice(buckets[court].indexOf(entry), 1, {t:benchTeam, via:"bench"});
+    evicted.push({t:entry.t, court});
+  });
+
+  const plainBuckets = {}; for (let c=1;c<=courts;c++) plainBuckets[c]=buckets[c].map(e=>e.t);
+  const newBreakIds = [...firmHere, ...evicted.map(e=>e.t.id), ...stillBenched];
+  return { newBreakIds, buckets: plainBuckets };
+}
 // CT Ladder: generate next match. retiredIds: PLAYER ids marked retired (Enhancement #24) —
 // retiring one player retires their whole team (fixed doubles, no "continue short-handed"
 // mode), so the whole team is dropped from every future round, with a break-pool backfill if a
@@ -1643,16 +1902,39 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[]) {
   const retiredTeamIds = retiredIds.length ? (teams||[]).filter(t=>t.players?.some(p=>retiredIds.includes(p.userId))).map(t=>t.id) : [];
   const ri = rounds.length;
   const lastRound = rounds[ri-1];
+  const totalRounds = plan.maxRounds || plan.totalRounds || breakPlan.length;
   // Dynamic Break Engine (2026-09-05) — same design as genNextRoundCI, at team granularity.
   // Entitlement math below is a deliberate self-contained duplicate of buildCTBreakPlan's
   // regenerate path (not a shared refactor) — that function is Classic-only, already hardened
-  // through real production bugs this session, and is left untouched on purpose.
+  // through real production bugs this session, and is left untouched on purpose. v2 (see
+  // genDynamic2CT) is a third, independent option below.
   const firmHere = (plan.firmBreaks||{})[ri] || [];
-  let newBreakIds;
-  if (plan.breakEngine === "dynamic") {
+  // Corrected version of findLastCourtCT further down (kept for v1, unchanged, since touching
+  // it now would be an unrelated behavior change) — v2 needs the same win/loss-adjusted target
+  // CI's findExpectedReturnCourt uses (a team returns where their last real result earned them,
+  // not literally back to the court they broke from), plus the Round-1-only-ever-on-break
+  // fallback to the team's own wouldBeCourt (see generateCTPlan's ladder branch).
+  const findExpectedReturnCourtCT=(tid)=>{
+    for(let i=rounds.length-1;i>=0;i--){
+      for(const m of rounds[i].matchesA||[]){
+        const inA=m.teamA?.id===tid, inB=m.teamB?.id===tid;
+        if(inA||inB){
+          if(!m.winner) return m.court;
+          const won=(inA&&m.winner==="A")||(inB&&m.winner==="B");
+          return won ? Math.max(1,m.court-1) : Math.min(courts,m.court+1);
+        }
+      }
+      const onB=(rounds[i].onBreak||[]).find(t=>t.id===tid);
+      if(onB&&onB.wouldBeCourt) return onB.wouldBeCourt;
+    }
+    return null;
+  };
+  let newBreakIds, buckets;
+  if (plan.breakEngine === "dynamic2") {
+    ({newBreakIds, buckets} = genDynamic2CT(sorted||teams, courts, ri, totalRounds, rounds, lastRound, retiredTeamIds, concentrateOn, firmHere, findExpectedReturnCourtCT));
+  } else if (plan.breakEngine === "dynamic") {
     const activeTeams = (sorted||teams).filter(t=>!retiredTeamIds.includes(t.id));
     const bpr = Math.max(0, activeTeams.length - courts*2);
-    const totalRounds = plan.maxRounds || plan.totalRounds || breakPlan.length;
     const breakCounts = {}, lastBreak = {};
     activeTeams.forEach(t => { breakCounts[t.id]=0; lastBreak[t.id]=-99; });
     rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(id => { if(breakCounts[id]!==undefined){ breakCounts[id]++; lastBreak[id]=rr; } }));
@@ -1689,41 +1971,47 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[]) {
   } else {
     newBreakIds = breakPlan[ri] || [];
   }
+  if (plan.breakEngine !== "dynamic2") {
+    // Court ladder: winners up, losers down
+    buckets = {}; for(let c=1;c<=courts;c++) buckets[c]=[];
+    lastRound.matchesA.forEach(m => {
+      if (!m.winner) return;
+      const W = m.winner==="A"?m.teamA:m.teamB, L = m.winner==="A"?m.teamB:m.teamA;
+      buckets[Math.max(1,m.court-1)].push(W);
+      buckets[Math.min(courts,m.court+1)].push(L);
+    });
+    // Remove teams on break or retired
+    for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
+  }
   const onBreak = sorted.filter(t => newBreakIds.includes(t.id) && !retiredTeamIds.includes(t.id));
-
-  // Court ladder: winners up, losers down
-  const buckets = {}; for(let c=1;c<=courts;c++) buckets[c]=[];
-  lastRound.matchesA.forEach(m => {
-    if (!m.winner) return;
-    const W = m.winner==="A"?m.teamA:m.teamB, L = m.winner==="A"?m.teamB:m.teamA;
-    buckets[Math.max(1,m.court-1)].push(W);
-    buckets[Math.min(courts,m.court+1)].push(L);
-  });
-  // Remove teams on break or retired
-  for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
-  // Add returning teams — prefer sending each team back to the court they last competed
-  // on (before their break), falling back to the neediest court if that one's still full.
-  const returning = sorted.filter(t=>(lastRound.onBreakIds||[]).includes(t.id)&&!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
-  const findLastCourtCT=(tid)=>{
-    for(let i=rounds.length-1;i>=0;i--){
-      for(const m of rounds[i].matchesA||[]){
-        if(m.teamA?.id===tid||m.teamB?.id===tid) return m.court;
+  // v2 already placed every returning team while building its own buckets above (see
+  // genDynamic2CT) — running this generic "whichever court has room" pass for it too would
+  // double-place them.
+  if (plan.breakEngine !== "dynamic2") {
+    // Add returning teams — prefer sending each team back to the court they last competed
+    // on (before their break), falling back to the neediest court if that one's still full.
+    const returning = sorted.filter(t=>(lastRound.onBreakIds||[]).includes(t.id)&&!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
+    const findLastCourtCT=(tid)=>{
+      for(let i=rounds.length-1;i>=0;i--){
+        for(const m of rounds[i].matchesA||[]){
+          if(m.teamA?.id===tid||m.teamB?.id===tid) return m.court;
+        }
       }
-    }
-    return null;
-  };
-  // Same court-order cascade as genNextRoundCI's returning-player placement (requested
-  // 2026-09-07): every Court-1-bound returning team is placed before any Court-2-bound team is
-  // even considered, and within a group a team that can't reclaim its own court cascades
-  // DOWNWARD through the higher-numbered courts in order, not to whichever court has the most
-  // empty seats.
-  const returningWithCourt = returning.map(t=>({t, lastCourt:findLastCourtCT(t.id)}));
-  returningWithCourt.sort((a,b)=>(a.lastCourt??999)-(b.lastCourt??999));
-  returningWithCourt.forEach(({t,lastCourt}) => {
-    if (lastCourt) { for(let c=lastCourt;c<=courts;c++){ if(buckets[c].length<2){ buckets[c].push(t); return; } } }
-    const needy=Object.entries(buckets).filter(([,ts])=>ts.length<2).sort((a,b)=>a[1].length-b[1].length)[0];
-    if(needy)buckets[parseInt(needy[0])].push(t);
-  });
+      return null;
+    };
+    // Same court-order cascade as genNextRoundCI's returning-player placement (requested
+    // 2026-09-07): every Court-1-bound returning team is placed before any Court-2-bound team is
+    // even considered, and within a group a team that can't reclaim its own court cascades
+    // DOWNWARD through the higher-numbered courts in order, not to whichever court has the most
+    // empty seats.
+    const returningWithCourt = returning.map(t=>({t, lastCourt:findLastCourtCT(t.id)}));
+    returningWithCourt.sort((a,b)=>(a.lastCourt??999)-(b.lastCourt??999));
+    returningWithCourt.forEach(({t,lastCourt}) => {
+      if (lastCourt) { for(let c=lastCourt;c<=courts;c++){ if(buckets[c].length<2){ buckets[c].push(t); return; } } }
+      const needy=Object.entries(buckets).filter(([,ts])=>ts.length<2).sort((a,b)=>a[1].length-b[1].length)[0];
+      if(needy)buckets[parseInt(needy[0])].push(t);
+    });
+  }
 
   if(retiredTeamIds.length){
     const breakCountSoFar={};
@@ -7968,7 +8256,7 @@ export default function Matchkeeper() {
       toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Start again`,"err");
       return;
     }
-    updEvent(cid,eid,e=>({...e,plan:{...genRound1(buildPlayers(e).players,e.courts,n),roundDuration:dur,breakEngine:breakEngine||"classic"}}));
+    updEvent(cid,eid,e=>({...e,plan:{...genRound1(buildPlayers(e).players,e.courts,n,e.breakConcentrateIds||[]),roundDuration:dur,breakEngine:breakEngine||"classic"}}));
   };
   const nextRoundCI=(cid,eid,silent)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return false;
@@ -10630,10 +10918,10 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Break Schedule</div>
       {isAdmin&&ev.status!=="completed"&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="dynamic"?"classic":"dynamic")}
-          title="Switchable any time during play — takes effect on the next round generated"
-          style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #F59E0B44",background:breakEngine==="dynamic"?"#F59E0B22":"#F59E0B11",color:"#FBBF24",fontSize:12,fontWeight:500,cursor:"pointer"}}>
-          ⚡ Engine: {breakEngine==="dynamic"?"Dynamic":"Classic"}
+        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="classic"?"dynamic":breakEngine==="dynamic"?"dynamic2":"classic")}
+          title="Switchable any time during play — takes effect on the next round generated. Tap to cycle: Classic → Dynamic → Dynamic v2"
+          style={{padding:"6px 12px",borderRadius:7,border:`0.5px solid ${breakEngine==="dynamic2"?"#22D3EE44":"#F59E0B44"}`,background:breakEngine==="classic"?"#F59E0B11":breakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:breakEngine==="dynamic2"?"#22D3EE":"#FBBF24",fontSize:12,fontWeight:500,cursor:"pointer"}}>
+          {breakEngine==="dynamic2"?"🧬":"⚡"} Engine: {breakEngine==="dynamic"?"Dynamic":breakEngine==="dynamic2"?"Dynamic v2":"Classic"}
         </button>
         <button onClick={()=>setConcOpen(true)}
           style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #8B5CF644",background:concentrateIds.length?"#8B5CF622":"#8B5CF611",color:"#A78BFA",fontSize:12,fontWeight:500,cursor:"pointer"}}>
@@ -10915,10 +11203,10 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
         {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap a cell to set Playing/Break/Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
       {isAdmin&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="dynamic"?"classic":"dynamic")}
-          title="Switchable any time during play — takes effect on the next match generated"
-          style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:breakEngine==="dynamic"?"#F59E0B22":"#F59E0B11",color:"#FBBF24",fontSize:11,fontWeight:600,cursor:"pointer"}}>
-          ⚡ Engine: {breakEngine==="dynamic"?"Dynamic":"Classic"}
+        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="classic"?"dynamic":breakEngine==="dynamic"?"dynamic2":"classic")}
+          title="Switchable any time during play — takes effect on the next match generated. Tap to cycle: Classic → Dynamic → Dynamic v2"
+          style={{padding:"5px 12px",borderRadius:6,border:`0.5px solid ${breakEngine==="dynamic2"?"#22D3EE44":"#F59E0B44"}`,background:breakEngine==="classic"?"#F59E0B11":breakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:breakEngine==="dynamic2"?"#22D3EE":"#FBBF24",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+          {breakEngine==="dynamic2"?"🧬":"⚡"} Engine: {breakEngine==="dynamic"?"Dynamic":breakEngine==="dynamic2"?"Dynamic v2":"Classic"}
         </button>
         <button onClick={()=>setConcOpen(true)} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #8B5CF644",background:concentrateIds.length?"#8B5CF622":"#8B5CF611",color:"#A78BFA",fontSize:11,fontWeight:600,cursor:"pointer"}}>🎯 Concentrate{concentrateIds.length?` (${concentrateIds.length})`:""}</button>
         {onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
@@ -11487,7 +11775,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     return mins;
   })();
   const [roundDur,setRDur] = useState(suggestedRoundDur);
-  const [startBreakEngine,setStartBreakEngine] = useState("classic"); // pre-start default only — see the live toggle in the Breaks tab
+  // Default is Dynamic v2 (2026-09-20, explicit admin request: "make it default choice... I
+  // don't want to forget to choose it") — pre-start default only, still switchable any time
+  // from the Breaks tab's live toggle, and still overridable here before Start too.
+  const [startBreakEngine,setStartBreakEngine] = useState("dynamic2");
+  // Admin request (2026-09-20): "I want to be able to select the concentrate before generating
+  // the rounds and breaks first time" — same picker the Breaks tab already uses post-Start,
+  // just also reachable from the pre-Start "Generate Round 1"/"Form Teams & Start" cards.
+  const [preStartConcOpen,setPreStartConcOpen] = useState(false);
   // Total rounds is fully derived from the event's real booking window ÷ round duration —
   // no manual round-count picker; changing the duration recomputes this automatically.
   const totalR = Math.max(1, Math.round(eventBookingMins/(roundDur||20)));
@@ -11641,7 +11936,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     startCI: (n,dur,breakEngine) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
-          return {...e, plan:{...genRound1(players, e.courts, n), roundDuration:dur, breakEngine:breakEngine||"classic"}};
+          return {...e, plan:{...genRound1(players, e.courts, n, e.breakConcentrateIds||[]), roundDuration:dur, breakEngine:breakEngine||"classic"}};
         })
       : onStartCI(n,dur,breakEngine),
     setWinCI: (ri,mi,w,sA,sB) => sim
@@ -13221,13 +13516,22 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{activeRegCount} players · {tc} courts · {Math.max(0,activeRegCount-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
           <span style={{fontSize:12,color:"var(--po-dim)"}}>Break engine:</span>
           <SmBtn label="Classic" onClick={()=>setStartBreakEngine("classic")} active={startBreakEngine==="classic"} color="#6366F1"/>
           <SmBtn label="⚡ Dynamic" onClick={()=>setStartBreakEngine("dynamic")} active={startBreakEngine==="dynamic"} color="#F59E0B"/>
+          <SmBtn label="🧬 Dynamic v2" onClick={()=>setStartBreakEngine("dynamic2")} active={startBreakEngine==="dynamic2"} color="#22D3EE"/>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <SmBtn label={`🎯 Concentrate${(effEv.breakConcentrateIds||[]).length?` (${effEv.breakConcentrateIds.length})`:""}`} onClick={()=>setPreStartConcOpen(true)} color="#8B5CF6"/>
         </div>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:16}}>💡 {totalR} rounds fit this event's booking window automatically ({roundDur}m each) · just a starting default — switchable any time from the Breaks tab</div>
         {activeRegCount<tc*4?<div style={{padding:"10px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8,fontSize:12,color:"#EF4444"}}>⚠️ Need at least {tc*4} players.</div>:<Btn label="🎯 Generate Round 1" primary onClick={()=>act.startCI(totalR,roundDur,startBreakEngine)} style={{width:"100%"}}/>}
+        {preStartConcOpen&&<ConcentrateBreaksModal
+          players={splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,userId:r.userId}:null;}).filter(Boolean)}
+          selectedIds={effEv.breakConcentrateIds||[]}
+          onSave={ids=>{act.setBreakConcentrateIds(ids);setPreStartConcOpen(false);}}
+          onClose={()=>setPreStartConcOpen(false)}/>}
       </Card>}
       {plan&&<>
         <div style={{padding:"8px 12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:8,fontSize:12,color:"#34D399",marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -13388,11 +13692,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
         {ctF==="ladder"&&<div style={{marginBottom:16}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Break engine:</div>
-          <div style={{display:"flex",gap:8}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <SmBtn label="Classic" onClick={()=>setStartBreakEngine("classic")} active={startBreakEngine==="classic"} color="#6366F1"/>
             <SmBtn label="⚡ Dynamic" onClick={()=>setStartBreakEngine("dynamic")} active={startBreakEngine==="dynamic"} color="#F59E0B"/>
+            <SmBtn label="🧬 Dynamic v2" onClick={()=>setStartBreakEngine("dynamic2")} active={startBreakEngine==="dynamic2"} color="#22D3EE"/>
           </div>
-          <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6}}>Just a starting default — switchable any time from the Breaks tab</div>
+          <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6,marginBottom:10}}>Just a starting default — switchable any time from the Breaks tab</div>
+          <SmBtn label={`🎯 Concentrate${(effEv.breakConcentrateIds||[]).length?` (${effEv.breakConcentrateIds.length})`:""}`} onClick={()=>setPreStartConcOpen(true)} color="#8B5CF6"/>
+          {preStartConcOpen&&<ConcentrateBreaksModal
+            players={splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,userId:r.userId}:null;}).filter(Boolean)}
+            selectedIds={effEv.breakConcentrateIds||[]}
+            onSave={ids=>{act.setBreakConcentrateIds(ids);setPreStartConcOpen(false);}}
+            onClose={()=>setPreStartConcOpen(false)}/>}
         </div>}
         {!isFootballEv&&(()=>{
           const cur=splitRegsByCapacity(effEv,comm).active.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:teamFormationRating(u,effEv)}:null;}).filter(Boolean);

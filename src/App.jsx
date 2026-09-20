@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.59";
+const APP_VERSION = "V0.16.60";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -974,10 +974,20 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   });
   const isProtected = entry => entry.via!=="win";
 
+  // Admin request (2026-09-2X, after real dev testing of Concentrate): Concentrate/Avoid used
+  // to win this per-round pick outright, every single time they were eligible — which meant a
+  // concentrated player's breaks kept landing right on top of each other (only the anti-
+  // consecutive rule stood in the way, and that only blocks the very next round), and the same
+  // low-ranked courts kept getting disturbed while Court 1 sat untouched for most of the event.
+  // Concentrate/Avoid now ONLY shape total entitlement (ent[]/remaining[] above) — they never
+  // touch this pick. What decides it now: an exact break-preference match for this round wins
+  // first (a rare, specific, personal request), then genuine spacing — whoever's gone the
+  // longest since their own last break — which is what actually spreads breaks out over time
+  // instead of clustering them.
   const pickBest = pool => {
     pool.sort((x,y) => {
-      const px=breakPriority(x.p.userId,concSet,avoidSet), py=breakPriority(y.p.userId,concSet,avoidSet); if(px!==py) return py-px;
       const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
+      const sx=ri-(lastBreak[x.p.userId]??-99), sy=ri-(lastBreak[y.p.userId]??-99); if(sx!==sy) return sy-sx;
       return x.p.usr - y.p.usr;
     });
     return pool[0];
@@ -1014,23 +1024,40 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     for (let c=target+1;c<=courts;c++) momentumOrder.push(c);
     for (let c=target-1;c>=1;c--) momentumOrder.push(c);
 
-    const findWith = eligibleFn => {
-      for (const c of protectedOrder) {
-        const pool = buckets[c].filter(e=>isProtected(e)&&eligibleFn(e.p.userId));
-        if (pool.length) return {court:c, entry:pickBest(pool)};
-      }
-      for (const c of momentumOrder) {
-        const pool = buckets[c].filter(e=>!isProtected(e)&&eligibleFn(e.p.userId));
+    // Local-window search (2026-09-2X, admin request after real dev testing): capped to the
+    // bench player's own target court ± 1 — "your court, one up, one down" — before ever
+    // reaching further. Previously the search could walk the ENTIRE ladder from target to
+    // Court 1 (or to the bottom) on its very first pass, which is what let low-target
+    // Concentrated churn occasionally disturb courts several levels away — confirmed
+    // uncomfortable on a real dev event. Local courts are tried exhaustively (protected AND
+    // momentum, strict AND relaxed) before "Plan Z" — the original unrestricted search — ever
+    // gets a turn.
+    const localCourts = [target];
+    if (target-1>=1) localCourts.push(target-1);
+    if (target+1<=courts) localCourts.push(target+1);
+    const farProtectedOrder = protectedOrder.filter(c=>!localCourts.includes(c));
+    const farMomentumOrder = momentumOrder.filter(c=>!localCourts.includes(c));
+    const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
+      for (const c of courtsOrder) {
+        const pool = buckets[c].filter(e=>(protectedPhase?isProtected(e):!isProtected(e))&&eligibleFn(e.p.userId));
         if (pool.length) return {court:c, entry:pickBest(pool)};
       }
       return null;
     };
-    // Strict pass (both hard rules) first; only if that finds nobody anywhere does the relaxed
-    // pass (anti-consecutive only, entitlement cap dropped) get a turn — see isEligibleRelaxed's
-    // comment for why anti-consecutive wins when the two hard rules can't both be satisfied.
-    const foundStrict = findWith(isEligibleStrict);
-    const found = foundStrict || findWith(isEligibleRelaxed);
-    const usedRelaxed = !foundStrict && !!found;
+    // Strict pass (both hard rules) first; only if that finds nobody LOCALLY does a relaxed
+    // local pass (anti-consecutive only, entitlement cap dropped) get a turn — see
+    // isEligibleRelaxed's comment for why anti-consecutive wins when the two hard rules can't
+    // both be satisfied. Only once BOTH local passes are exhausted does the search ever leave
+    // the local window at all.
+    const found =
+      attemptSearch(localCourts, true, isEligibleStrict) ||
+      attemptSearch(localCourts, false, isEligibleStrict) ||
+      attemptSearch(localCourts, true, isEligibleRelaxed) ||
+      attemptSearch(localCourts, false, isEligibleRelaxed) ||
+      attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
+      attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
+      attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
+      attemptSearch(farMomentumOrder, false, isEligibleRelaxed);
     // Real bug found via stress-testing (2026-09-20, higher break-ratio events, later rounds):
     // even the relaxed pass can still come up empty in extreme cases (bpr close to or exceeding
     // court count) — every occupant of every court already broke last round too. Simply
@@ -1050,7 +1077,11 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     // court: show it directly instead of making them ask — for every court tried and passed over
     // before the one that worked, list who was sitting there and why they didn't qualify,
     // including the actual remaining-entitlement number, not just a vague "already used their
-    // share." Uses the SAME eligibility function that actually succeeded (strict or relaxed).
+    // share." Uses the SAME eligibility function that actually succeeded (strict or relaxed) —
+    // valid to reuse for every earlier court in the walk too, since the tiered attemptSearch
+    // above always exhausts local under BOTH strict and relaxed before ever trying far, so
+    // anything before the successful (court,phase) has already failed under this exact function.
+    const usedRelaxed = !isEligibleStrict(entry.p.userId);
     const eligFnUsed = usedRelaxed ? isEligibleRelaxed : isEligibleStrict;
     const describeCourtSkip = (c, protectedPhase) => {
       const occupants = buckets[c].filter(e => protectedPhase ? isProtected(e) : !isProtected(e));
@@ -1061,14 +1092,24 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       return named.length ? `🔍 Court ${c}${protectedPhase?"":" (momentum)"} skipped — ${named.join(", ")}` : null;
     };
     const foundInProtected = isProtected(entry);
-    const skipBullets = (foundInProtected ? protectedOrder.slice(0, protectedOrder.indexOf(court)) : protectedOrder)
-      .map(c => describeCourtSkip(c, true)).filter(Boolean);
-    if (!foundInProtected) skipBullets.push(...momentumOrder.slice(0, momentumOrder.indexOf(court)).map(c => describeCourtSkip(c, false)).filter(Boolean));
+    const foundInLocal = localCourts.includes(court);
+    const displayOrder = [
+      ...localCourts.map(c=>({c, protectedPhase:true})),
+      ...localCourts.map(c=>({c, protectedPhase:false})),
+      ...(foundInLocal ? [] : farProtectedOrder.map(c=>({c, protectedPhase:true}))),
+      ...(foundInLocal ? [] : farMomentumOrder.map(c=>({c, protectedPhase:false}))),
+    ];
+    const skipBullets = [];
+    for (const {c, protectedPhase} of displayOrder) {
+      if (c===court && protectedPhase===foundInProtected) break;
+      const b = describeCourtSkip(c, protectedPhase);
+      if (b) skipBullets.push(b);
+    }
 
     const targetSrc = findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[uid] = [
       `🎯 Target Court ${target}, earned from ${targetSrc}`,
-      court===target ? `✅ A seat was opened right at Court ${target}` : `↪️ Court ${target} had no eligible seat to open — the search cascaded to Court ${court} instead`,
+      court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
       ...skipBullets,
       `🔓 Seat opened by moving ${entry.p.nickname||("player #"+entry.p.userId)} to break — they'd arrived at Court ${court} by ${viaLabel(entry.via)}`,
       isProtected(entry) ? `🛡️ Found in the "protected" pool (a loser, or a Court-1 winner who stayed) — momentum players (fresh winners) are never touched while a protected candidate is available` : `⚠️ Had to reach into the "momentum" pool (a fresh winner) — no protected candidate was eligible anywhere`,
@@ -1076,13 +1117,13 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (usedRelaxed) returnReasons[uid].push("⚖️ The fair-share cap had to be relaxed for the evicted player — every strictly-eligible candidate was either over budget or broke last round too");
 
     const evUid = entry.p.userId;
+    const evGap = ri-(lastBreak[evUid]??-99);
     breakReasons[evUid] = [
       `🪑 Evicted from Court ${court} to free a seat for ${benchPlayer.nickname||("player #"+uid)}, who was due back there`,
       isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
       `⚖️ Had ${Math.max(0,remaining[evUid]||0)} break(s) remaining this event before this pick`,
+      (lastBreak[evUid]===-99||lastBreak[evUid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
-    if (breakPriority(evUid,concSet,avoidSet)===1) breakReasons[evUid].push("🎯 Concentrated — was prioritized as the pick among eligible candidates at this court");
-    if (breakPriority(evUid,concSet,avoidSet)===-1) breakReasons[evUid].push("🚫 Avoided — was still the most eligible candidate at this court despite being deprioritized");
     if (isAnchor(entry.p)) breakReasons[evUid].push(`⏱ Matches their "${entry.p.breakPref}" break preference for this round`);
     if (usedRelaxed) breakReasons[evUid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
   });
@@ -2116,10 +2157,12 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   });
   const isProtected = entry => entry.via!=="win";
 
+  // Same redesign as genDynamic2CI's pickBest — see its comment for the full "why". Concentrate/
+  // Avoid no longer win this per-round pick; they only shape total entitlement above.
   const pickBest = pool => {
     pool.sort((x,y) => {
-      const px=teamBreakPriority(x.t,concSet,avoidSet), py=teamBreakPriority(y.t,concSet,avoidSet); if(px!==py) return py-px;
       const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
+      const sx=ri-(lastBreak[x.t.id]??-99), sy=ri-(lastBreak[y.t.id]??-99); if(sx!==sy) return sy-sx;
       return (x.t.avgUsr||0) - (y.t.avgUsr||0);
     });
     return pool[0];
@@ -2147,20 +2190,28 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const momentumOrder = [target];
     for (let c=target+1;c<=courts;c++) momentumOrder.push(c);
     for (let c=target-1;c>=1;c--) momentumOrder.push(c);
-    const findWith = eligibleFn => {
-      for (const c of protectedOrder) {
-        const pool = buckets[c].filter(e=>isProtected(e)&&eligibleFn(e.t.id));
-        if (pool.length) return {court:c, entry:pickBest(pool)};
-      }
-      for (const c of momentumOrder) {
-        const pool = buckets[c].filter(e=>!isProtected(e)&&eligibleFn(e.t.id));
+    // Local-window search — see genDynamic2CI's comment for the full "why".
+    const localCourts = [target];
+    if (target-1>=1) localCourts.push(target-1);
+    if (target+1<=courts) localCourts.push(target+1);
+    const farProtectedOrder = protectedOrder.filter(c=>!localCourts.includes(c));
+    const farMomentumOrder = momentumOrder.filter(c=>!localCourts.includes(c));
+    const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
+      for (const c of courtsOrder) {
+        const pool = buckets[c].filter(e=>(protectedPhase?isProtected(e):!isProtected(e))&&eligibleFn(e.t.id));
         if (pool.length) return {court:c, entry:pickBest(pool)};
       }
       return null;
     };
-    const foundStrict = findWith(isEligibleStrict);
-    const found = foundStrict || findWith(isEligibleRelaxed);
-    const usedRelaxed = !foundStrict && !!found;
+    const found =
+      attemptSearch(localCourts, true, isEligibleStrict) ||
+      attemptSearch(localCourts, false, isEligibleStrict) ||
+      attemptSearch(localCourts, true, isEligibleRelaxed) ||
+      attemptSearch(localCourts, false, isEligibleRelaxed) ||
+      attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
+      attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
+      attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
+      attemptSearch(farMomentumOrder, false, isEligibleRelaxed);
     if (!found) {
       stillBenched.push(tid);
       returnReasons[tid] = [`⏳ Due back at Court ${target}, but no eligible seat could be opened anywhere this round — every occupant had either used their fair share or broke last round too. Stays on break one more round.`];
@@ -2172,6 +2223,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
 
     // Same "show the skip reasoning with real numbers" addition as genDynamic2CI — see its
     // comment for why.
+    const usedRelaxed = !isEligibleStrict(entry.t.id);
     const eligFnUsed = usedRelaxed ? isEligibleRelaxed : isEligibleStrict;
     const describeCourtSkip = (c, protectedPhase) => {
       const occupants = buckets[c].filter(e => protectedPhase ? isProtected(e) : !isProtected(e));
@@ -2182,14 +2234,24 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       return named.length ? `🔍 Court ${c}${protectedPhase?"":" (momentum)"} skipped — ${named.join(", ")}` : null;
     };
     const foundInProtected = isProtected(entry);
-    const skipBullets = (foundInProtected ? protectedOrder.slice(0, protectedOrder.indexOf(court)) : protectedOrder)
-      .map(c => describeCourtSkip(c, true)).filter(Boolean);
-    if (!foundInProtected) skipBullets.push(...momentumOrder.slice(0, momentumOrder.indexOf(court)).map(c => describeCourtSkip(c, false)).filter(Boolean));
+    const foundInLocal = localCourts.includes(court);
+    const displayOrder = [
+      ...localCourts.map(c=>({c, protectedPhase:true})),
+      ...localCourts.map(c=>({c, protectedPhase:false})),
+      ...(foundInLocal ? [] : farProtectedOrder.map(c=>({c, protectedPhase:true}))),
+      ...(foundInLocal ? [] : farMomentumOrder.map(c=>({c, protectedPhase:false}))),
+    ];
+    const skipBullets = [];
+    for (const {c, protectedPhase} of displayOrder) {
+      if (c===court && protectedPhase===foundInProtected) break;
+      const b = describeCourtSkip(c, protectedPhase);
+      if (b) skipBullets.push(b);
+    }
 
     const targetSrc = findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[tid] = [
       `🎯 Target Court ${target}, earned from ${targetSrc}`,
-      court===target ? `✅ A seat was opened right at Court ${target}` : `↪️ Court ${target} had no eligible seat to open — the search cascaded to Court ${court} instead`,
+      court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
       ...skipBullets,
       `🔓 Seat opened by moving ${entry.t.name||("Team #"+entry.t.id)} to break — they'd arrived at Court ${court} by ${viaLabel(entry.via)}`,
       isProtected(entry) ? `🛡️ Found in the "protected" pool (a loser, or a Court-1 winner who stayed) — momentum teams (fresh winners) are never touched while a protected candidate is available` : `⚠️ Had to reach into the "momentum" pool (a fresh winner) — no protected candidate was eligible anywhere`,
@@ -2197,13 +2259,13 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (usedRelaxed) returnReasons[tid].push("⚖️ The fair-share cap had to be relaxed for the evicted team — every strictly-eligible candidate was either over budget or broke last round too");
 
     const evTid = entry.t.id;
+    const evGap = ri-(lastBreak[evTid]??-99);
     breakReasons[evTid] = [
       `🪑 Evicted from Court ${court} to free a seat for ${benchTeam.name||("Team #"+tid)}, who was due back there`,
       isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
       `⚖️ Had ${Math.max(0,remaining[evTid]||0)} break(s) remaining this event before this pick`,
+      (lastBreak[evTid]===-99||lastBreak[evTid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
-    if (teamBreakPriority(entry.t,concSet,avoidSet)===1) breakReasons[evTid].push("🎯 Concentrated — was prioritized as the pick among eligible candidates at this court");
-    if (teamBreakPriority(entry.t,concSet,avoidSet)===-1) breakReasons[evTid].push("🚫 Avoided — was still the most eligible candidate at this court despite being deprioritized");
     if (isAnchor(entry.t)) breakReasons[evTid].push(`⏱ Matches their "${entry.t.breakPref}" break preference for this round`);
     if (usedRelaxed) breakReasons[evTid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
   });

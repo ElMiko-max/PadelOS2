@@ -4,7 +4,21 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.59 (current) — The real "remaining" number now shows up in the Decision Trail
+## V0.16.60 (current) — Dynamic v2: better break spacing + local-window court search
+
+- **Found after the admin's real testing of Monday Night Padel Hustle #101 on DEV** — two observations:
+  1. **A given player's own breaks (especially under Concentrate) landed too close together** — break, one match, break again. The anti-consecutive rule was working correctly, but nothing was actively spacing breaks further apart beyond that bare minimum.
+  2. **Break activity stayed concentrated at the lower courts (mostly Court 3) for a long stretch before ever reaching Court 1** — meaning top players went untouched by breaks for most of the event, and the search would sometimes jump more than one court away in a single attempt.
+- **Root cause:** Concentrate/Avoid were winning the pick of who breaks **every single round**, not just deciding the total count — so a concentrated player won the "next available slot" the moment they were eligible again, which the anti-consecutive rule alone couldn't prevent. And the target-court search had no distance limit, so it could walk all the way to Court 1 on its first pass.
+- **Fix (discussed and agreed with the admin):**
+  - Concentrate/Avoid now **only** affect total entitlement (same as before), never who gets picked in a given round.
+  - New per-round priority: **an exact break-preference match for this round wins first** (when it applies), then **whoever has gone the longest without a break** (genuine spacing) — this is what actually prevents clustering.
+  - **Court search is now capped to a local window: your own court, one court up, one court down** (just 2 if you're at the very top or bottom). This local window is fully exhausted (protected and momentum pools, strict and relaxed rules) before the search ever reaches further out — that's now "Plan Z," a true last resort.
+- **Verified via simulation:** average gap between a concentrated player's own breaks improved from 3.05 rounds to 4.53 (now close to the overall average of 4.52 — genuinely spread out, not clustered), and the local search resolves 98-99% of cases without ever needing to jump to a distant court.
+
+---
+
+## V0.16.59 — The real "remaining" number now shows up in the Decision Trail
 
 - **Requested by the admin:** the remaining-entitlement number ("rem") should be visible directly in the modal, instead of having to ask for it to be traced manually — as happened with "why did you jump from Court 1 to Court 3, why not Court 2?"
 - **Added:**

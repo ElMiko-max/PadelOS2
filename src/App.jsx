@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.62";
+const APP_VERSION = "V0.16.63";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1115,12 +1115,18 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       });
       return {court:candidates[0].c, entry:candidates[0].e};
     };
-    // Preferred-spacing passes (both hard rules, then just anti-consecutive) are tried first,
-    // over the WHOLE local-then-far walk, before the bare-minimum-gap tiers ever get a turn —
-    // so a wider gap always wins when one genuinely exists anywhere, and the 1-round-gap tiers
-    // only fire once every wider option has truly come up empty. Urgency (fair share) is checked
-    // first of all, before even preferred spacing, since it's the one thing allowed to override
-    // locality outright.
+    // Real bug found from a live dev event, admin report (2026-09-21, event #90098): the cascade
+    // used to try every LOCAL tier — including the cap-dropping ones — before ever checking a FAR
+    // court for a candidate who'd respect the fair-share cap. That let an Avoided player get
+    // bumped to a 2nd, over-quota break simply because the only cap-respecting candidate that
+    // round happened to be sitting outside the local window, while locality was (wrongly) treated
+    // as more important than the fair-share cap itself. Per the admin's own stated priority
+    // ("fair share is the strongest rule — nothing breaks it except a manual admin override"),
+    // every cap-respecting tier (local AND far, preferred-spacing AND bare-minimum-spacing) is
+    // now exhausted before ANY cap-dropping tier is even attempted — locality only gets to pick
+    // between two cap-violating candidates once fair share has already been confirmed impossible
+    // to satisfy anywhere on the ladder. Urgency (fair share) is still checked first of all,
+    // before any of this, since it's the one thing allowed to override locality outright.
     let usedUrgent = false;
     const found = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
@@ -1128,14 +1134,14 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
         attemptSearch(localCourts, false, isEligibleStrict) ||
-        attemptSearch(localCourts, true, isEligibleRelaxedPreferred) ||
-        attemptSearch(localCourts, false, isEligibleRelaxedPreferred) ||
-        attemptSearch(localCourts, true, isEligibleRelaxed) ||
-        attemptSearch(localCourts, false, isEligibleRelaxed) ||
         attemptSearch(farProtectedOrder, true, isEligiblePreferred) ||
         attemptSearch(farMomentumOrder, false, isEligiblePreferred) ||
         attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
         attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
+        attemptSearch(localCourts, true, isEligibleRelaxedPreferred) ||
+        attemptSearch(localCourts, false, isEligibleRelaxedPreferred) ||
+        attemptSearch(localCourts, true, isEligibleRelaxed) ||
+        attemptSearch(localCourts, false, isEligibleRelaxed) ||
         attemptSearch(farProtectedOrder, true, isEligibleRelaxedPreferred) ||
         attemptSearch(farMomentumOrder, false, isEligibleRelaxedPreferred) ||
         attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
@@ -2336,6 +2342,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       });
       return {court:candidates[0].c, entry:candidates[0].e};
     };
+    // Fair-share-before-locality reordering — see genDynamic2CI's comment for the full "why".
     let usedUrgent = false;
     const found = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
@@ -2343,14 +2350,14 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
         attemptSearch(localCourts, false, isEligibleStrict) ||
-        attemptSearch(localCourts, true, isEligibleRelaxedPreferred) ||
-        attemptSearch(localCourts, false, isEligibleRelaxedPreferred) ||
-        attemptSearch(localCourts, true, isEligibleRelaxed) ||
-        attemptSearch(localCourts, false, isEligibleRelaxed) ||
         attemptSearch(farProtectedOrder, true, isEligiblePreferred) ||
         attemptSearch(farMomentumOrder, false, isEligiblePreferred) ||
         attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
         attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
+        attemptSearch(localCourts, true, isEligibleRelaxedPreferred) ||
+        attemptSearch(localCourts, false, isEligibleRelaxedPreferred) ||
+        attemptSearch(localCourts, true, isEligibleRelaxed) ||
+        attemptSearch(localCourts, false, isEligibleRelaxed) ||
         attemptSearch(farProtectedOrder, true, isEligibleRelaxedPreferred) ||
         attemptSearch(farMomentumOrder, false, isEligibleRelaxedPreferred) ||
         attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||

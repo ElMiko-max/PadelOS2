@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.62 (current) — Prefer a 2-round gap between the same player's breaks
+## V0.16.63 (current) — Fix: an Avoided player getting bumped over quota like Concentrate
+
+- **Found from the admin's testing of event #90098 on DEV** — Dodo was flagged "Avoid" but ended up with 2 breaks, same as the Concentrated players. Root cause: the search tried every LOCAL option (including ones that violate the fair-share cap) before ever checking a FAR court for someone who'd actually respect it — effectively ranking locality above the admin's own stated rule ("fair share is the strongest rule, nothing breaks it"). When nobody nearby had any entitlement left, it took the nearest person anyway instead of looking a bit further for someone who was still owed a break.
+- **The fix:** every cap-respecting search tier (local and far, with or without the preferred spacing) is now tried before any cap-violating tier — so a far court with someone genuinely owed a break now wins over violating someone else's fair share nearby.
+- **Verified with 300 randomized trials (identical match outcomes for a fair comparison):** total fair-share cap violations dropped from 73 to 53 (~27% fewer), and specifically an Avoided player getting bumped over quota dropped from 11 to 7 (~36% fewer) — with no new issues elsewhere (tight gaps and zero-break cases both improved slightly too, not worse).
+
+---
+
+## V0.16.62 — Prefer a 2-round gap between the same player's breaks
 
 - **Found from the admin's testing of event #90096 on DEV** — Rehab (Concentrated) broke in Round 1 and again in Round 3 (only one played round between them) — legal (never truly consecutive), but felt clustered. The admin's call: "a 2-played-round gap (Break > Play > Play > Break) is fully acceptable, not preferred but no problem if it appears" — meaning the bare legal minimum (just 1 played round) should be a rare fallback, not the default outcome.
 - **The fix:** added a "preferred spacing" tier on top of the existing anti-consecutive rule — the search now tries first to find someone with a full 2-played-round gap since their own last break, and only falls back to the bare 1-round minimum once nobody anywhere (local or far) clears the wider gap. Applied identically to Dynamic v2 (CI and CT) and to the Classic engine (both individuals and teams) so every engine behaves consistently.

@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.61 (current) — Core "fair share" bug + pooled search + fair share above everything
+## V0.16.62 (current) — Prefer a 2-round gap between the same player's breaks
+
+- **Found from the admin's testing of event #90096 on DEV** — Rehab (Concentrated) broke in Round 1 and again in Round 3 (only one played round between them) — legal (never truly consecutive), but felt clustered. The admin's call: "a 2-played-round gap (Break > Play > Play > Break) is fully acceptable, not preferred but no problem if it appears" — meaning the bare legal minimum (just 1 played round) should be a rare fallback, not the default outcome.
+- **The fix:** added a "preferred spacing" tier on top of the existing anti-consecutive rule — the search now tries first to find someone with a full 2-played-round gap since their own last break, and only falls back to the bare 1-round minimum once nobody anywhere (local or far) clears the wider gap. Applied identically to Dynamic v2 (CI and CT) and to the Classic engine (both individuals and teams) so every engine behaves consistently.
+- **Verified with 300 randomized trials (identical match outcomes fed to both the old and new engine for a fair side-by-side comparison):** tight gaps (only 1 played round between breaks) dropped from 456 to 305 occurrences (~33% fewer), with no increase in fair-share cap violations (if anything, slightly fewer) and zero crashes or vanishing players.
+
+---
+
+## V0.16.61 — Core "fair share" bug + pooled search + fair share above everything
 
 - **Found from the admin's detailed questions about real event #90095 on DEV** — "why doesn't Ashraf get the first break despite 'early' preference?", "why does a non-Concentrated player get 2 breaks — is that fixed or can it change?", "why did Rouka get two breaks close together?", "the event ended with Zizo at 0 breaks and Rouka at 3?" — every one of these traced back to a real bug:
   1. **Core bug in "who gets the extra break" math:** the sort ranked "most breaks so far" first instead of least — the exact opposite of the code's own comment ("more breaks = lower priority"). This let anyone who broke early keep winning the extra slot again and again instead of it rotating to someone else — precisely why Rouka (not even Concentrated) ended with 3 breaks while Zizo had 0. **Fixed in all 8 places this computation exists** (Classic, Dynamic, and Dynamic v2, both CI and CT).

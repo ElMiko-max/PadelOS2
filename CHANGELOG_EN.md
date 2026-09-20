@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.60 (current) — Dynamic v2: better break spacing + local-window court search
+## V0.16.61 (current) — Core "fair share" bug + pooled search + fair share above everything
+
+- **Found from the admin's detailed questions about real event #90095 on DEV** — "why doesn't Ashraf get the first break despite 'early' preference?", "why does a non-Concentrated player get 2 breaks — is that fixed or can it change?", "why did Rouka get two breaks close together?", "the event ended with Zizo at 0 breaks and Rouka at 3?" — every one of these traced back to a real bug:
+  1. **Core bug in "who gets the extra break" math:** the sort ranked "most breaks so far" first instead of least — the exact opposite of the code's own comment ("more breaks = lower priority"). This let anyone who broke early keep winning the extra slot again and again instead of it rotating to someone else — precisely why Rouka (not even Concentrated) ended with 3 breaks while Zizo had 0. **Fixed in all 8 places this computation exists** (Classic, Dynamic, and Dynamic v2, both CI and CT).
+  2. **Round 1 was still using the old Concentrate/Avoid-first priority** (before break-preference). That's why Ashraf (avoided) lost Round 1 to Concentrated players even though his "early" preference matched perfectly. Fixed: Round 1 now follows the same priority as Dynamic v2 (preference wins first, not Concentrate/Avoid).
+  3. **The local court search fully drained one court before ever checking its neighbor** — even if that meant evicting someone who'd just played one match since their last break, instead of moving to the next court where a better-spaced candidate was sitting. Fixed: the search now pools every local court together and picks the genuinely best candidate (preference, then spacing, then closeness to the target court, then USR) — not just the first court with enough people.
+  4. **"Fair share is the strongest rule — nothing breaks it except a manual admin override."** Now, if a player is about to miss their fair share entirely (their remaining breaks equal or exceed the rounds left), the system forces their break immediately, even outside the local window. This was the missing piece that let Zizo (high USR, never any bench player's actual target) finish the whole event without a single break.
+- **Verified with 300+ randomized simulations plus a full replay of the real event #90095 with identical results:** Ashraf gets Round 1, Zizo gets his fair share (0 → 1), and every non-Concentrated player lands on exactly the same count (genuine fairness) — no short rounds, no crashes.
+
+---
+
+## V0.16.60 — Dynamic v2: better break spacing + local-window court search
 
 - **Found after the admin's real testing of Monday Night Padel Hustle #101 on DEV** — two observations:
   1. **A given player's own breaks (especially under Concentrate) landed too close together** — break, one match, break again. The anti-consecutive rule was working correctly, but nothing was actively spacing breaks further apart beyond that bare minimum.

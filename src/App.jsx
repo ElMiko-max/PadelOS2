@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.60";
+const APP_VERSION = "V0.16.61";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -732,7 +732,14 @@ function buildBreakPlan(players, courts, totalRounds, concentrateOn=[], avoidOn=
   // Priority: concentrated first, avoided last, then most historical breaks = lower priority, then lowest USR
   const sorted = [...players].sort((a, b) => {
     const pa=breakPriority(a.userId,concSet,avoidSet), pb=breakPriority(b.userId,concSet,avoidSet); if (pa!==pb) return pb-pa;
-    const hDiff = (b.histBreaks||0) - (a.histBreaks||0);
+    // Real bug, confirmed 2026-09-2X: this was `(b.histBreaks||0)-(a.histBreaks||0)`, which
+    // sorts by MOST historical breaks first — the exact opposite of the comment above and of
+    // every caller's intent ("more breaks = lower priority" for the entitlement bonus). histBreaks
+    // is always 0 for a fresh registration so this was inert in practice, but the identical bug
+    // in the LIVE per-round equivalent (breakCounts, see genDynamic2CI etc.) was real and
+    // confirmed on a dev event: it let whoever already broke the most keep winning the "extra"
+    // entitlement slot again, compounding instead of rotating.
+    const hDiff = (a.histBreaks||0) - (b.histBreaks||0);
     if (hDiff !== 0) return hDiff;
     return a.usr - b.usr; // lower USR gets break first
   });
@@ -765,7 +772,19 @@ function buildBreakPlan(players, courts, totalRounds, concentrateOn=[], avoidOn=
     // queue a 4th time on the very event that exposed the original bug.
     const roundsLeft = totalRounds - r; // this round counts as one of the remaining ones
     const isUrgent = p => (ent[p.userId]-assigned[p.userId]) >= roundsLeft;
-    const sortFn = (a, b) => {
+    // Round 1 specifically (r===0, admin request 2026-09-2X): match Dynamic v2's per-round
+    // priority — break preference wins first, and Concentrate/Avoid never touch the per-round
+    // pick here either, only the entitlement above (ent[]) — same fix, same reasoning as
+    // genDynamic2CI's redesign. Confirmed case: an Avoided player with a matching "early"
+    // preference still lost Round 1 to Concentrated players with no preference match at all,
+    // simply because Avoid ranked below Concentrate in this sort. Rounds 2+ (Classic engine
+    // only — Dynamic/Dynamic v2 never reach this branch past Round 1) keep their original,
+    // deliberate "Concentrate gets first claim" design untouched.
+    const sortFn = r===0 ? (a, b) => {
+      const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if (ua!==ub) return ub-ua;
+      const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0; if (anchA!==anchB) return anchB-anchA;
+      return a.usr - b.usr;
+    } : (a, b) => {
       const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if (ua!==ub) return ub-ua; // must-break-now beats every discretionary tiebreak below, including Concentrate/Avoid
       const pa=breakPriority(a.userId,concSet,avoidSet), pb=breakPriority(b.userId,concSet,avoidSet); if (pa!==pb) return pb-pa; // concentrated players get first claim on the round's pick too, not just the "extra" entitlement above; avoided players get last claim
       const anchA = isAnchor(a)?1:0, anchB = isAnchor(b)?1:0;
@@ -883,7 +902,7 @@ function genRound1(players, courts, totalRounds, concentrateOn=[], avoidOn=[]) {
   const concSet0 = new Set(concentrateOn), avoidSet0 = new Set(avoidOn);
   const sortedByNeed0 = [...sorted].sort((a,b) => {
     const pa=breakPriority(a.userId,concSet0,avoidSet0), pb=breakPriority(b.userId,concSet0,avoidSet0); if(pa!==pb) return pb-pa;
-    const hDiff=(b.histBreaks||0)-(a.histBreaks||0); if(hDiff!==0) return hDiff;
+    const hDiff=(a.histBreaks||0)-(b.histBreaks||0); if(hDiff!==0) return hDiff; // real bug fix, see buildBreakPlan's own comment — was sorting MOST historical breaks first
     return a.usr-b.usr;
   });
   const ent0 = {}; sortedByNeed0.forEach((p,i)=>{ ent0[p.userId] = base0+(i<extras0?1:0); });
@@ -938,9 +957,16 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   const totalSlots = bpr*totalRounds;
   const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
   const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
+  // Real bug, confirmed on a live dev event (2026-09-2X): this was `(breakCounts[b]||0)-
+  // (breakCounts[a]||0)`, which sorts by MOST breaks-so-far first — the exact opposite of "more
+  // breaks = lower priority" for the entitlement bonus (same bug, same fix, everywhere this
+  // pattern appears). It let whoever already broke the most keep winning the "extra" entitlement
+  // slot again each round (confirmed: a non-Concentrated player ended with 3 breaks while another
+  // ended with 0, purely because the first kept re-qualifying for the extra after already using
+  // it, instead of the slot rotating to whoever hadn't had one yet).
   const sortedByNeed = [...activePlayers].sort((a,b) => {
     const pa=breakPriority(a.userId,concSet,avoidSet), pb=breakPriority(b.userId,concSet,avoidSet); if(pa!==pb) return pb-pa;
-    const needDiff=(breakCounts[b.userId]||0)-(breakCounts[a.userId]||0); if(needDiff!==0) return needDiff;
+    const needDiff=(breakCounts[a.userId]||0)-(breakCounts[b.userId]||0); if(needDiff!==0) return needDiff;
     return a.usr-b.usr;
   });
   const ent = {}; sortedByNeed.forEach((p,i) => { ent[p.userId] = base + (i<extras?1:0); });
@@ -984,14 +1010,16 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   // first (a rare, specific, personal request), then genuine spacing — whoever's gone the
   // longest since their own last break — which is what actually spreads breaks out over time
   // instead of clustering them.
-  const pickBest = pool => {
-    pool.sort((x,y) => {
-      const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
-      const sx=ri-(lastBreak[x.p.userId]??-99), sy=ri-(lastBreak[y.p.userId]??-99); if(sx!==sy) return sy-sx;
-      return x.p.usr - y.p.usr;
-    });
-    return pool[0];
-  };
+  //
+  // Fair-share urgency (2026-09-2X, admin request): "fair share stays the strongest rule — no
+  // other rule breaks it (short of a manual admin override)." A player whose remaining
+  // entitlement is at least as large as their remaining rounds MUST be evicted now, wherever
+  // they are, or they mathematically can't finish on time — this overrides even the local-window
+  // preference below and Concentrate/Avoid alike, the only thing besides "Plan Z" that can pull
+  // an eviction outside the local window. Confirmed necessary on a real dev event: a high-USR
+  // player who was never any bench player's actual target went the ENTIRE event without a single
+  // break, purely because nobody's local search ever happened to reach their court.
+  const isUrgent = uid => !excludeIds.has(uid) && (remaining[uid]||0) >= (totalRounds-ri) && ri-(lastBreak[uid]??-99) > 1;
 
   const evicted = []; // {p, court} — this round's real break picks, tagged with where they were evicted from
   const stillBenched = []; // uids who found no eligible seat anywhere this round — see below
@@ -1037,27 +1065,58 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (target+1<=courts) localCourts.push(target+1);
     const farProtectedOrder = protectedOrder.filter(c=>!localCourts.includes(c));
     const farMomentumOrder = momentumOrder.filter(c=>!localCourts.includes(c));
+    // Pooled search (2026-09-2X, admin request): a court is no longer exhausted one at a time
+    // before trying the next — every court in `courtsOrder` is gathered into ONE pool and the
+    // single best candidate wins across all of them (anchor, then spacing, then closeness to
+    // target, then USR). Confirmed necessary on a real dev event: Court 3 alone had exactly
+    // enough occupants to satisfy 3 simultaneous returns, so the OLD court-by-court search never
+    // even looked at Court 2 — evicting someone at Court 3 who'd broken just 2 rounds earlier
+    // even though a much longer-overdue candidate was sitting right at Court 2.
     const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
+      const candidates = [];
       for (const c of courtsOrder) {
-        const pool = buckets[c].filter(e=>(protectedPhase?isProtected(e):!isProtected(e))&&eligibleFn(e.p.userId));
-        if (pool.length) return {court:c, entry:pickBest(pool)};
+        buckets[c].forEach(e => { if ((protectedPhase?isProtected(e):!isProtected(e)) && eligibleFn(e.p.userId)) candidates.push({c, e}); });
       }
-      return null;
+      if (!candidates.length) return null;
+      candidates.sort((X,Y) => {
+        const x=X.e, y=Y.e;
+        const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
+        const sx=ri-(lastBreak[x.p.userId]??-99), sy=ri-(lastBreak[y.p.userId]??-99); if(sx!==sy) return sy-sx;
+        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy; // prefer the exact target court on a genuine tie, then whichever's closer
+        return x.p.usr - y.p.usr;
+      });
+      return {court:candidates[0].c, entry:candidates[0].e};
+    };
+    const attemptUrgent = () => {
+      const candidates = [];
+      for (let c=1;c<=courts;c++) buckets[c].forEach(e=>{ if(isUrgent(e.p.userId)) candidates.push({c,e}); });
+      if (!candidates.length) return null;
+      candidates.sort((X,Y) => {
+        const x=X.e, y=Y.e;
+        const rx=(remaining[x.p.userId]||0)-(totalRounds-ri), ry=(remaining[y.p.userId]||0)-(totalRounds-ri); if(rx!==ry) return ry-rx; // furthest past their own deadline first, if more than one is urgent
+        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
+        return x.p.usr - y.p.usr;
+      });
+      return {court:candidates[0].c, entry:candidates[0].e};
     };
     // Strict pass (both hard rules) first; only if that finds nobody LOCALLY does a relaxed
     // local pass (anti-consecutive only, entitlement cap dropped) get a turn — see
     // isEligibleRelaxed's comment for why anti-consecutive wins when the two hard rules can't
     // both be satisfied. Only once BOTH local passes are exhausted does the search ever leave
-    // the local window at all.
-    const found =
-      attemptSearch(localCourts, true, isEligibleStrict) ||
-      attemptSearch(localCourts, false, isEligibleStrict) ||
-      attemptSearch(localCourts, true, isEligibleRelaxed) ||
-      attemptSearch(localCourts, false, isEligibleRelaxed) ||
-      attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
-      attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
-      attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
-      attemptSearch(farMomentumOrder, false, isEligibleRelaxed);
+    // the local window at all. Urgency (fair share) is checked first, before even the local
+    // window, since it's the one thing allowed to override locality.
+    let usedUrgent = false;
+    const found = (() => {
+      const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
+      return attemptSearch(localCourts, true, isEligibleStrict) ||
+        attemptSearch(localCourts, false, isEligibleStrict) ||
+        attemptSearch(localCourts, true, isEligibleRelaxed) ||
+        attemptSearch(localCourts, false, isEligibleRelaxed) ||
+        attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
+        attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
+        attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
+        attemptSearch(farMomentumOrder, false, isEligibleRelaxed);
+    })();
     // Real bug found via stress-testing (2026-09-20, higher break-ratio events, later rounds):
     // even the relaxed pass can still come up empty in extreme cases (bpr close to or exceeding
     // court count) — every occupant of every court already broke last round too. Simply
@@ -1093,7 +1152,10 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     };
     const foundInProtected = isProtected(entry);
     const foundInLocal = localCourts.includes(court);
-    const displayOrder = [
+    // Urgency skips the normal court-by-court "skipped" bookkeeping entirely — it isn't that
+    // earlier courts were ineligible, it's that fair share pulled the pick from wherever it
+    // needed to regardless of what else was available closer by.
+    const displayOrder = usedUrgent ? [] : [
       ...localCourts.map(c=>({c, protectedPhase:true})),
       ...localCourts.map(c=>({c, protectedPhase:false})),
       ...(foundInLocal ? [] : farProtectedOrder.map(c=>({c, protectedPhase:true}))),
@@ -1109,7 +1171,9 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const targetSrc = findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[uid] = [
       `🎯 Target Court ${target}, earned from ${targetSrc}`,
-      court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
+      usedUrgent
+        ? `⚖️ Court ${court} was reached because ${entry.p.nickname||("player #"+entry.p.userId)} was about to miss their fair share entirely — fair share overrides locality and Concentrate/Avoid alike`
+        : court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
       ...skipBullets,
       `🔓 Seat opened by moving ${entry.p.nickname||("player #"+entry.p.userId)} to break — they'd arrived at Court ${court} by ${viaLabel(entry.via)}`,
       isProtected(entry) ? `🛡️ Found in the "protected" pool (a loser, or a Court-1 winner who stayed) — momentum players (fresh winners) are never touched while a protected candidate is available` : `⚠️ Had to reach into the "momentum" pool (a fresh winner) — no protected candidate was eligible anywhere`,
@@ -1124,6 +1188,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       `⚖️ Had ${Math.max(0,remaining[evUid]||0)} break(s) remaining this event before this pick`,
       (lastBreak[evUid]===-99||lastBreak[evUid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
+    if (usedUrgent) breakReasons[evUid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evUid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
     if (isAnchor(entry.p)) breakReasons[evUid].push(`⏱ Matches their "${entry.p.breakPref}" break preference for this round`);
     if (usedRelaxed) breakReasons[evUid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
   });
@@ -1194,9 +1259,11 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
       const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
       const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
       const concSet = new Set(concentrateOn), avoidSet = new Set(avoidOn);
+      // Real bug fix, same as genDynamic2CI's — was sorting MOST breaks-so-far first for the
+      // entitlement bonus, the opposite of intent.
       const sortedByNeed = [...activePlayers].sort((a,b) => {
         const pa=breakPriority(a.userId,concSet,avoidSet), pb=breakPriority(b.userId,concSet,avoidSet); if(pa!==pb) return pb-pa;
-        const needDiff=(breakCounts[b.userId]||0)-(breakCounts[a.userId]||0); if(needDiff!==0) return needDiff;
+        const needDiff=(breakCounts[a.userId]||0)-(breakCounts[b.userId]||0); if(needDiff!==0) return needDiff;
         return a.usr-b.usr;
       });
       const ent = {};
@@ -1242,7 +1309,7 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
       const concSetC = new Set(concentrateOn), avoidSetC = new Set(avoidOn);
       const sortedByNeedC = [...activePlayersC].sort((a,b) => {
         const pa=breakPriority(a.userId,concSetC,avoidSetC), pb=breakPriority(b.userId,concSetC,avoidSetC); if(pa!==pb) return pb-pa;
-        const needDiff=(breakCountsC[b.userId]||0)-(breakCountsC[a.userId]||0); if(needDiff!==0) return needDiff;
+        const needDiff=(breakCountsC[a.userId]||0)-(breakCountsC[b.userId]||0); if(needDiff!==0) return needDiff; // real bug fix, same as genDynamic2CI's — was sorting MOST breaks-so-far first
         return a.usr-b.usr;
       });
       const entC = {}; sortedByNeedC.forEach((p,i) => { entC[p.userId] = baseC + (i<extrasC?1:0); });
@@ -1373,10 +1440,15 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
   // candidates (both for the entitlement's "extra" slot here, and for the per-round tie-break
   // below), never a bigger total share.
   const concSet = new Set(concentrateOn), avoidSet = new Set(avoidOn);
+  // Real bug, confirmed on a live dev event (2026-09-2X): this was `(breakCounts[b]||0)-
+  // (breakCounts[a]||0)`, which sorted by MOST breaks-so-far first — the opposite of the very
+  // next line's own comment ("more breaks = lower priority"). It let whoever already broke the
+  // most keep winning the "extra" entitlement slot again each time this recomputes, instead of
+  // the slot rotating to whoever hadn't had one yet.
   const sortedByNeed = [...players].sort((a,b) => {
     const pa = breakPriority(a.userId,concSet,avoidSet), pb = breakPriority(b.userId,concSet,avoidSet);
     if (pa !== pb) return pb - pa;
-    const needDiff = (breakCounts[b.userId]||0) - (breakCounts[a.userId]||0);
+    const needDiff = (breakCounts[a.userId]||0) - (breakCounts[b.userId]||0);
     if (needDiff !== 0) return needDiff; // more breaks = lower priority
     return a.usr - b.usr; // lower USR = higher priority for break
   });
@@ -2069,7 +2141,7 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
   const sorted = [...teams].sort((a,b) => {
     const pa = teamBreakPriority(a,concSet,avoidSet), pb = teamBreakPriority(b,concSet,avoidSet);
     if (pa !== pb) return pb - pa;
-    return (b.histBreaks||0) - (a.histBreaks||0);
+    return (a.histBreaks||0) - (b.histBreaks||0); // real bug, same fix as buildBreakPlan's CI equivalent — was sorting MOST historical breaks first
   });
   const ent = {}; sorted.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
   const assigned={}, lastB={}; teams.forEach(t => { assigned[t.id]=0; lastB[t.id]=-99; });
@@ -2099,7 +2171,15 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
     // discretionary tiebreak.
     const roundsLeft = totalRounds - r; // this round counts as one of the remaining ones
     const isUrgent = t => (ent[t.id]-assigned[t.id]) >= roundsLeft;
-    const sortFn = (a,b) => {
+    const isAnchorT = t => t.breakPref && t.breakPref!=="none" && prefDist(t.breakPref,r,totalRounds)<=0.5;
+    // Round 1 (r===0): same admin-requested fix as buildBreakPlan's CI equivalent — break
+    // preference wins first, Concentrate/Avoid never touch the per-round pick here, only the
+    // entitlement above. Rounds 2+ (Classic engine only) keep their original design.
+    const sortFn = r===0 ? (a,b) => {
+      const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if(ua!==ub) return ub-ua;
+      const anchA=isAnchorT(a)?1:0, anchB=isAnchorT(b)?1:0; if(anchA!==anchB) return anchB-anchA;
+      return (a.avgUsr||0)-(b.avgUsr||0);
+    } : (a,b) => {
       const ua=isUrgent(a)?1:0, ub=isUrgent(b)?1:0; if(ua!==ub) return ub-ua; // must-break-now beats every discretionary tiebreak below, including Concentrate/Avoid
       const pa=teamBreakPriority(a,concSet,avoidSet), pb=teamBreakPriority(b,concSet,avoidSet); if(pa!==pb) return pb-pa; // concentrated teams get first claim on a break, every round; avoided teams get last claim
       const rd=(ent[b.id]-assigned[b.id])-(ent[a.id]-assigned[a.id]); if(rd!==0)return rd;
@@ -2136,9 +2216,11 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   const totalSlots = bpr*totalRounds;
   const base = activeTeams.length ? Math.floor(totalSlots/activeTeams.length) : 0;
   const extras = activeTeams.length ? totalSlots%activeTeams.length : 0;
+  // Real bug fix, same as genDynamic2CI's — was sorting MOST breaks-so-far first for the
+  // entitlement bonus, the opposite of intent.
   const sortedByNeed = [...activeTeams].sort((a,b) => {
     const pa=teamBreakPriority(a,concSet,avoidSet), pb=teamBreakPriority(b,concSet,avoidSet); if(pa!==pb) return pb-pa;
-    const needDiff=(breakCounts[b.id]||0)-(breakCounts[a.id]||0); if(needDiff!==0) return needDiff;
+    const needDiff=(breakCounts[a.id]||0)-(breakCounts[b.id]||0); if(needDiff!==0) return needDiff;
     return (a.avgUsr||0)-(b.avgUsr||0);
   });
   const ent = {}; sortedByNeed.forEach((t,i) => { ent[t.id] = base + (i<extras?1:0); });
@@ -2157,16 +2239,11 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   });
   const isProtected = entry => entry.via!=="win";
 
-  // Same redesign as genDynamic2CI's pickBest — see its comment for the full "why". Concentrate/
-  // Avoid no longer win this per-round pick; they only shape total entitlement above.
-  const pickBest = pool => {
-    pool.sort((x,y) => {
-      const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
-      const sx=ri-(lastBreak[x.t.id]??-99), sy=ri-(lastBreak[y.t.id]??-99); if(sx!==sy) return sy-sx;
-      return (x.t.avgUsr||0) - (y.t.avgUsr||0);
-    });
-    return pool[0];
-  };
+  // Same redesign as genDynamic2CI's — see its comment for the full "why". Concentrate/Avoid no
+  // longer win this per-round pick; they only shape total entitlement above. Fair-share urgency
+  // (same admin request) overrides even locality: a team whose remaining entitlement is at
+  // least as large as their remaining rounds must be evicted now, wherever they are.
+  const isUrgent = tid => !excludeIds.has(tid) && (remaining[tid]||0) >= (totalRounds-ri) && ri-(lastBreak[tid]??-99) > 1;
 
   const evicted = [];
   const stillBenched = [];
@@ -2196,22 +2273,46 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (target+1<=courts) localCourts.push(target+1);
     const farProtectedOrder = protectedOrder.filter(c=>!localCourts.includes(c));
     const farMomentumOrder = momentumOrder.filter(c=>!localCourts.includes(c));
+    // Pooled search — see genDynamic2CI's comment for the full "why".
     const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
+      const candidates = [];
       for (const c of courtsOrder) {
-        const pool = buckets[c].filter(e=>(protectedPhase?isProtected(e):!isProtected(e))&&eligibleFn(e.t.id));
-        if (pool.length) return {court:c, entry:pickBest(pool)};
+        buckets[c].forEach(e => { if ((protectedPhase?isProtected(e):!isProtected(e)) && eligibleFn(e.t.id)) candidates.push({c, e}); });
       }
-      return null;
+      if (!candidates.length) return null;
+      candidates.sort((X,Y) => {
+        const x=X.e, y=Y.e;
+        const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
+        const sx=ri-(lastBreak[x.t.id]??-99), sy=ri-(lastBreak[y.t.id]??-99); if(sx!==sy) return sy-sx;
+        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
+        return (x.t.avgUsr||0) - (y.t.avgUsr||0);
+      });
+      return {court:candidates[0].c, entry:candidates[0].e};
     };
-    const found =
-      attemptSearch(localCourts, true, isEligibleStrict) ||
-      attemptSearch(localCourts, false, isEligibleStrict) ||
-      attemptSearch(localCourts, true, isEligibleRelaxed) ||
-      attemptSearch(localCourts, false, isEligibleRelaxed) ||
-      attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
-      attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
-      attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
-      attemptSearch(farMomentumOrder, false, isEligibleRelaxed);
+    const attemptUrgent = () => {
+      const candidates = [];
+      for (let c=1;c<=courts;c++) buckets[c].forEach(e=>{ if(isUrgent(e.t.id)) candidates.push({c,e}); });
+      if (!candidates.length) return null;
+      candidates.sort((X,Y) => {
+        const x=X.e, y=Y.e;
+        const rx=(remaining[x.t.id]||0)-(totalRounds-ri), ry=(remaining[y.t.id]||0)-(totalRounds-ri); if(rx!==ry) return ry-rx;
+        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
+        return (x.t.avgUsr||0) - (y.t.avgUsr||0);
+      });
+      return {court:candidates[0].c, entry:candidates[0].e};
+    };
+    let usedUrgent = false;
+    const found = (() => {
+      const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
+      return attemptSearch(localCourts, true, isEligibleStrict) ||
+        attemptSearch(localCourts, false, isEligibleStrict) ||
+        attemptSearch(localCourts, true, isEligibleRelaxed) ||
+        attemptSearch(localCourts, false, isEligibleRelaxed) ||
+        attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
+        attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
+        attemptSearch(farProtectedOrder, true, isEligibleRelaxed) ||
+        attemptSearch(farMomentumOrder, false, isEligibleRelaxed);
+    })();
     if (!found) {
       stillBenched.push(tid);
       returnReasons[tid] = [`⏳ Due back at Court ${target}, but no eligible seat could be opened anywhere this round — every occupant had either used their fair share or broke last round too. Stays on break one more round.`];
@@ -2235,7 +2336,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     };
     const foundInProtected = isProtected(entry);
     const foundInLocal = localCourts.includes(court);
-    const displayOrder = [
+    const displayOrder = usedUrgent ? [] : [
       ...localCourts.map(c=>({c, protectedPhase:true})),
       ...localCourts.map(c=>({c, protectedPhase:false})),
       ...(foundInLocal ? [] : farProtectedOrder.map(c=>({c, protectedPhase:true}))),
@@ -2251,7 +2352,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const targetSrc = findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[tid] = [
       `🎯 Target Court ${target}, earned from ${targetSrc}`,
-      court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
+      usedUrgent
+        ? `⚖️ Court ${court} was reached because ${entry.t.name||("Team #"+entry.t.id)} was about to miss their fair share entirely — fair share overrides locality and Concentrate/Avoid alike`
+        : court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
       ...skipBullets,
       `🔓 Seat opened by moving ${entry.t.name||("Team #"+entry.t.id)} to break — they'd arrived at Court ${court} by ${viaLabel(entry.via)}`,
       isProtected(entry) ? `🛡️ Found in the "protected" pool (a loser, or a Court-1 winner who stayed) — momentum teams (fresh winners) are never touched while a protected candidate is available` : `⚠️ Had to reach into the "momentum" pool (a fresh winner) — no protected candidate was eligible anywhere`,
@@ -2266,6 +2369,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       `⚖️ Had ${Math.max(0,remaining[evTid]||0)} break(s) remaining this event before this pick`,
       (lastBreak[evTid]===-99||lastBreak[evTid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
+    if (usedUrgent) breakReasons[evTid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evTid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
     if (isAnchor(entry.t)) breakReasons[evTid].push(`⏱ Matches their "${entry.t.breakPref}" break preference for this round`);
     if (usedRelaxed) breakReasons[evTid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
   });
@@ -2325,9 +2429,10 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     const base = activeTeams.length ? Math.floor(totalSlots/activeTeams.length) : 0;
     const extras = activeTeams.length ? totalSlots%activeTeams.length : 0;
     const concSet = new Set(concentrateOn), avoidSet = new Set(avoidOn);
+    // Real bug fix, same as genDynamic2CI's — was sorting MOST breaks-so-far first
     const sortedByNeed = [...activeTeams].sort((a,b) => {
       const pa=teamBreakPriority(a,concSet,avoidSet), pb=teamBreakPriority(b,concSet,avoidSet); if(pa!==pb) return pb-pa;
-      const needDiff=(breakCounts[b.id]||0)-(breakCounts[a.id]||0); if(needDiff!==0) return needDiff;
+      const needDiff=(breakCounts[a.id]||0)-(breakCounts[b.id]||0); if(needDiff!==0) return needDiff;
       return (a.avgUsr||0)-(b.avgUsr||0);
     });
     const ent = {};
@@ -2373,7 +2478,7 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     const concSetC = new Set(concentrateOn), avoidSetC = new Set(avoidOn);
     const sortedByNeedC = [...activeTeamsC].sort((a,b) => {
       const pa=teamBreakPriority(a,concSetC,avoidSetC), pb=teamBreakPriority(b,concSetC,avoidSetC); if(pa!==pb) return pb-pa;
-      const needDiff=(breakCountsC[b.id]||0)-(breakCountsC[a.id]||0); if(needDiff!==0) return needDiff;
+      const needDiff=(breakCountsC[a.id]||0)-(breakCountsC[b.id]||0); if(needDiff!==0) return needDiff; // real bug fix, same as genDynamic2CI's — was sorting MOST breaks-so-far first
       return (a.avgUsr||0)-(b.avgUsr||0);
     });
     const entC = {}; sortedByNeedC.forEach((t,i) => { entC[t.id] = baseC + (i<extrasC?1:0); });

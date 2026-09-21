@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.64";
+const APP_VERSION = "V0.16.65";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8316,6 +8316,18 @@ export default function Matchkeeper() {
     const onIt = waitlisted.some(r=>r.userId===uid);
     return {waitlisted:onIt, pos:onIt?waitlisted.length:0};
   };
+  // Admin request (2026-09-21): "so that he does not assume he is already in the event" — a
+  // registering player needs the SAME condition-to-leave-the-waitlist explanation the Waitlist
+  // card already shows admins (EventDetail's waitlist render, ~line 14076), just phrased for the
+  // player themselves rather than as a status label. Kept as its own small helper (rather than
+  // reused directly) since the admin-facing version also folds in a `hasRoom` check that's out of
+  // scope for a one-time registration toast — this is deliberately the simpler of the two.
+  const waitlistConditionText = (regularUntil) => {
+    const windowActive = regularUntil && Date.now() < new Date(regularUntil).getTime();
+    return windowActive
+      ? `Regular members get priority until ${new Date(regularUntil).toLocaleString([], {hour:"numeric",minute:"2-digit",hour12:true})}, then you'll be considered`
+      : "you'll join automatically if a spot opens up";
+  };
   // Tracks which event a registration is currently in flight for, so the "I'm In" button can show
   // a real "Registering…" state and disable itself instead of looking clickable/unresponsive
   // during the (possibly several-second, under load — see the concurrency test that confirmed a
@@ -8342,13 +8354,17 @@ export default function Matchkeeper() {
     // inside registerInEvent's own transaction (the regHistoryNote passed below) on the
     // direct-write fallback path. Either way it's already handled by the time this runs — nothing
     // left for afterRegistered itself to log (BUGS.md #20 and its fallback-path counterpart).
-    const afterRegistered = (waitlisted, waitPos) => {
+    // Admin request (2026-09-21): a flat "Registered ✓" (or a bare waitlist number with no
+    // explanation) let a registering player easily assume they had an active seat when they
+    // didn't — say explicitly which list they actually landed on, their real position in it, and
+    // for the waitlist, the actual condition for leaving it (see waitlistConditionText).
+    const afterRegistered = (waitlisted, pos, regularUntil) => {
       if (waitlisted) {
-        toast2(`You're #${waitPos} on the waitlist`);
-        if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${waitPos} on the waitlist for ${ev.name}`, "We'll notify you if a spot opens up.");
+        toast2(`⏳ You're #${pos} on the waitlist — ${waitlistConditionText(regularUntil)}`);
+        if (ev) notify([me.id], "waitlisted", ev, `⏳ You're #${pos} on the waitlist for ${ev.name}`, waitlistConditionText(regularUntil));
       } else {
-        toast2("Registered ✓");
-        if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
+        toast2(`Registered ✓ — you're #${pos} on the active list`);
+        if (ev) notify([me.id], "registered", ev, `✓ You're in for ${ev.name}`, `You're #${pos} on the active list — ${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""}`);
       }
       // Let the event's creator + community admins know someone registered themselves — the
       // admin-driven paths (addMember, registerViaInvite, approveEventJoin) don't need this,
@@ -8373,9 +8389,9 @@ export default function Matchkeeper() {
       try {
         const fn = httpsCallable(getFunctionsLazy(), "registerForEvent");
         const res = await withTimeout(fn({communityId:cid, eventId:eid, via:null}), 8000);
-        const {status, waitlisted, pos} = res.data || {};
+        const {status, waitlisted, pos, regularUntil} = res.data || {};
         if (status === "already-registered") return;
-        afterRegistered(!!waitlisted, pos||0);
+        afterRegistered(!!waitlisted, pos||0, regularUntil);
         return;
       } catch (e) {
         if (e?.code === "functions/failed-precondition") { toast2(e.message || "Registration is currently closed", "err"); return; }
@@ -8395,9 +8411,11 @@ export default function Matchkeeper() {
       // atomic with the write that already landed.
       const freshSnap = await getDocs(collection(db,"padelos_events",String(eid),"registrations"));
       const freshEv = {...ev, registrations: freshSnap.docs.map(d=>({...d.data(), eventId:eid}))};
-      const {waitlisted} = splitRegsByCapacity(freshEv, comm);
+      const {active, waitlisted} = splitRegsByCapacity(freshEv, comm);
       const isWaitlisted = waitlisted.some(r=>r.userId===me.id);
-      afterRegistered(isWaitlisted, isWaitlisted?waitlisted.length:0);
+      const list = isWaitlisted ? waitlisted : active;
+      const pos = list.findIndex(r=>r.userId===me.id)+1 || list.length;
+      afterRegistered(isWaitlisted, pos, ev.regularUntil);
     } catch (e) {
       toast2(e?.message && e.message!=="blocked" ? e.message : "Registration didn't go through — too many people were registering at the same moment. Please try again.", "err");
     }
@@ -8476,13 +8494,15 @@ export default function Matchkeeper() {
       try {
         const fn = httpsCallable(getFunctionsLazy(), "registerForEvent");
         const res = await withTimeout(fn({communityId:cid, eventId:eid, via:"invite"}), 8000);
-        const {status, waitlisted} = res.data || {};
+        const {status, waitlisted, pos, regularUntil} = res.data || {};
         if (status === "already-registered") return;
         // Server-side agreed this account is guest-tier for this community (stale local comm
         // data, or a client that predates the client-side check above) — same outcome as the
         // early-return branch: a request, not a registration.
-        if (status === "needs-approval") { toast2("Request sent ✓"); return; }
-        if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
+        if (status === "needs-approval") { toast2("Request sent ✓ — awaiting admin approval"); return; }
+        // Same "don't let them assume an active seat" fix as registerEv — see its comment.
+        if (uid===me.id) toast2(waitlisted ? `⏳ You're #${pos} on the waitlist — ${waitlistConditionText(regularUntil)}` : `Registered ✓ — you're #${pos} on the active list`);
+        if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?waitlistConditionText(regularUntil):`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
         logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
         // regHistory's "Registered (via invite link)" line is written atomically either here
         // (server-side, inside registerForEvent) or client-side inside registerWithMembership's
@@ -8493,13 +8513,14 @@ export default function Matchkeeper() {
         console.log("registerForEvent unavailable, falling back to direct write", e);
       }
     }
-    const {waitlisted} = willLandWaitlisted(ev, uid, comm, "invite");
+    const {waitlisted, pos} = willLandWaitlisted(ev, uid, comm, "invite");
     registerWithMembership(cid, eid, uid,
       c => ({...c, members: c.members.some(m=>m.userId===uid) ? c.members : [...c.members,{userId:uid,role:"member",status:"guest",since:today}]}),
       {registeredAt:new Date().toISOString(), status:"registered", addedBy:"invite", isGuest:false},
       {}, "Registered (via invite link)"
     ).catch(e=>console.log("registerViaInvite registerWithMembership failed", e));
-    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?"We'll notify you if a spot opens up.":`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
+    if (uid===me.id) toast2(waitlisted ? `⏳ You're #${pos} on the waitlist — ${waitlistConditionText(ev.regularUntil)}` : "Registered ✓");
+    if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?waitlistConditionText(ev.regularUntil):`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
     logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
   };
   // Event-level join requests — same shape as community joinRequests, but scoped to one
@@ -8509,7 +8530,9 @@ export default function Matchkeeper() {
   const requestEventJoin=(cid,eid)=>{
     const ev=getEv(cid,eid);
     updEvent(cid,eid,ev=>(ev.joinRequests||[]).some(r=>r.userId===me.id)?ev:{...ev,joinRequests:[...(ev.joinRequests||[]),{userId:me.id,requestedAt:new Date().toISOString()}]});
-    toast2("Request sent ✓");
+    // Admin request (2026-09-21): make it explicit this is a REQUEST, not a registration —
+    // same "don't let them assume they're already in" fix as registerEv's toast.
+    toast2("Request sent ✓ — awaiting admin approval");
     if (ev) notify(eventAdminIds(ev, cid), "eventJoinRequest", ev, "🙋 New request to join", `${me.nickname} wants to join ${ev.name} — review in Players.`);
     logAudit("event.requestJoin", `${me.nickname} requested to join "${ev?.name||eid}"`, "event", eid);
     // Written here even though no registration doc exists yet (2026-09-10, admin request — "several

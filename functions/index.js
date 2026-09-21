@@ -339,10 +339,20 @@ const splitRegsByCapacity = (e, c) => {
 // the contention this function used to serialize on (it used to tx.set() the whole event doc on
 // every single registration).
 //
-// Waitlist position for the response (used only for the confirmation toast) is computed by a
-// SEPARATE, plain, non-transactional read done AFTER the write commits — informational only,
-// never enforced, so a race here only affects what number is displayed, never who's actually
-// active vs waitlisted (that's still purely derived, recomputed correctly everywhere, always).
+// Waitlist/active position for the response (used only for the confirmation toast) is computed
+// by a SEPARATE, plain, non-transactional read done AFTER the write commits — informational
+// only, never enforced, so a race here only affects what number is displayed, never who's
+// actually active vs waitlisted (that's still purely derived, recomputed correctly everywhere,
+// always).
+//
+// Admin request (2026-09-21): "so that he does not assume he is already in the event" —
+// register* used to always say a flat "Registered ✓"/"You're #N on the waitlist" regardless of
+// which list a player actually landed on, so a waitlisted (or Regular-priority-window-waitlisted)
+// player could easily believe that toast meant an active seat. Now returns enough for the
+// caller to build an unambiguous message either way: `pos` is the active-list position when NOT
+// waitlisted, the waitlist position when waitlisted; `regularUntil` lets the client explain the
+// specific condition for leaving the waitlist (the priority window vs. "joins automatically"),
+// exactly the same wording the Waitlist card itself already shows admins.
 const computeWaitlistInfo = async (db, communityId, eventId, userId) => {
   const [commSnap, evSnap, regsSnap] = await Promise.all([
     db.collection("padelos_communities").doc(String(communityId)).get(),
@@ -355,9 +365,11 @@ const computeWaitlistInfo = async (db, communityId, eventId, userId) => {
     if (a.registeredAt !== b.registeredAt) return a.registeredAt < b.registeredAt ? -1 : 1;
     return String(a.userId).localeCompare(String(b.userId));
   });
-  const {waitlisted: waitlistArr} = splitRegsByCapacity({...ev, registrations}, comm);
+  const {active: activeArr, waitlisted: waitlistArr} = splitRegsByCapacity({...ev, registrations}, comm);
   const onIt = waitlistArr.some(r => r.userId === userId);
-  return {waitlisted: onIt, pos: onIt ? waitlistArr.length : 0};
+  const list = onIt ? waitlistArr : activeArr;
+  const pos = list.findIndex(r => r.userId === userId) + 1 || list.length;
+  return {waitlisted: onIt, pos, regularUntil: ev.regularUntil || null};
 };
 
 // Writes the "Registered" line into the SAME transaction that creates the registration doc
@@ -464,8 +476,8 @@ exports.registerForEvent = onCall(async (request) => {
 
   if (alreadyRegistered) return {status: "already-registered", waitlisted: false, eventName};
   if (needsApproval) return {status: "needs-approval", eventName};
-  const {waitlisted, pos} = await computeWaitlistInfo(db, communityId, eventId, userId);
-  return {status: "ok", waitlisted, pos, eventName};
+  const {waitlisted, pos, regularUntil} = await computeWaitlistInfo(db, communityId, eventId, userId);
+  return {status: "ok", waitlisted, pos, regularUntil, eventName};
 });
 
 // addMemberToEvent / approveEventJoinRequest — same server-side backstop as registerForEvent,

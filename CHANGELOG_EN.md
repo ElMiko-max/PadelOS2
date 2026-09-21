@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.64 (current) — Fix: two returning players swapping courts + stale badge tooltip
+## V0.16.65 (current) — Add: clear registration status message (Active / Waiting / Request)
+
+- **Admin request:** a generic "Registered ✓" toast could easily let a player assume they had an active seat when they were actually on the waitlist or still needed admin approval. Asked for a message that says exactly which list they landed on and their position in it.
+- **Done:** when a player registers themselves (the "I'm In" button or an invite link):
+  - Landed on the active list: **"Registered ✓ — you're #N on the active list"**.
+  - Landed on the waitlist: **"⏳ You're #N on the waitlist — [the actual condition for leaving it]"** — the condition adapts to the event's state: during the first-24-hours Regular-member priority window it says "Regular members get priority until [time], then you'll be considered", otherwise "you'll join automatically if a spot opens up".
+  - A Guest needing admin approval (invite link or join request): **"Request sent ✓ — awaiting admin approval"**.
+- Covers every self-registration path: the normal button, an invite link, and a Guest's join request — the `registerForEvent` Cloud Function now returns the real position and condition to the client too, so the message is accurate even when the Cloud Function path succeeds (not just the local fallback).
+
+---
+
+## V0.16.64 — Fix: two returning players swapping courts + stale badge tooltip
 
 - **Found from the admin spotting it in a real screenshot:** two players returning from break the same round — one earning Court 2, the other Court 1 — and the system found a seat for each, but handed them out backwards (neither landed on their own court). Root cause: when more than one seat is "urgent" (someone about to miss their fair share) in the same round, the code always grabbed the single most-urgent seat for whichever bench player was processed first, without checking whether that seat was actually THEIR earned court — causing an unnecessary swap.
 - **The fix:** if an urgent seat sits exactly at the returning player's own earned court, it's taken first — before comparing urgency severity at all — since that resolves both problems at once (frees the seat, AND lands the right player on the right court) at no cost.

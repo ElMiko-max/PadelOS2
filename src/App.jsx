@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.68";
+const APP_VERSION = "V0.16.69";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -658,6 +658,23 @@ function predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId, befo
   }
   finalP = Math.max(0.05, Math.min(0.95, finalP));
   return {winner: Math.random() < finalP ? "A" : "B", confidence: Math.round(finalP * 1000) / 1000};
+}
+// Admin request (2026-09-22): the simulation report needs an actual game score per match, not
+// just a winner — "زي ما انت عايز بقى... اربعة اتنين، خمسة واحد، اربعة ثلاثة" (whatever's
+// realistic: 4-2, 5-1, 4-3). Modeled as a short single-set match (6 or 7 total games — the
+// admin's own numbers), with the winner needing MORE than half: 4/5/6 out of a 6-game set,
+// 4/5/6/7 out of a 7-game one. Which of those the winner actually gets is driven by how lopsided
+// `confidence` (predictMatchWinner's own win probability, already known to be >=0.5 for the
+// winner) says the match was — a near-toss-up lands on the closest possible score (4-2 or 4-3),
+// a near-certainty drifts toward a blowout (6-0 or 7-0), everything else in between.
+function simulateMatchScore(confidence) {
+  const total = Math.random() < 0.6 ? 6 : 7;
+  const minWinner = 4; // the fewest games that can ever win either a 6 or 7 game set here
+  const range = total - minWinner; // 2 for a 6-game set, 3 for a 7-game one
+  const lopsidedness = Math.max(0, Math.min(1, (confidence - 0.5) * 2)); // 0 = toss-up, 1 = near-certain
+  const idx = Math.min(range, Math.floor(lopsidedness * (range + 1) + Math.random() * 0.5));
+  const winnerScore = minWinner + idx;
+  return {winnerScore, loserScore: total - winnerScore};
 }
 // Distance from a player's preferred break window to round r — lower is more preferred.
 // Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
@@ -1625,22 +1642,30 @@ function calcCIStandings(plan, users) {
 function simulateFullEventCI(sorted, courts, totalRounds, concentrateOn, avoidOn, comms, eventId, users) {
   let plan = genRound1(sorted, courts, totalRounds, concentrateOn, avoidOn);
   const predictions = [];
+  const breakSchedule = [];
   const applyPredictions = (ri) => {
     plan.rounds[ri].matches.forEach(m => {
       const idsA = m.teamA.map(p=>p.userId), idsB = m.teamB.map(p=>p.userId);
       const usrA = m.teamA.reduce((s,p)=>s+(p.usr??50),0)/m.teamA.length;
       const usrB = m.teamB.reduce((s,p)=>s+(p.usr??50),0)/m.teamB.length;
       const {winner, confidence} = predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId: eventId, beforeRound: ri});
-      m.winner = winner;
-      predictions.push({round: ri+1, court: m.court, teamA: m.teamA.map(p=>p.nickname), teamB: m.teamB.map(p=>p.nickname), winner, confidence});
+      // Admin request: an actual game score per match, not just a winner — see
+      // simulateMatchScore's own comment for the model.
+      const {winnerScore, loserScore} = simulateMatchScore(confidence);
+      const scoreA = winner==="A" ? winnerScore : loserScore, scoreB = winner==="A" ? loserScore : winnerScore;
+      m.winner = winner; m.scoreA = scoreA; m.scoreB = scoreB;
+      predictions.push({round: ri+1, court: m.court, teamA: m.teamA.map(p=>p.nickname), teamB: m.teamB.map(p=>p.nickname), winner, confidence, scoreA, scoreB});
     });
+    // Admin request: a full break schedule — who's on break, round by round — not just the
+    // final per-player break count already sitting in the standings table.
+    breakSchedule.push({round: ri+1, players: (plan.rounds[ri].onBreak||[]).map(p=>p.nickname)});
   };
   applyPredictions(0);
   for (let ri = 1; ri < totalRounds; ri++) {
     plan = genNextRoundCI(plan, [], concentrateOn, avoidOn);
     applyPredictions(ri);
   }
-  return {plan, predictions, standings: calcCIStandings(plan, users)};
+  return {plan, predictions, breakSchedule, standings: calcCIStandings(plan, users)};
 }
 function maxPossibleCI(plan){
   // One unified max for every player (not per-player) — uses the average number of
@@ -11294,7 +11319,7 @@ function EvCard({ev,me,users,venues,onClick}){
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
   const avgUsr=calcEventAvgUsr(ev,users||[]);
-  return <Card clickable><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
+  return <Card clickable><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{ev.minUsrFloor>0&&<Bdg label={`🎯 USR ${ev.minUsrFloor}+`} color="#F43746"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
               // Compact version of the graduated Min/Max capacity indicator (V0.09.22, EvDetail)
               // — same status-pill + Min-tick language, scaled down for a list card (no marker
               // dot or Start/Max text labels, the fill edge itself shows position at this size).
@@ -11720,12 +11745,23 @@ function SimReportView({report,onClose}){
         {roundsGrouped[ri].sort((a,b)=>a.court-b.court).map((p,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:"var(--po-inp)",borderRadius:8,marginBottom:4,fontSize:11.5}}>
           <div style={{color:"var(--po-dim)",width:16}}>C{p.court}</div>
           <div style={{flex:1,color:p.winner==="A"?"#34D399":"var(--po-text)",fontWeight:p.winner==="A"?700:400}}>{p.teamA.join(" & ")}</div>
-          <div style={{color:"var(--po-dim)",fontSize:10}}>vs</div>
+          {/* Admin request (2026-09-22): a real game score per match, not just a win/loss —
+              see simulateMatchScore's own comment for the model. */}
+          <div style={{fontSize:12,fontWeight:700,color:"var(--po-text)",minWidth:34,textAlign:"center"}}>{p.scoreA}-{p.scoreB}</div>
           <div style={{flex:1,color:p.winner==="B"?"#34D399":"var(--po-text)",fontWeight:p.winner==="B"?700:400,textAlign:"right"}}>{p.teamB.join(" & ")}</div>
-          <div style={{fontSize:10,color:"var(--po-dim)",minWidth:36,textAlign:"right"}}>{Math.round((p.winner==="A"?p.confidence:1-p.confidence)*100)}%</div>
+          <div title="Predicted win confidence" style={{fontSize:10,color:"var(--po-dim)",minWidth:32,textAlign:"right"}}>{Math.round((p.winner==="A"?p.confidence:1-p.confidence)*100)}%</div>
         </div>)}
       </div>)}
     </Card>
+    {/* Admin request (2026-09-22): a full break schedule — who's on break, round by round —
+        not just the final per-player break count already in the standings table above. */}
+    {report.breakSchedule?.length>0&&<Card style={{marginTop:12}}>
+      <ST>🪑 Break Schedule</ST>
+      {report.breakSchedule.map(rb=><div key={rb.round} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
+        <div style={{fontSize:11,fontWeight:600,color:"var(--po-sub)",width:56,flexShrink:0}}>Round {rb.round}</div>
+        <div style={{flex:1,fontSize:11.5,color:rb.players.length?"var(--po-text)":"var(--po-dim)"}}>{rb.players.length?rb.players.join(", "):"— nobody on break —"}</div>
+      </div>)}
+    </Card>}
   </div>;
 }
 function ReasonModal({title,bullets,onClose}){
@@ -12747,6 +12783,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [simReportsList,setSimReportsList] = useState([]);
   const [simRunning,setSimRunning] = useState(false);
   const [showSimHistory,setShowSimHistory] = useState(false);
+  // Admin report (2026-09-22): "I don't know, it's not saving" about the Practice Session
+  // autosave — traced the write path end to end and confirmed it DOES land in Firestore (a
+  // direct read after a real test session showed the correct roundsCompleted/plan every time).
+  // The real gap: there was zero visible confirmation either way, so there was no way to
+  // actually tell it worked short of me checking Firestore by hand. Surfaced here instead.
+  const [practiceSaveStatus,setPracticeSaveStatus] = useState(null); // {state:"saving"|"saved"|"error", round, at}
   const [showLedgerForm,setShowLedgerForm] = useState(false);
   const [ledgerType,setLedgerType] = useState("expense");
   const [ledgerDesc,setLedgerDesc] = useState("");
@@ -12921,17 +12963,18 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setSimRunning(true);
     try {
       const players = active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
-      const {plan, predictions, standings} = simulateFullEventCI(players, ev.courts, totalR, ev.breakConcentrateIds||[], ev.breakAvoidIds||[], comms, ev.id, users);
+      const {plan, predictions, breakSchedule, standings} = simulateFullEventCI(players, ev.courts, totalR, ev.breakConcentrateIds||[], ev.breakAvoidIds||[], comms, ev.id, users);
       const reportId = `${ev.id}_${Date.now()}`;
       const payload = {
         eventId: ev.id, eventName: ev.name, communityId: ev.communityId,
         runBy: me.id, runByName: me.nickname, runAt: new Date().toISOString(),
         totalRounds: totalR, courts: ev.courts,
         predictions: JSON.stringify(predictions),
+        breakSchedule: JSON.stringify(breakSchedule),
         standings: JSON.stringify(standings.map(s=>({userId:s.user.id, nickname:s.user.nickname, pts:s.pts, wins:s.wins, breaks:s.breaks, played:s.played}))),
       };
       await setDoc(doc(db,"padelos_simulation_reports",reportId), payload);
-      setSimReport({id:reportId, ...payload, predictions, standings: JSON.parse(payload.standings)});
+      setSimReport({id:reportId, ...payload, predictions, breakSchedule, standings: JSON.parse(payload.standings)});
       loadSimReportsList();
       onToast&&onToast("Simulation complete ✓");
     } catch(e) {
@@ -12942,7 +12985,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     }
   };
   const openSimReport = (r) => {
-    try { setSimReport({...r, predictions: JSON.parse(r.predictions), standings: JSON.parse(r.standings)}); }
+    // r.breakSchedule may be absent on a report saved before this field existed — falls back to
+    // an empty list rather than throwing, same spirit as every other forward-only field in this app.
+    try { setSimReport({...r, predictions: JSON.parse(r.predictions), breakSchedule: r.breakSchedule?JSON.parse(r.breakSchedule):[], standings: JSON.parse(r.standings)}); }
     catch(e) { console.log("openSimReport parse failed", e); onToast&&onToast("Couldn't open that report", "err"); }
   };
   // Autosave the practice session after every round (the admin's own choice of granularity,
@@ -12954,12 +12999,15 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   useEffect(() => {
     if (!sim || !simEv || !isAdmin) return;
     const roundsCompleted = simEv.plan?.rounds?.length || 0;
+    setPracticeSaveStatus({state:"saving", round:roundsCompleted});
     setDoc(doc(db,"padelos_practice_sessions",String(ev.id)), {
       eventId: ev.id, eventName: ev.name, communityId: ev.communityId,
       startedBy: me.id, startedByName: me.nickname,
       updatedAt: new Date().toISOString(),
       roundsCompleted, status: simEv.status, plan: JSON.stringify(simEv.plan),
-    }, {merge:true}).catch(e=>console.log("practice session autosave failed", e));
+    }, {merge:true})
+      .then(()=>setPracticeSaveStatus({state:"saved", round:roundsCompleted, at:new Date()}))
+      .catch(e=>{ console.log("practice session autosave failed", e); setPracticeSaveStatus({state:"error", round:roundsCompleted}); });
   }, [sim, simEv?.plan?.rounds?.length]);
 
   // ── Sim-aware action dispatcher ──────────────────────
@@ -13834,7 +13882,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </Card>}
     </div>}
     {simReport&&<SimReportView report={simReport} onClose={()=>setSimReport(null)}/>}
-    {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
+    {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div>
+      {/* Admin request (2026-09-22): make the server-side autosave (see the useEffect above)
+          actually visible — previously it happened silently either way, so there was no way to
+          tell it worked short of checking Firestore directly. */}
+      {practiceSaveStatus&&<div style={{fontSize:10,marginTop:3,color:practiceSaveStatus.state==="error"?"#EF4444":practiceSaveStatus.state==="saving"?"#F59E0B":"#34D399"}}>
+        {practiceSaveStatus.state==="saving"?`⏳ Saving round ${practiceSaveStatus.round}…`
+          :practiceSaveStatus.state==="error"?`⚠️ Round ${practiceSaveStatus.round} couldn't be saved to the server`
+          :`💾 Saved on the server — round ${practiceSaveStatus.round}, ${practiceSaveStatus.at.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"})}`}
+      </div>}
+    </div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>
       {/* Line 1 is #id + name ONLY, leftmost to rightmost — nothing else shares it (admin
@@ -13865,6 +13922,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
             {!isCompleted&&regPaused&&<Bdg label="🔒 Paused" color="#94A3B8"/>}
             {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
+            {ev.minUsrFloor>0&&<Bdg label={`🎯 USR ${ev.minUsrFloor}+`} color="#F43746"/>}
             {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
           </div>
         </div>

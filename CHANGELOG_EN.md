@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.68 (current) — Add: full-event simulation (a predicted preview report)
+## V0.16.69 (current) — Polish on the last 3 features (after real testing)
+
+- **Practice Session:** there was no visible proof the autosave was actually happening — it felt like it "wasn't saving." Traced the write path end to end and confirmed it does land in Firestore correctly; the real gap was the missing feedback. Added a clear status line under "Practice Session Active": "⏳ Saving round X…" while writing, then "💾 Saved on the server — round X, [time]" once it lands, or a visible warning if it genuinely fails.
+- **Minimum-USR floor:** it existed but was invisible anywhere except the edit form. Added a clear "🎯 USR 25+"-style badge to both the event card in the list and the event detail header.
+- **Full-event simulation report:** was final standings + win/loss only. Now includes:
+  - **A real score for every match** (like 4-2, 5-1, 4-3) instead of just a confidence percentage — modeled as a short set played to 6 or 7 games, landing close for an even matchup and lopsided for a clear mismatch.
+  - **A full break schedule** — who was on break each round, not just the final per-player count in the standings.
+- **Verified all of it live on dev** via automated scripts: the badge shows correctly on both the card and header, the save indicator appears after every round, and the report now shows real scores (like 6-0, 4-3, 2-5) plus a complete break schedule across all 6 rounds.
+
+---
+
+## V0.16.68 — Add: full-event simulation (a predicted preview report)
 
 - **Admin request:** a new feature — the system runs an entire event simulation up front (every match result, player movement between courts and breaks, and a final projected standings) and records it in a clear report for later review and comparison.
 - **Done (Padel/Individuals only for now):**

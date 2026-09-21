@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.70 (current) — Add: a big, clear lock indicator when registration is paused
+## V0.16.71 (current) — Fix: full-event simulation was using the wrong break engine from round 2 onward
+
+- **Bug the admin caught:** the "Full-Event Simulation" (🔮 Simulate Full Event) was producing break patterns completely different from the real app. The admin explicitly asked for it to run the exact same break engine (Dynamic v2), round by round.
+- **Root cause:** `simulateFullEventCI` (the function driving the simulation) never set `breakEngine: "dynamic2"` on its plan before generating the first round — every other real caller in the codebase (e.g. starting a real event) adds that right after `genRound1`, but the simulation forgot this one step. Round 1 itself was unaffected (same logic regardless of engine), but from round 2 onward the function that decides who goes on break silently fell back to the old "Classic" engine — a genuinely different engine than what real events actually use.
+- **Fix:** one line — add `breakEngine: "dynamic2"` to the simulation's plan right when it's created, matching every other place in the code that does the same thing.
+- **Verified live on dev.**
+
+---
+
+## V0.16.70 — Add: a big, clear lock indicator when registration is paused
 
 - **Admin request:** when an admin pauses registration on an event, nothing shows that from the outside — on the events list or the Home screen, the event still looks perfectly open, and the admin has to open it just to check. Wanted a big, unmistakable lock indicator visible right away, without opening the event.
 - **Done:** whenever `registrationOpen` is `false` (and the event isn't completed/cancelled):

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.70";
+const APP_VERSION = "V0.16.71";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1640,7 +1640,17 @@ function calcCIStandings(plan, users) {
 // WHO wins each match is synthetic. CI/Padel only for v1 — CT Ladder/Football are a natural
 // fast-follow once this is proven out, not built now.
 function simulateFullEventCI(sorted, courts, totalRounds, concentrateOn, avoidOn, comms, eventId, users) {
-  let plan = genRound1(sorted, courts, totalRounds, concentrateOn, avoidOn);
+  // Real bug, admin report (2026-09-22): genRound1's own return object never sets
+  // `breakEngine` — every OTHER caller adds it themselves right after (see act.startCI:
+  // `{...genRound1(...), breakEngine: breakEngine||"classic"}`), which this function forgot to
+  // do. Without it, genNextRoundCI's internal dispatch (`if plan.breakEngine==="dynamic2" ...
+  // else if "dynamic" ... else classic`) silently fell through to the Classic engine for every
+  // round after the first — a genuinely different break engine than the one this whole session
+  // has been fixing and than what a real event actually uses by default, which is exactly why
+  // the admin saw the simulation produce break patterns that didn't match the real app's logic
+  // at all. Round 1 itself was unaffected (buildBreakPlan's r===0 branch runs the same
+  // preference-first selection regardless of engine), but every later round wasn't.
+  let plan = {...genRound1(sorted, courts, totalRounds, concentrateOn, avoidOn), breakEngine: "dynamic2"};
   const predictions = [];
   const breakSchedule = [];
   const applyPredictions = (ri) => {

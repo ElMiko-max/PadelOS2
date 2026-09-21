@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.69 (current) — Polish on the last 3 features (after real testing)
+## V0.16.70 (current) — Add: a big, clear lock indicator when registration is paused
+
+- **Admin request:** when an admin pauses registration on an event, nothing shows that from the outside — on the events list or the Home screen, the event still looks perfectly open, and the admin has to open it just to check. Wanted a big, unmistakable lock indicator visible right away, without opening the event.
+- **Done:** whenever `registrationOpen` is `false` (and the event isn't completed/cancelled):
+  - **The event card in the list** (a community's Events tab, and the same card wherever it shows on the Home screen) — a bold red banner across the top: "🔒 REGISTRATION LOCKED — closed for now".
+  - **The "Next Up" hero card on the Home screen** — a clear red "🔒 LOCKED" badge next to the event name.
+  - No change inside the event screen's own header — as requested, since there's already a toggle there showing the state.
+- **Verified live on dev** via an automated script — the banner and badge both render correctly in both places.
+
+---
+
+## V0.16.69 — Polish on the last 3 features (after real testing)
 
 - **Practice Session:** there was no visible proof the autosave was actually happening — it felt like it "wasn't saving." Traced the write path end to end and confirmed it does land in Firestore correctly; the real gap was the missing feedback. Added a clear status line under "Practice Session Active": "⏳ Saving round X…" while writing, then "💾 Saved on the server — round X, [time]" once it lands, or a visible warning if it genuinely fails.
 - **Minimum-USR floor:** it existed but was invisible anywhere except the edit form. Added a clear "🎯 USR 25+"-style badge to both the event card in the list and the event detail header.

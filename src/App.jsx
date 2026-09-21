@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.69";
+const APP_VERSION = "V0.16.70";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -11319,7 +11319,20 @@ function EvCard({ev,me,users,venues,onClick}){
   const remaining=live?Math.max(0,Math.round((live.roundEndAt-now)/1000)):null;
   const clock=remaining!=null?`${String(Math.floor(remaining/60)).padStart(2,"0")}:${String(remaining%60).padStart(2,"0")}`:null;
   const avgUsr=calcEventAvgUsr(ev,users||[]);
-  return <Card clickable><div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{ev.minUsrFloor>0&&<Bdg label={`🎯 USR ${ev.minUsrFloor}+`} color="#F43746"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
+  // Admin request (2026-09-22): a paused registration only ever showed as a small toggle inside
+  // the event itself — nothing on the list card said so from the outside, so it was easy to miss
+  // that an event looked open but wasn't actually accepting registrations. A full-width banner,
+  // not just another small pill lost among the others, at the top of the card whenever
+  // registrationOpen is explicitly false (an event with no plan/round data yet defaults to open,
+  // same as everywhere else this field is read) — moot once the event is completed/cancelled,
+  // since registration isn't a live concept there anymore either way.
+  const showLockBanner = ev.registrationOpen===false && ev.status!=="completed" && ev.status!=="cancelled";
+  return <Card clickable style={{overflow:"hidden"}}>
+    {showLockBanner&&<div style={{margin:"-14px -16px 10px -16px",padding:"7px 16px",background:"#EF4444",display:"flex",alignItems:"center",gap:6}}>
+      <span style={{fontSize:14}}>🔒</span>
+      <span style={{fontSize:12,fontWeight:700,color:"#fff",letterSpacing:0.3}}>REGISTRATION LOCKED — closed for now</span>
+    </div>}
+    <div onClick={onClick} style={{display:"flex",gap:10,alignItems:"center"}}>{avgUsr!=null?<EventLevelBadge avg={avgUsr} sport={ev.sport||DEFAULT_SPORT}/>:<div style={{width:42,height:42,borderRadius:10,background:"var(--po-bdr)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>📅</div>}<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3,flexWrap:"wrap"}}><span style={{fontWeight:600,fontSize:14,color:"var(--po-text)"}}>{ev.name}</span><span style={{fontSize:10,color:"var(--po-dim)",background:"var(--po-inp)",padding:"1px 6px",borderRadius:5}}>#{ev.id}</span>{live&&<LiveBdg label="LIVE"/>}{ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}{ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}<Bdg label={sl[ev.status]||ev.status} color={sc[ev.status]||"#94A3B8"}/>{ev.type&&<Bdg label={tl[ev.type]||ev.type} color="#6366F1"/>}{!ev.type&&<Bdg label="🗳 Poll" color="#F59E0B"/>}{ev.minUsrFloor>0&&<Bdg label={`🎯 USR ${ev.minUsrFloor}+`} color="#F43746"/>}{photoCount>0&&<span style={{fontSize:10,color:"#A5B4FC",background:"#6366F122",padding:"1px 6px",borderRadius:5}}>🖼 {photoCount}</span>}</div>{live&&<div style={{fontSize:12,fontWeight:700,color:"#EF4444",marginBottom:2}}>⏱ Round {live.slot}/{live.tr} · ends in {clock}</div>}{ev.commName&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>👥 {ev.commName}</div>}{venue&&<div style={{fontSize:11,color:"var(--po-dim)",display:"flex",alignItems:"center",gap:4,marginBottom:2}}>🏟 {venue.name}</div>}<div style={{fontSize:11,color:"var(--po-dim)"}}>{ev.pitches?.length?`${ev.pitches.join(", ")}`:`${ev.courts} courts`}{creator?` · by ${creator.nickname}`:""}</div>{(()=>{
               // Compact version of the graduated Min/Max capacity indicator (V0.09.22, EvDetail)
               // — same status-pill + Min-tick language, scaled down for a list card (no marker
               // dot or Start/Max text labels, the fill edge itself shows position at this size).
@@ -15186,7 +15199,11 @@ function HomeSc({events,me,comms,venues,eventCommFilter,onOpen,onGoEvents,auditL
     return <>
       <div style={{position:"absolute",top:-50,right:-50,width:140,height:140,borderRadius:"50%",background:"radial-gradient(circle, rgba(99,102,241,.32), transparent 70%)"}}/>
       <div style={{position:"relative"}}>
-        <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(ev)}</div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+          <div style={{fontSize:10,fontWeight:700,color:"#A5B4FC",textTransform:"uppercase",letterSpacing:0.6}}>Next Up · {countdownLabel(ev)}</div>
+          {/* Same lock indicator as EvCard, admin request 2026-09-22 — see its own comment. */}
+          {ev.registrationOpen===false&&ev.status!=="completed"&&ev.status!=="cancelled"&&<div style={{fontSize:10,fontWeight:700,color:"#fff",background:"#EF4444",padding:"2px 8px",borderRadius:20,whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:3}}><span>🔒</span>LOCKED</div>}
+        </div>
         <div style={{fontSize:16,fontWeight:700,color:"#fff",marginTop:6}}>{ev.name}</div>
         <div style={{fontSize:11.5,color:"#C7D2FE",marginTop:4,display:"flex",gap:10,flexWrap:"wrap"}}>
           {v&&<span>📍 {v.name}</span>}

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.71";
+const APP_VERSION = "V0.16.72";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -657,7 +657,10 @@ function predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId, befo
     finalP = E + (h2h.sideAWinRate - E) * weight;
   }
   finalP = Math.max(0.05, Math.min(0.95, finalP));
-  return {winner: Math.random() < finalP ? "A" : "B", confidence: Math.round(finalP * 1000) / 1000};
+  // Admin request (2026-09-21): a prediction with no visible reasoning reads as "random" even
+  // when it isn't — surface the two real inputs (USR gap, head-to-head history) that produced it
+  // so a surprising-looking result can be checked against what actually drove it.
+  return {winner: Math.random() < finalP ? "A" : "B", confidence: Math.round(finalP * 1000) / 1000, h2hMeetings: h2h.meetings, h2hSideAWinRate: h2h.sideAWinRate};
 }
 // Admin request (2026-09-22): the simulation report needs an actual game score per match, not
 // just a winner — "زي ما انت عايز بقى... اربعة اتنين، خمسة واحد، اربعة ثلاثة" (whatever's
@@ -1658,13 +1661,16 @@ function simulateFullEventCI(sorted, courts, totalRounds, concentrateOn, avoidOn
       const idsA = m.teamA.map(p=>p.userId), idsB = m.teamB.map(p=>p.userId);
       const usrA = m.teamA.reduce((s,p)=>s+(p.usr??50),0)/m.teamA.length;
       const usrB = m.teamB.reduce((s,p)=>s+(p.usr??50),0)/m.teamB.length;
-      const {winner, confidence} = predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId: eventId, beforeRound: ri});
+      const {winner, confidence, h2hMeetings, h2hSideAWinRate} = predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId: eventId, beforeRound: ri});
       // Admin request: an actual game score per match, not just a winner — see
       // simulateMatchScore's own comment for the model.
       const {winnerScore, loserScore} = simulateMatchScore(confidence);
       const scoreA = winner==="A" ? winnerScore : loserScore, scoreB = winner==="A" ? loserScore : winnerScore;
       m.winner = winner; m.scoreA = scoreA; m.scoreB = scoreB;
-      predictions.push({round: ri+1, court: m.court, teamA: m.teamA.map(p=>p.nickname), teamB: m.teamB.map(p=>p.nickname), winner, confidence, scoreA, scoreB});
+      // Admin request (2026-09-21): "بيطلع نتائج غريبة" — a surprising result needs its own inputs
+      // visible right next to it (avg USR per side, prior head-to-head) so it can be sanity-checked
+      // instead of just trusted or dismissed as random.
+      predictions.push({round: ri+1, court: m.court, teamA: m.teamA.map(p=>p.nickname), teamB: m.teamB.map(p=>p.nickname), winner, confidence, scoreA, scoreB, usrA: Math.round(usrA), usrB: Math.round(usrB), h2hMeetings, h2hSideAWinRate});
     });
     // Admin request: a full break schedule — who's on break, round by round — not just the
     // final per-player break count already sitting in the standings table.
@@ -11765,14 +11771,25 @@ function SimReportView({report,onClose}){
       <ST>📅 Round-by-Round Predicted Results</ST>
       {Object.keys(roundsGrouped).sort((a,b)=>a-b).map(ri=><div key={ri} style={{marginBottom:10}}>
         <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)",marginBottom:4}}>Round {ri}</div>
-        {roundsGrouped[ri].sort((a,b)=>a.court-b.court).map((p,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:"var(--po-inp)",borderRadius:8,marginBottom:4,fontSize:11.5}}>
-          <div style={{color:"var(--po-dim)",width:16}}>C{p.court}</div>
-          <div style={{flex:1,color:p.winner==="A"?"#34D399":"var(--po-text)",fontWeight:p.winner==="A"?700:400}}>{p.teamA.join(" & ")}</div>
-          {/* Admin request (2026-09-22): a real game score per match, not just a win/loss —
-              see simulateMatchScore's own comment for the model. */}
-          <div style={{fontSize:12,fontWeight:700,color:"var(--po-text)",minWidth:34,textAlign:"center"}}>{p.scoreA}-{p.scoreB}</div>
-          <div style={{flex:1,color:p.winner==="B"?"#34D399":"var(--po-text)",fontWeight:p.winner==="B"?700:400,textAlign:"right"}}>{p.teamB.join(" & ")}</div>
-          <div title="Predicted win confidence" style={{fontSize:10,color:"var(--po-dim)",minWidth:32,textAlign:"right"}}>{Math.round((p.winner==="A"?p.confidence:1-p.confidence)*100)}%</div>
+        {roundsGrouped[ri].sort((a,b)=>a.court-b.court).map((p,i)=><div key={i} style={{padding:"5px 8px",background:"var(--po-inp)",borderRadius:8,marginBottom:4}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,fontSize:11.5}}>
+            <div style={{color:"var(--po-dim)",width:16}}>C{p.court}</div>
+            <div style={{flex:1,color:p.winner==="A"?"#34D399":"var(--po-text)",fontWeight:p.winner==="A"?700:400}}>{p.teamA.join(" & ")}</div>
+            {/* Admin request (2026-09-22): a real game score per match, not just a win/loss —
+                see simulateMatchScore's own comment for the model. */}
+            <div style={{fontSize:12,fontWeight:700,color:"var(--po-text)",minWidth:34,textAlign:"center"}}>{p.scoreA}-{p.scoreB}</div>
+            <div style={{flex:1,color:p.winner==="B"?"#34D399":"var(--po-text)",fontWeight:p.winner==="B"?700:400,textAlign:"right"}}>{p.teamB.join(" & ")}</div>
+            <div title="Predicted win confidence" style={{fontSize:10,color:"var(--po-dim)",minWidth:32,textAlign:"right"}}>{Math.round((p.winner==="A"?p.confidence:1-p.confidence)*100)}%</div>
+          </div>
+          {/* Admin request (2026-09-21): show what actually drove a prediction — avg USR per
+              side and any prior head-to-head — so a surprising-looking result can be checked
+              against its real inputs instead of just trusted or dismissed as random. */}
+          <div style={{fontSize:10,color:"var(--po-dim)",marginTop:2,paddingLeft:22}}>
+            USR {p.usrA} vs {p.usrB}
+            {p.h2hMeetings>0
+              ? ` · 📊 H2H: ${p.h2hMeetings} past meeting${p.h2hMeetings===1?"":"s"} — ${p.teamA.join("/")} won ${Math.round(p.h2hSideAWinRate*100)}%`
+              : ` · 📊 H2H: no prior meetings — USR only`}
+          </div>
         </div>)}
       </div>)}
     </Card>

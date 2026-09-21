@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.71 (current) — Fix: full-event simulation was using the wrong break engine from round 2 onward
+## V0.16.72 (current) — Add: context info next to every result in the simulation report
+
+- **Admin request:** after fixing the break engine (V0.16.71), the admin reported some match results in the simulation report still "look strange" and wanted to see what actually drove them — the average USR for each side, and any prior head-to-head history between the same players, so a surprising result can be checked instead of just trusted.
+- **Done:** under every match in "Round-by-Round Predicted Results", added a small line showing:
+  - Each team's average USR (e.g. "USR 53 vs 54").
+  - Real prior head-to-head between these exact players, if any: meeting count and the first team's win rate (e.g. "📊 H2H: 3 past meetings — Yehia/Boudy won 67%"), or "no prior meetings — USR only" when there's no history.
+- **Important note on "strange results":** the prediction is deliberately probabilistic, not a guarantee — even a clearly stronger side (by USR) can lose a simulated match, the same way a real stronger team sometimes loses in practice; the winner isn't always handed to whoever has the higher USR. A near-even matchup can go either way — that's intended, not a bug, and the new info makes it visible (a close USR gap will now visibly read as a near coin-flip rather than a confident pick).
+- **Verified** via a direct simulation script — the new USR and H2H fields render correctly for every match.
+
+---
+
+## V0.16.71 — Fix: full-event simulation was using the wrong break engine from round 2 onward
 
 - **Bug the admin caught:** the "Full-Event Simulation" (🔮 Simulate Full Event) was producing break patterns completely different from the real app. The admin explicitly asked for it to run the exact same break engine (Dynamic v2), round by round.
 - **Root cause:** `simulateFullEventCI` (the function driving the simulation) never set `breakEngine: "dynamic2"` on its plan before generating the first round — every other real caller in the codebase (e.g. starting a real event) adds that right after `genRound1`, but the simulation forgot this one step. Round 1 itself was unaffected (same logic regardless of engine), but from round 2 onward the function that decides who goes on break silently fell back to the old "Classic" engine — a genuinely different engine than what real events actually use.

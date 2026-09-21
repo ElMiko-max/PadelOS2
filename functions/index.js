@@ -326,10 +326,12 @@ exports.confirmEmailMatch = onCall(async (request) => {
 // bundle; a real shared-module setup is more invasive than these fixes warranted.
 const getMaxPlayers = e => (e?.maxPlayers > 0 ? e.maxPlayers : null);
 const splitRegsByCapacity = (e, c) => {
+  // Kept in sync with the client's own filter — see its comment for the full "why".
+  const regs = (e.registrations || []).filter(r => r.status !== "unqualified");
   const max = getMaxPlayers(e);
-  if (!max) return {active: e.registrations, waitlisted: []};
-  const confirmed = e.registrations.filter(r => r.confirmOrder != null);
-  const rest = e.registrations.filter(r => r.confirmOrder == null);
+  if (!max) return {active: regs, waitlisted: []};
+  const confirmed = regs.filter(r => r.confirmOrder != null);
+  const rest = regs.filter(r => r.confirmOrder == null);
   const remainingMax = Math.max(0, max - confirmed.length);
   const windowActive = e?.regularUntil && Date.now() < new Date(e.regularUntil).getTime();
   if (windowActive && c) {
@@ -438,7 +440,7 @@ exports.registerForEvent = onCall(async (request) => {
   const commRef = db.collection("padelos_communities").doc(String(communityId));
   const regRef = evRef.collection("registrations").doc(String(userId));
 
-  const {alreadyRegistered, needsApproval, eventName} = await db.runTransaction(async (tx) => {
+  const {alreadyRegistered, needsApproval, eventName, unqualifiedInfo} = await db.runTransaction(async (tx) => {
     const evSnap = await tx.get(evRef);
     if (!evSnap.exists) throw new HttpsError("not-found", "Event not found.");
     const ev = evSnap.data();
@@ -479,19 +481,38 @@ exports.registerForEvent = onCall(async (request) => {
       }
     }
 
+    // Minimum-USR floor (2026-09-21, admin request): below it, self-registration still creates
+    // a real registration doc — just tagged "unqualified" instead of "registered" — so the
+    // player shows up on a distinct admin-approval list instead of silently competing for a
+    // seat their skill level wasn't meant to. Only self-service registration (this function) is
+    // gated; addMemberToEvent/approveEventJoinRequest deliberately skip this, matching the
+    // existing admin-bypass philosophy (an admin adding/approving someone specific already IS
+    // the judgment call). Read here (not before) so it never costs a users-blob fetch for events
+    // with no floor set at all.
+    let regStatus = "registered", unqualifiedInfo = null;
+    if (ev.minUsrFloor > 0) {
+      const usersSnap = await tx.get(db.collection("padelos").doc("users"));
+      const usersArr = JSON.parse(usersSnap.data()?.value || "[]");
+      const usr = usersArr.find(u => u.id === userId)?.usr ?? 0;
+      if (usr < ev.minUsrFloor) { regStatus = "unqualified"; unqualifiedInfo = {usr, floor: ev.minUsrFloor}; }
+    }
+
     const addedBy = via === "invite" ? "invite" : null;
-    const newReg = {userId, eventId, registeredAt: new Date().toISOString(), status: "registered", addedBy, isGuest: false};
+    const newReg = {userId, eventId, registeredAt: new Date().toISOString(), status: regStatus, addedBy, isGuest: false};
     tx.set(regRef, newReg);
-    writeRegHistory(tx, db, eventId, userId, via === "invite" ? "Registered (via invite link)" : "Registered (self, via app)");
+    writeRegHistory(tx, db, eventId, userId, unqualifiedInfo
+      ? `Registered — unqualified (USR ${unqualifiedInfo.usr} below floor ${unqualifiedInfo.floor}), awaiting admin exception`
+      : (via === "invite" ? "Registered (via invite link)" : "Registered (self, via app)"));
     if (via === "invite" && !comm.members.some(m => m.userId === userId)) {
       tx.set(commRef, {...comm, members: [...comm.members, {userId, role: "member", status: "guest", since: new Date().toISOString().slice(0, 10)}]});
     }
 
-    return {alreadyRegistered: false, eventName: ev.name};
+    return {alreadyRegistered: false, eventName: ev.name, unqualifiedInfo};
   });
 
   if (alreadyRegistered) return {status: "already-registered", waitlisted: false, eventName};
   if (needsApproval) return {status: "needs-approval", eventName};
+  if (unqualifiedInfo) return {status: "ok", unqualified: true, userUsr: unqualifiedInfo.usr, floor: unqualifiedInfo.floor, eventName};
   const {waitlisted, pos, regularUntil} = await computeWaitlistInfo(db, communityId, eventId, userId);
   return {status: "ok", waitlisted, pos, regularUntil, eventName};
 });

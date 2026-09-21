@@ -4,7 +4,19 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.66 (current) — Add: server-side Practice Session autosave (temporary, self-cleaning)
+## V0.16.67 (current) — Add: minimum-USR registration floor + "Unqualified" bucket
+
+- **Admin request:** a new per-event minimum-USR floor. A registrant below it isn't rejected outright — they land in a distinct "Unqualified" bucket until the admin explicitly grants an exception.
+- **Done:**
+  - New optional "Minimum USR to register" field on the event create/edit form (Padel only — Football has no USR concept).
+  - A self-registering player (the "I'm In" button or an invite link) below the floor still gets a real registration, tagged "Unqualified" — it never counts toward Active or Waitlist capacity — with a clear toast: "🚩 Your USR (X) is below this event's minimum (Y) — you're on the Unqualified list awaiting admin approval."
+  - New admin section "🚩 Unqualified — needs approval" on the Players tab, mirroring the existing "🙋 Requests to Join" card exactly — "✓ Exception" flips them back to a normal registrant (keeping their original registration timestamp, so they land at their rightful spot, not the back of the line), "✕" rejects them.
+  - Admin-initiated registration (Add Member) and approving a Guest's join request are unaffected by the floor — those are already the admin's own judgment call.
+- **Verified live on dev:** a below-floor player registered, correctly landed in the Unqualified list, the admin granted an exception, and the player then counted normally in the Active list.
+
+---
+
+## V0.16.66 — Add: server-side Practice Session autosave (temporary, self-cleaning)
 
 - **Admin request:** "🧪 Practice Session" is deliberately local-only (never touches real data) — but that also meant once the tab closed, nobody (including a later review) could ever see what a practice run actually did. Asked for practice progress to be written to the server so it's reviewable, with automatic periodic cleanup.
 - **Done:** every round generated inside a Practice Session now auto-saves to a new `padelos_practice_sessions/{eventId}` collection (one doc per event, always fully overwritten — starting a fresh practice run on the same event replaces the old snapshot automatically, matching "cancelling later on with a later simulation"). A new scheduled Cloud Function (`cleanupStalePracticeSessions`) runs daily and deletes anything untouched for 7+ days — a backstop for events practiced once and never revisited.

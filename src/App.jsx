@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.66";
+const APP_VERSION = "V0.16.67";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -512,10 +512,15 @@ const getMaxPlayers = ev => (ev?.maxPlayers>0 ? ev.maxPlayers : null);
 // Anyone already confirmed (BUGS.md #18) stays active unconditionally, forever, regardless of
 // window state — that permanence guarantee is untouched by any of this.
 const splitRegsByCapacity = (ev, comm) => {
+  // A registration below the event's minUsrFloor (2026-09-21, admin request) is neither active
+  // nor waitlisted — it sits in its own "Unqualified" bucket until an admin grants an exception
+  // (flips it back to status:"registered"), so it's excluded here before any of the existing
+  // confirmed/rest/active/waitlisted math ever sees it.
+  const regs = (ev.registrations||[]).filter(r => r.status !== "unqualified");
   const max = getMaxPlayers(ev);
-  if (!max) return { active: ev.registrations, waitlisted: [] };
-  const confirmed = ev.registrations.filter(r => r.confirmOrder != null);
-  const rest = ev.registrations.filter(r => r.confirmOrder == null); // already chronological (regsByEvent's sort)
+  if (!max) return { active: regs, waitlisted: [] };
+  const confirmed = regs.filter(r => r.confirmOrder != null);
+  const rest = regs.filter(r => r.confirmOrder == null); // already chronological (regsByEvent's sort)
   const remainingMax = Math.max(0, max - confirmed.length);
   const windowActive = ev?.regularUntil && Date.now() < new Date(ev.regularUntil).getTime();
   if (windowActive && comm) {
@@ -7981,7 +7986,7 @@ export default function Matchkeeper() {
     // round/team generator (its own picker, e.g. CI's "Round duration" or CT's "Match duration"
     // at generation time), not the event create/edit form. This is just the seed default those
     // pickers start from before the admin generates anything.
-    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams,excludeFromAttendance:!!d.excludeFromAttendance};
+    const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams,excludeFromAttendance:!!d.excludeFromAttendance,minUsrFloor:isFootballEv?null:(parseInt(d.minUsrFloor)||null)};
     createEventDoc(ev);toast2("Event created ✓");go("event",{cid,eid:id});
     scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
@@ -8376,6 +8381,19 @@ export default function Matchkeeper() {
       }
       logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}"${waitlisted?" (waitlisted)":""}`, "event", eid);
     };
+    // Minimum-USR floor (2026-09-21, admin request) — same "don't let them assume they're
+    // competing normally" fix as afterRegistered above, for the third possible outcome: below
+    // the event's floor, they land on the Unqualified list, not Active or Waitlist at all.
+    const afterUnqualified = (userUsr, floor) => {
+      toast2(`🚩 Your USR (${userUsr}) is below this event's minimum (${floor}) — you're on the Unqualified list awaiting admin approval`);
+      if (ev) notify([me.id], "unqualified", ev, `🚩 Awaiting approval for ${ev.name}`, `Your USR (${userUsr}) is below this event's minimum (${floor}) — an admin needs to grant an exception before you're treated as a normal registrant.`);
+      if (ev) {
+        const adminIds = (comm?.members||[]).filter(m=>(m.role==="owner"||m.role==="admin")&&m.userId!==me.id).map(m=>m.userId);
+        const recipients = [...adminIds, ev.createdBy].filter(uid=>uid!=null&&uid!==me.id);
+        notify(recipients, "eventRegistration", ev, "🚩 Unqualified registration", `${me.nickname} registered for ${ev.name} below the USR floor (${userUsr} < ${floor}) — needs your approval.`);
+      }
+      logAudit("event.register", `${me.nickname} registered for "${ev?.name||eid}" — unqualified (USR ${userUsr} below floor ${floor})`, "event", eid);
+    };
     setRegisteringEventId(eid);
     try {
     // Server-side gateway first — see registerForEvent's own comment in functions/index.js for
@@ -8389,8 +8407,9 @@ export default function Matchkeeper() {
       try {
         const fn = httpsCallable(getFunctionsLazy(), "registerForEvent");
         const res = await withTimeout(fn({communityId:cid, eventId:eid, via:null}), 8000);
-        const {status, waitlisted, pos, regularUntil} = res.data || {};
+        const {status, waitlisted, pos, regularUntil, unqualified, userUsr, floor} = res.data || {};
         if (status === "already-registered") return;
+        if (unqualified) { afterUnqualified(userUsr, floor); return; }
         afterRegistered(!!waitlisted, pos||0, regularUntil);
         return;
       } catch (e) {
@@ -8404,7 +8423,10 @@ export default function Matchkeeper() {
     // real concurrency the guess can be wrong (someone else's registration could land in
     // between), so the true answer is recomputed from the confirmed data that comes back.
     try {
-      await registerInEvent(cid, eid, me.id, {registeredAt:new Date().toISOString(), status:"registered", addedBy:null, isGuest:false}, {checkRegistrationOpen:true, regHistoryNote:"Registered (self, via app)"});
+      const myUsr = users.find(u=>u.id===me.id)?.usr ?? 0;
+      const unqualified = ev.minUsrFloor>0 && myUsr<ev.minUsrFloor;
+      await registerInEvent(cid, eid, me.id, {registeredAt:new Date().toISOString(), status:unqualified?"unqualified":"registered", addedBy:null, isGuest:false}, {checkRegistrationOpen:true, regHistoryNote:unqualified?`Registered — unqualified (USR ${myUsr} below floor ${ev.minUsrFloor}), awaiting admin exception`:"Registered (self, via app)"});
+      if (unqualified) { afterUnqualified(myUsr, ev.minUsrFloor); return; }
       // Waitlist position for the toast is a plain post-write read of this event's current
       // registrations, fetched fresh from Firestore (not via comms — that's still on the closure
       // from before this await) — informational only, never enforced, so it doesn't need to be
@@ -8494,12 +8516,19 @@ export default function Matchkeeper() {
       try {
         const fn = httpsCallable(getFunctionsLazy(), "registerForEvent");
         const res = await withTimeout(fn({communityId:cid, eventId:eid, via:"invite"}), 8000);
-        const {status, waitlisted, pos, regularUntil} = res.data || {};
+        const {status, waitlisted, pos, regularUntil, unqualified, userUsr, floor} = res.data || {};
         if (status === "already-registered") return;
         // Server-side agreed this account is guest-tier for this community (stale local comm
         // data, or a client that predates the client-side check above) — same outcome as the
         // early-return branch: a request, not a registration.
         if (status === "needs-approval") { toast2("Request sent ✓ — awaiting admin approval"); return; }
+        // Minimum-USR floor (2026-09-21) — same third outcome as registerEv, see its comment.
+        if (unqualified) {
+          if (uid===me.id) toast2(`🚩 Your USR (${userUsr}) is below this event's minimum (${floor}) — you're on the Unqualified list awaiting admin approval`);
+          if (ev) notify([uid], "unqualified", ev, `🚩 Awaiting approval for ${ev.name}`, `Your USR (${userUsr}) is below this event's minimum (${floor}) — an admin needs to grant an exception.`);
+          logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link — unqualified (USR ${userUsr} below floor ${floor})`, "event", eid);
+          return;
+        }
         // Same "don't let them assume an active seat" fix as registerEv — see its comment.
         if (uid===me.id) toast2(waitlisted ? `⏳ You're #${pos} on the waitlist — ${waitlistConditionText(regularUntil)}` : `Registered ✓ — you're #${pos} on the active list`);
         if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?waitlistConditionText(regularUntil):`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
@@ -8513,12 +8542,20 @@ export default function Matchkeeper() {
         console.log("registerForEvent unavailable, falling back to direct write", e);
       }
     }
-    const {waitlisted, pos} = willLandWaitlisted(ev, uid, comm, "invite");
+    const targetUsr = u?.usr ?? 0;
+    const unqualified = ev.minUsrFloor>0 && targetUsr<ev.minUsrFloor;
+    const {waitlisted, pos} = unqualified ? {waitlisted:false, pos:0} : willLandWaitlisted(ev, uid, comm, "invite");
     registerWithMembership(cid, eid, uid,
       c => ({...c, members: c.members.some(m=>m.userId===uid) ? c.members : [...c.members,{userId:uid,role:"member",status:"guest",since:today}]}),
-      {registeredAt:new Date().toISOString(), status:"registered", addedBy:"invite", isGuest:false},
-      {}, "Registered (via invite link)"
+      {registeredAt:new Date().toISOString(), status:unqualified?"unqualified":"registered", addedBy:"invite", isGuest:false},
+      {}, unqualified?`Registered — unqualified (USR ${targetUsr} below floor ${ev.minUsrFloor}), awaiting admin exception`:"Registered (via invite link)"
     ).catch(e=>console.log("registerViaInvite registerWithMembership failed", e));
+    if (unqualified) {
+      if (uid===me.id) toast2(`🚩 Your USR (${targetUsr}) is below this event's minimum (${ev.minUsrFloor}) — you're on the Unqualified list awaiting admin approval`);
+      if (ev) notify([uid], "unqualified", ev, `🚩 Awaiting approval for ${ev.name}`, `Your USR (${targetUsr}) is below this event's minimum (${ev.minUsrFloor}) — an admin needs to grant an exception.`);
+      logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link — unqualified (USR ${targetUsr} below floor ${ev.minUsrFloor})`, "event", eid);
+      return;
+    }
     if (uid===me.id) toast2(waitlisted ? `⏳ You're #${pos} on the waitlist — ${waitlistConditionText(ev.regularUntil)}` : "Registered ✓");
     if (ev) notify([uid], waitlisted?"waitlisted":"registered", ev, waitlisted?`⏳ You're on the waitlist for ${ev.name}`:`✓ You're in for ${ev.name}`, waitlisted?waitlistConditionText(ev.regularUntil):`${fmtD(ev.date)}${ev.time?` · ${fmtT(ev.time)}`:""} — via invite link`);
     logAudit("event.register", `${u?.nickname||uid} joined "${ev?.name||eid}" via invite link${waitlisted?" (waitlisted)":""}`, "event", eid);
@@ -8579,6 +8616,30 @@ export default function Matchkeeper() {
     updEvent(cid,eid,ev=>({...ev,joinRequests:(ev.joinRequests||[]).filter(r=>r.userId!==uid)}));
     toast2("Rejected");
     logRegHistory(eid, uid, `Join request rejected (by ${me.nickname})`);
+  };
+  // Minimum-USR floor's admin-exception pair (2026-09-21) — unlike approveEventJoin/
+  // rejectEventJoin (a Guest join REQUEST has no registration doc yet, so approving one has to
+  // create it), an "unqualified" registrant already has a real doc — approving here is just
+  // flipping its status back to "registered" (keeping the original registeredAt, so they land at
+  // their rightful chronological spot instead of the back of the line), same simplicity as
+  // rejectEventJoin above, no server-side Cloud Function needed for either.
+  const approveUnqualified=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    if(!ev||ev.status==="completed"||ev.status==="cancelled"||ev.deleted){toast2("This event is closed — can't grant an exception anymore","err");return;}
+    const u=users.find(u=>u.id===uid);
+    updateRegistrationDoc(eid, uid, {status:"registered"}).catch(e=>{ console.log("approveUnqualified failed", e); toast2("That didn't save — please try again.", "err"); });
+    toast2(`Exception granted ✓ — ${u?.nickname||"they"} now competes normally`);
+    notify([uid], "registered", ev, `✓ You're in for ${ev.name}`, `An admin granted you an exception below the USR minimum — you're now competing normally for a seat.`);
+    logAudit("event.register", `${me.nickname} granted ${u?.nickname||uid} a USR-floor exception for "${ev.name}"`, "event", eid);
+    logRegHistory(eid, uid, `USR-floor exception granted (by ${me.nickname})`);
+  };
+  const rejectUnqualified=(cid,eid,uid)=>{
+    const ev=getEv(cid,eid);
+    const u=users.find(u=>u.id===uid);
+    deleteRegistrationDoc(eid, uid).catch(e=>console.log("rejectUnqualified failed", e));
+    toast2("Rejected");
+    logRegHistory(eid, uid, `Unqualified registration rejected (by ${me.nickname})`);
+    if (ev) logAudit("event.register", `${me.nickname} rejected ${u?.nickname||uid}'s below-floor registration for "${ev.name}"`, "event", eid);
   };
   const addGuest=(cid,eid,g)=>{
     const ev=getEv(cid,eid);
@@ -9862,6 +9923,8 @@ export default function Matchkeeper() {
             onRequestEventJoin={()=>requestEventJoin(comm.id,event.id)}
             onApproveEventJoin={uid=>approveEventJoin(comm.id,event.id,uid)}
             onRejectEventJoin={uid=>rejectEventJoin(comm.id,event.id,uid)}
+            onApproveUnqualified={uid=>approveUnqualified(comm.id,event.id,uid)}
+            onRejectUnqualified={uid=>rejectUnqualified(comm.id,event.id,uid)}
             onSetFootballSkill={setFootballSkill}
             onRetirePlayer={(uid,noShow)=>retirePlayer(comm.id,event.id,uid,noShow)}
             onToggleEventAdmin={uid=>toggleEventAdmin(comm.id,event.id,uid)}
@@ -11228,7 +11291,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
     const dateStr=`${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}`;
     const timeStr=`${pad(start.getHours())}:${pad(start.getMinutes())}`;
     const timeToStr=`${pad(end.getHours())}:${pad(end.getMinutes())}`;
-    return {name:"",description:"",date:dateStr,time:timeStr,timeTo:timeToStr,endMode:"time",durationHrs:0.5,venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false};
+    return {name:"",description:"",date:dateStr,time:timeStr,timeTo:timeToStr,endMode:"time",durationHrs:0.5,venueId:"",courts:"2",eventType:getEventTypesForSport(sportOptions[0])[0].key,visibility:"public",sport:sportOptions[0],pitchNames:[],teamSize:"5",numTeams:"3",numTeamsTouched:false,excludeFromAttendance:false,minUsrFloor:""};
   });
   const set=(k,v)=>setF(p=>({...p,[k]:v}));const v=venues.find(x=>x.id===parseInt(f.venueId));
   const isFootball=f.sport==="Football";
@@ -11294,6 +11357,9 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
         </>}
     <div style={{marginBottom:12}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${venuePitches.length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
     <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private (invite-only)","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>{f.visibility==="private"?"Only members you invite can see and register for this event.":"Visible and open to all community members."}</div></div>
+    {/* Football has no USR concept at all — this floor only makes sense for Padel. */}
+    {f.sport!=="Football"&&<Inp label="Minimum USR to register (optional)" value={f.minUsrFloor} onChange={v2=>set("minUsrFloor",v2.replace(/\D/g,""))} type="number" placeholder="No minimum"/>}
+    {f.sport!=="Football"&&f.minUsrFloor&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>A self-registrant below USR {f.minUsrFloor} lands on a separate "Unqualified" list until an admin grants an exception — they're never blocked outright.</div>}
     <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
       <div style={{width:20,height:20,borderRadius:5,flexShrink:0,marginTop:1,border:`1.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-dim)"}`,background:f.excludeFromAttendance?"#F59E0B":"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#1e1b3a",fontWeight:700}}>{f.excludeFromAttendance?"✓":""}</div>
       <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Optional (extra weekly event)</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Missing this event never counts against anyone's Casual↔Regular streak — but attending it still counts as attendance, same as any other event. Useful for a newly added or occasional extra event.</div></div>
@@ -11324,7 +11390,7 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
 // ── Event Edit Form (courts + times only) ─────────────
 function EventEditForm({ev,venues,commSports,onBack,onSave}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",endMode:"time",durationHrs:durationLabel(ev.time,ev.timeTo)==="—"?2:(()=>{const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=(ev.timeTo||"").split(":").map(Number);let mins=(eh*60+em)-(sh*60+sm);if(mins<=0)mins+=24*60;return mins/60;})(),eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance});
+  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",endMode:"time",durationHrs:durationLabel(ev.time,ev.timeTo)==="—"?2:(()=>{const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=(ev.timeTo||"").split(":").map(Number);let mins=(eh*60+em)-(sh*60+sm);if(mins<=0)mins+=24*60;return mins/60;})(),eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance,minUsrFloor:ev.minUsrFloor?String(ev.minUsrFloor):""});
   const set=(k,val)=>setF(p=>({...p,[k]:val}));
   const v=venues.find(x=>x.id===parseInt(f.venueId));
   const maxC=v?v.courts.length:10;
@@ -11377,6 +11443,9 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           event actually happened. */}
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:4}}>Venue</div><select value={f.venueId} onChange={e=>set("venueId",e.target.value)} className="po-inp" style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13}}><option value="">Select venue...</option>{venues.map(x=><option key={x.id} value={x.id}>{x.name} — {x.area}</option>)}</select>{v&&<div style={{marginTop:5,fontSize:11,color:"var(--po-dim)"}}>{isFootball?`${(v.pitches||[]).length} pitches`:`${v.courts.length} courts`} · {vPricing.pricePerHour} EGP/hr{vPricing.extraFee>0?` · +${vPricing.extraFee} booking`:""}</div>}</div>
       <div style={{marginBottom:14}}><div style={{fontSize:12,color:"var(--po-dim)",marginBottom:6}}>Visibility</div><div style={{display:"flex",gap:8}}>{[["🌐 Public","public"],["🔒 Private","private"]].map(([lbl,v2])=><button key={v2} onClick={()=>set("visibility",v2)} style={{flex:1,padding:"8px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.visibility===v2?"#6366F1":"var(--po-bdr)"}`,background:f.visibility===v2?"#6366F133":"var(--po-bdr)",color:f.visibility===v2?"#A5B4FC":"var(--po-dim)",fontSize:12,fontWeight:500}}>{lbl}</button>)}</div></div>
+      {/* Football has no USR concept at all — this floor only makes sense for Padel. */}
+      {!isFootball&&<Inp label="Minimum USR to register (optional)" value={f.minUsrFloor} onChange={v2=>set("minUsrFloor",v2.replace(/\D/g,""))} type="number" placeholder="No minimum"/>}
+      {!isFootball&&f.minUsrFloor&&<div style={{fontSize:11,color:"var(--po-dim)",marginBottom:14,marginTop:-8}}>A self-registrant below USR {f.minUsrFloor} lands on a separate "Unqualified" list until an admin grants an exception — they're never blocked outright.</div>}
       <div onClick={()=>set("excludeFromAttendance",!f.excludeFromAttendance)} style={{marginBottom:14,padding:"10px 12px",borderRadius:8,cursor:"pointer",border:`0.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-bdr)"}`,background:f.excludeFromAttendance?"#F59E0B1a":"var(--po-inp)",display:"flex",gap:10,alignItems:"flex-start"}}>
         <div style={{width:20,height:20,borderRadius:5,flexShrink:0,marginTop:1,border:`1.5px solid ${f.excludeFromAttendance?"#F59E0B":"var(--po-dim)"}`,background:f.excludeFromAttendance?"#F59E0B":"transparent",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#1e1b3a",fontWeight:700}}>{f.excludeFromAttendance?"✓":""}</div>
         <div><div style={{fontSize:12.5,fontWeight:600,color:f.excludeFromAttendance?"#F59E0B":"var(--po-text)"}}>Optional (extra weekly event)</div><div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>Missing this event never counts against anyone's Casual↔Regular streak — but attending it still counts as attendance, same as any other event.</div></div>
@@ -11409,7 +11478,7 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           </div>)}
         </div>
       </>}
-      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})})} style={{width:"100%"}}/>
+      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,minUsrFloor:isFootball?null:(parseInt(f.minUsrFloor)||null),...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,minUsrFloor:isFootball?null:(parseInt(f.minUsrFloor)||null),...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})})} style={{width:"100%"}}/>
     </Card>
   </>;
 }
@@ -12577,7 +12646,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -12771,6 +12840,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     requestEventJoin: () => onRequestEventJoin&&onRequestEventJoin(),
     approveEventJoin: uid => onApproveEventJoin&&onApproveEventJoin(uid),
     rejectEventJoin: uid => onRejectEventJoin&&onRejectEventJoin(uid),
+    approveUnqualified: uid => onApproveUnqualified&&onApproveUnqualified(uid),
+    rejectUnqualified: uid => onRejectUnqualified&&onRejectUnqualified(uid),
     addMember: (uid) => sim
       ? simMutate(e => e.registrations.find(r=>r.userId===uid) ? e : {...e, registrations:[...e.registrations,{userId:uid,registeredAt:new Date().toISOString(),status:"registered",addedBy:"admin",isGuest:false}]})
       : onAddMember(uid),
@@ -13861,6 +13932,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"var(--po-dim)",marginLeft:6}}>USR {u.usr}</span></div>
           <SmBtn label="✓" onClick={()=>act.approveEventJoin(u.id)} color="#34D399"/>
           <SmBtn label="✕" onClick={()=>act.rejectEventJoin(u.id)} color="#EF4444"/>
+        </div>;})}
+      </Card>}
+      {/* Minimum-USR floor (2026-09-21, admin request) — a self-registrant below effEv.minUsrFloor
+          never counts as active/waitlisted (see splitRegsByCapacity's filter) until an admin
+          grants an exception here, mirroring the Join Requests card right above exactly. */}
+      {isAdmin&&(effEv.registrations||[]).filter(r=>r.status==="unqualified").length>0&&<Card style={{marginBottom:10,borderColor:"#F4374666",background:"#F4374608"}}>
+        <ST>🚩 Unqualified — needs approval ({(effEv.registrations||[]).filter(r=>r.status==="unqualified").length})</ST>
+        {(effEv.registrations||[]).filter(r=>r.status==="unqualified").map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return <div key={r.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
+          <Av u={u} size={28}/><div style={{flex:1}}><span style={{fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{u.nickname}</span><span style={{fontSize:11,color:"#F43746",marginLeft:6,fontWeight:600}}>USR {u.usr} · below {effEv.minUsrFloor}</span></div>
+          <SmBtn label="✓ Exception" onClick={()=>act.approveUnqualified(u.id)} color="#34D399"/>
+          <SmBtn label="✕" onClick={()=>act.rejectUnqualified(u.id)} color="#EF4444"/>
         </div>;})}
       </Card>}
       {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>{

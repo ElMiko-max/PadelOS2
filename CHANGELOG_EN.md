@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.72 (current) — Add: context info next to every result in the simulation report
+## V0.16.73 (current) — Fix: match results are now a straight calculation, not a dice roll
+
+- **Admin request:** "I want it to run reliably... a straightforward calculation from the average USR ratio between the two teams, with head-to-head as an additional factor — I don't want... random results."
+- **Cause:** `predictMatchWinner` correctly computed a real win probability (from the USR gap plus head-to-head), but then rolled a random dice (`Math.random() < probability`) to decide who actually won — so even a side favored by a huge USR margin could still "lose" in the simulation purely by chance. That's exactly what made some results look strange and unreliable.
+- **Fix:** removed the dice roll entirely — the side the calculation (USR + head-to-head) actually favors now wins outright, no randomness involved. Also fixed a related bug where the score margin (e.g. 4-2 vs 6-0) was computed backwards whenever the underdog side (B) ended up as the winner — it now scales correctly regardless of which side wins.
+- **Verified:** the same USR inputs now produce the same winning side every time (checked over 5 repeated runs), and a full test event's final standings came out cleanly ordered by USR top to bottom with no odd jumps.
+
+---
+
+## V0.16.72 — Add: context info next to every result in the simulation report
 
 - **Admin request:** after fixing the break engine (V0.16.71), the admin reported some match results in the simulation report still "look strange" and wanted to see what actually drove them — the average USR for each side, and any prior head-to-head history between the same players, so a surprising result can be checked instead of just trusted.
 - **Done:** under every match in "Round-by-Round Predicted Results", added a small line showing:

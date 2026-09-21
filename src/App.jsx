@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.72";
+const APP_VERSION = "V0.16.73";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -660,7 +660,12 @@ function predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId, befo
   // Admin request (2026-09-21): a prediction with no visible reasoning reads as "random" even
   // when it isn't — surface the two real inputs (USR gap, head-to-head history) that produced it
   // so a surprising-looking result can be checked against what actually drove it.
-  return {winner: Math.random() < finalP ? "A" : "B", confidence: Math.round(finalP * 1000) / 1000, h2hMeetings: h2h.meetings, h2hSideAWinRate: h2h.sideAWinRate};
+  //
+  // Admin request (2026-09-21, follow-up): "مش عاوز... راندوم ريزلتس" — a dice roll here (the old
+  // `Math.random() < finalP`) meant a clearly weaker side could still "win" the simulation, which
+  // reads as unreliable noise rather than a trustworthy projection. The whole point of USR + H2H
+  // is to BE the calculation — so the side finalP actually favors simply wins, straight up, no roll.
+  return {winner: finalP >= 0.5 ? "A" : "B", confidence: Math.round(finalP * 1000) / 1000, h2hMeetings: h2h.meetings, h2hSideAWinRate: h2h.sideAWinRate};
 }
 // Admin request (2026-09-22): the simulation report needs an actual game score per match, not
 // just a winner — "زي ما انت عايز بقى... اربعة اتنين، خمسة واحد، اربعة ثلاثة" (whatever's
@@ -1663,8 +1668,10 @@ function simulateFullEventCI(sorted, courts, totalRounds, concentrateOn, avoidOn
       const usrB = m.teamB.reduce((s,p)=>s+(p.usr??50),0)/m.teamB.length;
       const {winner, confidence, h2hMeetings, h2hSideAWinRate} = predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId: eventId, beforeRound: ri});
       // Admin request: an actual game score per match, not just a winner — see
-      // simulateMatchScore's own comment for the model.
-      const {winnerScore, loserScore} = simulateMatchScore(confidence);
+      // simulateMatchScore's own comment for the model. `confidence` is P(A wins), so when B is
+      // the winner it needs flipping to P(B wins) first — otherwise a confidently-favored B (e.g.
+      // confidence 0.2) reads as a near-toss-up and gets handed a too-close score.
+      const {winnerScore, loserScore} = simulateMatchScore(winner==="A" ? confidence : 1-confidence);
       const scoreA = winner==="A" ? winnerScore : loserScore, scoreB = winner==="A" ? loserScore : winnerScore;
       m.winner = winner; m.scoreA = scoreA; m.scoreB = scoreB;
       // Admin request (2026-09-21): "بيطلع نتائج غريبة" — a surprising result needs its own inputs

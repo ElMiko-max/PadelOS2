@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.63 (current) — Fix: an Avoided player getting bumped over quota like Concentrate
+## V0.16.64 (current) — Fix: two returning players swapping courts + stale badge tooltip
+
+- **Found from the admin spotting it in a real screenshot:** two players returning from break the same round — one earning Court 2, the other Court 1 — and the system found a seat for each, but handed them out backwards (neither landed on their own court). Root cause: when more than one seat is "urgent" (someone about to miss their fair share) in the same round, the code always grabbed the single most-urgent seat for whichever bench player was processed first, without checking whether that seat was actually THEIR earned court — causing an unnecessary swap.
+- **The fix:** if an urgent seat sits exactly at the returning player's own earned court, it's taken first — before comparing urgency severity at all — since that resolves both problems at once (frees the seat, AND lands the right player on the right court) at no cost.
+- **Also:** the small "C1"/"C2" badge next to a name in the On Break list had a stale tooltip — "Court they'd have played on by USR rank" — even past Round 1, when the number is actually earned from their real match result, not USR rank. Reworded it to say so, and to note the actual landing court can still differ (cascading, fair-share overrides) with the ℹ️ button explaining why.
+
+---
+
+## V0.16.63 — Fix: an Avoided player getting bumped over quota like Concentrate
 
 - **Found from the admin's testing of event #90098 on DEV** — Dodo was flagged "Avoid" but ended up with 2 breaks, same as the Concentrated players. Root cause: the search tried every LOCAL option (including ones that violate the fair-share cap) before ever checking a FAR court for someone who'd actually respect it — effectively ranking locality above the admin's own stated rule ("fair share is the strongest rule, nothing breaks it"). When nobody nearby had any entitlement left, it took the nearest person anyway instead of looking a bit further for someone who was still owed a break.
 - **The fix:** every cap-respecting search tier (local and far, with or without the preferred spacing) is now tried before any cap-violating tier — so a far court with someone genuinely owed a break now wins over violating someone else's fair share nearby.

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.63";
+const APP_VERSION = "V0.16.64";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1103,14 +1103,29 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       });
       return {court:candidates[0].c, entry:candidates[0].e};
     };
+    // Real bug, admin report (2026-09-21, event #90098): with two bench players returning the
+    // same round — say A targeting Court 2, B targeting Court 1 — and an urgent occupant sitting
+    // at EACH of those exact courts, this used to always hand the first bench player processed
+    // whichever occupant was globally "most urgent" by remaining-vs-roundsLeft, ignoring whose
+    // target that court actually was. That's how A and B ended up swapped: neither landed on
+    // their own earned court, even though both courts had a perfectly good, urgent match sitting
+    // right there. An urgent occupant sitting exactly at THIS bench player's own target is now
+    // taken first, before the raw urgency-severity comparison — it costs nothing (the eviction
+    // still happens exactly the same this round) and it means A and B each land where they
+    // actually earned their seat, instead of crossing paths for no reason. The urgency-severity
+    // tiebreak still decides everything else (no exact-target match on either side, or a genuine
+    // tie), so "most urgent wins" remains true whenever there's no home-court option to take
+    // first.
     const attemptUrgent = () => {
       const candidates = [];
       for (let c=1;c<=courts;c++) buckets[c].forEach(e=>{ if(isUrgent(e.p.userId)) candidates.push({c,e}); });
       if (!candidates.length) return null;
       candidates.sort((X,Y) => {
         const x=X.e, y=Y.e;
+        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target);
+        const ex=dx===0?1:0, ey=dy===0?1:0; if(ex!==ey) return ey-ex;
         const rx=(remaining[x.p.userId]||0)-(totalRounds-ri), ry=(remaining[y.p.userId]||0)-(totalRounds-ri); if(rx!==ry) return ry-rx; // furthest past their own deadline first, if more than one is urgent
-        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
+        if(dx!==dy) return dx-dy;
         return x.p.usr - y.p.usr;
       });
       return {court:candidates[0].c, entry:candidates[0].e};
@@ -2330,14 +2345,17 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       });
       return {court:candidates[0].c, entry:candidates[0].e};
     };
+    // Same "take the exact-target urgent match first" fix as genDynamic2CI — see its comment.
     const attemptUrgent = () => {
       const candidates = [];
       for (let c=1;c<=courts;c++) buckets[c].forEach(e=>{ if(isUrgent(e.t.id)) candidates.push({c,e}); });
       if (!candidates.length) return null;
       candidates.sort((X,Y) => {
         const x=X.e, y=Y.e;
+        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target);
+        const ex=dx===0?1:0, ey=dy===0?1:0; if(ex!==ey) return ey-ex;
         const rx=(remaining[x.t.id]||0)-(totalRounds-ri), ry=(remaining[y.t.id]||0)-(totalRounds-ri); if(rx!==ry) return ry-rx;
-        const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
+        if(dx!==dy) return dx-dy;
         return (x.t.avgUsr||0) - (y.t.avgUsr||0);
       });
       return {court:candidates[0].c, entry:candidates[0].e};
@@ -13444,7 +13462,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({p.usr})</span></span>
       {matchBadge?.isDream&&<span title="ماتش جامد — this is their Dream Match" style={{fontSize:12}}>🔥</span>}
       {matchBadge?.isFunny&&<span title="ماتش مسخرة — this is their Funny Match" style={{fontSize:12}}>😂</span>}
-      {p.wouldBeCourt&&<span title="Court they'd have played on by USR rank" style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
+      {p.wouldBeCourt&&<span title={ri===0?"Court they'd have played on by USR rank (no result yet)":"Target return court, earned from their last result — the actual landing court can still differ (see ℹ️ Why?)"} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       {reasonInfo&&<button onClick={e=>{e.stopPropagation();setReasonModal(reasonInfo);}} title="Why?" style={{fontSize:11,padding:"2px 5px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer",flexShrink:0}}>ℹ️</button>}
     </div>;

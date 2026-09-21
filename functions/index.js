@@ -172,6 +172,22 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   console.log(`[eventReminder] sent ${newNotifs.length} notification(s)`);
 });
 
+// Backstop cleanup for padelos_practice_sessions (see App.jsx's startSim/the autosave effect
+// right after it, admin request 2026-09-21): each doc there is one per event, always fully
+// overwritten by that event's own latest Practice Session — the ONLY docs that can ever go
+// stale are ones for an event practiced once and never revisited. Runs daily rather than every
+// minute like the two reminder/alarm dispatchers above (nothing here is time-sensitive), and
+// deletes rather than marks-processed since there's no "processed" state for a snapshot, only
+// "too old to matter."
+exports.cleanupStalePracticeSessions = onSchedule("every 24 hours", async () => {
+  const db = getFirestore();
+  const cutoff = new Date(Date.now() - 7 * 24 * 3600000).toISOString();
+  const snap = await db.collection("padelos_practice_sessions").where("updatedAt", "<", cutoff).get();
+  if (snap.empty) { console.log("[practiceSessionCleanup] nothing stale"); return; }
+  await Promise.all(snap.docs.map(d => d.ref.delete()));
+  console.log(`[practiceSessionCleanup] deleted ${snap.docs.length} stale practice session(s)`);
+});
+
 // ── Email-uniqueness enforcement (server-side) ─────────
 // The old client-side check (findEmailMatchUser in App.jsx) re-scans the in-memory `users`
 // array at the moment of sign-in using whatever JS bundle that specific device happens to be

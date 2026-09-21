@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.65 (current) — Add: clear registration status message (Active / Waiting / Request)
+## V0.16.66 (current) — Add: server-side Practice Session autosave (temporary, self-cleaning)
+
+- **Admin request:** "🧪 Practice Session" is deliberately local-only (never touches real data) — but that also meant once the tab closed, nobody (including a later review) could ever see what a practice run actually did. Asked for practice progress to be written to the server so it's reviewable, with automatic periodic cleanup.
+- **Done:** every round generated inside a Practice Session now auto-saves to a new `padelos_practice_sessions/{eventId}` collection (one doc per event, always fully overwritten — starting a fresh practice run on the same event replaces the old snapshot automatically, matching "cancelling later on with a later simulation"). A new scheduled Cloud Function (`cleanupStalePracticeSessions`) runs daily and deletes anything untouched for 7+ days — a backstop for events practiced once and never revisited.
+- **Not in this version:** no "Resume" button to pick a saved practice session back up — the goal was making it reviewable after the fact, not resumable.
+
+---
+
+## V0.16.65 — Add: clear registration status message (Active / Waiting / Request)
 
 - **Admin request:** a generic "Registered ✓" toast could easily let a player assume they had an active seat when they were actually on the waitlist or still needed admin approval. Asked for a message that says exactly which list they landed on and their position in it.
 - **Done:** when a player registers themselves (the "I'm In" button or an invite link):

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.65";
+const APP_VERSION = "V0.16.66";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -12718,6 +12718,19 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setSimEv(working);
     setSim(true);
     setTab(isCI?"rounds":isCT?"teams":"players");
+    // Admin request (2026-09-21): Practice Session is deliberately local-only (never touches
+    // the real event) — but that also meant once the tab closed, nobody (including a later
+    // review) could ever see what a practice run actually did. Autosaved separately here, one
+    // doc per event, always fully overwritten — starting a fresh practice run on the same event
+    // replaces the old snapshot outright, matching "cancel it with a later simulation." A daily
+    // scheduled Cloud Function (cleanupStalePracticeSessions) sweeps anything untouched for 7+
+    // days as a backstop for events practiced once and never revisited.
+    setDoc(doc(db,"padelos_practice_sessions",String(ev.id)), {
+      eventId: ev.id, eventName: ev.name, communityId: ev.communityId,
+      startedBy: me.id, startedByName: me.nickname,
+      startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      roundsCompleted: 0, status: working.status, plan: null,
+    }).catch(e=>console.log("practice session autosave (start) failed", e));
   };
   const exitSim = () => {
     setSim(false);
@@ -12725,6 +12738,22 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setSimSnapshot(null);
     onToast&&onToast("Simulation ended — no changes were saved");
   };
+  // Autosave the practice session after every round (the admin's own choice of granularity,
+  // over "manual save" or "only at the end") — the ONE place this needs to hook rather than
+  // instrumenting every one of the several separate round-advance actions (startCI/nextRound/
+  // applyPromo/nextFootballRound/nextCTLadder, all below), since they all funnel through
+  // setSimEv and therefore through simEv's own round count changing. Same "watch state, sync
+  // lazily" shape as the confirmOrder catch-up effect right above.
+  useEffect(() => {
+    if (!sim || !simEv || !isAdmin) return;
+    const roundsCompleted = simEv.plan?.rounds?.length || 0;
+    setDoc(doc(db,"padelos_practice_sessions",String(ev.id)), {
+      eventId: ev.id, eventName: ev.name, communityId: ev.communityId,
+      startedBy: me.id, startedByName: me.nickname,
+      updatedAt: new Date().toISOString(),
+      roundsCompleted, status: simEv.status, plan: JSON.stringify(simEv.plan),
+    }, {merge:true}).catch(e=>console.log("practice session autosave failed", e));
+  }, [sim, simEv?.plan?.rounds?.length]);
 
   // ── Sim-aware action dispatcher ──────────────────────
   // When sim is active, mutate the local simEv copy using the same logic as the

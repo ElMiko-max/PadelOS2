@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.67";
+const APP_VERSION = "V0.16.68";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -636,6 +636,28 @@ function xMatchValue({myScore, oppScore, won, mySideUsr, oppSideUsr, h2h}) {
   }
   const xPts = Math.max(0, Math.min(100, 50 + 50 * (delta * h2hFactor)));
   return {E: Math.round(E * 1000) / 1000, S: Math.round(S * 1000) / 1000, delta: Math.round(delta * 1000) / 1000, h2hFactor: Math.round(h2hFactor * 1000) / 1000, xPts: Math.round(xPts * 10) / 10, hasRealScore};
+}
+
+// Full-event simulation (2026-09-21, admin request): predicts a match winner FORWARD, before
+// any result exists — genuinely new, since xMatchValue's own h2hFactor above only scales an
+// already-REALIZED performance delta, it never produces a probability. Reuses what's actually
+// reusable: the exact same USR-gap logistic curve as xMatchValue's own E (so "USR-weighted" here
+// means the identical model the real Delta Standings report already uses, not a new one), and
+// the same calcExactHeadToHead history lookup — just blended into a forward win probability
+// instead of grading a result that already happened. More head-to-head meetings mean more
+// confidence in history over the raw USR estimate; capped well short of 0/1 so no matchup is
+// ever treated as a certainty, however lopsided.
+function predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId, beforeRound}) {
+  const usrGap = (usrA ?? 50) - (usrB ?? 50);
+  const E = 1 / (1 + Math.pow(10, -usrGap / USR_XPTS_DIVISOR));
+  const h2h = calcExactHeadToHead(comms||[], idsA, idsB, {excludeEventId, beforeRound});
+  let finalP = E;
+  if (h2h.meetings >= 1) {
+    const weight = Math.min(h2h.meetings, 5) / 5 * 0.6;
+    finalP = E + (h2h.sideAWinRate - E) * weight;
+  }
+  finalP = Math.max(0.05, Math.min(0.95, finalP));
+  return {winner: Math.random() < finalP ? "A" : "B", confidence: Math.round(finalP * 1000) / 1000};
 }
 // Distance from a player's preferred break window to round r — lower is more preferred.
 // Soft signal only: used as the last tiebreaker, after fairness/urgency/spacing are already equal.
@@ -1593,6 +1615,32 @@ function calcCIStandings(plan, users) {
     b.courtWinSum-a.courtWinSum   // 3. Court-weighted wins (wins on stronger courts count more)
     // 4. Still tied after all of the above = genuine tie
   );
+}
+// Full-event simulation (2026-09-21, admin request): runs an entire CI event to completion in
+// one shot, no admin interaction per round, using predictMatchWinner for every match instead of
+// a UI-confirmed result. Reuses genRound1/genNextRoundCI completely unchanged — the break/
+// court-movement mechanics are byte-identical to a real event or a manual Practice Session, only
+// WHO wins each match is synthetic. CI/Padel only for v1 — CT Ladder/Football are a natural
+// fast-follow once this is proven out, not built now.
+function simulateFullEventCI(sorted, courts, totalRounds, concentrateOn, avoidOn, comms, eventId, users) {
+  let plan = genRound1(sorted, courts, totalRounds, concentrateOn, avoidOn);
+  const predictions = [];
+  const applyPredictions = (ri) => {
+    plan.rounds[ri].matches.forEach(m => {
+      const idsA = m.teamA.map(p=>p.userId), idsB = m.teamB.map(p=>p.userId);
+      const usrA = m.teamA.reduce((s,p)=>s+(p.usr??50),0)/m.teamA.length;
+      const usrB = m.teamB.reduce((s,p)=>s+(p.usr??50),0)/m.teamB.length;
+      const {winner, confidence} = predictMatchWinner({idsA, idsB, usrA, usrB, comms, excludeEventId: eventId, beforeRound: ri});
+      m.winner = winner;
+      predictions.push({round: ri+1, court: m.court, teamA: m.teamA.map(p=>p.nickname), teamB: m.teamB.map(p=>p.nickname), winner, confidence});
+    });
+  };
+  applyPredictions(0);
+  for (let ri = 1; ri < totalRounds; ri++) {
+    plan = genNextRoundCI(plan, [], concentrateOn, avoidOn);
+    applyPredictions(ri);
+  }
+  return {plan, predictions, standings: calcCIStandings(plan, users)};
 }
 function maxPossibleCI(plan){
   // One unified max for every player (not per-player) — uses the average number of
@@ -11640,6 +11688,46 @@ const BREAK_STATE_OPTIONS = [
 // (see fairShareBullets and the per-engine call sites) — never recomputes anything itself, so it
 // always reflects exactly what really happened, including manual/firm overrides. `bullets` is
 // undefined for a round generated before this feature shipped — shown plainly, not guessed at.
+// Full-event simulation report (2026-09-21, admin request) — read-only, three sections: final
+// projected standings, round-by-round predicted results, and the header identifying which run
+// this is (multiple runs are meant to be reopened and eyeballed against each other — see
+// runFullSimulation's own comment for why each run is its own saved doc rather than one
+// overwritten snapshot).
+function SimReportView({report,onClose}){
+  const roundsGrouped = {};
+  (report.predictions||[]).forEach(p => { (roundsGrouped[p.round] = roundsGrouped[p.round]||[]).push(p); });
+  return <div style={{position:"fixed",inset:0,background:"var(--po-bg)",zIndex:300,overflowY:"auto",padding:"16px 14px 40px"}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+      <div style={{flex:1}}>
+        <div style={{fontWeight:700,fontSize:16,color:"var(--po-text)"}}>🔮 Simulation Report</div>
+        <div style={{fontSize:11,color:"var(--po-dim)"}}>{report.eventName} · {new Date(report.runAt).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})} · by {report.runByName}</div>
+      </div>
+      <Btn label="✕ Close" onClick={onClose}/>
+    </div>
+    <Card style={{marginBottom:12}}>
+      <ST>🏆 Predicted Final Standings</ST>
+      {(report.standings||[]).map((s,i)=><div key={s.userId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
+        <div style={{width:20,fontSize:12,fontWeight:700,color:i<3?"#FBBF24":"var(--po-dim)"}}>{i+1}</div>
+        <div style={{flex:1,fontSize:12,fontWeight:500,color:"var(--po-text)"}}>{s.nickname}</div>
+        <div style={{fontSize:11,color:"var(--po-dim)"}}>{s.wins}W · {s.breaks} brk</div>
+        <div style={{fontSize:13,fontWeight:700,color:"#22D3EE",minWidth:32,textAlign:"right"}}>{s.pts}</div>
+      </div>)}
+    </Card>
+    <Card>
+      <ST>📅 Round-by-Round Predicted Results</ST>
+      {Object.keys(roundsGrouped).sort((a,b)=>a-b).map(ri=><div key={ri} style={{marginBottom:10}}>
+        <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)",marginBottom:4}}>Round {ri}</div>
+        {roundsGrouped[ri].sort((a,b)=>a.court-b.court).map((p,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:"var(--po-inp)",borderRadius:8,marginBottom:4,fontSize:11.5}}>
+          <div style={{color:"var(--po-dim)",width:16}}>C{p.court}</div>
+          <div style={{flex:1,color:p.winner==="A"?"#34D399":"var(--po-text)",fontWeight:p.winner==="A"?700:400}}>{p.teamA.join(" & ")}</div>
+          <div style={{color:"var(--po-dim)",fontSize:10}}>vs</div>
+          <div style={{flex:1,color:p.winner==="B"?"#34D399":"var(--po-text)",fontWeight:p.winner==="B"?700:400,textAlign:"right"}}>{p.teamB.join(" & ")}</div>
+          <div style={{fontSize:10,color:"var(--po-dim)",minWidth:36,textAlign:"right"}}>{Math.round((p.winner==="A"?p.confidence:1-p.confidence)*100)}%</div>
+        </div>)}
+      </div>)}
+    </Card>
+  </div>;
+}
 function ReasonModal({title,bullets,onClose}){
   return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:360,width:"100%",maxHeight:"80vh",overflowY:"auto",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
@@ -12650,6 +12738,15 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
+  // Full-event simulation report (2026-09-21, admin request) — see simulateFullEventCI's own
+  // comment for the model. `simReport` is whichever run is currently on screen (freshly
+  // generated, or reopened from `simReportsList`); each run persists as its OWN new doc
+  // (never overwritten, unlike Practice Session's autosave above) specifically so multiple runs
+  // can be reopened and compared later.
+  const [simReport,setSimReport] = useState(null);
+  const [simReportsList,setSimReportsList] = useState([]);
+  const [simRunning,setSimRunning] = useState(false);
+  const [showSimHistory,setShowSimHistory] = useState(false);
   const [showLedgerForm,setShowLedgerForm] = useState(false);
   const [ledgerType,setLedgerType] = useState("expense");
   const [ledgerDesc,setLedgerDesc] = useState("");
@@ -12806,6 +12903,47 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setSimEv(null);
     setSimSnapshot(null);
     onToast&&onToast("Simulation ended — no changes were saved");
+  };
+  // Full-event simulation report (2026-09-21, admin request) — CI/Padel only for v1 (see
+  // simulateFullEventCI's own comment). Deliberately runs against the REAL event (`ev`, never
+  // `effEv`/`simEv`) since it's a one-shot preview, not an interactive session — the button
+  // itself is hidden while a Practice Session is active (same `!sim` gate as the Practice/
+  // Registration cards) to avoid any ambiguity about which roster it's using.
+  const loadSimReportsList = async () => {
+    try {
+      const snap = await getDocs(query(collection(db,"padelos_simulation_reports"), where("eventId","==",ev.id)));
+      setSimReportsList(snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.runAt||"").localeCompare(a.runAt||"")));
+    } catch(e) { console.log("loadSimReportsList failed", e); }
+  };
+  const runFullSimulation = async () => {
+    const {active} = splitRegsByCapacity(ev, comm);
+    if (active.length < ev.courts*4) { onToast&&onToast(`Need at least ${ev.courts*4} active players to simulate a full event`, "err"); return; }
+    setSimRunning(true);
+    try {
+      const players = active.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
+      const {plan, predictions, standings} = simulateFullEventCI(players, ev.courts, totalR, ev.breakConcentrateIds||[], ev.breakAvoidIds||[], comms, ev.id, users);
+      const reportId = `${ev.id}_${Date.now()}`;
+      const payload = {
+        eventId: ev.id, eventName: ev.name, communityId: ev.communityId,
+        runBy: me.id, runByName: me.nickname, runAt: new Date().toISOString(),
+        totalRounds: totalR, courts: ev.courts,
+        predictions: JSON.stringify(predictions),
+        standings: JSON.stringify(standings.map(s=>({userId:s.user.id, nickname:s.user.nickname, pts:s.pts, wins:s.wins, breaks:s.breaks, played:s.played}))),
+      };
+      await setDoc(doc(db,"padelos_simulation_reports",reportId), payload);
+      setSimReport({id:reportId, ...payload, predictions, standings: JSON.parse(payload.standings)});
+      loadSimReportsList();
+      onToast&&onToast("Simulation complete ✓");
+    } catch(e) {
+      console.log("runFullSimulation failed", e);
+      onToast&&onToast("Simulation failed — please try again", "err");
+    } finally {
+      setSimRunning(false);
+    }
+  };
+  const openSimReport = (r) => {
+    try { setSimReport({...r, predictions: JSON.parse(r.predictions), standings: JSON.parse(r.standings)}); }
+    catch(e) { console.log("openSimReport parse failed", e); onToast&&onToast("Couldn't open that report", "err"); }
   };
   // Autosave the practice session after every round (the admin's own choice of granularity,
   // over "manual save" or "only at the end") — the ONE place this needs to hook rather than
@@ -13068,6 +13206,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const isOpen = effEv.type==="open";
   const isCI   = effEv.type==="closed_ind";
   const isCT   = effEv.type==="closed_teams";
+  // Full-event simulation report history — see runFullSimulation's own comment above for the
+  // full feature. Placed here (not right next to that function) because isAdmin/isCI aren't
+  // defined yet at that point in the component body, and a useEffect's dependency array is
+  // evaluated eagerly at render time, unlike its (deferred) callback body.
+  useEffect(() => { if (isAdmin && isCI) loadSimReportsList(); }, [isAdmin, isCI, ev.id]);
   const isFootballEv = effEv.sport==="Football";
   const tc     = effEv.courts;
   const bp     = breakPts(tc);
@@ -13670,6 +13813,27 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         }}/>
       </div>}
     </div>}
+    {/* Full-event simulation (2026-09-21, admin request) — CI/Padel only for v1, see
+        simulateFullEventCI's own comment. Separate row from Practice/Registration above since
+        it's a one-shot report, not a toggle/session. */}
+    {isAdmin&&!sim&&isCI&&<div style={{marginBottom:12}}>
+      <div className="po-card" style={{padding:"9px 11px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",gap:8}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>🔮 Full-Event Simulation</div>
+          <div style={{fontSize:10,color:"var(--po-dim)"}}>USR + head-to-head weighted preview — nothing saved to the real event</div>
+        </div>
+        {simReportsList.length>0&&<SmBtn label={`📋 ${simReportsList.length}`} onClick={()=>setShowSimHistory(v=>!v)} color="#A78BFA"/>}
+        <SmBtn label={simRunning?"Running…":"Simulate ▶"} onClick={runFullSimulation} color="#22D3EE"/>
+      </div>
+      {showSimHistory&&simReportsList.length>0&&<Card style={{marginTop:8}}>
+        <ST>📋 Past Simulation Runs</ST>
+        {simReportsList.map(r=><div key={r.id} onClick={()=>{openSimReport(r);setShowSimHistory(false);}} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"0.5px solid var(--po-bdr)",cursor:"pointer"}}>
+          <div style={{flex:1,fontSize:12,color:"var(--po-text)"}}>{new Date(r.runAt).toLocaleString([], {dateStyle:"medium",timeStyle:"short"})}</div>
+          <div style={{fontSize:11,color:"var(--po-dim)"}}>by {r.runByName}</div>
+        </div>)}
+      </Card>}
+    </div>}
+    {simReport&&<SimReportView report={simReport} onClose={()=>setSimReport(null)}/>}
     {sim&&<div style={{marginBottom:12,padding:"10px 14px",background:"#6366F111",borderRadius:10,border:"0.5px solid #6366F155",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:12,fontWeight:600,color:"#A5B4FC"}}>🧪 Practice Session Active</div><div style={{fontSize:10,color:"var(--po-dim)"}}>{ev.status==="completed"?"Replaying from scratch with the same players — original results are untouched":"All changes here are temporary"}</div></div><SmBtn label="Exit & Discard" onClick={exitSim} color="#EF4444"/></div>}
 
     <Card>

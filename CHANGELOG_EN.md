@@ -4,7 +4,20 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.67 (current) — Add: minimum-USR registration floor + "Unqualified" bucket
+## V0.16.68 (current) — Add: full-event simulation (a predicted preview report)
+
+- **Admin request:** a new feature — the system runs an entire event simulation up front (every match result, player movement between courts and breaks, and a final projected standings) and records it in a clear report for later review and comparison.
+- **Done (Padel/Individuals only for now):**
+  - New "🔮 Simulate Full Event" button on the event page — runs the whole event instantly with no manual interaction, using **the exact same expected-outcome model the real Delta Standings report already uses**: a USR-gap win probability (the identical logistic curve), adjusted by real head-to-head history where it exists.
+  - Each run saves as its own new report (never overwriting an older one) — so the admin can reopen and compare any past run against another, or against how the real event actually turns out.
+  - The report shows the predicted final standings and every match's predicted result with a confidence percentage, round by round.
+  - A "📋 Past Simulation Runs" list under the same button for reopening any earlier run.
+- **Not in this version:** CT Ladder and Football — CI/Padel only for now.
+- **Verified live on dev** against a real 18-player/4-court event: the report came out correct (24 matches, 18 players in the standings), and two separate runs correctly appeared in the "Past Runs" list.
+
+---
+
+## V0.16.67 — Add: minimum-USR registration floor + "Unqualified" bucket
 
 - **Admin request:** a new per-event minimum-USR floor. A registrant below it isn't rejected outright — they land in a distinct "Unqualified" bucket until the admin explicitly grants an exception.
 - **Done:**

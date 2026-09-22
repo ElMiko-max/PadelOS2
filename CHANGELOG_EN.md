@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.75 (current) — Fix a Dynamic v2 vanishing-players disaster + Breaks tab improvements (Bugs #23, #24, Enhancement #37)
+## V0.16.76 (current) — Fix: Dynamic v2 forgot about upcoming firm-locked breaks when computing fair share (Bug #25)
+
+- **Admin request:** while reviewing Bug #23, noted that firm-locking a player's break for an upcoming round should make the system immediately "look ahead" and plan the rest of the rounds knowing that player's break is already settled — not discover it late and get cornered.
+- **Cause:** Dynamic v2 (both CI and CT) only counted breaks from rounds already played when computing each player's fair share — never a firm-locked break scheduled for a round that hasn't been generated yet. The older v1 "Dynamic" engine already did this correctly; v2 never carried the same logic over.
+- **Fix:** Dynamic v2 now counts any firm-locked break scheduled for any future round toward each player's fair share from round one, matching the older engine.
+- **Verified:** direct test — a player firm-locked for round 5 is now correctly treated as "already covered" for their share while the system is generating round 2, instead of still looking like they're owed a normal break.
+
+---
+
+## V0.16.75 — Fix a Dynamic v2 vanishing-players disaster + Breaks tab improvements (Bugs #23, #24, Enhancement #37)
 
 - **Admin request:** reviewing another real event (#210 on DEV) turned up a "disaster" in round 6 — 4 players on break instead of 3, an entire court with no match at all, and 3 players missing completely. Also noticed the Breaks tab hides who was Firm-locked/Manual-swapped/Concentrate/Avoid the moment a round gets played.
 - **Bug #23 (the serious one) — players vanishing in Dynamic v2 whenever a firm-locked break exists:** confirmed by directly replaying the real event's own data — when a player is firm-locked onto break, their court is silently left one player short, with nothing catching it. Any player returning from break afterward would unnecessarily evict someone else instead of just taking the already-open seat, and any court that stayed short of a full 4 was simply skipped entirely — vanishing every player left in it. Fixed by checking for an already-open seat first, before ever evicting anyone.

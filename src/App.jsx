@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.75";
+const APP_VERSION = "V0.16.76";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1000,7 +1000,7 @@ function genRound1(players, courts, totalRounds, concentrateOn=[], avoidOn=[]) {
 // Fair-distribution entitlement and the no-consecutive-break rule remain hard eligibility gates
 // throughout, identical to v1's — this only changes WHICH eligible candidate gets picked and
 // WHERE, never whether someone's eligible at all.
-function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retiredIds, concentrateOn, firmHere, findExpectedReturnCourt, avoidOn=[]) {
+function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retiredIds, concentrateOn, firmHere, findExpectedReturnCourt, avoidOn=[], futureFirmBreaks={}) {
   const concSet = new Set(concentrateOn), avoidSet = new Set(avoidOn);
   const excludeIds = new Set([...firmHere, ...retiredIds]);
 
@@ -1011,6 +1011,15 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   const breakCounts = {}, lastBreak = {};
   activePlayers.forEach(p => { breakCounts[p.userId]=0; lastBreak[p.userId]=-99; });
   rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(uid => { if(breakCounts[uid]!==undefined){ breakCounts[uid]++; lastBreak[uid]=rr; } }));
+  // Real bug, admin report (2026-09-22): v1's own "dynamic" engine (see genNextRoundCI's other
+  // branch) counts every FUTURE firm-locked break toward breakCounts before computing entitlement
+  // — this v2 rewrite never carried that over, despite its own comment above claiming "identical
+  // math to v1's dynamic engine." Without it, a player firm-locked for a later round still looks
+  // fully "owed" their normal share in every round before that — the algorithm has no idea they're
+  // already spoken for until it actually reaches that round, which is exactly the kind of
+  // last-minute surprise the admin described ("plan its route through all the rounds knowing this
+  // person already has a break confirmed," not discover it round by round and get cornered).
+  for (let r=ri; r<totalRounds; r++) (futureFirmBreaks[r]||[]).forEach(uid => { if(breakCounts[uid]!==undefined) breakCounts[uid]++; });
   const totalSlots = bpr*totalRounds;
   const base = activePlayers.length ? Math.floor(totalSlots/activePlayers.length) : 0;
   const extras = activePlayers.length ? totalSlots%activePlayers.length : 0;
@@ -1377,7 +1386,7 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
   let newBreakIds, buckets;
   let breakReasons = {}, returnReasons = {}; // Decision Trail (see fairShareBullets)
   if (plan.breakEngine === "dynamic2") {
-    ({newBreakIds, buckets, breakReasons, returnReasons} = genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retiredIds, concentrateOn, firmHere, findExpectedReturnCourt, avoidOn));
+    ({newBreakIds, buckets, breakReasons, returnReasons} = genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retiredIds, concentrateOn, firmHere, findExpectedReturnCourt, avoidOn, plan.firmBreaks||{}));
   } else {
     if (plan.breakEngine === "dynamic") {
       const activePlayers = sorted.filter(p=>!retiredIds.includes(p.userId));
@@ -2386,7 +2395,7 @@ function buildCTBreakPlan(teams, courts, totalRounds, lockedRounds=[], firmBreak
 // granularity (a team is the atomic unit in Ladder — always moves, breaks, and returns as one,
 // unlike CI's individually-reshuffled partners), and 2 teams per court instead of 4 players.
 // See genDynamic2CI's own header comment for the full protected/momentum cascade rationale.
-function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retiredTeamIds, concentrateOn, firmHere, findExpectedReturnCourtCT, avoidOn=[]) {
+function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retiredTeamIds, concentrateOn, firmHere, findExpectedReturnCourtCT, avoidOn=[], futureFirmBreaks={}) {
   const excludeIds = new Set([...firmHere, ...retiredTeamIds]);
   const concSet = new Set(concentrateOn), avoidSet = new Set(avoidOn);
 
@@ -2395,6 +2404,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   const breakCounts = {}, lastBreak = {};
   activeTeams.forEach(t => { breakCounts[t.id]=0; lastBreak[t.id]=-99; });
   rounds.forEach((r,rr) => (r.onBreakIds||[]).forEach(id => { if(breakCounts[id]!==undefined){ breakCounts[id]++; lastBreak[id]=rr; } }));
+  // Same fix as genDynamic2CI's, same reasoning — count future firm-locked breaks toward
+  // entitlement now, don't wait to discover them round by round.
+  for (let r=ri; r<totalRounds; r++) (futureFirmBreaks[r]||[]).forEach(id => { if(breakCounts[id]!==undefined) breakCounts[id]++; });
   const totalSlots = bpr*totalRounds;
   const base = activeTeams.length ? Math.floor(totalSlots/activeTeams.length) : 0;
   const extras = activeTeams.length ? totalSlots%activeTeams.length : 0;
@@ -2636,7 +2648,7 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
   let newBreakIds, buckets;
   let breakReasons = {}, returnReasons = {}; // Decision Trail (see fairShareBullets)
   if (plan.breakEngine === "dynamic2") {
-    ({newBreakIds, buckets, breakReasons, returnReasons} = genDynamic2CT(sorted||teams, courts, ri, totalRounds, rounds, lastRound, retiredTeamIds, concentrateOn, firmHere, findExpectedReturnCourtCT, avoidOn));
+    ({newBreakIds, buckets, breakReasons, returnReasons} = genDynamic2CT(sorted||teams, courts, ri, totalRounds, rounds, lastRound, retiredTeamIds, concentrateOn, firmHere, findExpectedReturnCourtCT, avoidOn, plan.firmBreaks||{}));
   } else if (plan.breakEngine === "dynamic") {
     const activeTeams = (sorted||teams).filter(t=>!retiredTeamIds.includes(t.id));
     const bpr = Math.max(0, activeTeams.length - courts*2);

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.74";
+const APP_VERSION = "V0.16.75";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1133,6 +1133,34 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (target+1<=courts) localCourts.push(target+1);
     const farProtectedOrder = protectedOrder.filter(c=>!localCourts.includes(c));
     const farMomentumOrder = momentumOrder.filter(c=>!localCourts.includes(c));
+
+    // Real bug, admin report (2026-09-22, event #210, round 6 — "3 players disappeared, no Court
+    // 1 match at all"): the bucket-building step above deliberately excludes firm-locked (and
+    // retired) players from their natural win/loss bucket, on the reasoning that they're "not real
+    // occupants this round" — which is correct, but it silently breaks this function's own stated
+    // invariant that every bucket "is always exactly 4 per court on their own." Nothing here ever
+    // checked for that shortfall — every bench player unconditionally went through the eviction
+    // search below, which always performs a 1-for-1 swap (evict one, insert one), even when the
+    // target bucket already had room. That evicted an EXTRA, unnecessary person (converting an
+    // already-open seat into "someone new displaces someone old" instead of just filling the open
+    // seat), and the match-building step further down silently drops (skips entirely) any bucket
+    // that still ends up short of 4 — which is exactly how Court 1 vanished and 3 players (2 who
+    // were never touched at all, plus the 1 needlessly evicted) fell out of the round completely.
+    // Fix: check for an already-open seat — local window first (matching this player's own
+    // target-court priority), then anywhere — and just fill it directly, no eviction, before any
+    // of the search machinery below ever runs. This is the exact same check the "late joiner" pass
+    // further down already does correctly (`ps.length<4`) — bench returns never had it.
+    const openLocal = localCourts.find(c => buckets[c].length < 4);
+    const openAny = openLocal ?? Object.keys(buckets).map(Number).find(c => buckets[c].length < 4);
+    if (openAny != null) {
+      buckets[openAny].push({p: benchPlayer, via: "bench"});
+      returnReasons[uid] = [
+        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        openAny===target ? `✅ Court ${target} already had an open seat — no eviction needed`
+          : `🪑 Court ${target} was full, but Court ${openAny} already had an open seat (from an admin's firm-locked break) — filled directly, no eviction needed`,
+      ];
+      return;
+    }
     // Pooled search (2026-09-2X, admin request): a court is no longer exhausted one at a time
     // before trying the next — every court in `courtsOrder` is gathered into ONE pool and the
     // single best candidate wins across all of them (anchor, then spacing, then closeness to
@@ -2430,6 +2458,22 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (target+1<=courts) localCourts.push(target+1);
     const farProtectedOrder = protectedOrder.filter(c=>!localCourts.includes(c));
     const farMomentumOrder = momentumOrder.filter(c=>!localCourts.includes(c));
+
+    // Same real bug fix as genDynamic2CI's, same reasoning — a firm-locked team's court is
+    // excluded from its natural bucket above, which can leave a bucket short of 2 with nothing
+    // here ever checking for it before evicting an extra, unnecessary team. Fill an already-open
+    // seat directly first — local window, then anywhere — before any eviction search runs.
+    const openLocal = localCourts.find(c => buckets[c].length < 2);
+    const openAny = openLocal ?? Object.keys(buckets).map(Number).find(c => buckets[c].length < 2);
+    if (openAny != null) {
+      buckets[openAny].push({t: benchTeam, via: "bench"});
+      returnReasons[tid] = [
+        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        openAny===target ? `✅ Court ${target} already had an open seat — no eviction needed`
+          : `🪑 Court ${target} was full, but Court ${openAny} already had an open seat (from an admin's firm-locked break) — filled directly, no eviction needed`,
+      ];
+      return;
+    }
     // Pooled search — see genDynamic2CI's comment for the full "why".
     const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
       const candidates = [];
@@ -9121,7 +9165,11 @@ export default function Matchkeeper() {
       toast2(`⚠️ ${missing.join(", ")} registered but couldn't be included — try closing and reopening the app, then Start again`,"err");
       return;
     }
-    updEvent(cid,eid,e=>({...e,plan:{...genRound1(buildPlayers(e).players,e.courts,n,e.breakConcentrateIds||[],e.breakAvoidIds||[]),roundDuration:dur,breakEngine:breakEngine||"classic"}}));
+    // Admin request (2026-09-22): "Dynamic v2 should be default... cannot change on its own" —
+    // the UI's own startBreakEngine already defaults to "dynamic2", but this fallback (for any
+    // caller that somehow omits the param) used to quietly land on Classic instead, which is
+    // exactly the kind of silent-default-to-Classic risk the admin doesn't want anywhere.
+    updEvent(cid,eid,e=>({...e,plan:{...genRound1(buildPlayers(e).players,e.courts,n,e.breakConcentrateIds||[],e.breakAvoidIds||[]),roundDuration:dur,breakEngine:breakEngine||"dynamic2"}}));
   };
   const nextRoundCI=(cid,eid,silent)=>{
     const ev=getEv(cid,eid);if(!ev?.plan)return false;
@@ -9539,7 +9587,7 @@ export default function Matchkeeper() {
     const previewPlan=generateCTPlan(players,effCourts,fmt,ev,dur||20,topPoolSizeOverride);
     updEvent(cid,eid,e=>{
       const {players:freshPlayers,waitlisted:freshWaitlisted}=buildTeams(e);
-      return {...e,plan:{...generateCTPlan(freshPlayers,effCourts,fmt,e,dur||20,topPoolSizeOverride),waitlisted:freshWaitlisted?[{userId:freshWaitlisted.userId,nickname:freshWaitlisted.nickname,usr:freshWaitlisted.usr}]:[],breakEngine:breakEngine||"classic"}};
+      return {...e,plan:{...generateCTPlan(freshPlayers,effCourts,fmt,e,dur||20,topPoolSizeOverride),waitlisted:freshWaitlisted?[{userId:freshWaitlisted.userId,nickname:freshWaitlisted.nickname,usr:freshWaitlisted.usr}]:[],breakEngine:breakEngine||"dynamic2"}};
     });
     toast2(isFootballEv?`Teams formed ✓ — ${ev.numTeams||previewPlan.teams.length} teams`:`Teams formed ✓ — ${Math.floor(players.length/2)} teams`);
   };
@@ -11962,11 +12010,18 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
       <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)"}}>Break Schedule</div>
       {isAdmin&&ev.status!=="completed"&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="classic"?"dynamic":breakEngine==="dynamic"?"dynamic2":"classic")}
-          title="Switchable any time during play — takes effect on the next round generated. Tap to cycle: Classic → Dynamic → Dynamic v2"
-          style={{padding:"6px 12px",borderRadius:7,border:`0.5px solid ${breakEngine==="dynamic2"?"#22D3EE44":"#F59E0B44"}`,background:breakEngine==="classic"?"#F59E0B11":breakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:breakEngine==="dynamic2"?"#22D3EE":"#FBBF24",fontSize:12,fontWeight:500,cursor:"pointer"}}>
-          {breakEngine==="dynamic2"?"🧬":"⚡"} Engine: {breakEngine==="dynamic"?"Dynamic":breakEngine==="dynamic2"?"Dynamic v2":"Classic"}
-        </button>
+        {/* Admin request (2026-09-22): "cannot change on its own" — a cycling button relies on
+            reading its own current label correctly before every tap, which is exactly what went
+            wrong once (the confirmation toast lied about it — see setBreakEngine's own fix). An
+            explicit dropdown picks a named value directly; there's no "which step am I on" to
+            misjudge. */}
+        <select value={breakEngine} onChange={e=>onSetBreakEngine&&onSetBreakEngine(e.target.value)}
+          title="Switchable any time during play — takes effect on the next round generated."
+          style={{padding:"6px 10px",borderRadius:7,border:`0.5px solid ${breakEngine==="dynamic2"?"#22D3EE44":breakEngine==="dynamic"?"#F59E0B44":"var(--po-bdr)"}`,background:breakEngine==="classic"?"var(--po-inp)":breakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:breakEngine==="dynamic2"?"#22D3EE":breakEngine==="dynamic"?"#FBBF24":"var(--po-text)",fontSize:12,fontWeight:500,cursor:"pointer"}}>
+          <option value="classic">⚙️ Classic</option>
+          <option value="dynamic">⚡ Dynamic</option>
+          <option value="dynamic2">🧬 Dynamic v2</option>
+        </select>
         <button onClick={()=>setConcOpen(true)}
           style={{padding:"6px 12px",borderRadius:7,border:"0.5px solid #8B5CF644",background:concentrateIds.length?"#8B5CF622":"#8B5CF611",color:"#A78BFA",fontSize:12,fontWeight:500,cursor:"pointer"}}>
           🎯 Concentrate{concentrateIds.length?` (${concentrateIds.length})`:""}
@@ -11984,6 +12039,16 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
     <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>
       {plan.totalRounds} rounds · {tc} courts · {bpr} on break/round · Break = {bp} pts
       {breakEngine==="dynamic"&&<span style={{color:"#FBBF24"}}> · ⚡ Dynamic: not-yet-generated breaks below are a live prediction, decided for real once each round's results are in</span>}
+    </div>
+    {/* Real bug, admin report (2026-09-22): once ev.status==="completed", the toolbar above
+        (Engine/Concentrate/Avoid buttons) disappears entirely — correctly, since there's nothing
+        left to edit — but that was the ONLY place showing who'd been set as Concentrate/Avoid or
+        which engine ran, so that history became invisible right when it's most wanted for review.
+        A permanent, always-visible, read-only line covers it regardless of admin/completed state. */}
+    <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>
+      Engine: <b style={{color:breakEngine==="dynamic2"?"#22D3EE":breakEngine==="dynamic"?"#FBBF24":"var(--po-text)"}}>{breakEngine==="dynamic2"?"Dynamic v2":breakEngine==="dynamic"?"Dynamic":"Classic"}</b>
+      {concentrateIds.length>0&&<> · 🎯 Concentrate: {concentrateIds.map(id=>displayRoster.find(p=>p.userId===id)?.nickname||`#${id}`).join(", ")}</>}
+      {avoidIds.length>0&&<> · 🚫 Avoid: {avoidIds.map(id=>displayRoster.find(p=>p.userId===id)?.nickname||`#${id}`).join(", ")}</>}
     </div>
 
     {/* Legend */}
@@ -12054,7 +12119,13 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
               const isOpen=ri>=generatedRounds;
               const canEdit=isOpen&&isAdmin; // only open rounds, and only admins, may edit from the Breaks tab
 
-              const isFirm = isOpen && (plan.firmBreaks?.[ri]||[]).includes(p.userId);
+              // Real bug, admin report (2026-09-22): this used to require isOpen, so the 🔐 badge
+              // (and its purple styling) vanished the instant a round stopped being "open for
+              // editing" — i.e. for every played or pending round, live or after the event closes
+              // — even though plan.firmBreaks[ri] still correctly records it happened. History
+              // should stay visible regardless of whether it's still editable; only the tap-to-edit
+              // interaction (canEdit, below) needs to be off for a locked round.
+              const isFirm = (plan.firmBreaks?.[ri]||[]).includes(p.userId);
               const bg   = isFirm ? "#8B5CF633" : onB ? (isFrozen?"#EF444422":isPending?"#F59E0B22":"#F59E0B33") : (isFrozen?"#33333322":isPending?"var(--po-bdr)":"#34D39911");
               const bdr  = isFirm ? "#8B5CF6AA" : onB ? (isFrozen?"#EF444455":isPending?"#F59E0B55":"#F59E0B44") : (isFrozen?"#33333344":isPending?"#1E293B44":"#34D39933");
               const icon = isFirm ? "🔐" : onB ? "🪑" : (isFrozen?"—":isPending?"·":"▶");
@@ -12263,11 +12334,14 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
         {isAdmin?"🔒 Frozen · 🔄 Generated · ✏️ Open (tap a cell to set Playing/Break/Firm)":"🔒 Frozen · 🔄 Generated · ✏️ Open"}
       </div>
       {isAdmin&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        <button onClick={()=>onSetBreakEngine&&onSetBreakEngine(breakEngine==="classic"?"dynamic":breakEngine==="dynamic"?"dynamic2":"classic")}
-          title="Switchable any time during play — takes effect on the next match generated. Tap to cycle: Classic → Dynamic → Dynamic v2"
-          style={{padding:"5px 12px",borderRadius:6,border:`0.5px solid ${breakEngine==="dynamic2"?"#22D3EE44":"#F59E0B44"}`,background:breakEngine==="classic"?"#F59E0B11":breakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:breakEngine==="dynamic2"?"#22D3EE":"#FBBF24",fontSize:11,fontWeight:600,cursor:"pointer"}}>
-          {breakEngine==="dynamic2"?"🧬":"⚡"} Engine: {breakEngine==="dynamic"?"Dynamic":breakEngine==="dynamic2"?"Dynamic v2":"Classic"}
-        </button>
+        {/* See the CI Breaks tab's identical fix — explicit dropdown, no cycling. */}
+        <select value={breakEngine} onChange={e=>onSetBreakEngine&&onSetBreakEngine(e.target.value)}
+          title="Switchable any time during play — takes effect on the next match generated."
+          style={{padding:"5px 10px",borderRadius:6,border:`0.5px solid ${breakEngine==="dynamic2"?"#22D3EE44":breakEngine==="dynamic"?"#F59E0B44":"var(--po-bdr)"}`,background:breakEngine==="classic"?"var(--po-inp)":breakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:breakEngine==="dynamic2"?"#22D3EE":breakEngine==="dynamic"?"#FBBF24":"var(--po-text)",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+          <option value="classic">⚙️ Classic</option>
+          <option value="dynamic">⚡ Dynamic</option>
+          <option value="dynamic2">🧬 Dynamic v2</option>
+        </select>
         <button onClick={()=>setConcOpen(true)} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #8B5CF644",background:concentrateIds.length?"#8B5CF622":"#8B5CF611",color:"#A78BFA",fontSize:11,fontWeight:600,cursor:"pointer"}}>🎯 Concentrate{concentrateIds.length?` (${concentrateIds.length})`:""}</button>
         <button onClick={()=>setAvoidOpen(true)} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F4374644",background:avoidIds.length?"#F4374622":"#F4374611",color:"#F87171",fontSize:11,fontWeight:600,cursor:"pointer"}}>🚫 Avoid{avoidIds.length?` (${avoidIds.length})`:""}</button>
         {onRegenBreaks&&<button onClick={()=>{if(window.confirm("Regenerate break schedule?\n\nThis will recalculate breaks for all ungenerated rounds based on current teams. Generated rounds are not affected."))onRegenBreaks();}} style={{padding:"5px 12px",borderRadius:6,border:"0.5px solid #F59E0B44",background:"#F59E0B11",color:"#F59E0B",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔄 Regenerate Breaks</button>}
@@ -13118,7 +13192,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     startCI: (n,dur,breakEngine) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:r.eventUsr??u.usr,userId:r.userId,histBreaks:0,breakPref:r.breakPrefOverride||u.breakPref||"none"};}).filter(Boolean);
-          return {...e, plan:{...genRound1(players, e.courts, n, e.breakConcentrateIds||[],e.breakAvoidIds||[]), roundDuration:dur, breakEngine:breakEngine||"classic"}};
+          return {...e, plan:{...genRound1(players, e.courts, n, e.breakConcentrateIds||[],e.breakAvoidIds||[]), roundDuration:dur, breakEngine:breakEngine||"dynamic2"}};
         })
       : onStartCI(n,dur,breakEngine),
     setWinCI: (ri,mi,w,sA,sB) => sim
@@ -13202,7 +13276,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     startCT: (c,f,dur,topPoolSizeOverride,breakEngine) => sim
       ? simMutate(e => {
           const players = e.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);if(!u)return null;return{...u,usr:teamFormationRating(u,e),userId:r.userId};}).filter(Boolean);
-          return {...e, plan: {...generateCTPlan(players, c, f, e, dur, topPoolSizeOverride), breakEngine:breakEngine||"classic"}};
+          return {...e, plan: {...generateCTPlan(players, c, f, e, dur, topPoolSizeOverride), breakEngine:breakEngine||"dynamic2"}};
         })
       : onStartCT(c,f,dur,topPoolSizeOverride,breakEngine),
     setWinCT: (ri,mi,side,w,sA,sB) => sim
@@ -14775,9 +14849,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{fontSize:12,color:"var(--po-dim)"}}>Round duration:</span>{[10,15,20,25,30].map(n=><SmBtn key={n} label={`${n}m`} onClick={()=>setRDur(n)} active={roundDur===n} color="#6366F1"/>)}</div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
           <span style={{fontSize:12,color:"var(--po-dim)"}}>Break engine:</span>
-          <SmBtn label="Classic" onClick={()=>setStartBreakEngine("classic")} active={startBreakEngine==="classic"} color="#6366F1"/>
-          <SmBtn label="⚡ Dynamic" onClick={()=>setStartBreakEngine("dynamic")} active={startBreakEngine==="dynamic"} color="#F59E0B"/>
-          <SmBtn label="🧬 Dynamic v2" onClick={()=>setStartBreakEngine("dynamic2")} active={startBreakEngine==="dynamic2"} color="#22D3EE"/>
+          <select value={startBreakEngine} onChange={e=>setStartBreakEngine(e.target.value)}
+            style={{padding:"6px 10px",borderRadius:7,border:`0.5px solid ${startBreakEngine==="dynamic2"?"#22D3EE44":startBreakEngine==="dynamic"?"#F59E0B44":"var(--po-bdr)"}`,background:startBreakEngine==="classic"?"var(--po-inp)":startBreakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:startBreakEngine==="dynamic2"?"#22D3EE":startBreakEngine==="dynamic"?"#FBBF24":"var(--po-text)",fontSize:12,fontWeight:500,cursor:"pointer"}}>
+            <option value="classic">⚙️ Classic</option>
+            <option value="dynamic">⚡ Dynamic</option>
+            <option value="dynamic2">🧬 Dynamic v2</option>
+          </select>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           <SmBtn label={`🎯 Concentrate${(effEv.breakConcentrateIds||[]).length?` (${effEv.breakConcentrateIds.length})`:""}`} onClick={()=>setPreStartConcOpen(true)} color="#8B5CF6"/>
@@ -14959,9 +15036,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {ctF==="ladder"&&<div style={{marginBottom:16}}>
           <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8}}>Break engine:</div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <SmBtn label="Classic" onClick={()=>setStartBreakEngine("classic")} active={startBreakEngine==="classic"} color="#6366F1"/>
-            <SmBtn label="⚡ Dynamic" onClick={()=>setStartBreakEngine("dynamic")} active={startBreakEngine==="dynamic"} color="#F59E0B"/>
-            <SmBtn label="🧬 Dynamic v2" onClick={()=>setStartBreakEngine("dynamic2")} active={startBreakEngine==="dynamic2"} color="#22D3EE"/>
+            <select value={startBreakEngine} onChange={e=>setStartBreakEngine(e.target.value)}
+              style={{padding:"6px 10px",borderRadius:7,border:`0.5px solid ${startBreakEngine==="dynamic2"?"#22D3EE44":startBreakEngine==="dynamic"?"#F59E0B44":"var(--po-bdr)"}`,background:startBreakEngine==="classic"?"var(--po-inp)":startBreakEngine==="dynamic"?"#F59E0B22":"#22D3EE22",color:startBreakEngine==="dynamic2"?"#22D3EE":startBreakEngine==="dynamic"?"#FBBF24":"var(--po-text)",fontSize:12,fontWeight:500,cursor:"pointer"}}>
+              <option value="classic">⚙️ Classic</option>
+              <option value="dynamic">⚡ Dynamic</option>
+              <option value="dynamic2">🧬 Dynamic v2</option>
+            </select>
           </div>
           <div style={{fontSize:10,color:"var(--po-dim)",marginTop:6,marginBottom:10}}>Just a starting default — switchable any time from the Breaks tab</div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>

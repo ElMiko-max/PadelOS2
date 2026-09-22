@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.74 (current) — Fix two real break-engine bugs found while reviewing a real event (#101, Bugs #21 & #22)
+## V0.16.75 (current) — Fix a Dynamic v2 vanishing-players disaster + Breaks tab improvements (Bugs #23, #24, Enhancement #37)
+
+- **Admin request:** reviewing another real event (#210 on DEV) turned up a "disaster" in round 6 — 4 players on break instead of 3, an entire court with no match at all, and 3 players missing completely. Also noticed the Breaks tab hides who was Firm-locked/Manual-swapped/Concentrate/Avoid the moment a round gets played.
+- **Bug #23 (the serious one) — players vanishing in Dynamic v2 whenever a firm-locked break exists:** confirmed by directly replaying the real event's own data — when a player is firm-locked onto break, their court is silently left one player short, with nothing catching it. Any player returning from break afterward would unnecessarily evict someone else instead of just taking the already-open seat, and any court that stayed short of a full 4 was simply skipped entirely — vanishing every player left in it. Fixed by checking for an already-open seat first, before ever evicting anyone.
+- **Bug #24 — the Breaks tab hides history once a round is played:** the 🔐 Firm badge disappeared the instant a round was generated (not just after the event closed), and the Concentrate/Avoid buttons vanished entirely after closing — even though the underlying data was still there. Added a permanent, always-visible line naming the engine and who's on Concentrate/Avoid, and the 🔐 badge now always renders from the saved data.
+- **Enhancement #37 — break engine is now a dropdown, not a cycling button:** everywhere the engine choice appears (CI/CT Breaks tab, the event-start screen) is now an explicit dropdown instead of a button that cycles through values — so it "can't change on its own" the way Bug #21 showed it could. Dynamic v2 is confirmed as the default everywhere, including every fallback path in the code.
+- **All verified** — Bug #23 by directly replaying the real event's data (round 6 now comes out as 4 full courts, exactly 3 on break, all 19 players accounted for). The rest verified by direct code review.
+
+---
+
+## V0.16.74 — Fix two real break-engine bugs found while reviewing a real event (#101, Bugs #21 & #22)
 
 - **Admin request:** a full review of a real, fully-played event, after noticing "disturbances" in how breaks played out live.
 - **Bug #21 — wrong engine-selection confirmation toast:** the break-engine picker button (Classic/Dynamic/Dynamic v2) cycles on every tap, and the confirmation toast after tapping said "Classic Break Engine ✓" even when Dynamic v2 was the one actually selected — a simple code bug (the condition only checked for "dynamic"). This exactly explains why the admin was certain they'd picked Dynamic v2 while the event actually ran on Classic. The toast now correctly names all three.

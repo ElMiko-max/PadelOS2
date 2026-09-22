@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.76";
+const APP_VERSION = "V0.16.77";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1170,6 +1170,86 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       ];
       return;
     }
+
+    // Enhancement #38, admin's own design (2026-09-22, event #210 rounds 4/5 — "Rouka forced all
+    // the way to Court 2 while Mizo, who'd ALSO just returned from break this exact round, sat
+    // comfortably at his own target Court 3 the whole time"): a same-round bench-returnee sitting
+    // in a local court (via==="bench" — someone this very loop already placed a few iterations
+    // ago) can NEVER be a real eviction candidate below — the anti-consecutive-break rule always
+    // excludes them (they broke exactly last round, so ri-lastBreak is always 1, never > 1 under
+    // any tier). Today that just means they get silently skipped and the search walks further
+    // away, even though relocating THEM (not evicting them — they just change seats) can often
+    // free up their spot far more cheaply than the far search below.
+    //
+    // A genuinely open seat for them (checked first, free — nobody breaks) is the rare case: with
+    // no firm lock in play, every bucket is always exactly full, so this only ever fires in a
+    // Bug #23-shaped shortfall. The real Mizo/Rouka case needs more: try giving the relocating
+    // player ONE bounded, ordinary eviction search of their OWN — same eligibility tiers as any
+    // normal pick, deliberately scoped to just their own local window (no "far" tier) to keep this
+    // relocation's own blast radius small and impossible to cascade further (it can only ever
+    // evict a real win/loss occupant, never another same-round bench-returnee, since anti-
+    // consecutive-break already rules that out the same way it does for the outer search). If that
+    // succeeds, the third player evicted gets the exact same breakReasons bookkeeping a normal
+    // eviction would. Net cost is identical either way (one break happens somewhere), but the
+    // people playing end up distributed closer to where they actually earned their seat instead of
+    // concentrating all the disruption on whichever bench player happened to be processed last.
+    const attemptBenchRelocate = () => {
+      for (const c of localCourts) {
+        const benchEntry = buckets[c].find(e => e.via === "bench");
+        if (!benchEntry) continue;
+        const entryTarget = bench.find(b=>b.uid===benchEntry.p.userId)?.target;
+        if (entryTarget == null) continue;
+        const entryLocal = [entryTarget, entryTarget-1, entryTarget+1].filter(x=>x>=1&&x<=courts&&x!==c);
+        const openSeat = entryLocal.find(x => buckets[x].length < 4);
+        if (openSeat != null) return {court:c, benchEntry, relocateCourt:openSeat, entryTarget, relocEvicted:null};
+        const relocSearch = (protectedPhase, eligibleFn) => {
+          const candidates = [];
+          entryLocal.forEach(rc => buckets[rc].forEach(e => { if ((protectedPhase?isProtected(e):!isProtected(e)) && eligibleFn(e.p.userId)) candidates.push({c:rc, e}); }));
+          if (!candidates.length) return null;
+          candidates.sort((X,Y) => {
+            const x=X.e, y=Y.e;
+            const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
+            const sx=ri-(lastBreak[x.p.userId]??-99), sy=ri-(lastBreak[y.p.userId]??-99); if(sx!==sy) return sy-sx;
+            const dx=Math.abs(X.c-entryTarget), dy=Math.abs(Y.c-entryTarget); if(dx!==dy) return dx-dy;
+            return x.p.usr - y.p.usr;
+          });
+          return {court:candidates[0].c, entry:candidates[0].e};
+        };
+        const relocFound = relocSearch(true, isEligiblePreferred) || relocSearch(false, isEligiblePreferred)
+          || relocSearch(true, isEligibleStrict) || relocSearch(false, isEligibleStrict);
+        if (relocFound) return {court:c, benchEntry, relocateCourt:relocFound.court, entryTarget, relocEvicted:relocFound.entry};
+      }
+      return null;
+    };
+    const benchRelocate = attemptBenchRelocate();
+    if (benchRelocate) {
+      const {court:brCourt, benchEntry, relocateCourt, entryTarget, relocEvicted} = benchRelocate;
+      buckets[brCourt].splice(buckets[brCourt].indexOf(benchEntry), 1);
+      buckets[brCourt].push({p: benchPlayer, via: "bench"});
+      if (relocEvicted) {
+        buckets[relocateCourt].splice(buckets[relocateCourt].indexOf(relocEvicted), 1, {p: benchEntry.p, via: "bench"});
+        evicted.push({p: relocEvicted.p, court: relocateCourt});
+        const evUid2 = relocEvicted.p.userId, evGap2 = ri-(lastBreak[evUid2]??-99);
+        breakReasons[evUid2] = [
+          `🪑 Evicted from Court ${relocateCourt} to free a seat for ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)}, relocated here as part of a same-round swap that also seated ${benchPlayer.nickname}`,
+          isProtected(relocEvicted) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(relocEvicted.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
+          `⚖️ Had ${Math.max(0,remaining[evUid2]||0)} break(s) remaining this event before this pick`,
+          (lastBreak[evUid2]===-99||lastBreak[evUid2]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap2} round(s) — picked as the most overdue eligible candidate at this court`,
+        ];
+      } else {
+        buckets[relocateCourt].push({p: benchEntry.p, via: "bench"});
+      }
+      returnReasons[uid] = [
+        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        `🔁 Court ${brCourt} was freed by relocating ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)} (also just returning from break this round) to Court ${relocateCourt} instead — ${relocEvicted?`freeing that seat by evicting ${relocEvicted.p.nickname||("player #"+relocEvicted.p.userId)}`:"nobody had to go on break for this"}`,
+      ];
+      returnReasons[benchEntry.p.userId] = [
+        `🎯 Target Court ${entryTarget}, earned from ${findExpectedReturnCourt(benchEntry.p.userId)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        `↪️ Was about to free Court ${brCourt} for ${benchPlayer.nickname}'s return — relocated to Court ${relocateCourt}${relocateCourt===entryTarget?", their own target,":""} instead of going on break`,
+      ];
+      return;
+    }
+
     // Pooled search (2026-09-2X, admin request): a court is no longer exhausted one at a time
     // before trying the next — every court in `courtsOrder` is gathered into ONE pool and the
     // single best candidate wins across all of them (anchor, then spacing, then closeness to
@@ -1333,7 +1413,10 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (usedTightSpacing) breakReasons[evUid].push(`↔️ Only ${evGap} round(s) since their last break — tighter than the preferred 2-round gap, but nobody clearing that was eligible anywhere`);
   });
 
-  const plainBuckets = {}; for (let c=1;c<=courts;c++) plainBuckets[c]=buckets[c].map(e=>e.p);
+  // Admin request (2026-09-22, Enhancement #39): carry `via` (win/loss/stay/bench) onto the final
+  // player objects instead of stripping it here — it's what lets the round card show a quick
+  // ↑/↓/TOP icon without needing the ℹ️ Why? modal.
+  const plainBuckets = {}; for (let c=1;c<=courts;c++) plainBuckets[c]=buckets[c].map(e=>({...e.p, via:e.via}));
   const newBreakIds = [...firmHere, ...evicted.map(e=>e.p.userId), ...stillBenched];
   return { newBreakIds, buckets: plainBuckets, breakReasons, returnReasons };
 }
@@ -1462,7 +1545,9 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     }
     buckets={};
     for(let c=1;c<=courts;c++) buckets[c]=[];
-    lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push(p));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push(p));});
+    // Admin request (2026-09-22, Enhancement #39): tag `via` here too (Classic/v1 path), same as
+    // genDynamic2CI already does internally — round card icon needs it regardless of engine.
+    lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push({...p, via:m.court===1?"stay":"win"}));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push({...p, via:"loss"}));});
     for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
   }
   firmHere.forEach(uid=>{ breakReasons[uid] = ["🔐 Firm-locked: an admin locked this player to break this round, bypassing normal balancing"]; });
@@ -1482,10 +1567,11 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     returningWithTarget.sort((a,b)=>(a.targetCourt??999)-(b.targetCourt??999));
     returningWithTarget.forEach(({rp,targetCourt})=>{
       let landed=null;
-      if (targetCourt) { for(let c=targetCourt;c<=courts;c++){ if(buckets[c].length<4){ buckets[c].push(rp); landed=c; break; } } }
+      const rpTagged = {...rp, via:"bench"};
+      if (targetCourt) { for(let c=targetCourt;c<=courts;c++){ if(buckets[c].length<4){ buckets[c].push(rpTagged); landed=c; break; } } }
       if (landed==null) {
         const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
-        if(needy){ landed=parseInt(needy[0]); buckets[landed].push(rp); }
+        if(needy){ landed=parseInt(needy[0]); buckets[landed].push(rpTagged); }
       }
       if (landed!=null) {
         returnReasons[rp.userId] = targetCourt
@@ -1503,7 +1589,7 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
   const lateJoiners=sorted.filter(p=>!accountedIds.has(p.userId)&&!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
   lateJoiners.forEach(lp=>{
     const needy=Object.entries(buckets).filter(([,ps])=>ps.length<4).sort((a,b)=>a[1].length-b[1].length)[0];
-    if(needy){ const c=parseInt(needy[0]); buckets[c].push(lp); returnReasons[lp.userId]=[`🆕 New registration since this event started — placed on Court ${c}, the neediest open court`]; }
+    if(needy){ const c=parseInt(needy[0]); buckets[c].push({...lp, via:"new"}); returnReasons[lp.userId]=[`🆕 New registration since this event started — placed on Court ${c}, the neediest open court`]; }
   });
   if(retiredIds.length){
     const breakCountSoFar={};
@@ -1512,7 +1598,7 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     for(let c=1;c<=courts;c++){
       while(buckets[c].length>0&&buckets[c].length<4&&callUpPool.length){
         const p=callUpPool.shift();
-        buckets[c].push(p);
+        buckets[c].push({...p, via:"new"});
         const oi=onBreak.findIndex(x=>x.userId===p.userId); if(oi>=0) onBreak.splice(oi,1);
         returnReasons[p.userId]=[`🔁 Called up early to Court ${c} — a retirement/no-show left a court short, and this player had the fewest breaks so far among those still on break`];
       }
@@ -2486,6 +2572,68 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       ];
       return;
     }
+
+    // Same Enhancement #38 relocation as genDynamic2CI's — see its comment for the full "why".
+    // Bounded to one level: the relocation search only ever evicts a real win/loss occupant
+    // (anti-consecutive-break already rules out picking another same-round bench-returnee), so
+    // this can never cascade.
+    const attemptBenchRelocate = () => {
+      for (const c of localCourts) {
+        const benchEntry = buckets[c].find(e => e.via === "bench");
+        if (!benchEntry) continue;
+        const entryTarget = bench.find(b=>b.tid===benchEntry.t.id)?.target;
+        if (entryTarget == null) continue;
+        const entryLocal = [entryTarget, entryTarget-1, entryTarget+1].filter(x=>x>=1&&x<=courts&&x!==c);
+        const openSeat = entryLocal.find(x => buckets[x].length < 2);
+        if (openSeat != null) return {court:c, benchEntry, relocateCourt:openSeat, entryTarget, relocEvicted:null};
+        const relocSearch = (protectedPhase, eligibleFn) => {
+          const candidates = [];
+          entryLocal.forEach(rc => buckets[rc].forEach(e => { if ((protectedPhase?isProtected(e):!isProtected(e)) && eligibleFn(e.t.id)) candidates.push({c:rc, e}); }));
+          if (!candidates.length) return null;
+          candidates.sort((X,Y) => {
+            const x=X.e, y=Y.e;
+            const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
+            const sx=ri-(lastBreak[x.t.id]??-99), sy=ri-(lastBreak[y.t.id]??-99); if(sx!==sy) return sy-sx;
+            const dx=Math.abs(X.c-entryTarget), dy=Math.abs(Y.c-entryTarget); if(dx!==dy) return dx-dy;
+            return (x.t.avgUsr||0) - (y.t.avgUsr||0);
+          });
+          return {court:candidates[0].c, entry:candidates[0].e};
+        };
+        const relocFound = relocSearch(true, isEligiblePreferred) || relocSearch(false, isEligiblePreferred)
+          || relocSearch(true, isEligibleStrict) || relocSearch(false, isEligibleStrict);
+        if (relocFound) return {court:c, benchEntry, relocateCourt:relocFound.court, entryTarget, relocEvicted:relocFound.entry};
+      }
+      return null;
+    };
+    const benchRelocate = attemptBenchRelocate();
+    if (benchRelocate) {
+      const {court:brCourt, benchEntry, relocateCourt, entryTarget, relocEvicted} = benchRelocate;
+      buckets[brCourt].splice(buckets[brCourt].indexOf(benchEntry), 1);
+      buckets[brCourt].push({t: benchTeam, via: "bench"});
+      if (relocEvicted) {
+        buckets[relocateCourt].splice(buckets[relocateCourt].indexOf(relocEvicted), 1, {t: benchEntry.t, via: "bench"});
+        evicted.push({t: relocEvicted.t, court: relocateCourt});
+        const evTid2 = relocEvicted.t.id, evGap2 = ri-(lastBreak[evTid2]??-99);
+        breakReasons[evTid2] = [
+          `🪑 Evicted from Court ${relocateCourt} to free a seat for ${benchEntry.t.name||("Team #"+benchEntry.t.id)}, relocated here as part of a same-round swap that also seated ${benchTeam.name}`,
+          isProtected(relocEvicted) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(relocEvicted.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
+          `⚖️ Had ${Math.max(0,remaining[evTid2]||0)} break(s) remaining this event before this pick`,
+          (lastBreak[evTid2]===-99||lastBreak[evTid2]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap2} round(s) — picked as the most overdue eligible candidate at this court`,
+        ];
+      } else {
+        buckets[relocateCourt].push({t: benchEntry.t, via: "bench"});
+      }
+      returnReasons[tid] = [
+        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        `🔁 Court ${brCourt} was freed by relocating ${benchEntry.t.name||("Team #"+benchEntry.t.id)} (also just returning from break this round) to Court ${relocateCourt} instead — ${relocEvicted?`freeing that seat by evicting ${relocEvicted.t.name||("Team #"+relocEvicted.t.id)}`:"nobody had to go on break for this"}`,
+      ];
+      returnReasons[benchEntry.t.id] = [
+        `🎯 Target Court ${entryTarget}, earned from ${findExpectedReturnCourtCT(benchEntry.t.id)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        `↪️ Was about to free Court ${brCourt} for ${benchTeam.name}'s return — relocated to Court ${relocateCourt}${relocateCourt===entryTarget?", their own target,":""} instead of going on break`,
+      ];
+      return;
+    }
+
     // Pooled search — see genDynamic2CI's comment for the full "why".
     const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
       const candidates = [];
@@ -2605,7 +2753,8 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (usedTightSpacing) breakReasons[evTid].push(`↔️ Only ${evGap} round(s) since their last break — tighter than the preferred 2-round gap, but nobody clearing that was eligible anywhere`);
   });
 
-  const plainBuckets = {}; for (let c=1;c<=courts;c++) plainBuckets[c]=buckets[c].map(e=>e.t);
+  // Same as genDynamic2CI's — carry `via` onto the final team objects for the round card's icon.
+  const plainBuckets = {}; for (let c=1;c<=courts;c++) plainBuckets[c]=buckets[c].map(e=>({...e.t, via:e.via}));
   const newBreakIds = [...firmHere, ...evicted.map(e=>e.t.id), ...stillBenched];
   return { newBreakIds, buckets: plainBuckets, breakReasons, returnReasons };
 }
@@ -2727,8 +2876,8 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     lastRound.matchesA.forEach(m => {
       if (!m.winner) return;
       const W = m.winner==="A"?m.teamA:m.teamB, L = m.winner==="A"?m.teamB:m.teamA;
-      buckets[Math.max(1,m.court-1)].push(W);
-      buckets[Math.min(courts,m.court+1)].push(L);
+      buckets[Math.max(1,m.court-1)].push({...W, via:m.court===1?"stay":"win"});
+      buckets[Math.min(courts,m.court+1)].push({...L, via:"loss"});
     });
     // Remove teams on break or retired
     for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
@@ -2758,10 +2907,11 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     returningWithCourt.sort((a,b)=>(a.lastCourt??999)-(b.lastCourt??999));
     returningWithCourt.forEach(({t,lastCourt}) => {
       let landed=null;
-      if (lastCourt) { for(let c=lastCourt;c<=courts;c++){ if(buckets[c].length<2){ buckets[c].push(t); landed=c; break; } } }
+      const tTagged = {...t, via:"bench"};
+      if (lastCourt) { for(let c=lastCourt;c<=courts;c++){ if(buckets[c].length<2){ buckets[c].push(tTagged); landed=c; break; } } }
       if (landed==null) {
         const needy=Object.entries(buckets).filter(([,ts])=>ts.length<2).sort((a,b)=>a[1].length-b[1].length)[0];
-        if(needy){ landed=parseInt(needy[0]); buckets[landed].push(t); }
+        if(needy){ landed=parseInt(needy[0]); buckets[landed].push(tTagged); }
       }
       if (landed!=null) {
         returnReasons[t.id] = lastCourt
@@ -2780,7 +2930,7 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     for(let c=1;c<=courts;c++){
       while(buckets[c].length>0&&buckets[c].length<2&&callUpPool.length){
         const t=callUpPool.shift();
-        buckets[c].push(t);
+        buckets[c].push({...t, via:"new"});
         const oi=onBreak.findIndex(x=>x.id===t.id); if(oi>=0) onBreak.splice(oi,1);
         returnReasons[t.id]=[`🔁 Called up early to Court ${c} — a retirement/no-show left a court short, and this team had the fewest breaks so far among those still on break`];
       }
@@ -12531,13 +12681,22 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
         return <div style={{marginBottom:5}}>
           <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
             <div style={{flex:1,textAlign:"center"}}>
-              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}{cameFromBreakOrNew(m.teamA?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamA?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamA?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
+              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamA?.name}
+                {/* Admin request (2026-09-22, Enhancement #39) — see CI's PChip for the full reasoning; only ever set for CT Ladder (matchesA), never football. */}
+                {m.teamA?.via==="win"&&<span title="Won last round — promoted up a court" style={{marginLeft:3,fontWeight:700,color:"#34D399"}}>↑</span>}
+                {m.teamA?.via==="loss"&&<span title="Lost last round — relegated down a court" style={{marginLeft:3,fontWeight:700,color:"#F87171"}}>↓</span>}
+                {m.teamA?.via==="stay"&&<span title="Won at Court 1 and stayed on top" style={{marginLeft:3,fontSize:9,color:"#FBBF24"}}>🏆</span>}
+                {cameFromBreakOrNew(m.teamA?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamA?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamA?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
               <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
             </div>
             <div style={{fontSize:12,color:"#334155",fontWeight:700,marginTop:2}}>—</div>
             <div style={{flex:1,textAlign:"center"}}>
-              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}{cameFromBreakOrNew(m.teamB?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamB?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamB?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
+              <div style={{fontSize:11,color:gc,fontWeight:600}}>{m.teamB?.name}
+                {m.teamB?.via==="win"&&<span title="Won last round — promoted up a court" style={{marginLeft:3,fontWeight:700,color:"#34D399"}}>↑</span>}
+                {m.teamB?.via==="loss"&&<span title="Lost last round — relegated down a court" style={{marginLeft:3,fontWeight:700,color:"#F87171"}}>↓</span>}
+                {m.teamB?.via==="stay"&&<span title="Won at Court 1 and stayed on top" style={{marginLeft:3,fontSize:9,color:"#FBBF24"}}>🏆</span>}
+                {cameFromBreakOrNew(m.teamB?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamB?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamB?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
               <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
             </div>
@@ -13929,6 +14088,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       <span style={{fontSize:13,fontWeight:500,color:"var(--po-text)",flex:1}}>{p.nickname} <span style={{fontSize:11,fontWeight:400,color:"var(--po-dim)"}}>({p.usr})</span></span>
       {matchBadge?.isDream&&<span title="ماتش جامد — this is their Dream Match" style={{fontSize:12}}>🔥</span>}
       {matchBadge?.isFunny&&<span title="ماتش مسخرة — this is their Funny Match" style={{fontSize:12}}>😂</span>}
+      {/* Admin request (2026-09-22, Enhancement #39): a quick-glance icon for how this player
+          landed here, without opening ℹ️ Why? — ↑ promoted by winning, ↓ relegated by losing,
+          🏆 TOP already holding Court 1 by winning there. Round 1 and non-movement placements
+          (new registration, retirement call-up) carry no `via` and show nothing, same as before. */}
+      {p.via==="win"&&<span title="Won last round — promoted up a court" style={{fontSize:12,fontWeight:700,color:"#34D399"}}>↑</span>}
+      {p.via==="loss"&&<span title="Lost last round — relegated down a court" style={{fontSize:12,fontWeight:700,color:"#F87171"}}>↓</span>}
+      {p.via==="stay"&&<span title="Won at Court 1 and stayed on top" style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:10,whiteSpace:"nowrap",background:"#FBBF2422",color:"#FBBF24",border:"0.5px solid #FBBF2444"}}>🏆 TOP</span>}
       {p.wouldBeCourt&&<span title={ri===0?"Court they'd have played on by USR rank (no result yet)":"Target return court, earned from their last result — the actual landing court can still differ (see ℹ️ Why?)"} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       {reasonInfo&&<button onClick={e=>{e.stopPropagation();setReasonModal(reasonInfo);}} title="Why?" style={{fontSize:11,padding:"2px 5px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer",flexShrink:0}}>ℹ️</button>}

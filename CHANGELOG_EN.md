@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.76 (current) — Fix: Dynamic v2 forgot about upcoming firm-locked breaks when computing fair share (Bug #25)
+## V0.16.77 (current) — Implement: fairer redistribution for returning bench players + win/loss/top icons (Enhancements #38, #39)
+
+- **Admin request:** fully implement Enhancement #38 (fairer joint redistribution for players returning from break in the same round) and Enhancement #39 (↑/↓/TOP icons), and ship both to dev for testing.
+- **Enhancement #38 (Dynamic v2 — CI and CT):** when a returning player's own court is blocked, the system now first checks whether another same-round bench-returnee sitting nearby can themselves relocate — if so, they move and hand their old seat straight to the current player, with nobody extra going on break. The exact same set of people end up on break either way (fairness untouched) — only court placement quality improves, so nobody ends up unnecessarily far from where they earned their seat.
+- **Enhancement #39 (CI and CT, every engine):** every player/team in the round card now carries a quick marker: ↑ (won, promoted), ↓ (lost, relegated), 🏆 TOP (held the top court) — no need to open ℹ️ Why? anymore.
+- **New bug logged from testing (Bug #26, still open):** found while stress-testing these fixes (300+ random simulations) — a narrow but real scenario: if firm locks were validly set, then a player retires mid-event, the number of firm locks can end up exceeding the new (smaller) break-slot count, triggering the same vanishing-players failure as Bug #23. Not as urgent (narrower scenario), logged for follow-up.
+- **Verified:** by directly replaying real event #210's data (Rouka now lands closer to her target, the exact same 3 players stay on break), and 130+ full random simulations across CI and CT (varying players/courts/rounds/firm locks) — zero failures under any realistic scenario, and Bug #23 remains correctly fixed.
+
+---
+
+## V0.16.76 — Fix: Dynamic v2 forgot about upcoming firm-locked breaks when computing fair share (Bug #25)
 
 - **Admin request:** while reviewing Bug #23, noted that firm-locking a player's break for an upcoming round should make the system immediately "look ahead" and plan the rest of the rounds knowing that player's break is already settled — not discover it late and get cornered.
 - **Cause:** Dynamic v2 (both CI and CT) only counted breaks from rounds already played when computing each player's fair share — never a firm-locked break scheduled for a round that hasn't been generated yet. The older v1 "Dynamic" engine already did this correctly; v2 never carried the same logic over.

@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.77 (current) — Implement: fairer redistribution for returning bench players + win/loss/top icons (Enhancements #38, #39)
+## V0.16.78 (current) — Add: a separate ⚓ BOTTOM icon distinct from the plain ↓ loss (amends Enhancement #39)
+
+- **Admin request:** after reviewing real event #212 on dev, noticed a player who lost while already sitting at the bottom court (nowhere lower to send them) got the exact same ↓ icon as a player genuinely relegated down from a higher court — wanted them told apart, the same way 🏆 TOP is already told apart from a plain ↑ win.
+- **Done:** a new state (`via: "stay-bottom"`) for a player/team that loses while already at the bottom court — a neutral grey ⚓ BOTTOM badge instead of the plain ↓, across Dynamic v2 and Classic/v1, for both CI and CT, and in the Decision Trail (ℹ️ Why?) text too.
+- **Verified:** by directly replaying real event #212's data — the bottom court (Court 4) now correctly shows ⚓ BOTTOM for players who lost while already there, distinct from players genuinely relegated down from Court 3.
+
+---
+
+## V0.16.77 — Implement: fairer redistribution for returning bench players + win/loss/top icons (Enhancements #38, #39)
 
 - **Admin request:** fully implement Enhancement #38 (fairer joint redistribution for players returning from break in the same round) and Enhancement #39 (↑/↓/TOP icons), and ship both to dev for testing.
 - **Enhancement #38 (Dynamic v2 — CI and CT):** when a returning player's own court is blocked, the system now first checks whether another same-round bench-returnee sitting nearby can themselves relocate — if so, they move and hand their old seat straight to the current player, with nobody extra going on break. The exact same set of people end up on break either way (fairness untouched) — only court placement quality improves, so nobody ends up unnecessarily far from where they earned their seat.

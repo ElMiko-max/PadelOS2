@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.77";
+const APP_VERSION = "V0.16.78";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1072,8 +1072,12 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   lastRound.matches.forEach(m=>{
     if(!m.winner) return;
     const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+    // Admin request (2026-09-23): mirror "stay" (winning and staying at Court 1) with an equivalent
+    // for the bottom court — losing while already AT the bottom court means staying there, not
+    // being freshly relegated down from somewhere higher. Was tagged identically to a real
+    // relegation before, which mixed up two very different situations under the same ↓ icon.
     W.forEach(p=>{ if(!excludeIds.has(p.userId)) buckets[Math.max(1,m.court-1)].push({p, via: m.court===1?"stay":"win"}); });
-    L.forEach(p=>{ if(!excludeIds.has(p.userId)) buckets[Math.min(courts,m.court+1)].push({p, via:"loss"}); });
+    L.forEach(p=>{ if(!excludeIds.has(p.userId)) buckets[Math.min(courts,m.court+1)].push({p, via: m.court===courts?"stay-bottom":"loss"}); });
   });
   const isProtected = entry => entry.via!=="win";
 
@@ -1101,7 +1105,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   const evicted = []; // {p, court} — this round's real break picks, tagged with where they were evicted from
   const stillBenched = []; // uids who found no eligible seat anywhere this round — see below
   const breakReasons = {}, returnReasons = {}; // Decision Trail (see fairShareBullets) — built as a byproduct of the real eviction search below, never reconstructed after the fact
-  const viaLabel = v => v==="win" ? "winning and being promoted from the court below" : v==="loss" ? "losing and being relegated from the court above" : v==="stay" ? "winning and staying at Court 1" : "an eviction earlier this round";
+  const viaLabel = v => v==="win" ? "winning and being promoted from the court below" : v==="loss" ? "losing and being relegated from the court above" : v==="stay" ? "winning and staying at Court 1" : v==="stay-bottom" ? "losing at the bottom court and staying there" : "an eviction earlier this round";
   // Real bug found replaying a real historical event through v2 (2026-09-20): a bench player
   // with no computable target — findExpectedReturnCourt only knows a match result or a
   // Round-1 wouldBeCourt, neither of which existed for events recorded before that field was
@@ -1547,7 +1551,8 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     for(let c=1;c<=courts;c++) buckets[c]=[];
     // Admin request (2026-09-22, Enhancement #39): tag `via` here too (Classic/v1 path), same as
     // genDynamic2CI already does internally — round card icon needs it regardless of engine.
-    lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push({...p, via:m.court===1?"stay":"win"}));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push({...p, via:"loss"}));});
+    // Admin request (2026-09-23): symmetric "stay-bottom" for the bottom court — see genDynamic2CI's comment.
+    lastRound.matches.forEach(m=>{if(!m.winner)return;const W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;W.forEach(p=>buckets[Math.max(1,m.court-1)].push({...p, via:m.court===1?"stay":"win"}));L.forEach(p=>buckets[Math.min(courts,m.court+1)].push({...p, via:m.court===courts?"stay-bottom":"loss"}));});
     for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(p=>!newBreakIds.includes(p.userId)&&!retiredIds.includes(p.userId));
   }
   firmHere.forEach(uid=>{ breakReasons[uid] = ["🔐 Firm-locked: an admin locked this player to break this round, bypassing normal balancing"]; });
@@ -2517,8 +2522,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   lastRound.matchesA.forEach(m=>{
     if(!m.winner) return;
     const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
+    // Admin request (2026-09-23): symmetric "stay-bottom" for the bottom court — see genDynamic2CI's comment.
     if(!excludeIds.has(W.id)) buckets[Math.max(1,m.court-1)].push({t:W, via: m.court===1?"stay":"win"});
-    if(!excludeIds.has(L.id)) buckets[Math.min(courts,m.court+1)].push({t:L, via:"loss"});
+    if(!excludeIds.has(L.id)) buckets[Math.min(courts,m.court+1)].push({t:L, via: m.court===courts?"stay-bottom":"loss"});
   });
   const isProtected = entry => entry.via!=="win";
 
@@ -2531,7 +2537,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   const evicted = [];
   const stillBenched = [];
   const breakReasons = {}, returnReasons = {}; // Decision Trail (see fairShareBullets), same as genDynamic2CI
-  const viaLabel = v => v==="win" ? "winning and being promoted from the court below" : v==="loss" ? "losing and being relegated from the court above" : v==="stay" ? "winning and staying at Court 1" : "an eviction earlier this round";
+  const viaLabel = v => v==="win" ? "winning and being promoted from the court below" : v==="loss" ? "losing and being relegated from the court above" : v==="stay" ? "winning and staying at Court 1" : v==="stay-bottom" ? "losing at the bottom court and staying there" : "an eviction earlier this round";
   // Same fallback as genDynamic2CI above, same reasoning — a team with no computable target
   // must still go through the full eviction cascade (an actual seat has to be freed for a
   // returning team, "late joiner" placement alone can't do that), never silently dropped.
@@ -2875,9 +2881,10 @@ function genNextCTLadder(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
     buckets = {}; for(let c=1;c<=courts;c++) buckets[c]=[];
     lastRound.matchesA.forEach(m => {
       if (!m.winner) return;
+      // Admin request (2026-09-23): symmetric "stay-bottom" for the bottom court — see genDynamic2CI's comment.
       const W = m.winner==="A"?m.teamA:m.teamB, L = m.winner==="A"?m.teamB:m.teamA;
       buckets[Math.max(1,m.court-1)].push({...W, via:m.court===1?"stay":"win"});
-      buckets[Math.min(courts,m.court+1)].push({...L, via:"loss"});
+      buckets[Math.min(courts,m.court+1)].push({...L, via: m.court===courts?"stay-bottom":"loss"});
     });
     // Remove teams on break or retired
     for(let c=1;c<=courts;c++) buckets[c]=buckets[c].filter(t=>!newBreakIds.includes(t.id)&&!retiredTeamIds.includes(t.id));
@@ -12686,6 +12693,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
                 {m.teamA?.via==="win"&&<span title="Won last round — promoted up a court" style={{marginLeft:3,fontWeight:700,color:"#34D399"}}>↑</span>}
                 {m.teamA?.via==="loss"&&<span title="Lost last round — relegated down a court" style={{marginLeft:3,fontWeight:700,color:"#F87171"}}>↓</span>}
                 {m.teamA?.via==="stay"&&<span title="Won at Court 1 and stayed on top" style={{marginLeft:3,fontSize:9,color:"#FBBF24"}}>🏆</span>}
+                {m.teamA?.via==="stay-bottom"&&<span title="Lost at the bottom court and stayed there" style={{marginLeft:3,fontSize:9,color:"#94A3B8"}}>⚓</span>}
                 {cameFromBreakOrNew(m.teamA?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamA?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamA?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamA?.players||[]).map(p=>p.nickname).join(" & ")}</div>
               <div style={{fontSize:19,fontWeight:700,color:m.winner==="A"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreA}</div>
@@ -12696,6 +12704,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
                 {m.teamB?.via==="win"&&<span title="Won last round — promoted up a court" style={{marginLeft:3,fontWeight:700,color:"#34D399"}}>↑</span>}
                 {m.teamB?.via==="loss"&&<span title="Lost last round — relegated down a court" style={{marginLeft:3,fontWeight:700,color:"#F87171"}}>↓</span>}
                 {m.teamB?.via==="stay"&&<span title="Won at Court 1 and stayed on top" style={{marginLeft:3,fontSize:9,color:"#FBBF24"}}>🏆</span>}
+                {m.teamB?.via==="stay-bottom"&&<span title="Lost at the bottom court and stayed there" style={{marginLeft:3,fontSize:9,color:"#94A3B8"}}>⚓</span>}
                 {cameFromBreakOrNew(m.teamB?.id,ri)&&<button onClick={()=>setReasonModal({title:`${m.teamB?.name} R${ri+1} C${m.court}`, bullets:plan.rounds[ri]?.returnReasons?.[m.teamB?.id]})} title="Why?" style={{marginLeft:4,fontSize:9,padding:"1px 4px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer"}}>ℹ️</button>}</div>
               <div style={{fontSize:10,color:"var(--po-dim)"}}>{(m.teamB?.players||[]).map(p=>p.nickname).join(" & ")}</div>
               <div style={{fontSize:19,fontWeight:700,color:m.winner==="B"?"#34D399":m.winner==="draw"?"#FBBF24":"var(--po-dim)",marginTop:2}}>{m.scoreB}</div>
@@ -14095,6 +14104,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {p.via==="win"&&<span title="Won last round — promoted up a court" style={{fontSize:12,fontWeight:700,color:"#34D399"}}>↑</span>}
       {p.via==="loss"&&<span title="Lost last round — relegated down a court" style={{fontSize:12,fontWeight:700,color:"#F87171"}}>↓</span>}
       {p.via==="stay"&&<span title="Won at Court 1 and stayed on top" style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:10,whiteSpace:"nowrap",background:"#FBBF2422",color:"#FBBF24",border:"0.5px solid #FBBF2444"}}>🏆 TOP</span>}
+      {/* Admin request (2026-09-23): losing at the bottom court isn't a real relegation (there's
+          nowhere lower to go) — same "already there" situation as 🏆 TOP, just at the other end.
+          Was tagged the same plain ↓ as a genuine fresh relegation before, which mixed up two very
+          different situations under one icon. */}
+      {p.via==="stay-bottom"&&<span title="Lost at the bottom court and stayed there" style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:10,whiteSpace:"nowrap",background:"#94A3B822",color:"#94A3B8",border:"0.5px solid #94A3B844"}}>⚓ BOTTOM</span>}
       {p.wouldBeCourt&&<span title={ri===0?"Court they'd have played on by USR rank (no result yet)":"Target return court, earned from their last result — the actual landing court can still differ (see ℹ️ Why?)"} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       {reasonInfo&&<button onClick={e=>{e.stopPropagation();setReasonModal(reasonInfo);}} title="Why?" style={{fontSize:11,padding:"2px 5px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer",flexShrink:0}}>ℹ️</button>}

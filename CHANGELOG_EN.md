@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.73 (current) — Fix: match results are now a straight calculation, not a dice roll
+## V0.16.74 (current) — Fix two real break-engine bugs found while reviewing a real event (#101, Bugs #21 & #22)
+
+- **Admin request:** a full review of a real, fully-played event, after noticing "disturbances" in how breaks played out live.
+- **Bug #21 — wrong engine-selection confirmation toast:** the break-engine picker button (Classic/Dynamic/Dynamic v2) cycles on every tap, and the confirmation toast after tapping said "Classic Break Engine ✓" even when Dynamic v2 was the one actually selected — a simple code bug (the condition only checked for "dynamic"). This exactly explains why the admin was certain they'd picked Dynamic v2 while the event actually ran on Classic. The toast now correctly names all three.
+- **Bug #22 — a manual court-to-break swap forgot the player's court:** when the admin manually pulls a player off their court (the Swap button) and puts them on break, the app completely forgot which court they'd been on — so when they returned to play, they were treated as a brand-new player with no history at all. Fixed by recording that court at swap time so the return placement uses it correctly.
+- **Both verified** — #21 by direct code review, #22 with a direct logic test reproducing the exact scenario from the real event.
+
+---
+
+## V0.16.73 — Fix: match results are now a straight calculation, not a dice roll
 
 - **Admin request:** "I want it to run reliably... a straightforward calculation from the average USR ratio between the two teams, with head-to-head as an additional factor — I don't want... random results."
 - **Cause:** `predictMatchWinner` correctly computed a real win probability (from the USR gap plus head-to-head), but then rolled a random dice (`Math.random() < probability`) to decide who actually won — so even a side favored by a huge USR margin could still "lose" in the simulation purely by chance. That's exactly what made some results look strange and unreliable.

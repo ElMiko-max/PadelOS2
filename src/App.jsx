@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.73";
+const APP_VERSION = "V0.16.74";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9204,8 +9204,18 @@ export default function Matchkeeper() {
       const crossesLine=lA.w!==lB.w;
       const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
       const clearTag=(p)=>{const{manualSwap,manualSwapAt,manualSwapBy,...rest}=p;return rest;};
-      const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...pA,...manualStamp}:pA);
-      const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...pB,...manualStamp}:pB);
+      // Real bug, admin report (2026-09-22, event 101): pulling a player off a court and onto
+      // break here never recorded which court they were pulled from — the app HAD already placed
+      // them, but that placement vanished the moment they were swapped out, so their next return
+      // fell all the way back to "no prior result, neediest open court" instead of resuming from
+      // where they actually were. findExpectedReturnCourt already has a shortcut for exactly this
+      // (an in-progress match with no winner yet returns m.court unchanged) but only reaches it by
+      // finding the player still IN that round's matches — this swap removes them from matches
+      // entirely, so the shortcut never fires. Stamping wouldBeCourt here (same field genRound1's
+      // own break entries carry) lets findExpectedReturnCourt's existing wouldBeCourt fallback
+      // pick it up instead, with no adjustment — no result happened, so the court doesn't change.
+      const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...pA,...manualStamp,...(lA.w==="court"?{wouldBeCourt:r.matches[lA.mi].court}:{})}:pA);
+      const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...pB,...manualStamp,...(lB.w==="court"?{wouldBeCourt:r.matches[lB.mi].court}:{})}:pB);
       set(lA,pBOut);set(lB,pAOut);
       r.onBreakIds=r.onBreak.map(p=>p.userId);
       // Sync breakPlan[ri] with the updated onBreakIds
@@ -9305,7 +9315,14 @@ export default function Matchkeeper() {
   // round, and "Regenerate Future" keeps working identically regardless of this setting.
   const setBreakEngine=(cid,eid,engine)=>{
     updEvent(cid,eid,e=>({...e,plan:{...e.plan,breakEngine:engine}}),{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
-    toast2(engine==="dynamic"?"Dynamic Break Engine on — next generated round picks breaks from who's losing ✓":"Classic Break Engine ✓");
+    // Real bug, admin report (2026-09-22): this only ever branched on "dynamic" — selecting
+    // "dynamic2" fell into the else and confirmed with the wrong text ("Classic Break Engine ✓"),
+    // directly contradicting the tap that just happened. Confirmed as the likely cause of a real
+    // event ending up on Classic despite the admin being sure they'd picked Dynamic v2 — the false
+    // "Classic" confirmation reads as "my tap reverted," inviting another tap that actually does.
+    toast2(engine==="dynamic"?"Dynamic Break Engine on — next generated round picks breaks from who's losing ✓"
+      :engine==="dynamic2"?"Dynamic v2 Break Engine on — next generated round protects winners and prioritizes losers for breaks ✓"
+      :"Classic Break Engine ✓");
   };
 
   // CT
@@ -9602,8 +9619,11 @@ export default function Matchkeeper() {
       const crossesLine=lA.w!==lB.w;
       const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
       const clearTag=(t)=>{const{manualSwap,manualSwapAt,manualSwapBy,...rest}=t;return rest;};
-      const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...tA,...manualStamp}:tA);
-      const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...tB,...manualStamp}:tB);
+      // Same fix as swapCI above (2026-09-22 admin report) — preserve the court a team was pulled
+      // from so their next return uses it via wouldBeCourt, instead of falling back to "no prior
+      // result, neediest open court" the moment they're swapped out of an in-progress match.
+      const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...tA,...manualStamp,...(lA.w==="match"?{wouldBeCourt:r.matchesA[lA.mi].court}:{})}:tA);
+      const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...tB,...manualStamp,...(lB.w==="match"?{wouldBeCourt:r.matchesA[lB.mi].court}:{})}:tB);
       setT(lA,tBOut);setT(lB,tAOut);
       r.onBreakIds=r.onBreak.map(t=>t.id);
       return{...ev,plan:{...ev.plan,rounds}};

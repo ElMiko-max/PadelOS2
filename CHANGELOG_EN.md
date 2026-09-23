@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.86 (current) — Fix wrong "C4" badge on an active player + simplify the ⚓ BOTTOM icon
+## V0.16.87 (current) — Clarify a "moved to their own target" message that read as backwards
+
+- **Wording bug the admin found (event #213, Amka R2 C3):** the message read "Target Court was 3" immediately followed by "Court 4 was needed for Muhammad Adel's return, so moved to Court 3 — their own target instead of going on break" — the admin's exact question: "their target was already Court 3, so what does the second line even mean? If they were going to Court 3 anyway, we don't need to say this — it reads as a strange, confusing sentence."
+- **Why:** that second bullet exists for the case where a player gets relocated somewhere OTHER than their own target (to free a seat for someone else's return) — there it's genuinely useful ("you got moved to a different court because of this"). But when the player actually landed on their own real target, tying that to an unrelated player's return adds confusion for zero benefit — the first bullet ("Target Court was 3") already says everything true.
+- **Fix:** when the final court exactly equals the player's own target, the second bullet is dropped entirely — no need to mention another player at all — leaving just "🎯 Target Court was X." The second bullet still appears, unchanged, for the real case (landed somewhere other than their own target).
+- **Applied to both CI and CT, and backfilled event #213's one stored instance (Amka).**
+
+---
+
+## V0.16.86 — Fix wrong "C4" badge on an active player + simplify the ⚓ BOTTOM icon
 
 - **Bug the admin found (event #213):** a player actively playing at Court 4 (Mizo) showed a stray blue "C4" badge — that badge is only supposed to appear for a player on break (showing "the court they're expected to return to"), never for someone actively playing.
 - **Investigation:** reviewed every code path that sets `wouldBeCourt` — all of them only ever set it on the on-break list, nowhere in the current code does it get attached to an active match player. Ran a direct test using event #213's real player data (same roster, same order) and confirmed today's code generates a completely clean round with no trace of this field on any active player — so this isn't a live bug in the current code, just old data left over from before an earlier fix (same pattern as the ⚓ BOTTOM gap in V0.16.85).

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.86";
+const APP_VERSION = "V0.16.87";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1274,10 +1274,19 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         `🔁 Court ${brCourt} was already held by ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)} (also returning from break this round).`,
         `↪️ ${benchEntry.p.nickname||"They"} moved to Court ${relocateCourt} instead, freeing this seat for you.`,
       ];
-      returnReasons[benchEntry.p.userId] = [
-        `🎯 Target Court was ${entryTarget}.`,
-        `↪️ Court ${brCourt} was needed for ${benchPlayer.nickname}'s return, so moved to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own target":""} instead of going on break.`,
-      ];
+      // Admin report (2026-09-23): when relocateCourt lands them exactly on their own target
+      // anyway, the old single bullet ("Court X was needed for Y's return, so moved to Court Z —
+      // their own target") read as backwards and confusing — target Court was ALREADY stated one
+      // line up, so re-explaining the same destination via someone else's unrelated return read
+      // like a non-sequitur. Only worth a second bullet when the outcome actually differs from
+      // their own target (a real "you got shuffled, not to your own court" surprise worth
+      // explaining) — otherwise the first bullet alone already says everything true here.
+      returnReasons[benchEntry.p.userId] = relocateCourt===entryTarget
+        ? [`🎯 Target Court was ${entryTarget}.`]
+        : [
+            `🎯 Target Court was ${entryTarget}.`,
+            `↪️ Court ${brCourt} was needed for ${benchPlayer.nickname}'s return, so moved to Court ${relocateCourt} instead of going on break.`,
+          ];
       return;
     }
 
@@ -2661,10 +2670,13 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         `🔁 Court ${brCourt} was already held by ${benchEntry.t.name||("Team #"+benchEntry.t.id)} (also returning from break this round).`,
         `↪️ ${benchEntry.t.name||"They"} moved to Court ${relocateCourt} instead, freeing this seat for you.`,
       ];
-      returnReasons[benchEntry.t.id] = [
-        `🎯 Target Court was ${entryTarget}.`,
-        `↪️ Court ${brCourt} was needed for ${benchTeam.name}'s return, so moved to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own target":""} instead of going on break.`,
-      ];
+      // Same clarity fix as genDynamic2CI's — see its comment for the full reasoning.
+      returnReasons[benchEntry.t.id] = relocateCourt===entryTarget
+        ? [`🎯 Target Court was ${entryTarget}.`]
+        : [
+            `🎯 Target Court was ${entryTarget}.`,
+            `↪️ Court ${brCourt} was needed for ${benchTeam.name}'s return, so moved to Court ${relocateCourt} instead of going on break.`,
+          ];
       return;
     }
 

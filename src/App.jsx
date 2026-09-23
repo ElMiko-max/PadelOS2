@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.85";
+const APP_VERSION = "V0.16.86";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -14151,7 +14151,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const tLabels={info:"ℹ️ Info",players:"👥 Players",manage:"💰 Financial",breaks:"☕ Breaks",rounds:"🔄 Rounds",standings:"🏆 Standings",teams:"👬 Teams",matches:`${ev.sport==="Football"?"⚽":"🎾"} Matches`,photos:`🖼 Photos${(ev.photos?.length||0)>0?` (${ev.photos.length})`:""}`,ann:"📢 Posts"};
 
   function tapP(ri,uid){if(!sel){setSel({ri,uid});return;}if(sel.ri!==ri){setSel({ri,uid});return;}if(sel.uid===uid){setSel(null);return;}act.swap(ri,sel.uid,uid);setSel(null);}
-  function PChip({p,ri,matchBadge,reasonInfo}){
+  function PChip({p,ri,matchBadge,reasonInfo,isBreakList}){
     const lv=usrLv(p.usr),isSel=sel?.ri===ri&&sel?.uid===p.userId,isTgt=sel&&sel.ri===ri&&sel.uid!==p.userId;
     let histBadge=null;
     if(isTgt&&plan){
@@ -14180,8 +14180,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           nowhere lower to go) — same "already there" situation as 🏆 TOP, just at the other end.
           Was tagged the same plain ↓ as a genuine fresh relegation before, which mixed up two very
           different situations under one icon. */}
-      {p.via==="stay-bottom"&&<span title="Lost at the bottom court and stayed there" style={{fontSize:9,fontWeight:700,padding:"2px 5px",borderRadius:10,whiteSpace:"nowrap",background:"#94A3B822",color:"#94A3B8",border:"0.5px solid #94A3B844"}}>⚓ BOTTOM</span>}
-      {p.wouldBeCourt&&<span title={ri===0?"Court they'd have played on by USR rank (no result yet)":"Target return court, earned from their last result — the actual landing court can still differ (see ℹ️ Why?)"} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
+      {p.via==="stay-bottom"&&<span title="Lost at the bottom court and stayed there" style={{fontSize:12,fontWeight:700,color:"#94A3B8"}}>⚓</span>}
+      {/* Admin report (2026-09-23, event #213): a match player (Mizo, Court 4) showed a "C4"
+          wouldBeCourt badge despite actively playing, not on break — this field is only ever
+          meant to label an ONBREAK entry's target return court (see genRound1/genNextRoundCI),
+          never a live match participant. Scoping the badge to isBreakList closes that off at the
+          render layer regardless of how a stray wouldBeCourt ends up on a match player's data. */}
+      {isBreakList&&p.wouldBeCourt&&<span title={ri===0?"Court they'd have played on by USR rank (no result yet)":"Target return court, earned from their last result — the actual landing court can still differ (see ℹ️ Why?)"} style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:"#38BDF822",color:"#38BDF8",border:"0.5px solid #38BDF844"}}>C{p.wouldBeCourt}</span>}
       {histBadge&&<span style={{fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10,whiteSpace:"nowrap",background:`${histBadge.color}22`,color:histBadge.color,border:`0.5px solid ${histBadge.color}44`}}>{histBadge.label}</span>}
       {reasonInfo&&<button onClick={e=>{e.stopPropagation();setReasonModal(reasonInfo);}} title="Why?" style={{fontSize:11,padding:"2px 5px",borderRadius:6,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-dim)",cursor:"pointer",flexShrink:0}}>ℹ️</button>}
     </div>;
@@ -15175,7 +15180,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>
             {effCollapsed?null:<>
             {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode} isCompleted={isCompleted}/>}
-            {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri} reasonInfo={{title:`${p.nickname} R${ri+1} Break`, bullets:round.breakReasons?.[p.userId]}}/>)}</div></div>}
+            {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri} isBreakList reasonInfo={{title:`${p.nickname} R${ri+1} Break`, bullets:round.breakReasons?.[p.userId]}}/>)}</div></div>}
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
               const gap=Math.abs(avgA-avgB);

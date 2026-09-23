@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.85 (current) — Fix missing ⚓ BOTTOM icon in old data + clarify the relocation message
+## V0.16.86 (current) — Fix wrong "C4" badge on an active player + simplify the ⚓ BOTTOM icon
+
+- **Bug the admin found (event #213):** a player actively playing at Court 4 (Mizo) showed a stray blue "C4" badge — that badge is only supposed to appear for a player on break (showing "the court they're expected to return to"), never for someone actively playing.
+- **Investigation:** reviewed every code path that sets `wouldBeCourt` — all of them only ever set it on the on-break list, nowhere in the current code does it get attached to an active match player. Ran a direct test using event #213's real player data (same roster, same order) and confirmed today's code generates a completely clean round with no trace of this field on any active player — so this isn't a live bug in the current code, just old data left over from before an earlier fix (same pattern as the ⚓ BOTTOM gap in V0.16.85).
+- **Fix (belt and suspenders):** (1) the badge is now only ever rendered in the code when the player is genuinely in the "On Break" list — not any other player — so even if similar stale data ever resurfaces, it can no longer show up in the UI. (2) direct backfill: stripped the stray field from event #212's data (21 instances across every round) and event #213's data (3 instances) — without touching any match result or court placement.
+- **Second request from the admin (same event):** the ⚓ BOTTOM icon looked like a padded "pill" badge that visually overflowed — simplified to a plain ⚓ symbol, matching ↑/↓'s style exactly.
+
+---
+
+## V0.16.85 — Fix missing ⚓ BOTTOM icon in old data + clarify the relocation message
 
 - **Real bug the admin confirmed:** two players at the bottom court who lost while already there from the previous round should have shown ⚓ BOTTOM instead of a plain ↓ — traced it: the current code already computes this correctly, but this specific round (event #212, round 2) was generated **before** the ⚓ BOTTOM feature (V0.16.78) shipped — not a bug in today's code, just old data needing a backfill.
 - **Fix:** precise backfill for event #212 — any player/team who was already at the bottom court and lost again (like Rehab and Muhammad Adel) had their icon corrected from ↓ to ⚓ BOTTOM.

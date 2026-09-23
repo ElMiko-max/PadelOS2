@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.84";
+const APP_VERSION = "V0.16.85";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -758,6 +758,7 @@ const BULLET_EXPLANATIONS = [
   { prefix: "⏱", explain: "Player preference for the timing of their break." },
   { prefix: `🛡️ Was in the "Downwards"`, explain: "Arrived by losing and being relegated from the court above — \"Downwards\" candidates are used before any fresh winner." },
   { prefix: `🛡️ Was in the "Holding Top"`, explain: "Won at Court 1 and stayed there — \"Holding Top\" candidates are used before any fresh winner." },
+  { prefix: "🎯 Target Court was", explain: "Earned from their last recorded result, or from their original seeding rank if they have no result on record yet." },
 ];
 function explainForBullet(text) {
   const hit = BULLET_EXPLANATIONS.find(e => typeof text === "string" && text.startsWith(e.prefix));
@@ -1189,7 +1190,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (openAny != null) {
       buckets[openAny].push({p: benchPlayer, via: "bench"});
       returnReasons[uid] = [
-        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        `🎯 Target Court was ${target}.`,
         openAny===target ? `✅ Court ${target} already had an open seat — no eviction needed`
           : `🪑 Court ${target} was full, but Court ${openAny} already had an open seat (from an admin's firm-locked break) — filled directly, no eviction needed`,
       ];
@@ -1264,13 +1265,18 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       } else {
         buckets[relocateCourt].push({p: benchEntry.p, via: "bench"});
       }
+      // Admin request (2026-09-23, event #212 wording review): the old one-sentence version
+      // crammed two separate events (a same-round relocation, then a knock-on eviction) into a
+      // single clause, and the admin couldn't follow what actually happened from it. Split into
+      // one bullet per actual event, in the order they happened.
       returnReasons[uid] = [
-        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
-        `🔁 Court ${brCourt} was freed by relocating ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)} (also just returning from break this round) to Court ${relocateCourt} instead — ${relocEvicted?`freeing that seat by evicting ${relocEvicted.p.nickname||("player #"+relocEvicted.p.userId)}`:"nobody had to go on break for this"}`,
+        `🎯 Target Court was ${target}.`,
+        `🔁 Court ${brCourt} was already held by ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)} (also returning from break this round).`,
+        `↪️ ${benchEntry.p.nickname||"They"} moved to Court ${relocateCourt} instead, freeing this seat for you.`,
       ];
       returnReasons[benchEntry.p.userId] = [
-        `🎯 Target Court ${entryTarget}, earned from ${findExpectedReturnCourt(benchEntry.p.userId)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
-        `↪️ Was about to free Court ${brCourt} for ${benchPlayer.nickname}'s return — relocated to Court ${relocateCourt}${relocateCourt===entryTarget?", their own target,":""} instead of going on break`,
+        `🎯 Target Court was ${entryTarget}.`,
+        `↪️ Court ${brCourt} was needed for ${benchPlayer.nickname}'s return, so moved to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own target":""} instead of going on break.`,
       ];
       return;
     }
@@ -1411,9 +1417,8 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       if (b) skipBullets.push(b);
     }
 
-    const targetSrc = findExpectedReturnCourt(uid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[uid] = [
-      `🎯 Target Court ${target}, earned from ${targetSrc}`,
+      `🎯 Target Court was ${target}.`,
       usedUrgent
         ? `⚖️ Court ${court} was reached because ${entry.p.nickname||("player #"+entry.p.userId)} was about to miss their fair share entirely — fair share overrides locality and Concentrate/Avoid alike`
         : court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,
@@ -2593,7 +2598,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (openAny != null) {
       buckets[openAny].push({t: benchTeam, via: "bench"});
       returnReasons[tid] = [
-        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
+        `🎯 Target Court was ${target}.`,
         openAny===target ? `✅ Court ${target} already had an open seat — no eviction needed`
           : `🪑 Court ${target} was full, but Court ${openAny} already had an open seat (from an admin's firm-locked break) — filled directly, no eviction needed`,
       ];
@@ -2650,13 +2655,15 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       } else {
         buckets[relocateCourt].push({t: benchEntry.t, via: "bench"});
       }
+      // Same clarity fix as swapCI's — see its comment for the full reasoning.
       returnReasons[tid] = [
-        `🎯 Target Court ${target}, earned from ${findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
-        `🔁 Court ${brCourt} was freed by relocating ${benchEntry.t.name||("Team #"+benchEntry.t.id)} (also just returning from break this round) to Court ${relocateCourt} instead — ${relocEvicted?`freeing that seat by evicting ${relocEvicted.t.name||("Team #"+relocEvicted.t.id)}`:"nobody had to go on break for this"}`,
+        `🎯 Target Court was ${target}.`,
+        `🔁 Court ${brCourt} was already held by ${benchEntry.t.name||("Team #"+benchEntry.t.id)} (also returning from break this round).`,
+        `↪️ ${benchEntry.t.name||"They"} moved to Court ${relocateCourt} instead, freeing this seat for you.`,
       ];
       returnReasons[benchEntry.t.id] = [
-        `🎯 Target Court ${entryTarget}, earned from ${findExpectedReturnCourtCT(benchEntry.t.id)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)"}`,
-        `↪️ Was about to free Court ${brCourt} for ${benchTeam.name}'s return — relocated to Court ${relocateCourt}${relocateCourt===entryTarget?", their own target,":""} instead of going on break`,
+        `🎯 Target Court was ${entryTarget}.`,
+        `↪️ Court ${brCourt} was needed for ${benchTeam.name}'s return, so moved to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own target":""} instead of going on break.`,
       ];
       return;
     }
@@ -2753,9 +2760,8 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       if (b) skipBullets.push(b);
     }
 
-    const targetSrc = findExpectedReturnCourtCT(tid)!=null ? "their last recorded result" : "their original seeding rank (no result on record yet)";
     returnReasons[tid] = [
-      `🎯 Target Court ${target}, earned from ${targetSrc}`,
+      `🎯 Target Court was ${target}.`,
       usedUrgent
         ? `⚖️ Court ${court} was reached because ${entry.t.name||("Team #"+entry.t.id)} was about to miss their fair share entirely — fair share overrides locality and Concentrate/Avoid alike`
         : court===target ? `✅ A seat was opened right at Court ${target}` : foundInLocal ? `↪️ Court ${target} had no eligible seat to open — cascaded one court over to Court ${court} instead` : `↪️ No eligible seat anywhere near Court ${target} — had to search further out, all the way to Court ${court}`,

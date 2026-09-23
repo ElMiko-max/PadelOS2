@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.84 (current) — Fix wrong ↑/↓ icon on manually-swapped players + review the eviction messages
+## V0.16.85 (current) — Fix missing ⚓ BOTTOM icon in old data + clarify the relocation message
+
+- **Real bug the admin confirmed:** two players at the bottom court who lost while already there from the previous round should have shown ⚓ BOTTOM instead of a plain ↓ — traced it: the current code already computes this correctly, but this specific round (event #212, round 2) was generated **before** the ⚓ BOTTOM feature (V0.16.78) shipped — not a bug in today's code, just old data needing a backfill.
+- **Fix:** precise backfill for event #212 — any player/team who was already at the bottom court and lost again (like Rehab and Muhammad Adel) had their icon corrected from ↓ to ⚓ BOTTOM.
+- **"Target Court" message:** "Target Court X, earned from their last recorded result" → "Target Court was X." (with an Explain for the detail).
+- **Clarified the relocation message (Enhancement #38):** the old message crammed two separate events (moving a player, then evicting another as a result) into one dense sentence — split into 2-3 clear bullets in the order they actually happened: "Court X was already held by Y (also returning from break) → Y moved to Court Z instead, freeing this seat for you."
+- **All verified against real event #212 data.**
+
+---
+
+## V0.16.84 — Fix wrong ↑/↓ icon on manually-swapped players + review the eviction messages
 
 - **Real bug the admin found:** a player manually pushed to break (e.g. Omar H) showed a ↓ (loss) icon in the On Break list — wrong, since that icon was left over from before they were pulled off their court and no longer means anything now that they're on break.
 - **Cause:** the swap function (CI and CT) cleared the manual-swap tags but never cleared `via` (the field driving the ↑/↓/🏆/⚓ icons) — so the old icon stuck around even after the player moved somewhere else.

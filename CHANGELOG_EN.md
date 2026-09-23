@@ -4,7 +4,20 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.83 (current) — Manual-swap message now names the court + confirms it counts toward fair share
+## V0.16.84 (current) — Fix wrong ↑/↓ icon on manually-swapped players + review the eviction messages
+
+- **Real bug the admin found:** a player manually pushed to break (e.g. Omar H) showed a ↓ (loss) icon in the On Break list — wrong, since that icon was left over from before they were pulled off their court and no longer means anything now that they're on break.
+- **Cause:** the swap function (CI and CT) cleared the manual-swap tags but never cleared `via` (the field driving the ↑/↓/🏆/⚓ icons) — so the old icon stuck around even after the player moved somewhere else.
+- **Fix:** any manual swap now clears the old `via` completely, whether the player ends up on break or back in a match.
+- **Eviction message review (Jimmy's example):**
+  - "Evicted from Court X to free a seat for Y, who was due back there" → "Evicted from Court X for Y."
+  - "Was in the 'protected' pool..." → "Was in the 'Downwards' pool..." (lost) or "Was in the 'Holding Top' pool..." (won at Court 1 and stayed) — each with its own Explain.
+  - "Hadn't broken... picked as the most overdue..." → "Selected as the most overdue and eligible at this court X."
+- **Precise backfill:** for event #212, the correct "Fair share" numbers (entitled + used) were computed **from the real historical data** (who actually broke in each earlier round) instead of the approximation used last time — exact, not a guess. Also fixed the wrong ↓ icon on Omar H and any similar case.
+
+---
+
+## V0.16.83 — Manual-swap message now names the court + confirms it counts toward fair share
 
 - **Admin request:** the manual-swap message should say **which court** the player was pulled from, and confirm the manual decision **still counts** toward their normal fair share — not an extra break on top of it.
 - **Done:** "🔧 Manually swapped onto break by the admin." → "🔧 Manually pushed to break from Court {N} by the admin." (the court number was already being recorded from an earlier fix) + a new second line: "⚖️ Still counts toward their normal fair share — not an extra break on top of it." — and that reassurance is actually true in the code, not just comforting text: a manual break gets written into the same list future rounds' fair-share math reads from.

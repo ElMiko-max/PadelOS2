@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.83";
+const APP_VERSION = "V0.16.84";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -756,6 +756,8 @@ const BULLET_EXPLANATIONS = [
   { prefix: "🎯 Concentrated", explain: "Guaranteed to be among the players who get the extra break." },
   { prefix: "⚖️ Fair share", explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically, unless manually done by an admin." },
   { prefix: "⏱", explain: "Player preference for the timing of their break." },
+  { prefix: `🛡️ Was in the "Downwards"`, explain: "Arrived by losing and being relegated from the court above — \"Downwards\" candidates are used before any fresh winner." },
+  { prefix: `🛡️ Was in the "Holding Top"`, explain: "Won at Court 1 and stayed there — \"Holding Top\" candidates are used before any fresh winner." },
 ];
 function explainForBullet(text) {
   const hit = BULLET_EXPLANATIONS.find(e => typeof text === "string" && text.startsWith(e.prefix));
@@ -1254,10 +1256,10 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         evicted.push({p: relocEvicted.p, court: relocateCourt});
         const evUid2 = relocEvicted.p.userId, evGap2 = ri-(lastBreak[evUid2]??-99);
         breakReasons[evUid2] = [
-          `🪑 Evicted from Court ${relocateCourt} to free a seat for ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)}, relocated here as part of a same-round swap that also seated ${benchPlayer.nickname}`,
-          isProtected(relocEvicted) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(relocEvicted.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
+          `🪑 Evicted from Court ${relocateCourt} for ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)}.`,
+          isProtected(relocEvicted) ? `🛡️ Was in the "${relocEvicted.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${relocateCourt}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
           `⚖️ Fair share: gets ${ent[evUid2]??0} break${ent[evUid2]===1?"":"s"}, ${breakCounts[evUid2]||0} used before`,
-          (lastBreak[evUid2]===-99||lastBreak[evUid2]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap2} round(s) — picked as the most overdue eligible candidate at this court`,
+          `🎯 Selected as the most overdue and eligible at this court ${relocateCourt}.`,
         ];
       } else {
         buckets[relocateCourt].push({p: benchEntry.p, via: "bench"});
@@ -1425,10 +1427,10 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const evUid = entry.p.userId;
     const evGap = ri-(lastBreak[evUid]??-99);
     breakReasons[evUid] = [
-      `🪑 Evicted from Court ${court} to free a seat for ${benchPlayer.nickname||("player #"+uid)}, who was due back there`,
-      isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
+      `🪑 Evicted from Court ${court} for ${benchPlayer.nickname||("player #"+uid)}.`,
+      isProtected(entry) ? `🛡️ Was in the "${entry.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${court}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
       `⚖️ Fair share: gets ${ent[evUid]??0} break${ent[evUid]===1?"":"s"}, ${breakCounts[evUid]||0} used before`,
-      (lastBreak[evUid]===-99||lastBreak[evUid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
+      `🎯 Selected as the most overdue and eligible at this court ${court}.`,
     ];
     if (usedUrgent) breakReasons[evUid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evUid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
     if (isAnchor(entry.p)) breakReasons[evUid].push(`⏱ ${entry.p.breakPref[0].toUpperCase()+entry.p.breakPref.slice(1)} Break.`);
@@ -2640,10 +2642,10 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         evicted.push({t: relocEvicted.t, court: relocateCourt});
         const evTid2 = relocEvicted.t.id, evGap2 = ri-(lastBreak[evTid2]??-99);
         breakReasons[evTid2] = [
-          `🪑 Evicted from Court ${relocateCourt} to free a seat for ${benchEntry.t.name||("Team #"+benchEntry.t.id)}, relocated here as part of a same-round swap that also seated ${benchTeam.name}`,
-          isProtected(relocEvicted) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(relocEvicted.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
+          `🪑 Evicted from Court ${relocateCourt} for ${benchEntry.t.name||("Team #"+benchEntry.t.id)}.`,
+          isProtected(relocEvicted) ? `🛡️ Was in the "${relocEvicted.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${relocateCourt}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
           `⚖️ Fair share: gets ${ent[evTid2]??0} break${ent[evTid2]===1?"":"s"}, ${breakCounts[evTid2]||0} used before`,
-          (lastBreak[evTid2]===-99||lastBreak[evTid2]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap2} round(s) — picked as the most overdue eligible candidate at this court`,
+          `🎯 Selected as the most overdue and eligible at this court ${relocateCourt}.`,
         ];
       } else {
         buckets[relocateCourt].push({t: benchEntry.t, via: "bench"});
@@ -2767,10 +2769,10 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const evTid = entry.t.id;
     const evGap = ri-(lastBreak[evTid]??-99);
     breakReasons[evTid] = [
-      `🪑 Evicted from Court ${court} to free a seat for ${benchTeam.name||("Team #"+tid)}, who was due back there`,
-      isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
+      `🪑 Evicted from Court ${court} for ${benchTeam.name||("Team #"+tid)}.`,
+      isProtected(entry) ? `🛡️ Was in the "${entry.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${court}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
       `⚖️ Fair share: gets ${ent[evTid]??0} break${ent[evTid]===1?"":"s"}, ${breakCounts[evTid]||0} used before`,
-      (lastBreak[evTid]===-99||lastBreak[evTid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
+      `🎯 Selected as the most overdue and eligible at this court ${court}.`,
     ];
     if (usedUrgent) breakReasons[evTid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evTid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
     if (isAnchor(entry.t)) breakReasons[evTid].push(`⏱ ${entry.t.breakPref[0].toUpperCase()+entry.t.breakPref.slice(1)} Break.`);
@@ -9439,19 +9441,16 @@ export default function Matchkeeper() {
       // Landing on COURT always clears any prior tag — it no longer describes their situation.
       const crossesLine=lA.w!==lB.w;
       const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
-      const clearTag=(p)=>{const{manualSwap,manualSwapAt,manualSwapBy,...rest}=p;return rest;};
-      // Real bug, admin report (2026-09-22, event 101): pulling a player off a court and onto
-      // break here never recorded which court they were pulled from — the app HAD already placed
-      // them, but that placement vanished the moment they were swapped out, so their next return
-      // fell all the way back to "no prior result, neediest open court" instead of resuming from
-      // where they actually were. findExpectedReturnCourt already has a shortcut for exactly this
-      // (an in-progress match with no winner yet returns m.court unchanged) but only reaches it by
-      // finding the player still IN that round's matches — this swap removes them from matches
-      // entirely, so the shortcut never fires. Stamping wouldBeCourt here (same field genRound1's
-      // own break entries carry) lets findExpectedReturnCourt's existing wouldBeCourt fallback
-      // pick it up instead, with no adjustment — no result happened, so the court doesn't change.
-      const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...pA,...manualStamp,...(lA.w==="court"?{wouldBeCourt:r.matches[lA.mi].court}:{})}:pA);
-      const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...pB,...manualStamp,...(lB.w==="court"?{wouldBeCourt:r.matches[lB.mi].court}:{})}:pB);
+      // Real bug, admin report (2026-09-23, event #212): `via` (win/loss/stay/bench, see
+      // Enhancement #39's ↑/↓/🏆/⚓ icons) describes how a player arrived at their CURRENT court —
+      // it stops being true the instant a manual swap moves them somewhere else, onto break or
+      // onto a different court, but this never cleared it. A player pulled off a court they'd
+      // reached by losing kept showing a plain ↓ next to their name in the On Break list — reading
+      // as a fresh relegation that never actually happened, when the real reason (this manual
+      // swap) is already told in breakReasons below.
+      const clearTag=(p)=>{const{manualSwap,manualSwapAt,manualSwapBy,via,...rest}=p;return rest;};
+      const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...clearTag(pA),...manualStamp,...(lA.w==="court"?{wouldBeCourt:r.matches[lA.mi].court}:{})}:pA);
+      const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...clearTag(pB),...manualStamp,...(lB.w==="court"?{wouldBeCourt:r.matches[lB.mi].court}:{})}:pB);
       set(lA,pBOut);set(lB,pAOut);
       // Admin request (2026-09-23, event #212 wording review): a manually-swapped player never
       // got a breakReasons entry at all, so their ℹ️ Why? modal fell back to the generic "Not
@@ -9875,12 +9874,13 @@ export default function Matchkeeper() {
       // engine pick. See swapCI's comment for the full reasoning.
       const crossesLine=lA.w!==lB.w;
       const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
-      const clearTag=(t)=>{const{manualSwap,manualSwapAt,manualSwapBy,...rest}=t;return rest;};
+      // Same via-clearing fix as swapCI's — see its comment for the full reasoning.
+      const clearTag=(t)=>{const{manualSwap,manualSwapAt,manualSwapBy,via,...rest}=t;return rest;};
       // Same fix as swapCI above (2026-09-22 admin report) — preserve the court a team was pulled
       // from so their next return uses it via wouldBeCourt, instead of falling back to "no prior
       // result, neediest open court" the moment they're swapped out of an in-progress match.
-      const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...tA,...manualStamp,...(lA.w==="match"?{wouldBeCourt:r.matchesA[lA.mi].court}:{})}:tA);
-      const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...tB,...manualStamp,...(lB.w==="match"?{wouldBeCourt:r.matchesA[lB.mi].court}:{})}:tB);
+      const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...clearTag(tA),...manualStamp,...(lA.w==="match"?{wouldBeCourt:r.matchesA[lA.mi].court}:{})}:tA);
+      const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...clearTag(tB),...manualStamp,...(lB.w==="match"?{wouldBeCourt:r.matchesA[lB.mi].court}:{})}:tB);
       setT(lA,tBOut);setT(lB,tAOut);
       // Same fix as swapCI's — see its comment for the full reasoning.
       if (crossesLine) {

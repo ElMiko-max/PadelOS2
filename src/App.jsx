@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.80";
+const APP_VERSION = "V0.16.81";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9453,6 +9453,19 @@ export default function Matchkeeper() {
       const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...pA,...manualStamp,...(lA.w==="court"?{wouldBeCourt:r.matches[lA.mi].court}:{})}:pA);
       const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...pB,...manualStamp,...(lB.w==="court"?{wouldBeCourt:r.matches[lB.mi].court}:{})}:pB);
       set(lA,pBOut);set(lB,pAOut);
+      // Admin request (2026-09-23, event #212 wording review): a manually-swapped player never
+      // got a breakReasons entry at all, so their ℹ️ Why? modal fell back to the generic "Not
+      // available — this round was generated before the Decision Trail feature shipped" — which
+      // is actively misleading here (the real reason is a deliberate admin action, not a missing
+      // feature). Write a real entry at swap time, and clean up the other player's stale one now
+      // that they're playing, not on break.
+      if (crossesLine) {
+        const uidNowOnBreak = lA.w==="court" ? uidA : uidB;
+        const uidNowOnCourt = lA.w==="court" ? uidB : uidA;
+        r.breakReasons = {...(r.breakReasons||{})};
+        r.breakReasons[uidNowOnBreak] = ["🔧 Manually swapped onto break by the admin."];
+        delete r.breakReasons[uidNowOnCourt];
+      }
       r.onBreakIds=r.onBreak.map(p=>p.userId);
       // Sync breakPlan[ri] with the updated onBreakIds
       const newBreakPlan=ev.plan.breakPlan.map((bp,bri)=>bri===ri?[...r.onBreakIds]:bp);
@@ -9861,6 +9874,14 @@ export default function Matchkeeper() {
       const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...tA,...manualStamp,...(lA.w==="match"?{wouldBeCourt:r.matchesA[lA.mi].court}:{})}:tA);
       const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...tB,...manualStamp,...(lB.w==="match"?{wouldBeCourt:r.matchesA[lB.mi].court}:{})}:tB);
       setT(lA,tBOut);setT(lB,tAOut);
+      // Same fix as swapCI's — see its comment for the full reasoning.
+      if (crossesLine) {
+        const tidNowOnBreak = lA.w==="match" ? tidA : tidB;
+        const tidNowOnCourt = lA.w==="match" ? tidB : tidA;
+        r.breakReasons = {...(r.breakReasons||{})};
+        r.breakReasons[tidNowOnBreak] = ["🔧 Manually swapped onto break by the admin."];
+        delete r.breakReasons[tidNowOnCourt];
+      }
       r.onBreakIds=r.onBreak.map(t=>t.id);
       return{...ev,plan:{...ev.plan,rounds}};
     });

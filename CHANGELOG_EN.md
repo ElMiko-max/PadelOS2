@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.80 (current) — Continue the Decision Trail wording review (round 2)
+## V0.16.81 (current) — Fix: a manual break swap never recorded any reason at all
+
+- **Admin request:** noticed a player manually swapped onto break (the Rounds tab's Swap action) showed "Not available — this round was generated before the Decision Trail feature shipped" in ℹ️ Why? — a misleading message, since the real reason is a deliberate admin action, not a missing feature.
+- **Cause:** the swap function (CI and CT) tagged the player `manualSwap` but never wrote a `breakReasons` entry for them at all, so the screen fell back to its generic "no data" message.
+- **Fix:** a manual swap onto break now writes a real reason: "🔧 Manually swapped onto break by the admin." The player who left break to go play also gets their old break reason cleared, so it doesn't linger while they're now on court.
+- **Backfill:** found exactly 3 such cases in event #212 (Fares and Shiko in round 1, plus one more) with no reason recorded — added it directly to the stored data.
+
+---
+
+## V0.16.80 — Continue the Decision Trail wording review (round 2)
 
 - **Admin's edits to the first 3 messages:**
   - "Concentrated — gets X break(s)" → just "Concentrated." (the number dropped, kept as a general idea in Explain instead)

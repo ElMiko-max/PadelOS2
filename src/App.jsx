@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.78";
+const APP_VERSION = "V0.16.79";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -733,14 +733,32 @@ function teamBreakPriority(t, concSet, avoidSet) {
 // the UI says so plainly rather than guessing one up. Shared by every engine (Classic, Dynamic,
 // Dynamic v2) and both CI and CT Ladder — callers pass in whether this id was Concentrated/
 // Avoided (via breakPriority/teamBreakPriority) since that check differs by granularity.
+// Admin request (2026-09-23, event #212 wording review): shorter primary text for quick reading —
+// full reasoning moved to BULLET_EXPLANATIONS below, shown only on tapping "Explain" per line in
+// ReasonModal. Kept as plain strings (not {text,explain} objects) on purpose — bullets are built
+// and pushed across dozens of call sites in both break engines (CI + CT, Classic/Dynamic/v2); a
+// stable text PREFIX is enough for the modal to look up the matching explanation without touching
+// any of those call sites.
 function fairShareBullets(entVal, beforeCount, {isConc, isAvoid, breakPref, ri, totalRounds}) {
   const bullets = [];
-  if (isConc) bullets.push("🎯 Concentrated — gets first claim on the round's extra break slot");
+  if (isConc) bullets.push(`🎯 Concentrated — gets ${entVal??0} break${entVal===1?"":"s"}`);
   if (isAvoid) bullets.push("🚫 Avoided — normally last in line for a break, but was still needed to hit the fair-share floor");
-  const remVal = Math.max(0, (entVal??0) - (beforeCount||0));
-  bullets.push(`⚖️ Fair share: entitled to ${entVal??0} break${entVal===1?"":"s"} across the event, ${beforeCount||0} used before this round — ${remVal} remaining`);
+  bullets.push(`⚖️ Fair share: gets ${entVal??0} break${entVal===1?"":"s"}, ${beforeCount||0} used before this round`);
   if (breakPref && breakPref!=="none" && prefDist(breakPref,ri,totalRounds)<=0.5) bullets.push(`⏱ Matches their "${breakPref}" break preference for this round`);
   return bullets;
+}
+// Admin request (2026-09-23): static, per-message-TYPE explanations — the same canned text
+// regardless of which player/round it's attached to, looked up by a stable prefix of the bullet's
+// own short text. Add an entry here every time a bullet's short wording gets simplified enough
+// that it needs a longer "Explain" to back it up. Order matters only in that the FIRST matching
+// prefix wins — keep more specific prefixes above more general ones if that ever becomes an issue.
+const BULLET_EXPLANATIONS = [
+  { prefix: "🎯 Concentrated", explain: "Guaranteed to be among the players who get the round's extra break slot, ahead of anyone not on this list." },
+  { prefix: "⚖️ Fair share", explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically, not something an admin sets by hand." },
+];
+function explainForBullet(text) {
+  const hit = BULLET_EXPLANATIONS.find(e => typeof text === "string" && text.startsWith(e.prefix));
+  return hit ? hit.explain : null;
 }
 
 // Shared cascade primitive for the Dynamic Break Engine (2026-09-05, CI + CT ladder): given an
@@ -12048,13 +12066,27 @@ function SimReportView({report,onClose}){
     </Card>}
   </div>;
 }
+// Admin request (2026-09-23): bullets are short by default now — a per-line "Explain" toggle
+// reveals the fuller reasoning (see BULLET_EXPLANATIONS) only for someone who actually wants it,
+// instead of always showing the long version to everyone.
+function ReasonBullet({text}){
+  const [open,setOpen]=useState(false);
+  const explain=explainForBullet(text);
+  return <div style={{fontSize:12,color:"var(--po-text)",lineHeight:1.5,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>
+    <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
+      <div style={{flex:1}}>{text}</div>
+      {explain&&<button onClick={()=>setOpen(o=>!o)} style={{fontSize:10,padding:"2px 6px",borderRadius:5,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-dim)",cursor:"pointer",flexShrink:0}}>{open?"Hide":"Explain"}</button>}
+    </div>
+    {open&&explain&&<div style={{fontSize:11,color:"var(--po-dim)",lineHeight:1.5,marginTop:6,paddingTop:6,borderTop:"0.5px solid var(--po-bdr)"}}>{explain}</div>}
+  </div>;
+}
 function ReasonModal({title,bullets,onClose}){
   return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:360,width:"100%",maxHeight:"80vh",overflowY:"auto",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
       <div style={{fontWeight:700,fontSize:14,marginBottom:14,color:"var(--po-text)"}}>{title}</div>
       {bullets?.length
         ? <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:16}}>
-            {bullets.map((b,i)=><div key={i} style={{fontSize:12,color:"var(--po-text)",lineHeight:1.5,padding:"8px 10px",background:"var(--po-inp)",borderRadius:8}}>{b}</div>)}
+            {bullets.map((b,i)=><ReasonBullet key={i} text={b}/>)}
           </div>
         : <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:16,lineHeight:1.5}}>Not available — this round was generated before the Decision Trail feature shipped.</div>}
       <Btn label="Close" onClick={onClose} style={{width:"100%"}}/>

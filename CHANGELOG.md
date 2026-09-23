@@ -4,7 +4,19 @@
 
 ---
 
-## V0.16.78 (الحالي) — إضافة: علامة ⚓ BOTTOM منفصلة عن ↓ الخسارة العادية (تعديل على Enhancement #39)
+## V0.16.79 (الحالي) — بداية مراجعة صياغة رسائل الـ Decision Trail: رسائل أقصر + زرار "Explain"
+
+- **طلب الأدمن:** بدء مراجعة تعاونية لصياغة الرسائل اللي بتظهر في "ℹ️ Why?" — رسائل أقصر عشان تتقرا بسرعة، مع إمكانية الضغط على "Explain" لو حد عايز التفاصيل الكاملة.
+- **اتعمل (البنية العامة):** كل رسالة (bullet) بقى ليها نسخة قصيرة تتعرض دايمًا، وزرار "Explain" اختياري بيظهر بس لو فيه شرح إضافي مسجل لنوع الرسالة دي — الشرح نص ثابت مش متغير حسب اللاعب/الجولة، فمحتاجش تغيير في مكان توليد الرسائل نفسه في الكود، بس إضافة بسيطة في الشاشة اللي بتعرضها.
+- **أول رسالتين اتغيروا (رسالة "Concentrated" و"Fair share" — بتظهر في كل الجولات وكل المحركات، مصدر واحد في الكود):**
+  - "Concentrated — gets first claim on the round's extra break slot" ← "Concentrated — gets {عدد} break(s)" + Explain: "Guaranteed to be among the players who get the round's extra break slot..."
+  - "Fair share: entitled to X break(s) across the event, Y used before this round — Z remaining" ← "Fair share: gets X break(s), Y used before this round" + Explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically..."
+- **⚠️ ملحوظة مهمة اتكشفت أثناء المراجعة:** الجولة الأولى بس هي اللي بتستخدم الرسالة المشتركة دي (`fairShareBullets`) — من الجولة الثانية، محرك Dynamic v2 بيستخدم رسالة تانية تمامًا ("🪑 Evicted from Court... Had X break(s) remaining...") مش متأثرة بالتعديل ده، هتحتاج مراجعة منفصلة.
+- **Backfill:** النصوص المحفوظة فعليًا في إيفنت #212 (على DEV) اتعدلت مباشرة عشان الأدمن يشوف الصياغة الجديدة فورًا بعد الـ refresh، من غير ما أي نتيجة ماتش أو توزيع ملعب يتغير.
+
+---
+
+## V0.16.78 — إضافة: علامة ⚓ BOTTOM منفصلة عن ↓ الخسارة العادية (تعديل على Enhancement #39)
 
 - **طلب الأدمن:** بعد مراجعة إيفنت #212 على DEV، لاحظ إن لاعب خسر وهو أصلاً قاعد في أقل ملعب (مفيش ملعب أنزل يروحله) كان بياخد نفس علامة ↓ زي لاعب اتنزل فعليًا من ملعب أعلى — عايزهم منفصلين زي ما 🏆 TOP منفصلة عن ↑ الفوز العادي.
 - **اتعمل:** حالة جديدة (`via: "stay-bottom"`) للاعب/الفريق اللي خسر وهو أصلاً في أقل ملعب — علامة ⚓ BOTTOM (رمادي محايد) بدل ↓ العادية، في محركي Dynamic v2 وClassic/v1، لـ CI وCT، وفي نصوص الـ Decision Trail (ℹ️ Why?) كمان.

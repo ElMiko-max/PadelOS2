@@ -4,7 +4,19 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.78 (current) — Add: a separate ⚓ BOTTOM icon distinct from the plain ↓ loss (amends Enhancement #39)
+## V0.16.79 (current) — Start reviewing Decision Trail message wording: shorter text + an "Explain" button
+
+- **Admin request:** start a collaborative review of the wording shown in "ℹ️ Why?" — shorter primary text for quick reading, with an optional "Explain" tap for anyone who wants the full reasoning.
+- **Done (the general pattern):** every bullet now has a short version shown by default, and an optional "Explain" button that only appears when a longer explanation is registered for that message type — the explanation text is static (the same regardless of which player/round it's attached to), so this needed no change to where the messages are actually generated, just a small addition to how they're displayed.
+- **First two messages changed (the "Concentrated" and "Fair share" lines — shown in every round, every engine, one shared source in the code):**
+  - "Concentrated — gets first claim on the round's extra break slot" → "Concentrated — gets {N} break(s)" + Explain: "Guaranteed to be among the players who get the round's extra break slot..."
+  - "Fair share: entitled to X break(s) across the event, Y used before this round — Z remaining" → "Fair share: gets X break(s), Y used before this round" + Explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically..."
+- **⚠️ Important thing found during the review:** only round 1 uses this shared message (`fairShareBullets`) — from round 2 onward, Dynamic v2 uses an entirely different message ("🪑 Evicted from Court... Had X break(s) remaining...") untouched by this change, which will need its own separate review.
+- **Backfill:** the text actually stored in event #212 (on dev) was updated directly so the admin sees the new wording immediately after a refresh, without changing any match result or court placement already recorded.
+
+---
+
+## V0.16.78 — Add: a separate ⚓ BOTTOM icon distinct from the plain ↓ loss (amends Enhancement #39)
 
 - **Admin request:** after reviewing real event #212 on dev, noticed a player who lost while already sitting at the bottom court (nowhere lower to send them) got the exact same ↓ icon as a player genuinely relegated down from a higher court — wanted them told apart, the same way 🏆 TOP is already told apart from a plain ↑ win.
 - **Done:** a new state (`via: "stay-bottom"`) for a player/team that loses while already at the bottom court — a neutral grey ⚓ BOTTOM badge instead of the plain ↓, across Dynamic v2 and Classic/v1, for both CI and CT, and in the Decision Trail (ℹ️ Why?) text too.

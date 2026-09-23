@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.81";
+const APP_VERSION = "V0.16.82";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1256,7 +1256,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         breakReasons[evUid2] = [
           `🪑 Evicted from Court ${relocateCourt} to free a seat for ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)}, relocated here as part of a same-round swap that also seated ${benchPlayer.nickname}`,
           isProtected(relocEvicted) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(relocEvicted.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
-          `⚖️ Had ${Math.max(0,remaining[evUid2]||0)} break(s) remaining this event before this pick`,
+          `⚖️ Fair share: gets ${ent[evUid2]??0} break${ent[evUid2]===1?"":"s"}, ${breakCounts[evUid2]||0} used before`,
           (lastBreak[evUid2]===-99||lastBreak[evUid2]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap2} round(s) — picked as the most overdue eligible candidate at this court`,
         ];
       } else {
@@ -1427,7 +1427,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     breakReasons[evUid] = [
       `🪑 Evicted from Court ${court} to free a seat for ${benchPlayer.nickname||("player #"+uid)}, who was due back there`,
       isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
-      `⚖️ Had ${Math.max(0,remaining[evUid]||0)} break(s) remaining this event before this pick`,
+      `⚖️ Fair share: gets ${ent[evUid]??0} break${ent[evUid]===1?"":"s"}, ${breakCounts[evUid]||0} used before`,
       (lastBreak[evUid]===-99||lastBreak[evUid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
     if (usedUrgent) breakReasons[evUid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evUid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
@@ -2642,7 +2642,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         breakReasons[evTid2] = [
           `🪑 Evicted from Court ${relocateCourt} to free a seat for ${benchEntry.t.name||("Team #"+benchEntry.t.id)}, relocated here as part of a same-round swap that also seated ${benchTeam.name}`,
           isProtected(relocEvicted) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(relocEvicted.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
-          `⚖️ Had ${Math.max(0,remaining[evTid2]||0)} break(s) remaining this event before this pick`,
+          `⚖️ Fair share: gets ${ent[evTid2]??0} break${ent[evTid2]===1?"":"s"}, ${breakCounts[evTid2]||0} used before`,
           (lastBreak[evTid2]===-99||lastBreak[evTid2]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap2} round(s) — picked as the most overdue eligible candidate at this court`,
         ];
       } else {
@@ -2769,7 +2769,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     breakReasons[evTid] = [
       `🪑 Evicted from Court ${court} to free a seat for ${benchTeam.name||("Team #"+tid)}, who was due back there`,
       isProtected(entry) ? `🛡️ Was in the "protected" pool at that court (arrived by ${viaLabel(entry.via)}) — protected candidates are used before any fresh winner` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
-      `⚖️ Had ${Math.max(0,remaining[evTid]||0)} break(s) remaining this event before this pick`,
+      `⚖️ Fair share: gets ${ent[evTid]??0} break${ent[evTid]===1?"":"s"}, ${breakCounts[evTid]||0} used before`,
       (lastBreak[evTid]===-99||lastBreak[evTid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
     if (usedUrgent) breakReasons[evTid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evTid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);

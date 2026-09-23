@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.81 (current) — Fix: a manual break swap never recorded any reason at all
+## V0.16.82 (current) — Unify the round-2+ "Fair share" message with round 1's wording
+
+- **Admin request:** the "⚖️ Had X break(s) remaining this event before this pick" message (shown by the Dynamic v1/v2 engine from round 2 onward) should match round 1's already-updated "Fair share" wording.
+- **Done:** the message is now "⚖️ Fair share: gets X break(s), Y used before" — the exact same wording, across all four places that used the old message (CI and CT, the normal case and Enhancement #38's relocation case).
+- **⚠️ Backfill limitation:** for the already-stored event #212, the old message only ever showed a "remaining" count, not the two separate "entitled" and "used" numbers. Regenerating the old rounds from their real results to recover the split didn't reproduce the stored data exactly (some internal state can't be safely rebuilt) — rather than guess two numbers and risk showing something wrong, the stored old text was just shortened to the one real number available: "⚖️ Fair share: N break(s) remaining", without the full "gets X, Y used before" breakdown. Any round generated from now on gets the full new wording immediately.
+
+---
+
+## V0.16.81 — Fix: a manual break swap never recorded any reason at all
 
 - **Admin request:** noticed a player manually swapped onto break (the Rounds tab's Swap action) showed "Not available — this round was generated before the Decision Trail feature shipped" in ℹ️ Why? — a misleading message, since the real reason is a deliberate admin action, not a missing feature.
 - **Cause:** the swap function (CI and CT) tagged the player `manualSwap` but never wrote a `breakReasons` entry for them at all, so the screen fell back to its generic "no data" message.

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.82";
+const APP_VERSION = "V0.16.83";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9462,8 +9462,16 @@ export default function Matchkeeper() {
       if (crossesLine) {
         const uidNowOnBreak = lA.w==="court" ? uidA : uidB;
         const uidNowOnCourt = lA.w==="court" ? uidB : uidA;
+        // Admin request (2026-09-23): name the actual court they were pulled from (already known —
+        // it's the same wouldBeCourt just stamped above), and reassure the admin that a manual pick
+        // still counts toward the player's normal fair-share total — it's not an extra, unaccounted
+        // break they'll be owed again on top of their usual share.
+        const pulledFromCourt = lA.w==="court" ? r.matches[lA.mi].court : r.matches[lB.mi].court;
         r.breakReasons = {...(r.breakReasons||{})};
-        r.breakReasons[uidNowOnBreak] = ["🔧 Manually swapped onto break by the admin."];
+        r.breakReasons[uidNowOnBreak] = [
+          `🔧 Manually pushed to break from Court ${pulledFromCourt} by the admin.`,
+          "⚖️ Still counts toward their normal fair share — not an extra break on top of it.",
+        ];
         delete r.breakReasons[uidNowOnCourt];
       }
       r.onBreakIds=r.onBreak.map(p=>p.userId);
@@ -9878,8 +9886,12 @@ export default function Matchkeeper() {
       if (crossesLine) {
         const tidNowOnBreak = lA.w==="match" ? tidA : tidB;
         const tidNowOnCourt = lA.w==="match" ? tidB : tidA;
+        const pulledFromCourt = lA.w==="match" ? r.matchesA[lA.mi].court : r.matchesA[lB.mi].court;
         r.breakReasons = {...(r.breakReasons||{})};
-        r.breakReasons[tidNowOnBreak] = ["🔧 Manually swapped onto break by the admin."];
+        r.breakReasons[tidNowOnBreak] = [
+          `🔧 Manually pushed to break from Court ${pulledFromCourt} by the admin.`,
+          "⚖️ Still counts toward their normal fair share — not an extra break on top of it.",
+        ];
         delete r.breakReasons[tidNowOnCourt];
       }
       r.onBreakIds=r.onBreak.map(t=>t.id);

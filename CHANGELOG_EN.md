@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.82 (current) — Unify the round-2+ "Fair share" message with round 1's wording
+## V0.16.83 (current) — Manual-swap message now names the court + confirms it counts toward fair share
+
+- **Admin request:** the manual-swap message should say **which court** the player was pulled from, and confirm the manual decision **still counts** toward their normal fair share — not an extra break on top of it.
+- **Done:** "🔧 Manually swapped onto break by the admin." → "🔧 Manually pushed to break from Court {N} by the admin." (the court number was already being recorded from an earlier fix) + a new second line: "⚖️ Still counts toward their normal fair share — not an extra break on top of it." — and that reassurance is actually true in the code, not just comforting text: a manual break gets written into the same list future rounds' fair-share math reads from.
+- **Backfill:** the 4 existing cases in event #212 (Fares and Shiko in round 1, Omar H and Yehia in round 2) updated with each player's actual recorded court.
+
+---
+
+## V0.16.82 — Unify the round-2+ "Fair share" message with round 1's wording
 
 - **Admin request:** the "⚖️ Had X break(s) remaining this event before this pick" message (shown by the Dynamic v1/v2 engine from round 2 onward) should match round 1's already-updated "Fair share" wording.
 - **Done:** the message is now "⚖️ Fair share: gets X break(s), Y used before" — the exact same wording, across all four places that used the old message (CI and CT, the normal case and Enhancement #38's relocation case).

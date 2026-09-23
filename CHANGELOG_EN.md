@@ -4,7 +4,19 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.79 (current) — Start reviewing Decision Trail message wording: shorter text + an "Explain" button
+## V0.16.80 (current) — Continue the Decision Trail wording review (round 2)
+
+- **Admin's edits to the first 3 messages:**
+  - "Concentrated — gets X break(s)" → just "Concentrated." (the number dropped, kept as a general idea in Explain instead)
+  - "Fair share: gets X break(s), Y used before this round" → "Fair share: gets X break(s), Y used before" (dropped the trailing "this round")
+  - "Matches their 'early' break preference for this round" → "Early Break." (or "Mid Break."/"Late Break." depending on the player's preference)
+  - Fair share's Explain also updated: "...enforced automatically, unless manually done by an admin" (clarifying an admin can override it manually via Firm Lock).
+- **Also applied to the same message elsewhere in the code:** the "Matches their break preference" line was duplicated in the Dynamic (v1/v2) engine for rounds after the first, not just round 1's — fixed in both places.
+- **Backfill:** event #212's stored text updated again to match.
+
+---
+
+## V0.16.79 — Start reviewing Decision Trail message wording: shorter text + an "Explain" button
 
 - **Admin request:** start a collaborative review of the wording shown in "ℹ️ Why?" — shorter primary text for quick reading, with an optional "Explain" tap for anyone who wants the full reasoning.
 - **Done (the general pattern):** every bullet now has a short version shown by default, and an optional "Explain" button that only appears when a longer explanation is registered for that message type — the explanation text is static (the same regardless of which player/round it's attached to), so this needed no change to where the messages are actually generated, just a small addition to how they're displayed.

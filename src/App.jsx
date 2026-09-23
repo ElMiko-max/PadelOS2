@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.79";
+const APP_VERSION = "V0.16.80";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -741,10 +741,10 @@ function teamBreakPriority(t, concSet, avoidSet) {
 // any of those call sites.
 function fairShareBullets(entVal, beforeCount, {isConc, isAvoid, breakPref, ri, totalRounds}) {
   const bullets = [];
-  if (isConc) bullets.push(`🎯 Concentrated — gets ${entVal??0} break${entVal===1?"":"s"}`);
+  if (isConc) bullets.push("🎯 Concentrated.");
   if (isAvoid) bullets.push("🚫 Avoided — normally last in line for a break, but was still needed to hit the fair-share floor");
-  bullets.push(`⚖️ Fair share: gets ${entVal??0} break${entVal===1?"":"s"}, ${beforeCount||0} used before this round`);
-  if (breakPref && breakPref!=="none" && prefDist(breakPref,ri,totalRounds)<=0.5) bullets.push(`⏱ Matches their "${breakPref}" break preference for this round`);
+  bullets.push(`⚖️ Fair share: gets ${entVal??0} break${entVal===1?"":"s"}, ${beforeCount||0} used before`);
+  if (breakPref && breakPref!=="none" && prefDist(breakPref,ri,totalRounds)<=0.5) bullets.push(`⏱ ${breakPref[0].toUpperCase()+breakPref.slice(1)} Break.`);
   return bullets;
 }
 // Admin request (2026-09-23): static, per-message-TYPE explanations — the same canned text
@@ -753,8 +753,9 @@ function fairShareBullets(entVal, beforeCount, {isConc, isAvoid, breakPref, ri, 
 // that it needs a longer "Explain" to back it up. Order matters only in that the FIRST matching
 // prefix wins — keep more specific prefixes above more general ones if that ever becomes an issue.
 const BULLET_EXPLANATIONS = [
-  { prefix: "🎯 Concentrated", explain: "Guaranteed to be among the players who get the round's extra break slot, ahead of anyone not on this list." },
-  { prefix: "⚖️ Fair share", explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically, not something an admin sets by hand." },
+  { prefix: "🎯 Concentrated", explain: "Guaranteed to be among the players who get the extra break." },
+  { prefix: "⚖️ Fair share", explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically, unless manually done by an admin." },
+  { prefix: "⏱", explain: "Player preference for the timing of their break." },
 ];
 function explainForBullet(text) {
   const hit = BULLET_EXPLANATIONS.find(e => typeof text === "string" && text.startsWith(e.prefix));
@@ -1430,7 +1431,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       (lastBreak[evUid]===-99||lastBreak[evUid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
     if (usedUrgent) breakReasons[evUid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evUid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
-    if (isAnchor(entry.p)) breakReasons[evUid].push(`⏱ Matches their "${entry.p.breakPref}" break preference for this round`);
+    if (isAnchor(entry.p)) breakReasons[evUid].push(`⏱ ${entry.p.breakPref[0].toUpperCase()+entry.p.breakPref.slice(1)} Break.`);
     if (usedRelaxedCap) breakReasons[evUid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
     if (usedTightSpacing) breakReasons[evUid].push(`↔️ Only ${evGap} round(s) since their last break — tighter than the preferred 2-round gap, but nobody clearing that was eligible anywhere`);
   });
@@ -2772,7 +2773,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       (lastBreak[evTid]===-99||lastBreak[evTid]===undefined) ? "⏳ Hadn't broken at all yet this event — picked as the most overdue eligible candidate at this court" : `⏳ Hadn't broken in ${evGap} round(s) — picked as the most overdue eligible candidate at this court (Concentrate/Avoid no longer decide this pick, only the total entitlement above)`,
     ];
     if (usedUrgent) breakReasons[evTid].push(`⚖️ Evicted specifically because their remaining entitlement (${remaining[evTid]||0}) could no longer fit in the ${totalRounds-ri} round(s) left — fair share overrides locality and Concentrate/Avoid`);
-    if (isAnchor(entry.t)) breakReasons[evTid].push(`⏱ Matches their "${entry.t.breakPref}" break preference for this round`);
+    if (isAnchor(entry.t)) breakReasons[evTid].push(`⏱ ${entry.t.breakPref[0].toUpperCase()+entry.t.breakPref.slice(1)} Break.`);
     if (usedRelaxedCap) breakReasons[evTid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
     if (usedTightSpacing) breakReasons[evTid].push(`↔️ Only ${evGap} round(s) since their last break — tighter than the preferred 2-round gap, but nobody clearing that was eligible anywhere`);
   });

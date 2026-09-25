@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.87 (current) — Clarify a "moved to their own target" message that read as backwards
+## V0.16.88 (current) — Clarify a "freed this seat for you" message that implied the wrong cause
+
+- **Wording bug the admin found (event #213, Muhammad Adel R2 C4):** the message read "Court 4 was already held by Amka... Amka moved to Court 3 instead, freeing this seat for you" — the admin's exact point: "we already know Amka's target was Court 3 — so this message seems false."
+- **Why:** this is the same relocation event fixed in V0.16.87, but from the other player's side. It implied Amka moved "for" Muhammad Adel specifically — like a favor tied to his return. In truth Amka was always headed to Court 3 (their own real target) regardless of Muhammad Adel; Court 4 opening up was a side effect, not the cause.
+- **Fix:** when the relocated player's final court IS their own real target, the message now reads "Amka's own target was Court 3 anyway — moving them there freed this seat for you" — making clear the move would've happened either way. The original phrasing is kept for the genuine case (someone displaced to a court that isn't their own target, purely to free a seat).
+- **Applied to both CI and CT, backfilled 3 stored instances (2 in event #212, Muhammad Adel's in #213).**
+
+---
+
+## V0.16.87 — Clarify a "moved to their own target" message that read as backwards
 
 - **Wording bug the admin found (event #213, Amka R2 C3):** the message read "Target Court was 3" immediately followed by "Court 4 was needed for Muhammad Adel's return, so moved to Court 3 — their own target instead of going on break" — the admin's exact question: "their target was already Court 3, so what does the second line even mean? If they were going to Court 3 anyway, we don't need to say this — it reads as a strange, confusing sentence."
 - **Why:** that second bullet exists for the case where a player gets relocated somewhere OTHER than their own target (to free a seat for someone else's return) — there it's genuinely useful ("you got moved to a different court because of this"). But when the player actually landed on their own real target, tying that to an unrelated player's return adds confusion for zero benefit — the first bullet ("Target Court was 3") already says everything true.

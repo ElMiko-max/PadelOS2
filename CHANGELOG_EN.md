@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.90 (current) — Real bug: a player evicted more than once in the same round had their earlier evictions erased
+## V0.16.91 (current) — Merged two bullets into one + reused the "Downwards" term instead of a long inline explanation
+
+- **Two admin notes on this same message (event #213, Amka R2 C3):**
+  1. "🔓 Seat opened by moving Omar H... they'd arrived at Court 3 by losing and being relegated from the court above" — this spells out something that already has a name in the app ("Downwards", the same term already used on the evicted player's own card) — asked to reuse that term with an Explain button instead of a long inline description.
+  2. "🛡️ Found in the protected pool..." — adds no new information, especially once the bullet right before it already says "Downwards" outright.
+- **Fix:** merged both into one: "🔓 Seat opened by evicting Omar H to break — who arrived at Court 3 as Downwards." with an Explain button reading "Downwards are those who lost in a court above and dropped down to this one" (and the same treatment for Holding Top, ⚓ BOTTOM, and a fresh winner).
+- **Verified directly against the current engine using real event #213 and #212 data before shipping.**
+- **Applied to both CI and CT, comprehensively backfilled every stored instance (3 in event #212, Amka's full chain in #213).**
+
+---
+
+## V0.16.90 — Real bug: a player evicted more than once in the same round had their earlier evictions erased
 
 - **Sharp question from the admin (event #213, Amka R2 C3):** "Where is the event of Amka evicting a player from C4 before moving to C3 recorded? ... at least write it at Amka's info card that he was initially seated at C4, evicting X, before moving to C3 and evicting another Y."
 - **What tracing the real event data actually revealed:** Amka moved **three times** in the same round (not two): (1) first placed at Court 3 (his target), evicting Omar H; (2) another player (Fares) also wanted Court 3, so Amka got bumped to Court 4, evicting Rehab; (3) Muhammad Adel then wanted Court 4, so Amka got bumped back to Court 3 (his real target), evicting Jimmy. **Real bug found:** every time Amka moved, the code overwrote his card's message entirely — the two earlier moves and their evictions just vanished, leaving only the last hop visible.

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.88";
+const APP_VERSION = "V0.16.89";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1269,18 +1269,28 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       // crammed two separate events (a same-round relocation, then a knock-on eviction) into a
       // single clause, and the admin couldn't follow what actually happened from it. Split into
       // one bullet per actual event, in the order they happened.
-      // Admin report (2026-09-25): when the relocated player's destination IS their own real
-      // target, "moved to Court Z instead, freeing this seat for you" overstates it — reads like
-      // they were shuffled around as a favor to THIS player, when really they were always headed
-      // to their own court regardless and freeing this seat was just a side effect, not the cause.
+      // Admin report (2026-09-25): two follow-up problems with the "for you" version. (1) Naming
+      // one player (benchEntryName) but addressing the other as "you" was inconsistent — this
+      // modal can be read out of context (screenshotted, discussed later), so both sides get named
+      // explicitly, never "you". (2) When the relocated player's destination IS their own real
+      // target, saying they "moved ... freeing this seat for you" still implied it happened AS A
+      // FAVOR to this player — when really they were always headed there regardless. The real
+      // story worth telling here is that they were only ever sitting at this court PROVISIONALLY
+      // (their own target hadn't opened yet when they were placed) — reframing it that way, rather
+      // than as a "move for you", is what actually explains why mentioning them here isn't noise.
       const benchEntryName = benchEntry.p.nickname||("player #"+benchEntry.p.userId);
-      returnReasons[uid] = [
-        `🎯 Target Court was ${target}.`,
-        `🔁 Court ${brCourt} was already held by ${benchEntryName} (also returning from break this round).`,
-        relocateCourt===entryTarget
-          ? `↪️ ${benchEntryName}'s own target was Court ${relocateCourt} anyway — moving them there freed this seat for you.`
-          : `↪️ ${benchEntryName} moved to Court ${relocateCourt} instead, freeing this seat for you.`,
-      ];
+      const thisPlayerName = benchPlayer.nickname||("player #"+uid);
+      returnReasons[uid] = relocateCourt===entryTarget
+        ? [
+            `🎯 Target Court was ${target}.`,
+            `🔁 Court ${brCourt} was only held temporarily by ${benchEntryName}, still waiting for their own target (Court ${relocateCourt}) to open up.`,
+            `↪️ Once Court ${relocateCourt} opened, ${benchEntryName} moved there and ${thisPlayerName} took Court ${brCourt}.`,
+          ]
+        : [
+            `🎯 Target Court was ${target}.`,
+            `🔁 Court ${brCourt} was already held by ${benchEntryName} (also returning from break this round).`,
+            `↪️ ${benchEntryName} moved to Court ${relocateCourt} instead, freeing Court ${brCourt} for ${thisPlayerName}.`,
+          ];
       // Admin report (2026-09-23): when relocateCourt lands them exactly on their own target
       // anyway, the old single bullet ("Court X was needed for Y's return, so moved to Court Z —
       // their own target") read as backwards and confusing — target Court was ALREADY stated one
@@ -2673,13 +2683,18 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       }
       // Same clarity fix as genDynamic2CI's — see its comment for the full reasoning.
       const benchEntryTeamName = benchEntry.t.name||("Team #"+benchEntry.t.id);
-      returnReasons[tid] = [
-        `🎯 Target Court was ${target}.`,
-        `🔁 Court ${brCourt} was already held by ${benchEntryTeamName} (also returning from break this round).`,
-        relocateCourt===entryTarget
-          ? `↪️ ${benchEntryTeamName}'s own target was Court ${relocateCourt} anyway — moving them there freed this seat for you.`
-          : `↪️ ${benchEntryTeamName} moved to Court ${relocateCourt} instead, freeing this seat for you.`,
-      ];
+      const thisTeamName = benchTeam.name||("Team #"+tid);
+      returnReasons[tid] = relocateCourt===entryTarget
+        ? [
+            `🎯 Target Court was ${target}.`,
+            `🔁 Court ${brCourt} was only held temporarily by ${benchEntryTeamName}, still waiting for their own target (Court ${relocateCourt}) to open up.`,
+            `↪️ Once Court ${relocateCourt} opened, ${benchEntryTeamName} moved there and ${thisTeamName} took Court ${brCourt}.`,
+          ]
+        : [
+            `🎯 Target Court was ${target}.`,
+            `🔁 Court ${brCourt} was already held by ${benchEntryTeamName} (also returning from break this round).`,
+            `↪️ ${benchEntryTeamName} moved to Court ${relocateCourt} instead, freeing Court ${brCourt} for ${thisTeamName}.`,
+          ];
       // Same clarity fix as genDynamic2CI's — see its comment for the full reasoning.
       returnReasons[benchEntry.t.id] = relocateCourt===entryTarget
         ? [`🎯 Target Court was ${entryTarget}.`]

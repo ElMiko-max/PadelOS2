@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.88 (current) — Clarify a "freed this seat for you" message that implied the wrong cause
+## V0.16.89 (current) — Rewrote the relocation message: real names instead of "you" + "temporary" instead of "for you"
+
+- **3 follow-up points from the admin on this same message (event #213):**
+  1. "Why does it say 'you'? Why not the player's name?" — the message named one player (Amka) explicitly but addressed the other as "you", which reads inconsistently, especially since this screen can be screenshotted and discussed out of its original context.
+  2. "Why mention Amka at all if it's normal for him to end up at Court 3?" — if Amka's landing at Court 3 was just their own normal placement, naming them in someone else's modal felt like unnecessary noise.
+  3. "So Adel ended up at C4... normally that's just taking the place of whoever went on break this round" — **this isn't actually what happened**: the real mechanism here is different from the normal "someone went on break" flow — it's a rarer case (Enhancement #38): two players returning from break in the same round had overlapping target courts, so one of them (Amka) was sitting somewhere **temporary** (Court 4) while waiting for their real target (Court 3) to open up, and the other (Muhammad Adel) took the court that freed up.
+- **Fix:** rewrote the message to state that reality plainly: "Court 4 was only held temporarily by Amka, still waiting for their own target (Court 3) to open up" → "Once Court 3 opened, Amka moved there and Muhammad Adel took Court 4." Every name is explicit, "you" is gone entirely, and "temporarily" makes clear Amka was never settled there in the first place — not a favor or a move "for" anyone.
+- **Applied to both CI and CT, and comprehensively backfilled 8 stored instances (6 in event #212, 2 in #213).**
+
+---
+
+## V0.16.88 — Clarify a "freed this seat for you" message that implied the wrong cause
 
 - **Wording bug the admin found (event #213, Muhammad Adel R2 C4):** the message read "Court 4 was already held by Amka... Amka moved to Court 3 instead, freeing this seat for you" — the admin's exact point: "we already know Amka's target was Court 3 — so this message seems false."
 - **Why:** this is the same relocation event fixed in V0.16.87, but from the other player's side. It implied Amka moved "for" Muhammad Adel specifically — like a favor tied to his return. In truth Amka was always headed to Court 3 (their own real target) regardless of Muhammad Adel; Court 4 opening up was a side effect, not the cause.

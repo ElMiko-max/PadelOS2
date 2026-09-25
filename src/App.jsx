@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.89";
+const APP_VERSION = "V0.16.90";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1291,19 +1291,19 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
             `🔁 Court ${brCourt} was already held by ${benchEntryName} (also returning from break this round).`,
             `↪️ ${benchEntryName} moved to Court ${relocateCourt} instead, freeing Court ${brCourt} for ${thisPlayerName}.`,
           ];
-      // Admin report (2026-09-23): when relocateCourt lands them exactly on their own target
-      // anyway, the old single bullet ("Court X was needed for Y's return, so moved to Court Z —
-      // their own target") read as backwards and confusing — target Court was ALREADY stated one
-      // line up, so re-explaining the same destination via someone else's unrelated return read
-      // like a non-sequitur. Only worth a second bullet when the outcome actually differs from
-      // their own target (a real "you got shuffled, not to your own court" surprise worth
-      // explaining) — otherwise the first bullet alone already says everything true here.
-      returnReasons[benchEntry.p.userId] = relocateCourt===entryTarget
-        ? [`🎯 Target Court was ${entryTarget}.`]
-        : [
-            `🎯 Target Court was ${entryTarget}.`,
-            `↪️ Court ${brCourt} was needed for ${benchPlayer.nickname}'s return, so moved to Court ${relocateCourt} instead of going on break.`,
-          ];
+      // Admin report (2026-09-25): a relocated player can get bounced MORE than once in the same
+      // round (confirmed on a real dev event: a player evicted someone to land at their own target,
+      // then got bumped again by a second same-round returnee also wanting that exact court, then
+      // got bumped back a third time by a THIRD returnee needing the court they'd been bumped to —
+      // three separate evictions, one player, one round). Overwriting returnReasons here on every
+      // hop silently erased the earlier legs — the eviction their OWN original placement caused was
+      // just gone the moment they got relocated. Now every hop APPENDS instead of replacing, so
+      // their card ends up with the full real chain, not just the last hop.
+      const priorReasons = returnReasons[benchEntry.p.userId] || [`🎯 Target Court was ${entryTarget}.`];
+      const relocHopBullet = relocEvicted
+        ? `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""}, evicting ${relocEvicted.p.nickname||("player #"+relocEvicted.p.userId)} there, to free Court ${brCourt} for ${thisPlayerName}.`
+        : `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""} (an open seat, no eviction needed), to free Court ${brCourt} for ${thisPlayerName}.`;
+      returnReasons[benchEntry.p.userId] = [...priorReasons, relocHopBullet];
       return;
     }
 
@@ -2695,13 +2695,14 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
             `🔁 Court ${brCourt} was already held by ${benchEntryTeamName} (also returning from break this round).`,
             `↪️ ${benchEntryTeamName} moved to Court ${relocateCourt} instead, freeing Court ${brCourt} for ${thisTeamName}.`,
           ];
-      // Same clarity fix as genDynamic2CI's — see its comment for the full reasoning.
-      returnReasons[benchEntry.t.id] = relocateCourt===entryTarget
-        ? [`🎯 Target Court was ${entryTarget}.`]
-        : [
-            `🎯 Target Court was ${entryTarget}.`,
-            `↪️ Court ${brCourt} was needed for ${benchTeam.name}'s return, so moved to Court ${relocateCourt} instead of going on break.`,
-          ];
+      // Same "append, don't overwrite" fix as genDynamic2CI's — see its comment for the full
+      // reasoning (a relocated team can get bumped more than once in the same round, and
+      // overwriting here silently erased whatever eviction their own original placement caused).
+      const priorTeamReasons = returnReasons[benchEntry.t.id] || [`🎯 Target Court was ${entryTarget}.`];
+      const relocHopTeamBullet = relocEvicted
+        ? `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""}, evicting ${relocEvicted.t.name||("Team #"+relocEvicted.t.id)} there, to free Court ${brCourt} for ${thisTeamName}.`
+        : `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""} (an open seat, no eviction needed), to free Court ${brCourt} for ${thisTeamName}.`;
+      returnReasons[benchEntry.t.id] = [...priorTeamReasons, relocHopTeamBullet];
       return;
     }
 

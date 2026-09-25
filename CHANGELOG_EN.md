@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.89 (current) — Rewrote the relocation message: real names instead of "you" + "temporary" instead of "for you"
+## V0.16.90 (current) — Real bug: a player evicted more than once in the same round had their earlier evictions erased
+
+- **Sharp question from the admin (event #213, Amka R2 C3):** "Where is the event of Amka evicting a player from C4 before moving to C3 recorded? ... at least write it at Amka's info card that he was initially seated at C4, evicting X, before moving to C3 and evicting another Y."
+- **What tracing the real event data actually revealed:** Amka moved **three times** in the same round (not two): (1) first placed at Court 3 (his target), evicting Omar H; (2) another player (Fares) also wanted Court 3, so Amka got bumped to Court 4, evicting Rehab; (3) Muhammad Adel then wanted Court 4, so Amka got bumped back to Court 3 (his real target), evicting Jimmy. **Real bug found:** every time Amka moved, the code overwrote his card's message entirely — the two earlier moves and their evictions just vanished, leaving only the last hop visible.
+- **Fix:** each move now appends to the existing message instead of replacing it, so Amka's card shows the full chain end to end — his original target, who got evicted for his first placement, then each subsequent hop and who was evicted at each one.
+- **Verified directly against the current engine using real event #213 and #212 data (both a single-hop and this 3-hop case) to confirm nothing else broke.**
+- **Applied to both CI and CT, backfilled Amka's case in event #213 (the only 3-hop chain in current data).**
+
+---
+
+## V0.16.89 — Rewrote the relocation message: real names instead of "you" + "temporary" instead of "for you"
 
 - **3 follow-up points from the admin on this same message (event #213):**
   1. "Why does it say 'you'? Why not the player's name?" — the message named one player (Amka) explicitly but addressed the other as "you", which reads inconsistently, especially since this screen can be screenshotted and discussed out of its original context.

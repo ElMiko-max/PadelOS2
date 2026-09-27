@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.94";
+const APP_VERSION = "V0.16.96";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1427,10 +1427,31 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     let usedUrgent = false;
     const localNormal = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
-      return attemptSearch(localCourts, true, isEligiblePreferred) ||
+      const general = attemptSearch(localCourts, true, isEligiblePreferred) ||
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
         attemptSearch(localCourts, false, isEligibleStrict);
+      // Admin report (2026-09-27, SECOND occurrence — a tie-only fix wasn't enough): real data
+      // almost never produces a clean anchor/spacing tie between the two neighboring courts, so
+      // the pooled search above kept picking whichever occupant was simply most overdue,
+      // continuing to ignore which of two same-target returnees actually outranks the other.
+      // Once the exact target is confirmed unreachable (general.court!==target), a genuine
+      // collision now re-tries JUST this player's own preferred side (upper for the higher-USR
+      // sibling, lower otherwise) through the exact same preferred/strict eligibility cascade —
+      // and uses THAT result instead whenever it succeeds, even if the pooled search would have
+      // picked the other side. Falls back to the pooled result untouched if the preferred side
+      // genuinely has nobody eligible, so nobody is ever stranded by this preference.
+      if (general && general.court !== target && sameTargetHigherExists !== sameTargetLowerExists) {
+        const preferredSide = sameTargetLowerExists ? target-1 : target+1;
+        if (localCourts.includes(preferredSide) && general.court !== preferredSide) {
+          const sideFound = attemptSearch([preferredSide], true, isEligiblePreferred) ||
+            attemptSearch([preferredSide], false, isEligiblePreferred) ||
+            attemptSearch([preferredSide], true, isEligibleStrict) ||
+            attemptSearch([preferredSide], false, isEligibleStrict);
+          if (sideFound) return sideFound;
+        }
+      }
+      return general;
     })();
     // Admin report (2026-09-27): the adjacent-court bench relocate (see attemptBenchRelocateAt's
     // comment above) only gets a turn here, once a normal eviction at the exact target — and its
@@ -2827,10 +2848,31 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     let usedUrgent = false;
     const localNormal = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
-      return attemptSearch(localCourts, true, isEligiblePreferred) ||
+      const general = attemptSearch(localCourts, true, isEligiblePreferred) ||
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
         attemptSearch(localCourts, false, isEligibleStrict);
+      // Admin report (2026-09-27, SECOND occurrence — a tie-only fix wasn't enough): real data
+      // almost never produces a clean anchor/spacing tie between the two neighboring courts, so
+      // the pooled search above kept picking whichever occupant was simply most overdue,
+      // continuing to ignore which of two same-target returnees actually outranks the other.
+      // Once the exact target is confirmed unreachable (general.court!==target), a genuine
+      // collision now re-tries JUST this player's own preferred side (upper for the higher-USR
+      // sibling, lower otherwise) through the exact same preferred/strict eligibility cascade —
+      // and uses THAT result instead whenever it succeeds, even if the pooled search would have
+      // picked the other side. Falls back to the pooled result untouched if the preferred side
+      // genuinely has nobody eligible, so nobody is ever stranded by this preference.
+      if (general && general.court !== target && sameTargetHigherExists !== sameTargetLowerExists) {
+        const preferredSide = sameTargetLowerExists ? target-1 : target+1;
+        if (localCourts.includes(preferredSide) && general.court !== preferredSide) {
+          const sideFound = attemptSearch([preferredSide], true, isEligiblePreferred) ||
+            attemptSearch([preferredSide], false, isEligiblePreferred) ||
+            attemptSearch([preferredSide], true, isEligibleStrict) ||
+            attemptSearch([preferredSide], false, isEligibleStrict);
+          if (sideFound) return sideFound;
+        }
+      }
+      return general;
     })();
     // Admin report (2026-09-27): the adjacent-court bench relocate (see attemptBenchRelocateAt's
     // comment above) only gets a turn here, once a normal eviction at the exact target — and its
@@ -9667,6 +9709,48 @@ export default function Matchkeeper() {
     const current=isFirm?"firm":isSuggested?"suggested":"none";
     if(current===target)return;
 
+    // Admin report (2026-09-27, live testing): a round that's already been generated but not
+    // yet played (PENDING — see BreaksTab's own isOpen/isPending/isFrozen comment) couldn't be
+    // firm-locked at all from this screen — canEdit below used to require isOpen, so tapping the
+    // cell silently did nothing, no error, no lock saved. "Moaz should have a firm last-round
+    // break — he didn't have one" traced to exactly this: the round was already generated by the
+    // time the admin tried to lock it. Putting someone ONTO break for a round whose matches
+    // already exist needs a REAL swap (pull them off their court seat, hand it to whoever they're
+    // trading places with) — the old code here only ever flipped list membership, which would
+    // have left them listed as both playing AND on break. Reuses swapCI's own real mutation
+    // instead of duplicating it, auto-picking a swap partner from whoever's already on break this
+    // round (unambiguous — any of them is a like-for-like seat swap), then layers the firm flag
+    // on top in a second, separate write. Only "firm"/"suggested" (both mean "make them break")
+    // get this treatment; pulling someone OFF break for a pending round has no unambiguous
+    // partner to auto-pick (which of 4 court occupants should give up their seat?) and is left to
+    // the Rounds tab's own two-player swap, which already handles that correctly.
+    const pendingRound = ev.plan.rounds[ri];
+    const roundIsFrozen = pendingRound && pendingRound.matches.every(m=>m.winner!=null);
+    if (roundIsFrozen) { toast2(`Can't change — R${ri+1} has already been played`,"err"); return; }
+    const alreadyOnBreakThisRound = pendingRound && (pendingRound.onBreakIds||[]).includes(uid);
+    if (pendingRound && !alreadyOnBreakThisRound && (target==="firm"||target==="suggested")) {
+      if (target==="firm") {
+        const currentFirmCount=(firmBreaks[ri]||[]).filter(id=>id!==uid).length;
+        if(currentFirmCount+1>bpr){toast2(`Can't lock — R${ri+1} only has ${bpr} break slot(s) total`,"err");return;}
+      }
+      const swapCandidate = (pendingRound.onBreakIds||[]).find(id=>!(firmBreaks[ri]||[]).includes(id));
+      if (!swapCandidate) { toast2(`Can't change — no one else is on break in R${ri+1} to swap with`,"err"); return; }
+      swapCI(cid,eid,ri,uid,swapCandidate);
+      if (target==="firm") {
+        updEvent(cid,eid,e=>{
+          if(!e.plan)return e;
+          const fb=e.plan.firmBreaks||{};
+          const newFb={...fb,[ri]:(fb[ri]||[]).includes(uid)?fb[ri]:[...(fb[ri]||[]),uid]};
+          return {...e,plan:{...e.plan,firmBreaks:newFb}};
+        },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
+      }
+      return;
+    }
+    if (pendingRound && alreadyOnBreakThisRound && target==="none") {
+      toast2(`Can't move them back onto court for R${ri+1} from here — use the swap tool in the Rounds tab instead`,"err");
+      return;
+    }
+
     if(target==="suggested"){
       const newCount=(ev.plan.breakPlan[ri]||[]).filter(id=>id!==uid).length+1;
       if(newCount!==bpr)toast2(`Warning: R${ri+1} has ${newCount} breaks (needs ${bpr})`,"err");
@@ -12567,7 +12651,13 @@ function BreaksTab({plan,ev,comm,users,bp,tc,onEditBreak,onRegenerate,onSetConce
               const isFrozen=ri<completedRounds;
               const isPending=ri>=completedRounds&&ri<generatedRounds;
               const isOpen=ri>=generatedRounds;
-              const canEdit=isOpen&&isAdmin; // only open rounds, and only admins, may edit from the Breaks tab
+              // Admin report (2026-09-27): pending rounds (generated, not yet played) used to be
+              // fully blocked here — a firm-lock tap on an already-generated round silently did
+              // nothing. Now editable too; editBreakCI itself performs a real swap (via swapCI)
+              // when putting someone onto break for a round whose matches already exist, and
+              // rejects the one direction (pulling someone OFF break) that has no unambiguous
+              // auto-pick, with a clear toast pointing at the Rounds tab's own swap tool instead.
+              const canEdit=(isOpen||isPending)&&isAdmin;
 
               // Real bug, admin report (2026-09-22): this used to require isOpen, so the 🔐 badge
               // (and its purple styling) vanished the instant a round stopped being "open for
@@ -12868,7 +12958,7 @@ function CTBreaksTab({plan,ev,tc,onRegenBreaks,onSetBreakState,onSetConcentrateI
 }
 
 
-function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin}){
+function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,totalBookingMin,eventDate,eventTime,eventId,sim,onSetMatchModeStart,onStopMatchMode,isAdmin,isCancelled}){
   const isFootballEv = sport==="Football";
   const teamRatingLabel = v => isFootballEv ? footballGradeLabel(v) : v;
   const [selT,setSelT]=useState(null); // {ri,tid} for ladder team swap
@@ -13089,7 +13179,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
       const ladderDone=plan.rounds.length>=maxR;
       return <>
         {selT&&<div style={{fontSize:12,padding:"8px 12px",borderRadius:8,marginBottom:8,background:"#FBBF2411",border:"0.5px solid #FBBF2444",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{color:"#FBBF24"}}>✋ Team selected — tap another team or break team to swap</span><SmBtn label="✕" onClick={()=>setSelT(null)} color="#EF4444"/></div>}
-      {lastRoundDone&&!ladderDone&&isAdmin&&<Btn label={`▶ Generate Next Match (Round ${plan.rounds.length+1} of ${maxR})`} primary onClick={onNextCTLadder} style={{width:"100%",marginBottom:12}}/>}
+      {lastRoundDone&&!ladderDone&&isAdmin&&!isCancelled&&<Btn label={`▶ Generate Next Match (Round ${plan.rounds.length+1} of ${maxR})`} primary onClick={onNextCTLadder} style={{width:"100%",marginBottom:12}}/>}
         {lastRoundDone&&ladderDone&&<div style={{padding:"12px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:13,fontWeight:600,color:"#34D399",textAlign:"center",marginBottom:12}}>🏆 Event Complete — all rounds played! Check Standings.</div>}
         {onBreak.length>0&&<div style={{background:"#F59E0B0D",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:12}}>
           <div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bPts} pts each{isAdmin&&onSwapCTLadder&&<span style={{fontSize:10,color:"var(--po-dim)",marginLeft:8}}>Tap to select for swap</span>}</div>
@@ -13106,7 +13196,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
       {!isFootballEv&&plan.lastPromo&&<div style={{fontSize:12,color:"var(--po-dim)",marginBottom:8,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>
         Last: <span style={{color:"#34D399"}}>{plan.lastPromo.promoted?.map?.(t=>t?.name).join(", ")||plan.lastPromo.promoted?.name}</span> promoted · <span style={{color:"#F59E0B"}}>{plan.lastPromo.relegated?.filter(Boolean).map(t=>t?.name).join(", ")}</span> relegated
       </div>}
-      {isAdmin&&(isFootballEv
+      {isAdmin&&!isCancelled&&(isFootballEv
         ? <Btn label="▶ Generate Next Round" primary onClick={onNextFootballRound} style={{width:"100%",marginBottom:12}}/>
         : <Btn label="🔀 Apply Promotion/Relegation & Start Next Round" primary onClick={onApplyPromo} style={{width:"100%",marginBottom:12}}/>)}
     </>}
@@ -13931,6 +14021,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const isDay  = sim||effEv.date===today;
   const plan   = effEv.plan;
   const isCompleted = effEv.status==="completed";
+  const isCancelled = effEv.status==="cancelled";
 
   // First tap selects a player; a second tap on a player from a DIFFERENT team swaps them.
   // Tapping the same player again, or another player on the SAME team, just clears/reselects.
@@ -14473,7 +14564,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
         <SmBtn label="Start ▶" onClick={startSim} color="#6366F1"/>
       </div>
-      {!isCompleted&&<div className="po-card" style={{flex:1,minWidth:0,padding:"9px 11px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",gap:8}}>
+      {!isCompleted&&!isCancelled&&<div className="po-card" style={{flex:1,minWidth:0,padding:"9px 11px",background:"var(--po-card)",borderRadius:10,border:"0.5px solid var(--po-bdr)",display:"flex",alignItems:"center",gap:8}}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:12,fontWeight:600,color:"var(--po-sub)"}}>{regPaused?"🔒":"🔓"} Registration</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{regPaused?"Paused":"Open"}</div>
@@ -14543,7 +14634,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {ev.isDemo&&me.id===1&&<Bdg label="Demo" color="#F59E0B"/>}
             {ev.visibility==="private"&&<Bdg label="🔒 Private" color="#94A3B8"/>}
             {isCompleted&&<Bdg label="✓ Completed" color="#34D399"/>}
-            {!isCompleted&&regPaused&&<Bdg label="🔒 Paused" color="#94A3B8"/>}
+            {isCancelled&&<Bdg label="❌ Cancelled" color="#EF4444"/>}
+            {!isCompleted&&!isCancelled&&regPaused&&<Bdg label="🔒 Paused" color="#94A3B8"/>}
             {ev.archived&&<Bdg label="📦 Archived" color="#94A3B8"/>}
             {ev.minUsrFloor>0&&<Bdg label={`🎯 USR ${ev.minUsrFloor}+`} color="#F43746"/>}
             {ev.deleted&&<Bdg label="🗑 Deleted" color="#EF4444"/>}
@@ -14561,7 +14653,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {canDeleteOrArchive&&isCompleted&&!ev.archived&&<ListRow icon="📦" label="Archive" danger onClick={()=>{if(window.confirm(`Archive "${ev.name}" (#${ev.id})?\n\nThis hides it from active lists — treat it like a permanent action, same weight as Delete, since restoring requires finding it and manually unarchiving.`)){onArchive();setShowHeaderMenu(false);}}}/>}
             </div>}
           </div>}
-          {!isCompleted&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
+          {!isCompleted&&!isCancelled&&<div onClick={handleShareBefore} title="Share Event" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
           {isCompleted&&<div onClick={handleShareAfter} title="Share Results" style={{width:30,height:30,borderRadius:"50%",background:"#34D39922",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,cursor:"pointer",opacity:sharing?0.5:1}}>{sharing?"⏳":"📤"}</div>}
         </div>
       </div>
@@ -14729,6 +14821,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {isAdmin&&sim&&<div style={{marginTop:6,padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
+      {/* The whole registration/admin-actions block above is scoped to status==="registration_open"
+          only, so a cancelled event (status==="cancelled", neither that nor "completed") rendered
+          this entire Card empty — no indication anywhere that it was cancelled. Admin report,
+          2026-09-27, live on padelos-dev: "now this is cancelled... so where is the indication?" */}
+      {isCancelled&&<div style={{padding:"9px",textAlign:"center",background:"#EF444422",border:"0.5px solid #EF444444",borderRadius:8,fontSize:13,fontWeight:600,color:"#EF4444"}}>❌ Event Cancelled{effEv.cancelReason?` — ${effEv.cancelReason}`:""}</div>}
       {showCancelModal&&<CancelEventModal eventName={ev.name} reasons={[...DEFAULT_CANCEL_REASONS,...(comm?.customCancelReasons||[])]} onClose={()=>setShowCancelModal(false)} onCancel={(reason)=>{act.cancelEvent(reason);setShowCancelModal(false);}}/>}
     </Card>
 
@@ -14795,7 +14892,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           <SmBtn label="✕" onClick={()=>act.rejectUnqualified(u.id)} color="#EF4444"/>
         </div>;})}
       </Card>}
-      {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&<SmBtn label="🔗 Invite Link" onClick={()=>{
+      {isAdmin&&!(ctR1Locked||ciR1Locked)&&<><div style={{display:"flex",gap:6,marginBottom:10}}>{onCreateInvite&&!isCompleted&&!isCancelled&&<SmBtn label="🔗 Invite Link" onClick={()=>{
         const label=`Join ${effEv.name}`;
         // Date/time + open-spot count folded into the shared message text (admin request,
         // 2026-09-15) — the recipient could otherwise only see this after tapping the link.
@@ -15329,7 +15426,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
     {/* CI ROUNDS */}
     {tab==="rounds"&&isCI&&<>
-      {isAdmin&&!plan&&<Card>
+      {isAdmin&&!plan&&!isCancelled&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Generate Round 1</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{activeRegCount} players · {tc} courts · {Math.max(0,activeRegCount-tc*4)} on break/round</div>
         <div style={{background:"var(--po-inp)",borderRadius:8,padding:"10px 12px",marginBottom:12}}><div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Scoring:</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{Array.from({length:tc},(_,i)=><Bdg key={i} label={`Court ${i+1} = ${courtPts(i+1,tc)} pts`} color="#38BDF8"/>)}<Bdg label={`Break = ${bp} pts`} color="#F59E0B"/></div></div>
@@ -15369,7 +15466,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           {isAdmin&&(!ciR1Locked?<SmBtn label="🔄 Regenerate" onClick={()=>{if(window.confirm("Discard current pairings and start over?\n\nRound 1 will be rebuilt from the current registered players. This cannot be undone."))act.startCI(plan.totalRounds,plan.roundDuration);}} color="#F59E0B"/>:<span style={{fontSize:10,color:"var(--po-dim)"}}>🔒 R1 locked</span>)}
         </div>
         {/* Next round button ON TOP */}
-        {isAdmin&&canNext&&!isCompleted&&<Btn label={`▶ Generate Round ${plan.rounds.length+1} of ${plan.totalRounds}`} primary onClick={act.nextRound} style={{width:"100%",marginBottom:12}}/>}
+        {isAdmin&&canNext&&!isCompleted&&!isCancelled&&<Btn label={`▶ Generate Round ${plan.rounds.length+1} of ${plan.totalRounds}`} primary onClick={act.nextRound} style={{width:"100%",marginBottom:12}}/>}
         {plan.rounds.length>=plan.totalRounds&&plan.rounds.every(r=>r.matches.every(m=>m.winner!=null))&&<div style={{textAlign:"center",padding:"14px",background:"#34D39911",border:"0.5px solid #34D39933",borderRadius:10,fontSize:14,fontWeight:600,color:"#34D399",marginBottom:12}}>🏆 Complete — check Standings!</div>}
 
         {/* Swap hint */}
@@ -15500,7 +15597,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
 
     {/* CT TEAMS */}
     {tab==="teams"&&isCT&&<>
-      {isAdmin&&!plan&&<Card>
+      {isAdmin&&!plan&&!isCancelled&&<Card>
         <div style={{fontSize:14,fontWeight:600,color:"var(--po-text)",marginBottom:8}}>Form Teams & Start</div>
         <div style={{fontSize:13,color:"var(--po-sub)",marginBottom:12}}>{isFootballEv?`${activeRegCount} players → ${footballPitches} pitch${footballPitches!==1?"es":""} → ${nTeams} teams`:`${activeRegCount} players → ${Math.floor(activeRegCount/6)} pools → ${Math.floor(activeRegCount/2)} teams`}</div>
         {ctCC?.warning&&<div style={{padding:"8px 12px",background:"#F59E0B11",border:"0.5px solid #F59E0B44",borderRadius:8,fontSize:12,color:"#F59E0B",marginBottom:12}}>⚠️ {ctCC.warning}</div>}
@@ -15604,7 +15701,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} ev={effEv} tc={tc} onRegenBreaks={act.regenCTBreaks} onSetBreakState={act.setCTBreakState} onSetConcentrateIds={act.setBreakConcentrateIds} onSetAvoidIds={act.setBreakAvoidIds} onSetBreakEngine={act.setBreakEngine} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
-    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onSetCTScorers={act.setCTScorers} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin}/>}
+    {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onSetCTScorers={act.setCTScorers} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin} isCancelled={isCancelled}/>}
 
     {/* CT STANDINGS */}
     {tab==="standings"&&isCT&&<>

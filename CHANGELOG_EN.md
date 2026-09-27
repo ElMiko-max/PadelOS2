@@ -4,7 +4,32 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.94 (current) — Notification badge fix + Cancel Event feature + USR-tier fix for same-target returnee collisions
+## V0.16.96 (current) — A stronger fix for the USR-tier collision bug + allow firm-locking an already-generated round
+
+- **A second bug report the admin confirmed (the same Zizo/Dodo problem, recurring):** the V0.16.94 fix only handled a genuine tie between the upper and lower neighboring courts — but real data almost never produces a clean tie (the time gap since each player's own last break usually differs), so the system kept picking based purely on "who's most overdue among the current occupants," with no regard at all for the returning players' own USR.
+- **The stronger fix:** when two same-round returnees collide on an identical target and are forced to split between an upper and lower court, each one now **prefers their own side first** (the higher-USR one tries the upper court, the lower-USR one tries the lower court) before falling back to the normal pick (most overdue) — not just when there's a tie. **Verified with a direct before/after reproduction of the exact real scenario (no tie involved) plus a 150-trial randomized stress test (800 round-generations), zero failures. Applied to both CI and CT.**
+- **A separate second bug — a firm lock on Moaz Abozaid wasn't actually saved:** the admin firm-locked Moaz's break for the last round, but he ended up playing normally anyway.
+- **Cause:** the Breaks screen blocked ANY edit (including a firm lock) on a round that had **already been generated** (even if not yet played, still 0-0) — tapping the cell did nothing, with no error message, so there was no way for the admin to know the lock never saved.
+- **Fix:** you can now firm-lock (or set "Suggested") a round that's already generated but not yet played — the system performs a real swap with someone else already on break to free up the locked player's seat, not just a cosmetic flag. If nobody else is on break to swap with, or the round has already been played, a clear message now explains why instead of staying silent.
+- **⚠️ This fix is CI (Padel/Individual) only for now — CT (Teams) has a separate, deeper issue (its Breaks screen doesn't sync the round's own data at all) that needs its own separate work.**
+
+---
+
+## V0.16.95 — Fix: a cancelled event showed no indication it was cancelled, and admin tools stayed active on it
+
+- **Real bug the admin confirmed (live on padelos-dev):** after using "❌ Cancel Event," the event detail screen looked **exactly** like a normal, active event — no banner, no badge, nothing showing it had been cancelled — and the "🔒 Registration" toggle stayed on and switchable.
+- **Cause:** the entire "Registration + admin actions" section (the "I'm In" button, "🏁 Close," even "❌ Cancel Event" itself) was gated purely on `status==="registration_open"` — so once status flipped to `"cancelled"`, that whole section vanished (not just the buttons — any visual indicator inside it too), with nothing put in its place to say "this event was cancelled."
+- **Fix:**
+  - A new "❌ Event Cancelled — [reason]" banner now shows instead, matching the "✓ Event Completed" banner's own style exactly.
+  - A "❌ Cancelled" badge next to the event name (matching the existing "✓ Completed" badge).
+  - The "🔒 Registration" toggle now disappears entirely for a cancelled event (it used to stay active and toggleable — wrong).
+  - The event's own "📤 Share" button is now hidden for a cancelled event too (nothing real to share).
+  - **Most important:** every round-generation/continue-play button (Generate Round 1, Generate Round N, Form Teams & Start, Generate Next Match/Round, Apply Promotion) is now fully disabled on a cancelled event — before this, an admin could in theory keep playing an event that had been declared cancelled, defeating the entire point of "Cancel = zero effect on the outcome."
+- **Applied to CI, CT, and football.**
+
+---
+
+## V0.16.94 — Notification badge fix + Cancel Event feature + USR-tier fix for same-target returnee collisions
 
 - **Fix 1 — the app icon's notification badge count didn't match the count inside the app:** the Android badge counts undismissed notifications in the OS tray, not the in-app "read" flag — nothing was ever clearing the tray. Fixed by clearing all delivered notifications (`PushNotifications.removeAllDeliveredNotifications`) on app launch and every time it resumes from the background, keeping the badge in sync with the in-app count.
 - **Fix 2 — when two same-round returnees shared an identical target court that wasn't available, the higher-USR one could land on the worse of the two leftover courts:** admin report, traced on a live "Test 5" practice run — Dodo and Zizo both targeted Court 3, it was full, so Zizo (higher USR) ended up at Court 4 while Dodo (lower USR) got Court 2 — backwards. Cause: when the choice between the better neighboring court and the worse one was genuinely tied, it was decided purely by which existing occupant was most overdue for a break, with no regard for either returning player's own USR. Fix: on a genuine tie between the two neighboring courts, the higher-USR player among the colliding returnees now wins the better one. **Verified with a direct before/after reproduction of the exact bug plus a 150-trial randomized stress test (838 round-generations), zero failures. Applied to both CI and CT.**

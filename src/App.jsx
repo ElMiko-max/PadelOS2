@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.93";
+const APP_VERSION = "V0.16.94";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1168,6 +1168,17 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   bench.forEach(({uid,target}) => {
     const benchPlayer = sorted.find(p=>p.userId===uid);
     if (!benchPlayer) return;
+    // Admin report (2026-09-27, event Test 5 dupe of #214 — "Dodo and Zizo both targeted Court
+    // 3, it wasn't available, so Zizo went to Court 4 and Dodo went to Court 2 — Zizo has the
+    // higher USR, he deserves the better leftover court, not the worse one"): when two same-round
+    // returnees share an identical target and it can't fit both, the split between the upper
+    // neighbor (target-1, the better tier) and the lower neighbor (target+1) was decided purely by
+    // which existing occupant was most overdue to break — completely blind to which of the two
+    // RETURNING players actually outranks the other. Computed once per bench player so the search
+    // below can break a genuine target-1-vs-target+1 tie in the higher-USR sibling's favor.
+    const sameTargetSiblings = bench.filter(b => b.uid!==uid && b.target===target);
+    const sameTargetHigherExists = sameTargetSiblings.some(b => (sorted.find(p=>p.userId===b.uid)?.usr||0) > benchPlayer.usr);
+    const sameTargetLowerExists = sameTargetSiblings.some(b => (sorted.find(p=>p.userId===b.uid)?.usr||0) < benchPlayer.usr);
     const protectedOrder = [target];
     for (let c=target-1;c>=1;c--) protectedOrder.push(c);
     for (let c=target+1;c<=courts;c++) protectedOrder.push(c);
@@ -1361,6 +1372,15 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
         const sx=ri-(lastBreak[x.p.userId]??-99), sy=ri-(lastBreak[y.p.userId]??-99); if(sx!==sy) return sy-sx;
         const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy; // prefer the exact target court on a genuine tie, then whichever's closer
+        // Admin request (2026-09-27): a genuine tie between the upper neighbor (target-dx) and the
+        // lower neighbor (target+dx) — both equally close, both equally overdue — is exactly the
+        // "which returnee outranks the other" case above. Only applies when this player is cleanly
+        // the top or bottom of their same-target group (a 3+-way tie falls through unchanged).
+        if (dx>0 && sameTargetHigherExists !== sameTargetLowerExists) {
+          const preferCourt = sameTargetLowerExists ? target-dx : target+dx;
+          if (X.c===preferCourt && Y.c!==preferCourt) return -1;
+          if (Y.c===preferCourt && X.c!==preferCourt) return 1;
+        }
         return x.p.usr - y.p.usr;
       });
       return {court:candidates[0].c, entry:candidates[0].e};
@@ -2653,6 +2673,11 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   bench.forEach(({tid,target}) => {
     const benchTeam = sorted.find(t=>t.id===tid);
     if (!benchTeam) return;
+    // Same USR-tier tie-break as genDynamic2CI's — see its comment for the full "why" (admin
+    // report, 2026-09-27). Uses avgUsr since CT ranks by team, not individual player.
+    const sameTargetSiblings = bench.filter(b => b.tid!==tid && b.target===target);
+    const sameTargetHigherExists = sameTargetSiblings.some(b => (sorted.find(t=>t.id===b.tid)?.avgUsr||0) > (benchTeam.avgUsr||0));
+    const sameTargetLowerExists = sameTargetSiblings.some(b => (sorted.find(t=>t.id===b.tid)?.avgUsr||0) < (benchTeam.avgUsr||0));
     const protectedOrder = [target];
     for (let c=target-1;c>=1;c--) protectedOrder.push(c);
     for (let c=target+1;c<=courts;c++) protectedOrder.push(c);
@@ -2773,6 +2798,12 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
         const sx=ri-(lastBreak[x.t.id]??-99), sy=ri-(lastBreak[y.t.id]??-99); if(sx!==sy) return sy-sx;
         const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
+        // Same USR-tier tie-break as genDynamic2CI's attemptSearch — see its comment.
+        if (dx>0 && sameTargetHigherExists !== sameTargetLowerExists) {
+          const preferCourt = sameTargetLowerExists ? target-dx : target+dx;
+          if (X.c===preferCourt && Y.c!==preferCourt) return -1;
+          if (Y.c===preferCourt && X.c!==preferCourt) return 1;
+        }
         return (x.t.avgUsr||0) - (y.t.avgUsr||0);
       });
       return {court:candidates[0].c, entry:candidates[0].e};
@@ -6006,6 +6037,24 @@ export default function Matchkeeper() {
       enablePushNotifications(linkedMe.id).catch(e=>console.log("Push enable failed", e));
     }
   }, [linkedMe]);
+  // Admin report (2026-09-27): the home-screen launcher badge (e.g. "3") and the in-app bell's
+  // unread count (e.g. "2") can drift apart — they're two completely separate counters. The
+  // bell reads `read:false` on this user's `padelos_notifications` docs in Firestore; the
+  // launcher badge is set by Android itself from however many pushes are still sitting,
+  // undismissed, in the system notification tray — nothing in this app ever told Android to
+  // clear them, so a push the user already read in-app (or dismissed by opening a different
+  // notification) stays counted on the launcher forever. There's no server-authoritative
+  // "badge count" API on Android the way there is on iOS — the only real lever is clearing the
+  // tray outright. Doing that every time the app is actually opened (cold start here, plus every
+  // resume below) is the closest this can get to "the badge means the same thing as the bell":
+  // both settle to 0 the moment the user has actually looked at the app.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    PushNotifications.removeAllDeliveredNotifications().catch(()=>{});
+    let sub;
+    CapApp.addListener("resume", () => { PushNotifications.removeAllDeliveredNotifications().catch(()=>{}); }).then(h=>sub=h);
+    return () => { sub?.remove(); };
+  }, []);
   // Links a signed-in Firebase account straight to an existing profile — safe ONLY when driven
   // by an admin-generated targeted invite (see pendingInviteConfirm below), since it's gated on
   // the signed-in person explicitly confirming "yes, that's me" before this ever runs.
@@ -8748,6 +8797,22 @@ export default function Matchkeeper() {
       logAudit("member.tier_change", `${u?.nickname||chg.userId} auto-moved ${chg.from} → ${chg.to} (closing "${ev.name}")`, "member", chg.userId);
     });
   };
+  // Admin request (2026-09-27): Cancel — an event that never actually happened. Deliberately just
+  // a plain status flip via updEvent, unlike closeEvent's closeEventTx — cancelling never touches
+  // USR/TR history or community member tiers (nothing here ever reads status==="cancelled" as
+  // "attended"), so there's no cross-cutting community-level write to make transactionally safe
+  // against. If a reason hasn't been offered to this community before, it's appended to
+  // `comm.customCancelReasons` so it shows up as a one-tap pick next time (see CancelEventModal).
+  const cancelEvent = (cid, eid, reason) => {
+    const ev = getEv(cid, eid);
+    if (!ev) { toast2("Event not found", "err"); return; }
+    const comm = comms.find(c=>c.id===cid);
+    const known = new Set([...DEFAULT_CANCEL_REASONS, ...(comm?.customCancelReasons||[])]);
+    if (!known.has(reason)) updC(cid, c => ({...c, customCancelReasons:[...(c.customCancelReasons||[]), reason]}));
+    updEvent(cid, eid, e => ({...e, status:"cancelled", cancelReason:reason, cancelledAt:new Date().toISOString(), cancelledBy:me.id}));
+    toast2("Event cancelled");
+    logAudit("event.cancel", `${me.nickname} cancelled event "${ev.name}" — ${reason}`, "event", eid);
+  };
   // willLandWaitlisted: computed BEFORE the mutation, by simulating the new registration
   // appended and running it through the same tier-aware splitRegsByCapacity real registrations
   // use — so someone who'd be waitlisted purely for being non-priority during the registration
@@ -10437,6 +10502,7 @@ export default function Matchkeeper() {
             onSetBreakEngine={engine=>setBreakEngine(comm.id,event.id,engine)}
             onBack={goBack}
             onCloseEvent={(scoringMethod)=>closeEvent(comm.id,event.id,scoringMethod)}
+            onCancelEvent={(reason)=>cancelEvent(comm.id,event.id,reason)}
             onEditEvent={()=>go("editEvent",{cid:comm.id,eid:event.id})}
             onRegister={()=>registerEv(comm.id,event.id)}
             registering={registeringEventId===event.id}
@@ -11206,10 +11272,20 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
           const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
           const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
           const upcoming=visEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
-          const pastAll=visEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived).sort(byNewestFirst);
+          // Admin request (2026-09-27): Cancel is "like Completed" for visibility (stays in the
+          // normal past-events list everyone can see) but "like Deleted" for impact (never
+          // touches score/history) — it used to be lumped into the admin-only Archived bucket
+          // below, which hid it from regular members entirely. Given its own section instead, at
+          // the same visibility level as Completed/Incomplete.
+          // A cancelled event lands here regardless of its original date — the `upcoming` filter
+          // above already excludes cancelled outright, so without this an event cancelled AHEAD
+          // of its scheduled date would vanish from both lists entirely (still "future" by date,
+          // but no longer eligible for `upcoming`).
+          const pastAll=visEvents.filter(ev=>(!isFutureEv(ev)||ev.status==="cancelled")&&!ev.archived).sort(byNewestFirst);
           const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
-          const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
-          const archived=visEvents.filter(ev=>ev.archived||ev.status==="cancelled").sort(byNewestFirst);
+          const pastCancelled=pastAll.filter(ev=>ev.status==="cancelled");
+          const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled");
+          const archived=visEvents.filter(ev=>ev.archived).sort(byNewestFirst);
           return <>
             {upcoming.length>0?<>{upcoming.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}</>
               :<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"16px 0"}}>No upcoming events</div></Card>}
@@ -11218,6 +11294,9 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
             </CollapsibleSection>}
             {pastCompleted.length>0&&<CollapsibleSection label={`✅ Completed (${pastCompleted.length})`} defaultOpen={false}>
               {pastCompleted.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
+            </CollapsibleSection>}
+            {pastCancelled.length>0&&<CollapsibleSection label={`❌ Cancelled (${pastCancelled.length})`} defaultOpen={false}>
+              {pastCancelled.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
             </CollapsibleSection>}
             {isAdmin&&archived.length>0&&<CollapsibleSection label={`📦 Archived (${archived.length})`} defaultOpen={false}>
               {archived.map(ev=><EvCard key={ev.id} ev={ev} me={me} users={users} onClick={()=>onOpenEv(ev.id)}/>)}
@@ -12258,6 +12337,33 @@ function BreakStateModal({title,subtitle,current,onPick,onClose}){
     </div>
   </div>;
 }
+// Admin request (2026-09-27): a Cancel action for an event that never actually happened —
+// distinct from Close (which freezes real results into USR/TR history/streaks). A cancelled
+// event stays visible (shown alongside Completed/Incomplete in the past-events list, its own
+// "❌ Cancelled" section) but never contributes to anyone's stats or history — closeEvent's own
+// USR/TR/streak writes simply never run for it, same as it never runs for a still-open event.
+// Reasons are a small built-in starter list plus whatever custom ones this community has typed
+// before (`comm.customCancelReasons`, appended to — never overwritten — the first time each new
+// one is used) — "a list that may grow" per the admin's own words, scoped per-community since
+// different communities tend to have different recurring cancellation reasons.
+const DEFAULT_CANCEL_REASONS = ["Not enough players", "Bad weather", "Venue unavailable", "Admin decision"];
+function CancelEventModal({eventName,reasons,onCancel,onClose}){
+  const [custom,setCustom]=useState("");
+  return <div style={{position:"fixed",inset:0,background:"#000000aa",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"var(--po-card)",borderRadius:14,padding:20,maxWidth:340,width:"100%",maxHeight:"80vh",overflowY:"auto",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
+      <div style={{fontWeight:700,fontSize:14,marginBottom:2,color:"var(--po-text)"}}>❌ Cancel "{eventName}"?</div>
+      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14,lineHeight:1.5}}>Pick a reason. The event stays visible in the past-events list, marked Cancelled — it never counts toward anyone's USR, TR, or attendance history.</div>
+      {reasons.map(r=>
+        <button key={r} onClick={()=>onCancel(r)} style={{display:"block",width:"100%",textAlign:"left",padding:"10px 12px",marginBottom:8,borderRadius:9,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:13,cursor:"pointer"}}>{r}</button>
+      )}
+      <div style={{display:"flex",gap:6,marginTop:2}}>
+        <input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="Other reason..." style={{flex:1,minWidth:0,padding:"9px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-inp)",color:"var(--po-text)",fontSize:13}}/>
+        <Btn label="Cancel Event" danger disabled={!custom.trim()} onClick={()=>{if(custom.trim())onCancel(custom.trim());}} style={{flexShrink:0,padding:"9px 12px",fontSize:12}}/>
+      </div>
+      <button onClick={onClose} style={{width:"100%",padding:"9px 12px",borderRadius:9,border:"0.5px solid var(--po-bdr)",background:"transparent",color:"var(--po-dim)",fontSize:12,cursor:"pointer",marginTop:10}}>Never mind</button>
+    </div>
+  </div>;
+}
 // Item 2 of the break-engine rework: picker for setBreakConcentrateIds/setBreakAvoidIds (2026-09-20:
 // generalized to cover both — Avoid is Concentrate's opposite end of the same tiebreak, see
 // breakPriority, so one modal with swappable copy/icon covers both rather than duplicating the
@@ -13266,7 +13372,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -13372,6 +13478,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // "why did this player/team break/return here" explanation, shared by CI and CT since only
   // one can ever be open at a time.
   const [reasonModal,setReasonModal] = useState(null);
+  const [showCancelModal,setShowCancelModal] = useState(false);
   // In-progress CI score entry, keyed by "ri_mi" — mirrors CTMatchesTab's scores state.
   const [ciScores,setCiScores] = useState({});
   const getCiS=(ri,mi)=>ciScores[`${ri}_${mi}`]||{scoreA:0,scoreB:0};
@@ -13702,6 +13809,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     closeEvent: (scoringMethod) => sim
       ? (onToast&&onToast("Can't close an event while simulating — exit Simulation Mode first.","err"))
       : onCloseEvent(scoringMethod),
+    cancelEvent: (reason) => sim
+      ? (onToast&&onToast("Can't cancel an event while simulating — exit Simulation Mode first.","err"))
+      : onCancelEvent(reason),
     toggleExempt: (uid) => sim
       ? simMutate(e=>{const ex=new Set(e.exempted||[]);ex.has(uid)?ex.delete(uid):ex.add(uid);return{...e,exempted:[...ex]};})
       : onToggleExempt&&onToggleExempt(uid),
@@ -14610,11 +14720,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 performance". Shortened to "Perf-Based" here; "Court-Based" above wasn't
                 flagged so it's untouched. */}
             {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Perf-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA",padding:"8px 6px",fontSize:11.5}}/>}
+            {/* Admin request (2026-09-27): an event that never actually happened — distinct from
+                Close, which freezes real results into history. Plain text style (not `danger`'s
+                filled red) so it doesn't visually compete with Close as "the" primary action. */}
+            <Btn label="❌ Cancel Event" onClick={()=>setShowCancelModal(true)} style={{color:"#EF4444",padding:"8px 6px",fontSize:11.5}}/>
           </div>}
         </div>
         {isAdmin&&sim&&<div style={{marginTop:6,padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}
       </>}
       {isCompleted&&<div style={{padding:"9px",textAlign:"center",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Event Completed</div>}
+      {showCancelModal&&<CancelEventModal eventName={ev.name} reasons={[...DEFAULT_CANCEL_REASONS,...(comm?.customCancelReasons||[])]} onClose={()=>setShowCancelModal(false)} onCancel={(reason)=>{act.cancelEvent(reason);setShowCancelModal(false);}}/>}
     </Card>
 
     {/* Player-facing "who to pay" card — the admin-only Settlement card further down (isAdmin
@@ -15836,17 +15951,23 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
   const isFutureEv=ev=>{ if(!ev.date) return true; const t=new Date(`${ev.date}T23:59:59`).getTime(); return isNaN(t)||t>=now; };
   // Coming/Past is decided strictly by whether the event's date+time has passed — not by admin status.
   // This surfaces events whose time has come and gone but were never closed (Incomplete), instead of
-  // leaving them stuck under "Coming" forever. Cancelled events don't appear in this quick view at all —
-  // they live under the community's own Archived section.
+  // leaving them stuck under "Coming" forever.
+  // Admin request (2026-09-27): Cancelled is "like Completed" for visibility (stays in the normal
+  // Past tab everyone can see, its own section) but "like Deleted" for impact (never touches
+  // score/history) — it used to be excluded here entirely and only shown under the community's
+  // own admin-only Archived section, which hid it from regular members.
   const evTime=ev=>{ const t=new Date(`${ev.date}T${ev.time||"00:00"}`).getTime(); return isNaN(t)?0:t; };
   const byNewestFirst=(a,b)=>evTime(b)-evTime(a);
   const bySoonestFirst=(a,b)=>evTime(a)-evTime(b);
   // Coming: soonest-first (ascending) — the event about to happen belongs at the top, not buried
   // under everything further out. Past: newest-first (descending) — most recently finished on top.
   const coming=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(bySoonestFirst);
-  const pastAll=filteredEvents.filter(ev=>ev.status!=="cancelled"&&!isFutureEv(ev)&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
+  // A cancelled event lands here regardless of its original date — see the same fix's comment
+  // in the community events list above.
+  const pastAll=filteredEvents.filter(ev=>(!isFutureEv(ev)||ev.status==="cancelled")&&!ev.archived&&myIds.has(ev.id)).sort(byNewestFirst);
   const pastCompleted=pastAll.filter(ev=>ev.status==="completed");
-  const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed");
+  const pastCancelled=pastAll.filter(ev=>ev.status==="cancelled");
+  const pastIncomplete=pastAll.filter(ev=>ev.status!=="completed"&&ev.status!=="cancelled");
   const past=pastAll;
   const others=filteredEvents.filter(ev=>ev.status!=="cancelled"&&isFutureEv(ev)&&!ev.archived&&!myIds.has(ev.id)).sort(bySoonestFirst);
   // Default open/closed state for the Past tab's two sections depends on whether there's actually
@@ -15858,6 +15979,7 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
   // afterward is never overridden by a later re-render.
   const [incompleteOpen,setIncompleteOpen]=useState(true);
   const [completedOpen,setCompletedOpen]=useState(()=>pastIncomplete.length===0);
+  const [cancelledOpen,setCancelledOpen]=useState(false);
   const [selMode,setSelMode]=useState(false);
   const [selected,setSelected]=useState(new Set());
   const adminComms=comms.filter(c=>c.members.some(m=>m.userId===me.id&&(m.role==="owner"||m.role==="admin")));
@@ -15914,6 +16036,13 @@ function EvList({events,me,users,comms,venues,eventCommFilter,onOpen,onCreateEv,
           <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)",textTransform:"uppercase",letterSpacing:0.5}}>✅ Completed ({pastCompleted.length})</span>
         </div>
         {completedOpen&&pastCompleted.map(ev=><Row key={ev.id} ev={ev}/>)}
+      </>}
+      {pastCancelled.length>0&&<>
+        <div onClick={()=>setCancelledOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",margin:"16px 0 8px"}}>
+          <span style={{fontSize:11,color:"var(--po-dim)",transform:cancelledOpen?"none":"rotate(-90deg)",transition:"transform 0.15s"}}>▾</span>
+          <span style={{fontSize:13,fontWeight:600,color:"var(--po-text)",textTransform:"uppercase",letterSpacing:0.5}}>❌ Cancelled ({pastCancelled.length})</span>
+        </div>
+        {cancelledOpen&&pastCancelled.map(ev=><Row key={ev.id} ev={ev}/>)}
       </>}
     </>)}
   </>;

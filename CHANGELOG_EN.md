@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.93 (current) — Real engine fix: a player who'd reached their correct court was evicted to serve someone else's different target (Bug #27)
+## V0.16.94 (current) — Notification badge fix + Cancel Event feature + USR-tier fix for same-target returnee collisions
+
+- **Fix 1 — the app icon's notification badge count didn't match the count inside the app:** the Android badge counts undismissed notifications in the OS tray, not the in-app "read" flag — nothing was ever clearing the tray. Fixed by clearing all delivered notifications (`PushNotifications.removeAllDeliveredNotifications`) on app launch and every time it resumes from the background, keeping the badge in sync with the in-app count.
+- **Fix 2 — when two same-round returnees shared an identical target court that wasn't available, the higher-USR one could land on the worse of the two leftover courts:** admin report, traced on a live "Test 5" practice run — Dodo and Zizo both targeted Court 3, it was full, so Zizo (higher USR) ended up at Court 4 while Dodo (lower USR) got Court 2 — backwards. Cause: when the choice between the better neighboring court and the worse one was genuinely tied, it was decided purely by which existing occupant was most overdue for a break, with no regard for either returning player's own USR. Fix: on a genuine tie between the two neighboring courts, the higher-USR player among the colliding returnees now wins the better one. **Verified with a direct before/after reproduction of the exact bug plus a 150-trial randomized stress test (838 round-generations), zero failures. Applied to both CI and CT.**
+- **New feature — Cancel Event:** a "❌ Cancel Event" button next to "🏁 Close" on the event detail screen opens a growing reason list (any custom reason typed in gets saved as a one-tap option for next time) or a free-text custom reason. A cancelled event shows in a new "❌ Cancelled" section (as visible as "✅ Completed", never hidden in the admin-only archive), **with zero effect on any stat or player history** (every stats function already gates strictly on `status==="completed"`).
+- **Also fixed while building this feature:** a cancelled event with a future date could vanish entirely (neither "upcoming" nor "past") — fixed.
+
+---
+
+## V0.16.93 — Real engine fix: a player who'd reached their correct court was evicted to serve someone else's different target (Bug #27)
 
 - **Real bug the admin confirmed (event #213, round 5):** Mahmoud Izzat (target Court 2) was correctly placed at Court 2, then got needlessly evicted again to Court 1 — because Dodo (target Court 3, **not** Court 2!) needed a seat.
 - **Cause:** Enhancement #38's bench relocation searched **every** court adjacent to the current player's target for any same-round returnee, not just the exact target — so if nobody was sitting at the player's own target, it kept walking outward and evicted whoever it found nearby (even someone who'd already reached their own correct court), without ever trying a plain eviction at the player's own target first.

@@ -4,7 +4,20 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.91 (current) — Merged two bullets into one + reused the "Downwards" term instead of a long inline explanation
+## V0.16.92 (current) — Unified naming: "Upwards"/"Top Holders" instead of "fresh winner"/"protected"
+
+- **Admin request:** rename "Fresh Winner" to "Upwards" (matching Downwards), reorder "Holding Top" to "Top Holders", and drop the word "protected" entirely — just the real pool names (Downwards/Top Holders/Upwards) everywhere.
+- **Applied everywhere:** every message that said "Was a fresh winner ('momentum' pool)... no protected candidate" now reads "Was in the 'Upwards' pool... no Downwards or Top Holders candidate", with its own Explain button (matching Downwards and Top Holders exactly).
+- **Along the way, traced a real decision question the admin asked** (event #213, Marwan Aly R5 Break — "why did Izzat evict Marwan (Upwards) from C1 when Zizo and Mizo were available at the right court?"):
+  - Tracing the actual event data showed the real story is more layered than it looked: Izzat himself got relocated twice (not once), because Hashim and Dodo both needed roughly the same court around the same time. Izzat's final move searched for a seat at Court 1 or 3 — never Court 2, since that's the court he was leaving, not heading to.
+  - At both those courts, every Downwards/Top Holders candidate (Moaz Abozaid, Shiko, Omar H) had **already used their full fair-share entitlement** (remaining=0) — the fair-share rule forbids evicting them again, forcing the search into the Upwards pool. Marwan, having never taken a break all event, was the most overdue candidate there.
+  - Zizo and Mizo were genuinely available and eligible — but at **Court 2**, not Court 1 or 3, and Court 2 was never in scope for this particular move (it's the court Izzat was leaving, not his destination).
+  - **Bottom line:** no bug here — the engine followed the admin's own stated priority ("fair share beats everything else") exactly as designed. One separate, genuinely interesting observation surfaced along the way (noted only, not a bug): Dodo (target Court 3) ended up at Court 2 instead, because the relocation search scans every nearby court for an existing same-round returnee rather than only the player's own exact target — worth revisiting later if the admin wants to.
+- **Applied the naming change to both CI and CT, comprehensively backfilled every stored instance (9 in event #212, 2 in #213).**
+
+---
+
+## V0.16.91 — Merged two bullets into one + reused the "Downwards" term instead of a long inline explanation
 
 - **Two admin notes on this same message (event #213, Amka R2 C3):**
   1. "🔓 Seat opened by moving Omar H... they'd arrived at Court 3 by losing and being relegated from the court above" — this spells out something that already has a name in the app ("Downwards", the same term already used on the evicted player's own card) — asked to reuse that term with an Explain button instead of a long inline description.

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.91";
+const APP_VERSION = "V0.16.92";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -756,19 +756,24 @@ const BULLET_EXPLANATIONS = [
   { prefix: "🎯 Concentrated", explain: "Guaranteed to be among the players who get the extra break." },
   { prefix: "⚖️ Fair share", explain: "The gap between whoever has taken the most breaks and whoever has taken the fewest never exceeds 1 — enforced automatically, unless manually done by an admin." },
   { prefix: "⏱", explain: "Player preference for the timing of their break." },
-  { prefix: `🛡️ Was in the "Downwards"`, explain: "Arrived by losing and being relegated from the court above — \"Downwards\" candidates are used before any fresh winner." },
-  { prefix: `🛡️ Was in the "Holding Top"`, explain: "Won at Court 1 and stayed there — \"Holding Top\" candidates are used before any fresh winner." },
+  { prefix: `🛡️ Was in the "Downwards"`, explain: "Arrived by losing and being relegated from the court above — \"Downwards\" candidates are used before any \"Upwards\" pick." },
+  { prefix: `🛡️ Was in the "Top Holders"`, explain: "Won at Court 1 and stayed there — \"Top Holders\" candidates are used before any \"Upwards\" pick." },
+  { prefix: `⬆️ Was in the "Upwards"`, explain: "Arrived by winning and being promoted up a court — only evicted when nobody from Downwards or Top Holders was eligible nearby." },
   { prefix: "🎯 Target Court was", explain: "Earned from their last recorded result, or from their original seeding rank if they have no result on record yet." },
   // Admin request (2026-09-25): the "Seat opened by evicting X" bullet used to name the evicted
   // player's own via-pool inline as a full sentence, then repeat the SAME fact one bullet later
   // as "Found in the protected pool" — redundant, no new information. Folded the pool name
-  // straight into this one bullet instead, using the same "Downwards"/"Holding Top" terms already
+  // straight into this one bullet instead, using the same "Downwards"/"Top Holders" terms already
   // established elsewhere (see the two entries above) — these new entries match via `.includes`
   // since the pool name sits mid-sentence here, not at the very start of the bullet.
+  // Admin request (2026-09-26): "Holding Top" reordered to "Top Holders", and the word "protected"
+  // dropped everywhere — the app now names the actual pools directly (Downwards/Top Holders) rather
+  // than the abstract "protected" umbrella term. "Fresh winner"/"momentum" renamed to "Upwards" to
+  // match the ↑ icon and sit alongside Downwards/Top Holders as a third named pool, not a caveat.
   { prefix: "as Downwards", explain: "Downwards are those who lost in a court above and dropped down to this one." },
-  { prefix: "as Holding Top", explain: "Holding Top are those who won at Court 1 and stayed there." },
+  { prefix: "as Top Holders", explain: "Top Holders are those who won at Court 1 and stayed there." },
   { prefix: "as ⚓ BOTTOM", explain: "⚓ BOTTOM are those who lost at the bottom court and stayed there — there's nowhere lower to drop to." },
-  { prefix: "as a fresh winner", explain: "A fresh winner is only evicted when nobody from the more usual \"Downwards\"/\"Holding Top\" pools was eligible anywhere." },
+  { prefix: "as Upwards", explain: "Upwards are those who won and got promoted up a court — only evicted when nobody from Downwards or Top Holders was eligible anywhere." },
 ];
 function explainForBullet(text) {
   const hit = BULLET_EXPLANATIONS.find(e => typeof text === "string" && text.includes(e.prefix));
@@ -1142,7 +1147,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   // those terms already exist and are explainable elsewhere (see BULLET_EXPLANATIONS), and a
   // separate bullet repeating the same fact right after ("Found in the protected pool...") added
   // no new information once the pool name itself is stated here.
-  const poolLabel = v => v==="loss" ? "Downwards" : v==="stay" ? "Holding Top" : v==="stay-bottom" ? "⚓ BOTTOM" : v==="win" ? "a fresh winner (only reached because no protected candidate was eligible anywhere)" : "an eviction earlier this round";
+  const poolLabel = v => v==="loss" ? "Downwards" : v==="stay" ? "Top Holders" : v==="stay-bottom" ? "⚓ BOTTOM" : v==="win" ? "Upwards (only reached because no Downwards or Top Holders candidate was eligible anywhere)" : "an eviction earlier this round";
   // Real bug found replaying a real historical event through v2 (2026-09-20): a bench player
   // with no computable target — findExpectedReturnCourt only knows a match result or a
   // Round-1 wouldBeCourt, neither of which existed for events recorded before that field was
@@ -1273,7 +1278,9 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const evUid2 = relocEvicted.p.userId, evGap2 = ri-(lastBreak[evUid2]??-99);
         breakReasons[evUid2] = [
           `🪑 Evicted from Court ${relocateCourt} for ${benchEntry.p.nickname||("player #"+benchEntry.p.userId)}.`,
-          isProtected(relocEvicted) ? `🛡️ Was in the "${relocEvicted.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${relocateCourt}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
+          relocEvicted.via==="win"
+            ? `⬆️ Was in the "Upwards" pool at Court ${relocateCourt} — only reached because no Downwards or Top Holders candidate was eligible nearby.`
+            : `🛡️ Was in the "${relocEvicted.via==="stay"?"Top Holders":"Downwards"}" pool at Court ${relocateCourt}.`,
           `⚖️ Fair share: gets ${ent[evUid2]??0} break${ent[evUid2]===1?"":"s"}, ${breakCounts[evUid2]||0} used before`,
           `🎯 Selected as the most overdue and eligible at this court ${relocateCourt}.`,
         ];
@@ -1438,7 +1445,7 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const rem = remaining[e.p.userId]||0;
         return rem<=0 ? `${e.p.nickname||("player #"+e.p.userId)} (${rem} remaining)` : `${e.p.nickname||("player #"+e.p.userId)} (broke last round)`;
       });
-      return named.length ? `🔍 Court ${c}${protectedPhase?"":" (momentum)"} skipped — ${named.join(", ")}` : null;
+      return named.length ? `🔍 Court ${c}${protectedPhase?"":" (Upwards)"} skipped — ${named.join(", ")}` : null;
     };
     const foundInProtected = isProtected(entry);
     const foundInLocal = localCourts.includes(court);
@@ -1473,7 +1480,9 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const evGap = ri-(lastBreak[evUid]??-99);
     breakReasons[evUid] = [
       `🪑 Evicted from Court ${court} for ${benchPlayer.nickname||("player #"+uid)}.`,
-      isProtected(entry) ? `🛡️ Was in the "${entry.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${court}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
+      entry.via==="win"
+        ? `⬆️ Was in the "Upwards" pool at Court ${court} — only reached because no Downwards or Top Holders candidate was eligible anywhere.`
+        : `🛡️ Was in the "${entry.via==="stay"?"Top Holders":"Downwards"}" pool at Court ${court}.`,
       `⚖️ Fair share: gets ${ent[evUid]??0} break${ent[evUid]===1?"":"s"}, ${breakCounts[evUid]||0} used before`,
       `🎯 Selected as the most overdue and eligible at this court ${court}.`,
     ];
@@ -2608,7 +2617,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   // those terms already exist and are explainable elsewhere (see BULLET_EXPLANATIONS), and a
   // separate bullet repeating the same fact right after ("Found in the protected pool...") added
   // no new information once the pool name itself is stated here.
-  const poolLabel = v => v==="loss" ? "Downwards" : v==="stay" ? "Holding Top" : v==="stay-bottom" ? "⚓ BOTTOM" : v==="win" ? "a fresh winner (only reached because no protected candidate was eligible anywhere)" : "an eviction earlier this round";
+  const poolLabel = v => v==="loss" ? "Downwards" : v==="stay" ? "Top Holders" : v==="stay-bottom" ? "⚓ BOTTOM" : v==="win" ? "Upwards (only reached because no Downwards or Top Holders candidate was eligible anywhere)" : "an eviction earlier this round";
   // Same fallback as genDynamic2CI above, same reasoning — a team with no computable target
   // must still go through the full eviction cascade (an actual seat has to be freed for a
   // returning team, "late joiner" placement alone can't do that), never silently dropped.
@@ -2693,7 +2702,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const evTid2 = relocEvicted.t.id, evGap2 = ri-(lastBreak[evTid2]??-99);
         breakReasons[evTid2] = [
           `🪑 Evicted from Court ${relocateCourt} for ${benchEntry.t.name||("Team #"+benchEntry.t.id)}.`,
-          isProtected(relocEvicted) ? `🛡️ Was in the "${relocEvicted.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${relocateCourt}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible nearby`,
+          relocEvicted.via==="win"
+            ? `⬆️ Was in the "Upwards" pool at Court ${relocateCourt} — only reached because no Downwards or Top Holders candidate was eligible nearby.`
+            : `🛡️ Was in the "${relocEvicted.via==="stay"?"Top Holders":"Downwards"}" pool at Court ${relocateCourt}.`,
           `⚖️ Fair share: gets ${ent[evTid2]??0} break${ent[evTid2]===1?"":"s"}, ${breakCounts[evTid2]||0} used before`,
           `🎯 Selected as the most overdue and eligible at this court ${relocateCourt}.`,
         ];
@@ -2800,7 +2811,7 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const rem = remaining[e.t.id]||0;
         return rem<=0 ? `${e.t.name||("Team #"+e.t.id)} (${rem} remaining)` : `${e.t.name||("Team #"+e.t.id)} (broke last round)`;
       });
-      return named.length ? `🔍 Court ${c}${protectedPhase?"":" (momentum)"} skipped — ${named.join(", ")}` : null;
+      return named.length ? `🔍 Court ${c}${protectedPhase?"":" (Upwards)"} skipped — ${named.join(", ")}` : null;
     };
     const foundInProtected = isProtected(entry);
     const foundInLocal = localCourts.includes(court);
@@ -2832,7 +2843,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     const evGap = ri-(lastBreak[evTid]??-99);
     breakReasons[evTid] = [
       `🪑 Evicted from Court ${court} for ${benchTeam.name||("Team #"+tid)}.`,
-      isProtected(entry) ? `🛡️ Was in the "${entry.via==="stay"?"Holding Top":"Downwards"}" pool at Court ${court}.` : `⚠️ Was a fresh winner ("momentum" pool) — only reached because no protected candidate was eligible anywhere`,
+      entry.via==="win"
+        ? `⬆️ Was in the "Upwards" pool at Court ${court} — only reached because no Downwards or Top Holders candidate was eligible anywhere.`
+        : `🛡️ Was in the "${entry.via==="stay"?"Top Holders":"Downwards"}" pool at Court ${court}.`,
       `⚖️ Fair share: gets ${ent[evTid]??0} break${ent[evTid]===1?"":"s"}, ${breakCounts[evTid]||0} used before`,
       `🎯 Selected as the most overdue and eligible at this court ${court}.`,
     ];

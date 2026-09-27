@@ -4,7 +4,18 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.92 (current) — Unified naming: "Upwards"/"Top Holders" instead of "fresh winner"/"protected"
+## V0.16.93 (current) — Real engine fix: a player who'd reached their correct court was evicted to serve someone else's different target (Bug #27)
+
+- **Real bug the admin confirmed (event #213, round 5):** Mahmoud Izzat (target Court 2) was correctly placed at Court 2, then got needlessly evicted again to Court 1 — because Dodo (target Court 3, **not** Court 2!) needed a seat.
+- **Cause:** Enhancement #38's bench relocation searched **every** court adjacent to the current player's target for any same-round returnee, not just the exact target — so if nobody was sitting at the player's own target, it kept walking outward and evicted whoever it found nearby (even someone who'd already reached their own correct court), without ever trying a plain eviction at the player's own target first.
+- **Fix:** eviction between two returning players is now two phases — a genuine collision on the **exact same court** (two players sharing a target) still behaves as before, but evicting a returnee sitting at an **adjacent** court is now a last resort, tried only after a plain eviction at the player's own target has already been attempted and failed.
+- **Full details, root cause, and verification (a real regeneration + 150 randomized stress trials + regenerating every round of #212/#213's real history, zero issues):** see Bug #27 in `BUGS.md`.
+- **⚠️ Important:** this fix changes an actual outcome (who breaks), not just wording — so it is **not** applied retroactively to round 5 as already recorded (that would corrupt real recorded results). It only affects rounds generated from now on.
+- **Applied to both CI and CT.**
+
+---
+
+## V0.16.92 — Unified naming: "Upwards"/"Top Holders" instead of "fresh winner"/"protected"
 
 - **Admin request:** rename "Fresh Winner" to "Upwards" (matching Downwards), reorder "Holding Top" to "Top Holders", and drop the word "protected" entirely — just the real pool names (Downwards/Top Holders/Upwards) everywhere.
 - **Applied everywhere:** every message that said "Was a fresh winner ('momentum' pool)... no protected candidate" now reads "Was in the 'Upwards' pool... no Downwards or Top Holders candidate", with its own Explain button (matching Downwards and Top Holders exactly).

@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.92";
+const APP_VERSION = "V0.16.93";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1239,8 +1239,8 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     // eviction would. Net cost is identical either way (one break happens somewhere), but the
     // people playing end up distributed closer to where they actually earned their seat instead of
     // concentrating all the disruption on whichever bench player happened to be processed last.
-    const attemptBenchRelocate = () => {
-      for (const c of localCourts) {
+    const attemptBenchRelocateAt = (courtsToCheck) => {
+      for (const c of courtsToCheck) {
         const benchEntry = buckets[c].find(e => e.via === "bench");
         if (!benchEntry) continue;
         const entryTarget = bench.find(b=>b.uid===benchEntry.p.userId)?.target;
@@ -1267,8 +1267,21 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       }
       return null;
     };
-    const benchRelocate = attemptBenchRelocate();
-    if (benchRelocate) {
+    // Admin report (2026-09-27, event #213 round 5 — "Dodo's target was Court 3, but he ended up
+    // at Court 2 instead, bumping Izzat out of HIS OWN correct target"): this used to scan the
+    // ENTIRE local window [target, target-1, target+1] for any same-round bench occupant and act on
+    // the first one found — even when the player's own EXACT target court had a perfectly good,
+    // ordinary eviction available and no bench conflict at all. That's exactly what happened here:
+    // Court 3 (Dodo's real target) had zero same-round bench occupants, but the walk kept going,
+    // found Izzat (bench) sitting at Court 2, and relocated HIM — bumping a player who'd already
+    // reached his own correct court to serve a DIFFERENT player's need at a DIFFERENT court, while
+    // Court 3 itself never even got a normal eviction attempt. Split into two scoped calls: check
+    // ONLY the exact target first (a genuine same-court collision — unchanged from before, this is
+    // the legitimate "two returnees want the identical court" case), and only ever consider an
+    // ADJACENT court's bench occupant afterward, once a normal local eviction at the exact target
+    // has already been tried and failed (see below) — matching Enhancement #38's original intent
+    // ("cheaper than reaching far") instead of preempting a perfectly good local option.
+    const applyBenchRelocate = (benchRelocate) => {
       const {court:brCourt, benchEntry, relocateCourt, entryTarget, relocEvicted} = benchRelocate;
       buckets[brCourt].splice(buckets[brCourt].indexOf(benchEntry), 1);
       buckets[brCourt].push({p: benchPlayer, via: "bench"});
@@ -1326,8 +1339,9 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         ? `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""}, evicting ${relocEvicted.p.nickname||("player #"+relocEvicted.p.userId)} there, to free Court ${brCourt} for ${thisPlayerName}.`
         : `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""} (an open seat, no eviction needed), to free Court ${brCourt} for ${thisPlayerName}.`;
       returnReasons[benchEntry.p.userId] = [...priorReasons, relocHopBullet];
-      return;
-    }
+    };
+    const benchRelocateExact = attemptBenchRelocateAt([target]);
+    if (benchRelocateExact) { applyBenchRelocate(benchRelocateExact); return; }
 
     // Pooled search (2026-09-2X, admin request): a court is no longer exhausted one at a time
     // before trying the next — every court in `courtsOrder` is gathered into ONE pool and the
@@ -1391,13 +1405,22 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     // to satisfy anywhere on the ladder. Urgency (fair share) is still checked first of all,
     // before any of this, since it's the one thing allowed to override locality outright.
     let usedUrgent = false;
-    const found = (() => {
+    const localNormal = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
       return attemptSearch(localCourts, true, isEligiblePreferred) ||
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
-        attemptSearch(localCourts, false, isEligibleStrict) ||
-        attemptSearch(farProtectedOrder, true, isEligiblePreferred) ||
+        attemptSearch(localCourts, false, isEligibleStrict);
+    })();
+    // Admin report (2026-09-27): the adjacent-court bench relocate (see attemptBenchRelocateAt's
+    // comment above) only gets a turn here, once a normal eviction at the exact target — and its
+    // immediate local neighbors — has already been tried and genuinely found nothing. This is the
+    // real Enhancement #38 case (a cheaper alternative to reaching all the way to a FAR court), not
+    // a shortcut that preempts a perfectly good local option the way it used to.
+    const benchRelocateAdjacent = localNormal ? null : attemptBenchRelocateAt(localCourts.filter(c => c !== target));
+    if (benchRelocateAdjacent) { applyBenchRelocate(benchRelocateAdjacent); return; }
+    const found = localNormal || (() => {
+      return attemptSearch(farProtectedOrder, true, isEligiblePreferred) ||
         attemptSearch(farMomentumOrder, false, isEligiblePreferred) ||
         attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
         attemptSearch(farMomentumOrder, false, isEligibleStrict) ||
@@ -2663,8 +2686,8 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     // Bounded to one level: the relocation search only ever evicts a real win/loss occupant
     // (anti-consecutive-break already rules out picking another same-round bench-returnee), so
     // this can never cascade.
-    const attemptBenchRelocate = () => {
-      for (const c of localCourts) {
+    const attemptBenchRelocateAt = (courtsToCheck) => {
+      for (const c of courtsToCheck) {
         const benchEntry = buckets[c].find(e => e.via === "bench");
         if (!benchEntry) continue;
         const entryTarget = bench.find(b=>b.tid===benchEntry.t.id)?.target;
@@ -2691,8 +2714,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
       }
       return null;
     };
-    const benchRelocate = attemptBenchRelocate();
-    if (benchRelocate) {
+    // Same "exact target first, adjacent only as a last resort" fix as genDynamic2CI's — see its
+    // comment for the full reasoning.
+    const applyBenchRelocate = (benchRelocate) => {
       const {court:brCourt, benchEntry, relocateCourt, entryTarget, relocEvicted} = benchRelocate;
       buckets[brCourt].splice(buckets[brCourt].indexOf(benchEntry), 1);
       buckets[brCourt].push({t: benchTeam, via: "bench"});
@@ -2733,8 +2757,9 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         ? `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""}, evicting ${relocEvicted.t.name||("Team #"+relocEvicted.t.id)} there, to free Court ${brCourt} for ${thisTeamName}.`
         : `↪️ Then bumped again to Court ${relocateCourt}${relocateCourt===entryTarget?" — their own real target":""} (an open seat, no eviction needed), to free Court ${brCourt} for ${thisTeamName}.`;
       returnReasons[benchEntry.t.id] = [...priorTeamReasons, relocHopTeamBullet];
-      return;
-    }
+    };
+    const benchRelocateExact = attemptBenchRelocateAt([target]);
+    if (benchRelocateExact) { applyBenchRelocate(benchRelocateExact); return; }
 
     // Pooled search — see genDynamic2CI's comment for the full "why".
     const attemptSearch = (courtsOrder, protectedPhase, eligibleFn) => {
@@ -2769,13 +2794,22 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     };
     // Fair-share-before-locality reordering — see genDynamic2CI's comment for the full "why".
     let usedUrgent = false;
-    const found = (() => {
+    const localNormal = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
       return attemptSearch(localCourts, true, isEligiblePreferred) ||
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
-        attemptSearch(localCourts, false, isEligibleStrict) ||
-        attemptSearch(farProtectedOrder, true, isEligiblePreferred) ||
+        attemptSearch(localCourts, false, isEligibleStrict);
+    })();
+    // Admin report (2026-09-27): the adjacent-court bench relocate (see attemptBenchRelocateAt's
+    // comment above) only gets a turn here, once a normal eviction at the exact target — and its
+    // immediate local neighbors — has already been tried and genuinely found nothing. This is the
+    // real Enhancement #38 case (a cheaper alternative to reaching all the way to a FAR court), not
+    // a shortcut that preempts a perfectly good local option the way it used to.
+    const benchRelocateAdjacent = localNormal ? null : attemptBenchRelocateAt(localCourts.filter(c => c !== target));
+    if (benchRelocateAdjacent) { applyBenchRelocate(benchRelocateAdjacent); return; }
+    const found = localNormal || (() => {
+      return attemptSearch(farProtectedOrder, true, isEligiblePreferred) ||
         attemptSearch(farMomentumOrder, false, isEligiblePreferred) ||
         attemptSearch(farProtectedOrder, true, isEligibleStrict) ||
         attemptSearch(farMomentumOrder, false, isEligibleStrict) ||

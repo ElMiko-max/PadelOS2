@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.96 (current) — A stronger fix for the USR-tier collision bug + allow firm-locking an already-generated round
+## V0.16.97 (current) — The real fix for the USR-tier bug: a final check after the normal logic, not another patch inside it
+
+- **The same bug recurred a third time (Rouka and Zizo this time)** despite the V0.16.96 fix (which made each returnee "prefer their own side" inside the search itself) — because there were simply too many search paths (urgent picks, far search, relaxed tiers...) and each fix kept missing whichever one produced this specific split.
+- **The fix the admin himself suggested, and the right one:** don't touch the normal search logic at all — leave it running exactly as it always has. **After** every returning player has landed somewhere, run **one single final check**: if two returnees collided on the same target and ended up on two different courts, sort them by USR and swap them between those same two courts (evicting nobody new) so the higher-USR one always gets the better court. **Simple, and catches the case no matter which path produced it.**
+- **Both earlier fixes (V0.16.94's tie-break, V0.16.96's side-preference) were removed entirely and replaced by this one final check** — simpler and more complete than both combined.
+- **Verified with a 200-trial randomized stress test (1250 round-generations): 236 real collisions actually occurred in the data, every single one resolved correctly (higher USR always got the better court). Zero structural failures.**
+- **Applied to both CI and CT.**
+
+---
+
+## V0.16.96 — A stronger fix for the USR-tier collision bug (superseded, see V0.16.97) + allow firm-locking an already-generated round
 
 - **A second bug report the admin confirmed (the same Zizo/Dodo problem, recurring):** the V0.16.94 fix only handled a genuine tie between the upper and lower neighboring courts — but real data almost never produces a clean tie (the time gap since each player's own last break usually differs), so the system kept picking based purely on "who's most overdue among the current occupants," with no regard at all for the returning players' own USR.
 - **The stronger fix:** when two same-round returnees collide on an identical target and are forced to split between an upper and lower court, each one now **prefers their own side first** (the higher-USR one tries the upper court, the lower-USR one tries the lower court) before falling back to the normal pick (most overdue) — not just when there's a tie. **Verified with a direct before/after reproduction of the exact real scenario (no tie involved) plus a 150-trial randomized stress test (800 round-generations), zero failures. Applied to both CI and CT.**

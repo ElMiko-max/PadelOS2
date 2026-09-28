@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.96";
+const APP_VERSION = "V0.16.97";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1168,17 +1168,6 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   bench.forEach(({uid,target}) => {
     const benchPlayer = sorted.find(p=>p.userId===uid);
     if (!benchPlayer) return;
-    // Admin report (2026-09-27, event Test 5 dupe of #214 — "Dodo and Zizo both targeted Court
-    // 3, it wasn't available, so Zizo went to Court 4 and Dodo went to Court 2 — Zizo has the
-    // higher USR, he deserves the better leftover court, not the worse one"): when two same-round
-    // returnees share an identical target and it can't fit both, the split between the upper
-    // neighbor (target-1, the better tier) and the lower neighbor (target+1) was decided purely by
-    // which existing occupant was most overdue to break — completely blind to which of the two
-    // RETURNING players actually outranks the other. Computed once per bench player so the search
-    // below can break a genuine target-1-vs-target+1 tie in the higher-USR sibling's favor.
-    const sameTargetSiblings = bench.filter(b => b.uid!==uid && b.target===target);
-    const sameTargetHigherExists = sameTargetSiblings.some(b => (sorted.find(p=>p.userId===b.uid)?.usr||0) > benchPlayer.usr);
-    const sameTargetLowerExists = sameTargetSiblings.some(b => (sorted.find(p=>p.userId===b.uid)?.usr||0) < benchPlayer.usr);
     const protectedOrder = [target];
     for (let c=target-1;c>=1;c--) protectedOrder.push(c);
     for (let c=target+1;c<=courts;c++) protectedOrder.push(c);
@@ -1372,15 +1361,6 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const ax=isAnchor(x.p)?1:0, ay=isAnchor(y.p)?1:0; if(ax!==ay) return ay-ax;
         const sx=ri-(lastBreak[x.p.userId]??-99), sy=ri-(lastBreak[y.p.userId]??-99); if(sx!==sy) return sy-sx;
         const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy; // prefer the exact target court on a genuine tie, then whichever's closer
-        // Admin request (2026-09-27): a genuine tie between the upper neighbor (target-dx) and the
-        // lower neighbor (target+dx) — both equally close, both equally overdue — is exactly the
-        // "which returnee outranks the other" case above. Only applies when this player is cleanly
-        // the top or bottom of their same-target group (a 3+-way tie falls through unchanged).
-        if (dx>0 && sameTargetHigherExists !== sameTargetLowerExists) {
-          const preferCourt = sameTargetLowerExists ? target-dx : target+dx;
-          if (X.c===preferCourt && Y.c!==preferCourt) return -1;
-          if (Y.c===preferCourt && X.c!==preferCourt) return 1;
-        }
         return x.p.usr - y.p.usr;
       });
       return {court:candidates[0].c, entry:candidates[0].e};
@@ -1427,31 +1407,10 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     let usedUrgent = false;
     const localNormal = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
-      const general = attemptSearch(localCourts, true, isEligiblePreferred) ||
+      return attemptSearch(localCourts, true, isEligiblePreferred) ||
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
         attemptSearch(localCourts, false, isEligibleStrict);
-      // Admin report (2026-09-27, SECOND occurrence — a tie-only fix wasn't enough): real data
-      // almost never produces a clean anchor/spacing tie between the two neighboring courts, so
-      // the pooled search above kept picking whichever occupant was simply most overdue,
-      // continuing to ignore which of two same-target returnees actually outranks the other.
-      // Once the exact target is confirmed unreachable (general.court!==target), a genuine
-      // collision now re-tries JUST this player's own preferred side (upper for the higher-USR
-      // sibling, lower otherwise) through the exact same preferred/strict eligibility cascade —
-      // and uses THAT result instead whenever it succeeds, even if the pooled search would have
-      // picked the other side. Falls back to the pooled result untouched if the preferred side
-      // genuinely has nobody eligible, so nobody is ever stranded by this preference.
-      if (general && general.court !== target && sameTargetHigherExists !== sameTargetLowerExists) {
-        const preferredSide = sameTargetLowerExists ? target-1 : target+1;
-        if (localCourts.includes(preferredSide) && general.court !== preferredSide) {
-          const sideFound = attemptSearch([preferredSide], true, isEligiblePreferred) ||
-            attemptSearch([preferredSide], false, isEligiblePreferred) ||
-            attemptSearch([preferredSide], true, isEligibleStrict) ||
-            attemptSearch([preferredSide], false, isEligibleStrict);
-          if (sideFound) return sideFound;
-        }
-      }
-      return general;
     })();
     // Admin report (2026-09-27): the adjacent-court bench relocate (see attemptBenchRelocateAt's
     // comment above) only gets a turn here, once a normal eviction at the exact target — and its
@@ -1554,6 +1513,61 @@ function genDynamic2CI(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (isAnchor(entry.p)) breakReasons[evUid].push(`⏱ ${entry.p.breakPref[0].toUpperCase()+entry.p.breakPref.slice(1)} Break.`);
     if (usedRelaxedCap) breakReasons[evUid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
     if (usedTightSpacing) breakReasons[evUid].push(`↔️ Only ${evGap} round(s) since their last break — tighter than the preferred 2-round gap, but nobody clearing that was eligible anywhere`);
+  });
+
+  // Admin report (2026-09-28, THIRD occurrence of the same pattern — Dodo/Zizo twice, now
+  // Rouka/Zizo): every attempt to fix this by biasing the search itself (a tie-break, then a
+  // "prefer my own side" cascade) kept missing some path through the eviction search — urgent
+  // picks, far search, relaxed tiers — that could still split a same-target collision the wrong
+  // way. Per the admin's own suggested fix: leave the normal search completely alone, and once
+  // every bench player this round has actually landed somewhere, do ONE final pass — for any
+  // group of same-target returnees who didn't all land exactly at their shared target, sort them
+  // by USR and reassign them across the SAME set of courts they already landed on, so the
+  // higher-USR one always ends up on the better (lower-numbered) court. This never evicts anyone
+  // new — both players already have a real seat, it only ever exchanges which of the two sits
+  // where, catching the case regardless of which search path produced the mismatch.
+  const targetGroups = {};
+  bench.forEach(({uid,target}) => { (targetGroups[target] = targetGroups[target]||[]).push(uid); });
+  Object.entries(targetGroups).forEach(([targetStr, uids]) => {
+    if (uids.length < 2) return;
+    const targetNum = Number(targetStr);
+    const findCourt = (uid) => { for (let c=1;c<=courts;c++) if (buckets[c].some(e=>e.p.userId===uid && e.via==="bench")) return c; return null; };
+    const group = uids.map(uid => ({ uid, usr: sorted.find(p=>p.userId===uid)?.usr||0, court: findCourt(uid) }))
+      .filter(g => g.court!=null && g.court!==targetNum); // never disturb someone who reached their exact real target
+    if (group.length < 2) return;
+    const byUsrDesc = [...group].sort((a,b) => b.usr-a.usr);
+    const courtsAsc = [...group].map(g=>g.court).sort((a,b)=>a-b);
+    const desiredCourt = {}; byUsrDesc.forEach((g,i) => { desiredCourt[g.uid] = courtsAsc[i]; });
+    if (group.every(g => g.court===desiredCourt[g.uid])) return; // already correctly ordered
+    const entryOf = {};
+    group.forEach(g => {
+      const idx = buckets[g.court].findIndex(e=>e.p.userId===g.uid && e.via==="bench");
+      entryOf[g.uid] = buckets[g.court][idx];
+      buckets[g.court].splice(idx,1);
+    });
+    group.forEach(g => { buckets[desiredCourt[g.uid]].push(entryOf[g.uid]); });
+    // Fix up the Decision Trail text for everyone actually swapped — both the returnee's own
+    // returnReasons (landed at a different court than originally reasoned through) and the
+    // evicted occupant's breakReasons (originally credited "for {the other returnee}", now wrong).
+    group.forEach(g => {
+      const newCourt = desiredCourt[g.uid];
+      if (newCourt === g.court) return;
+      const partner = group.find(o => o.uid!==g.uid && desiredCourt[o.uid]===g.court);
+      const name = uid2 => sorted.find(p=>p.userId===uid2)?.nickname || ("player #"+uid2);
+      returnReasons[g.uid] = [
+        ...(returnReasons[g.uid]||[]),
+        `⚖️ Swapped courts with ${name(partner?.uid)} — both were targeting Court ${targetNum}, and the higher-USR player gets the better of the two leftover courts (Court ${newCourt} instead of Court ${g.court}).`,
+      ];
+      const evEntry = evicted.find(e => e.court===newCourt);
+      if (evEntry) {
+        const evUid2 = evEntry.p.userId;
+        if (breakReasons[evUid2]) {
+          breakReasons[evUid2] = breakReasons[evUid2].map(line =>
+            line.startsWith("🪑 Evicted from Court") ? `🪑 Evicted from Court ${newCourt} for ${name(g.uid)}.` : line
+          );
+        }
+      }
+    });
   });
 
   // Admin request (2026-09-22, Enhancement #39): carry `via` (win/loss/stay/bench) onto the final
@@ -2694,11 +2708,6 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
   bench.forEach(({tid,target}) => {
     const benchTeam = sorted.find(t=>t.id===tid);
     if (!benchTeam) return;
-    // Same USR-tier tie-break as genDynamic2CI's — see its comment for the full "why" (admin
-    // report, 2026-09-27). Uses avgUsr since CT ranks by team, not individual player.
-    const sameTargetSiblings = bench.filter(b => b.tid!==tid && b.target===target);
-    const sameTargetHigherExists = sameTargetSiblings.some(b => (sorted.find(t=>t.id===b.tid)?.avgUsr||0) > (benchTeam.avgUsr||0));
-    const sameTargetLowerExists = sameTargetSiblings.some(b => (sorted.find(t=>t.id===b.tid)?.avgUsr||0) < (benchTeam.avgUsr||0));
     const protectedOrder = [target];
     for (let c=target-1;c>=1;c--) protectedOrder.push(c);
     for (let c=target+1;c<=courts;c++) protectedOrder.push(c);
@@ -2819,12 +2828,6 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
         const ax=isAnchor(x.t)?1:0, ay=isAnchor(y.t)?1:0; if(ax!==ay) return ay-ax;
         const sx=ri-(lastBreak[x.t.id]??-99), sy=ri-(lastBreak[y.t.id]??-99); if(sx!==sy) return sy-sx;
         const dx=Math.abs(X.c-target), dy=Math.abs(Y.c-target); if(dx!==dy) return dx-dy;
-        // Same USR-tier tie-break as genDynamic2CI's attemptSearch — see its comment.
-        if (dx>0 && sameTargetHigherExists !== sameTargetLowerExists) {
-          const preferCourt = sameTargetLowerExists ? target-dx : target+dx;
-          if (X.c===preferCourt && Y.c!==preferCourt) return -1;
-          if (Y.c===preferCourt && X.c!==preferCourt) return 1;
-        }
         return (x.t.avgUsr||0) - (y.t.avgUsr||0);
       });
       return {court:candidates[0].c, entry:candidates[0].e};
@@ -2848,31 +2851,10 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     let usedUrgent = false;
     const localNormal = (() => {
       const u = attemptUrgent(); if (u) { usedUrgent = true; return u; }
-      const general = attemptSearch(localCourts, true, isEligiblePreferred) ||
+      return attemptSearch(localCourts, true, isEligiblePreferred) ||
         attemptSearch(localCourts, false, isEligiblePreferred) ||
         attemptSearch(localCourts, true, isEligibleStrict) ||
         attemptSearch(localCourts, false, isEligibleStrict);
-      // Admin report (2026-09-27, SECOND occurrence — a tie-only fix wasn't enough): real data
-      // almost never produces a clean anchor/spacing tie between the two neighboring courts, so
-      // the pooled search above kept picking whichever occupant was simply most overdue,
-      // continuing to ignore which of two same-target returnees actually outranks the other.
-      // Once the exact target is confirmed unreachable (general.court!==target), a genuine
-      // collision now re-tries JUST this player's own preferred side (upper for the higher-USR
-      // sibling, lower otherwise) through the exact same preferred/strict eligibility cascade —
-      // and uses THAT result instead whenever it succeeds, even if the pooled search would have
-      // picked the other side. Falls back to the pooled result untouched if the preferred side
-      // genuinely has nobody eligible, so nobody is ever stranded by this preference.
-      if (general && general.court !== target && sameTargetHigherExists !== sameTargetLowerExists) {
-        const preferredSide = sameTargetLowerExists ? target-1 : target+1;
-        if (localCourts.includes(preferredSide) && general.court !== preferredSide) {
-          const sideFound = attemptSearch([preferredSide], true, isEligiblePreferred) ||
-            attemptSearch([preferredSide], false, isEligiblePreferred) ||
-            attemptSearch([preferredSide], true, isEligibleStrict) ||
-            attemptSearch([preferredSide], false, isEligibleStrict);
-          if (sideFound) return sideFound;
-        }
-      }
-      return general;
     })();
     // Admin report (2026-09-27): the adjacent-court bench relocate (see attemptBenchRelocateAt's
     // comment above) only gets a turn here, once a normal eviction at the exact target — and its
@@ -2960,6 +2942,48 @@ function genDynamic2CT(sorted, courts, ri, totalRounds, rounds, lastRound, retir
     if (isAnchor(entry.t)) breakReasons[evTid].push(`⏱ ${entry.t.breakPref[0].toUpperCase()+entry.t.breakPref.slice(1)} Break.`);
     if (usedRelaxedCap) breakReasons[evTid].push("⚖️ Picked under the relaxed pass — had already used their fair share, but the anti-consecutive-break rule left no one else eligible at this court");
     if (usedTightSpacing) breakReasons[evTid].push(`↔️ Only ${evGap} round(s) since their last break — tighter than the preferred 2-round gap, but nobody clearing that was eligible anywhere`);
+  });
+
+  // Same final USR-tier swap pass as genDynamic2CI's — see its comment for the full "why".
+  const targetGroups = {};
+  bench.forEach(({tid,target}) => { (targetGroups[target] = targetGroups[target]||[]).push(tid); });
+  Object.entries(targetGroups).forEach(([targetStr, tids]) => {
+    if (tids.length < 2) return;
+    const targetNum = Number(targetStr);
+    const findCourt = (tid) => { for (let c=1;c<=courts;c++) if (buckets[c].some(e=>e.t.id===tid && e.via==="bench")) return c; return null; };
+    const group = tids.map(tid => ({ tid, usr: sorted.find(t=>t.id===tid)?.avgUsr||0, court: findCourt(tid) }))
+      .filter(g => g.court!=null && g.court!==targetNum);
+    if (group.length < 2) return;
+    const byUsrDesc = [...group].sort((a,b) => b.usr-a.usr);
+    const courtsAsc = [...group].map(g=>g.court).sort((a,b)=>a-b);
+    const desiredCourt = {}; byUsrDesc.forEach((g,i) => { desiredCourt[g.tid] = courtsAsc[i]; });
+    if (group.every(g => g.court===desiredCourt[g.tid])) return;
+    const entryOf = {};
+    group.forEach(g => {
+      const idx = buckets[g.court].findIndex(e=>e.t.id===g.tid && e.via==="bench");
+      entryOf[g.tid] = buckets[g.court][idx];
+      buckets[g.court].splice(idx,1);
+    });
+    group.forEach(g => { buckets[desiredCourt[g.tid]].push(entryOf[g.tid]); });
+    group.forEach(g => {
+      const newCourt = desiredCourt[g.tid];
+      if (newCourt === g.court) return;
+      const partner = group.find(o => o.tid!==g.tid && desiredCourt[o.tid]===g.court);
+      const name = tid2 => sorted.find(t=>t.id===tid2)?.name || ("Team #"+tid2);
+      returnReasons[g.tid] = [
+        ...(returnReasons[g.tid]||[]),
+        `⚖️ Swapped courts with ${name(partner?.tid)} — both were targeting Court ${targetNum}, and the higher-USR team gets the better of the two leftover courts (Court ${newCourt} instead of Court ${g.court}).`,
+      ];
+      const evEntry = evicted.find(e => e.court===newCourt);
+      if (evEntry) {
+        const evTid2 = evEntry.t.id;
+        if (breakReasons[evTid2]) {
+          breakReasons[evTid2] = breakReasons[evTid2].map(line =>
+            line.startsWith("🪑 Evicted from Court") ? `🪑 Evicted from Court ${newCourt} for ${name(g.tid)}.` : line
+          );
+        }
+      }
+    });
   });
 
   // Same as genDynamic2CI's — carry `via` onto the final team objects for the round card's icon.

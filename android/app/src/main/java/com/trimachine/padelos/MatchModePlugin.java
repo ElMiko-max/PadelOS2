@@ -177,4 +177,14 @@ public class MatchModePlugin extends Plugin {
         result.put("granted", granted);
         call.resolve(result);
     }
+
+    // Reads the persistent on-device whistle/alarm diagnostic log (see MatchModeDiagLog) so
+    // the admin can review or share what actually happened during a past Match Mode session,
+    // without needing a laptop plugged in live via adb logcat.
+    @PluginMethod
+    public void getDiagLog(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("log", MatchModeDiagLog.readAll(getContext()));
+        call.resolve(result);
+    }
 }

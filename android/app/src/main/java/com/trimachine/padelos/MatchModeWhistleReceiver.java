@@ -56,12 +56,14 @@ public class MatchModeWhistleReceiver extends BroadcastReceiver {
 
         if ("warning".equals(type)) {
             android.util.Log.i("MatchModeDiag", "Round warning FIRED round=" + round + " eventId=" + eventId);
+            MatchModeDiagLog.write(context, "Round warning FIRED round=" + round + " eventId=" + eventId);
             postWarningNotification(context, round);
             speakWarning(context, round);
             return;
         }
 
         android.util.Log.i("MatchModeDiag", "MatchModeWhistleReceiver FIRED round=" + round + " eventId=" + eventId + " at " + System.currentTimeMillis());
+        MatchModeDiagLog.write(context, "WHISTLE FIRED round=" + round + " eventId=" + eventId + " at " + System.currentTimeMillis());
 
         // Durable record that THIS round's alarm actually rang, independent of whether
         // the JS bridge is reachable right now — the app can ask "which rounds have
@@ -116,7 +118,12 @@ public class MatchModeWhistleReceiver extends BroadcastReceiver {
             mp.start();
             pendingStop = MatchModeWhistleReceiver::stopCurrent; // hard safety cap
             handler.postDelayed(pendingStop, MAX_PLAY_MS);
+            MatchModeDiagLog.write(context, "whistle playback started OK round=" + round);
         } catch (Exception e) {
+            // Previously swallowed with zero logging anywhere — if this is where an
+            // intermittent "whistle didn't play" is coming from, it was invisible until now.
+            android.util.Log.e("MatchModeDiag", "whistle playback FAILED round=" + round + ": " + e, e);
+            MatchModeDiagLog.write(context, "ERROR whistle playback FAILED round=" + round + ": " + e);
             releaseWakeLock();
         }
 

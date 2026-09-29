@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.97 (current) — The real fix for the USR-tier bug: a final check after the normal logic, not another patch inside it
+## V0.16.98 (current) — Persistent on-device Match Mode / whistle diagnostic log
+
+- **The problem:** the admin reported the whistle sometimes rings and sometimes doesn't — it happened yesterday and there was no way to analyze it afterward, since the existing "MatchModeDiag" diagnostics only went to logcat (requires a laptop plugged in via USB, actively recording, at the exact moment it happens — not practical mid-event).
+- **The fix:** every diagnostic line that already existed (scheduling each whistle, confirming it registered, the self-healing checkpoint that re-arms anything missing, the actual moment a whistle fires) now also writes to a **persistent file in the app's own storage** (`MatchModeDiagLog`), not just logcat. The file starts fresh every time Match Mode is armed, and stops growing on its own once the last round passes (reusing the existing checkpoint's own end-of-match detection — no extra timer needed).
+- **Real gap found along the way:** one spot was silently swallowing any whistle-playback (MediaPlayer) failure with zero logging at all anywhere — plausibly the exact source of "sometimes doesn't play," invisible until now. It's logged like everything else now.
+- **Retrieval:** a new "📋 Export Match Mode Diagnostic Log" button in Platform Admin → Other Tools (native app only) reads the file and shares it via Android's normal share sheet — no laptop or USB needed.
+- **Note:** this change is purely additive — the whistle/alarm scheduling logic and timing itself were not touched, only logging alongside it.
+
+---
+
+## V0.16.97 — The real fix for the USR-tier bug: a final check after the normal logic, not another patch inside it
 
 - **The same bug recurred a third time (Rouka and Zizo this time)** despite the V0.16.96 fix (which made each returnee "prefer their own side" inside the search itself) — because there were simply too many search paths (urgent picks, far search, relaxed tiers...) and each fix kept missing whichever one produced this specific split.
 - **The fix the admin himself suggested, and the right one:** don't touch the normal search logic at all — leave it running exactly as it always has. **After** every returning player has landed somewhere, run **one single final check**: if two returnees collided on the same target and ended up on two different courts, sort them by USR and swap them between those same two courts (evicting nobody new) so the higher-USR one always gets the better court. **Simple, and catches the case no matter which path produced it.**

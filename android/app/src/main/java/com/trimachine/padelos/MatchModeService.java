@@ -106,6 +106,7 @@ public class MatchModeService extends Service {
             currentCourts.addAll(parseCourts(courtsJson));
             // TEMPORARY diagnostic for "widget doesn't know the round progressed" — remove once found.
             android.util.Log.i("MatchModeDiag", "onStartCommand action=" + action + " round=" + currentRoundNumber + " courts=" + currentCourts.size());
+            MatchModeDiagLog.write(this, "onStartCommand action=" + action + " round=" + currentRoundNumber + " courts=" + currentCourts.size());
             startForeground(NOTIF_ID, buildNotification());
             maybeAnnounceRoundStart(currentEventId, currentRoundNumber, currentWhistleAt);
         } else if (ACTION_SCHEDULE_ALL.equals(action)) {
@@ -129,7 +130,7 @@ public class MatchModeService extends Service {
             // persisted schedule rather than trusting any in-memory list, since this can
             // legitimately run in a freshly re-created process after Android killed the old one.
             List<PendingRoundSchedule> scheduled = loadCheckpointSchedule();
-            if (scheduled.isEmpty()) android.util.Log.i("MatchModeDiag", "checkpoint fired with no persisted schedule — nothing to verify");
+            if (scheduled.isEmpty()) { android.util.Log.i("MatchModeDiag", "checkpoint fired with no persisted schedule — nothing to verify"); MatchModeDiagLog.write(this, "checkpoint fired with no persisted schedule — nothing to verify"); }
             else verifyAndReschedule(scheduled);
         } else if (ACTION_COURT_WINNER.equals(action)) {
             handleCourtWinnerTap(intent);
@@ -191,8 +192,10 @@ public class MatchModeService extends Service {
     private void scheduleAllWhistles(String eventId, String scheduleJson, long matchModeStartAt) {
         cancelAllWhistles();
         clearFiredFlags(eventId);
+        MatchModeDiagLog.reset(this);
+        MatchModeDiagLog.write(this, "scheduleAllWhistles eventId=" + eventId + " matchModeStartAt=" + matchModeStartAt);
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (am == null) { android.util.Log.e("MatchModeDiag", "AlarmManager service unavailable"); return; }
+        if (am == null) { android.util.Log.e("MatchModeDiag", "AlarmManager service unavailable"); MatchModeDiagLog.write(this, "ERROR AlarmManager service unavailable"); return; }
         List<PendingRoundSchedule> scheduled = new ArrayList<>();
         // Round r's start is round r-1's end (rounds run back-to-back — see
         // computeRoundEndOffsets on the JS side); round 1's start is matchModeStartAt
@@ -225,6 +228,7 @@ public class MatchModeService extends Service {
 
                 if (whistleAt <= 0 || whistleAt <= now) {
                     android.util.Log.w("MatchModeDiag", "skipping round " + round + " — whistleAt=" + whistleAt + " now=" + now + " (already past or invalid)");
+                    MatchModeDiagLog.write(this, "SKIP round " + round + " whistleAt=" + whistleAt + " now=" + now + " (already past or invalid)");
                     continue;
                 }
                 scheduleOneAlarm(am, round, eventId, "final", whistleAt);
@@ -237,6 +241,7 @@ public class MatchModeService extends Service {
             }
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "scheduleAllWhistles: malformed schedule payload", e);
+            MatchModeDiagLog.write(this, "ERROR scheduleAllWhistles malformed schedule payload: " + e);
         }
         // Self-healing checkpoint (admin request, 2026-09-18: "make sure 100% that it will fire
         // every time... put a four or five second delayed checkpoint to check that this is
@@ -262,8 +267,10 @@ public class MatchModeService extends Service {
             AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(atMs, contentPendingIntent());
             am.setAlarmClock(info, pi);
             android.util.Log.i("MatchModeDiag", "setAlarmClock OK round=" + round + " type=" + type + " at=" + atMs);
+            MatchModeDiagLog.write(this, "setAlarmClock OK round=" + round + " type=" + type + " at=" + atMs);
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "setAlarmClock FAILED round=" + round + " type=" + type + ": " + e, e);
+            MatchModeDiagLog.write(this, "ERROR setAlarmClock FAILED round=" + round + " type=" + type + ": " + e);
             // Extremely rare fallback path, in case setAlarmClock itself is refused.
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -272,9 +279,11 @@ public class MatchModeService extends Service {
                     am.setExact(AlarmManager.RTC_WAKEUP, atMs, pi);
                 }
                 android.util.Log.i("MatchModeDiag", "fallback setExactAndAllowWhileIdle OK round=" + round + " type=" + type);
+                MatchModeDiagLog.write(this, "fallback setExactAndAllowWhileIdle OK round=" + round + " type=" + type);
             } catch (SecurityException se) {
                 am.set(AlarmManager.RTC_WAKEUP, atMs, pi);
                 android.util.Log.w("MatchModeDiag", "fallback plain set() used round=" + round + " type=" + type + " (no exact-alarm permission): " + se);
+                MatchModeDiagLog.write(this, "WARN fallback plain set() used round=" + round + " type=" + type + " (no exact-alarm permission): " + se);
             }
         }
     }
@@ -306,8 +315,10 @@ public class MatchModeService extends Service {
             AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(atMs, contentPendingIntent());
             am.setAlarmClock(info, pi);
             android.util.Log.i("MatchModeDiag", "setAlarmClock OK round=" + round + " type=round_start at=" + atMs);
+            MatchModeDiagLog.write(this, "setAlarmClock OK round=" + round + " type=round_start at=" + atMs);
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "setAlarmClock FAILED round=" + round + " type=round_start: " + e, e);
+            MatchModeDiagLog.write(this, "ERROR setAlarmClock FAILED round=" + round + " type=round_start: " + e);
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMs, pi);
@@ -341,7 +352,7 @@ public class MatchModeService extends Service {
 
     private void verifyAndReschedule(List<PendingRoundSchedule> scheduled) {
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (am == null) { android.util.Log.e("MatchModeDiag", "checkpoint: AlarmManager unavailable, skipping this pass"); scheduleCheckpoint(CHECKPOINT_INTERVAL_MS); return; }
+        if (am == null) { android.util.Log.e("MatchModeDiag", "checkpoint: AlarmManager unavailable, skipping this pass"); MatchModeDiagLog.write(this, "ERROR checkpoint: AlarmManager unavailable, skipping this pass"); scheduleCheckpoint(CHECKPOINT_INTERVAL_MS); return; }
         long now = System.currentTimeMillis();
         boolean anyFutureLeft = false;
         for (PendingRoundSchedule s : scheduled) {
@@ -349,6 +360,7 @@ public class MatchModeService extends Service {
                 anyFutureLeft = true;
                 if (!isAlarmRegistered(s.round, s.eventId, "final")) {
                     android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " final whistle MISSING — rescheduling autonomously");
+                    MatchModeDiagLog.write(this, "WARN checkpoint: round " + s.round + " final whistle MISSING — rescheduling autonomously");
                     scheduleOneAlarm(am, s.round, s.eventId, "final", s.whistleAt);
                 }
             }
@@ -356,6 +368,7 @@ public class MatchModeService extends Service {
                 anyFutureLeft = true;
                 if (!isAlarmRegistered(s.round, s.eventId, "warning")) {
                     android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " warning MISSING — rescheduling autonomously");
+                    MatchModeDiagLog.write(this, "WARN checkpoint: round " + s.round + " warning MISSING — rescheduling autonomously");
                     scheduleOneAlarm(am, s.round, s.eventId, "warning", s.warnAt);
                 }
             }
@@ -363,13 +376,15 @@ public class MatchModeService extends Service {
                 anyFutureLeft = true;
                 if (!isRoundStartAlarmRegistered(s.round, s.eventId)) {
                     android.util.Log.w("MatchModeDiag", "checkpoint: round " + s.round + " start announcement MISSING — rescheduling autonomously");
+                    MatchModeDiagLog.write(this, "WARN checkpoint: round " + s.round + " start announcement MISSING — rescheduling autonomously");
                     scheduleRoundStartAlarm(am, s.round, s.eventId, s.roundStartAt, s.whistleAt);
                 }
             }
         }
         android.util.Log.i("MatchModeDiag", "checkpoint: ran, anyFutureLeft=" + anyFutureLeft);
+        MatchModeDiagLog.write(this, "checkpoint: ran, anyFutureLeft=" + anyFutureLeft);
         if (anyFutureLeft) scheduleCheckpoint(CHECKPOINT_INTERVAL_MS);
-        else { clearCheckpointSchedule(); android.util.Log.i("MatchModeDiag", "checkpoint: all rounds past — stopping self-check loop"); }
+        else { clearCheckpointSchedule(); android.util.Log.i("MatchModeDiag", "checkpoint: all rounds past — stopping self-check loop"); MatchModeDiagLog.write(this, "checkpoint: all rounds past — stopping self-check loop (diag log ends here)"); }
     }
 
     // Doze-exempt re-arm for the checkpoint above — same setExactAndAllowWhileIdle exemption
@@ -417,6 +432,7 @@ public class MatchModeService extends Service {
             getSharedPreferences("matchmode_whistles", MODE_PRIVATE).edit().putString("checkpoint_schedule", arr.toString()).apply();
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "persistCheckpointSchedule failed", e);
+            MatchModeDiagLog.write(this, "ERROR persistCheckpointSchedule failed: " + e);
         }
     }
 
@@ -432,6 +448,7 @@ public class MatchModeService extends Service {
             }
         } catch (Exception e) {
             android.util.Log.e("MatchModeDiag", "loadCheckpointSchedule failed", e);
+            MatchModeDiagLog.write(this, "ERROR loadCheckpointSchedule failed: " + e);
         }
         return list;
     }

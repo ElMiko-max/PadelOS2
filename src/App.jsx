@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.97";
+const APP_VERSION = "V0.16.98";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -16812,6 +16812,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [auditSearch,setAuditSearch]=useState("");
   const [auditActionFilter,setAuditActionFilter]=useState("");
   const [auditVersionFilter,setAuditVersionFilter]=useState("");
+  const [diagLogBusy,setDiagLogBusy]=useState(false);
   const [auditActorFilter,setAuditActorFilter]=useState("");
   const [auditSort,setAuditSort]=useState({key:"ts",dir:"desc"});
   const [auditBucketsOpen,setAuditBucketsOpen]=useState({Today:true,Yesterday:false,"This week":false,"This month":false,"This year":false,Old:false});
@@ -17399,6 +17400,17 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
       <ListRow icon="🧹" label={`Clean Orphaned Account Links${orphanedLinksCount>0?` (${orphanedLinksCount})`:""}`} dim={orphanedLinksCount===0} onClick={()=>{if(window.confirm(`Clean orphaned account links?\n\nFound ${orphanedLinksCount} email/Google login(s) still "claimed" by a deleted user — this releases them so that person can sign in fresh again. Safe to run anytime.`))onCleanOrphanedLinks();}}/>
       <ListRow icon="📧" label={`Find Duplicate Emails${dupEmailGroups.length>0?` (${dupEmailGroups.length})`:""}`} dim={dupEmailGroups.length===0} trailing={showDupEmails?"⌄":"›"} onClick={()=>setShowDupEmails(o=>!o)}/>
       <ListRow icon="⚠️" label="Factory Reset (Erase Everything)" danger onClick={()=>{if(window.confirm("⚠️ Factory Reset — Delete ALL data?\n\nThis permanently erases every community, event, venue, and player, replacing them with the original seed data.\n\nCreate a backup first if you want to keep anything. This cannot be undone."))onFactoryReset();}}/>
+      {Capacitor.isNativePlatform()&&<ListRow icon="📋" label={diagLogBusy?"Reading log…":"Export Match Mode Diagnostic Log"} dim={diagLogBusy} sub="Alarm/whistle timeline from the last time Match Mode ran on this phone" onClick={async()=>{
+        if(diagLogBusy)return;
+        setDiagLogBusy(true);
+        try{
+          const r = await MatchMode.getDiagLog();
+          const text = (r&&r.log)||"";
+          if(!text.trim()){ toast2("No Match Mode diagnostic log on this device yet — run Match Mode at least once first","err"); return; }
+          await Share.share({title:"Matchkeeper Match Mode Diagnostic Log",text});
+        }catch(e){ toast2("Couldn't read the diagnostic log — "+(e&&e.message?e.message:e),"err"); }
+        finally{ setDiagLogBusy(false); }
+      }}/>}
       {!IS_DEV_ENV&&<ListRow icon="☁️" label={cloningToDev?"Cloning to DEV…":"Clone Data to DEV"} dim={cloningToDev} onClick={()=>{if(cloningToDev)return;if(window.confirm("☁️ Clone production data to DEV?\n\nThis copies every current user, community, event, venue, and setting into the padelos-dev test environment, OVERWRITING everything currently there.\n\nThis does NOT touch production — it's a one-way copy TO the test environment only. You may be asked to sign into the DEV environment once (first time only)."))onCloneToDev();}}/>}
       {/* Reverse direction of the button above — only ever shown inside a DEV build, since this
           is the one tool in the app that deliberately overwrites whatever's already here (dev's

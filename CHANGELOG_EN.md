@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.99 (current) — Gender and phone number are now required (hard block) for every user
+## V0.17.00 (current) — Gender/phone census in Platform Admin + a Contact (Call/SMS/WhatsApp) menu next to users
+
+- **Always-visible census in Platform Admin → Users:** clickable badges (same pattern as the existing Linked/Unlinked ones) always show: male count, female count, missing-gender count — and separately: how many have a phone in clean digit format, how many have none at all, and how many have something entered that isn't a clean number. Each badge doubles as a filter.
+- **What counts as "standard":** digits only (7-15 of them), no spaces, symbols, or letters — that's the rule the system uses to tell these apart.
+- **New Contact menu (📇):** a small icon next to a user opens Call / SMS / WhatsApp — each one jumps straight to the matching app on the phone with that person's number. Rolled out to 3 places first: Platform Admin's Users list, a community's member list, and the profile screen — the rest (like an event's Players tab) is tracked as Enhancement #41 for a gradual follow-up rollout.
+
+---
+
+## V0.16.99 — Gender and phone number are now required (hard block) for every user
 
 - **The ask:** the admin wants to collect gender and phone number (with country dial code) for every player, fast — this data was completely missing (gender never existed as a field, and phone was only ever entered manually by an admin for guests).
 - **The fix:** a new screen appears as a **hard block** — the app is unusable until it's filled in, no skip — the moment any user (existing or new) opens the app without a gender or phone on file. Shows exactly once per person, styled the same way as the existing block screens ("Update Required", "Account Suspended").

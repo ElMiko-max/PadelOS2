@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.99";
+const APP_VERSION = "V0.17.00";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -249,6 +249,10 @@ const LATEST_APK_VERSION_FALLBACK = "V0.10.00";
 // "VX.Y.Z" -> [X,Y,Z] for numeric comparison — plain string comparison breaks the moment any
 // segment hits double digits ("V0.11.9" > "V0.11.10" lexically, which is backwards).
 function parseVer(v){ const m=/^V?(\d+)\.(\d+)\.(\d+)/.exec(v||""); return m ? [+m[1],+m[2],+m[3]] : null; }
+// "Standard" = plain digits only, no spaces/dashes/parens/letters — used by Platform Admin's
+// phone census (admin request, 2026-09-30) to tell a genuinely missing number apart from one
+// that's there but not in a clean, dialable format (e.g. copy-pasted with spaces or symbols).
+const isStandardPhone = p => /^\d{7,15}$/.test((p||"").trim());
 function verLt(a,b){ const pa=parseVer(a),pb=parseVer(b); if(!pa||!pb) return false; for(let i=0;i<3;i++){ if(pa[i]!==pb[i]) return pa[i]<pb[i]; } return false; }
 // Splits CHANGELOG.md's raw text into one entry per "## " heading (its established format —
 // see CLAUDE.md §2). Each heading line is "VX.X.X (الحالي) — title" or "VX.X.X — title"; the
@@ -5473,6 +5477,36 @@ function Av({u,size=36}){
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}
+// Full E.164-ish digit string for wa.me / tel: — best-effort: prepends the dial code (only
+// collected from V0.16.99 onward via CompleteProfileGate) when we have one, otherwise falls back
+// to the bare phone digits as-is, same graceful-degradation the existing `tel:${u.phone}` links
+// already rely on for pre-V0.16.99 data.
+const contactDigits = u => `${(u.dialCode||"").replace(/\D/g,"")}${(u.phone||"").replace(/\D/g,"")}`;
+// Small "reach this person" menu — Call / SMS / WhatsApp — meant to sit right next to a user's
+// name/avatar anywhere one appears (admin request, 2026-09-30), not just on their full profile
+// page, so contacting someone never needs an extra navigation step. Renders nothing at all if
+// there's no usable phone number, rather than showing a dead menu.
+function ContactMenu({u}){
+  const [open,setOpen]=useState(false);
+  if (!(u.phone||"").trim()) return null;
+  const digits = contactDigits(u);
+  const items = [
+    {icon:"📞",label:"Call",href:`tel:${digits}`},
+    {icon:"💬",label:"SMS",href:`sms:${digits}`},
+    {icon:"🟢",label:"WhatsApp",href:`https://wa.me/${digits}`},
+  ];
+  return <div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+    <div onClick={()=>setOpen(o=>!o)} style={{width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:"var(--po-dim)",fontSize:15,flexShrink:0}}>📇</div>
+    {open&&<>
+      <div onClick={()=>setOpen(false)} style={{position:"fixed",inset:0,zIndex:299}}/>
+      <div style={{position:"absolute",top:"100%",right:0,marginTop:4,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,boxShadow:"0 4px 16px #00000044",zIndex:300,minWidth:130,overflow:"hidden"}}>
+        {items.map(it=><a key={it.label} href={it.href} onClick={()=>setOpen(false)} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",fontSize:13,color:"var(--po-text)",textDecoration:"none",whiteSpace:"nowrap"}}>
+          <span>{it.icon}</span><span>{it.label}</span>
+        </a>)}
+      </div>
+    </>}
+  </div>;
+}
 // Solid, not the soft `color22`-on-transparent pastel style every other badge on the card
 // uses — those all look alike at a glance, and LIVE needs to be the one thing that doesn't.
 function LiveBdg({label}){return <span style={{fontSize:11,fontWeight:800,padding:"3px 10px 3px 7px",borderRadius:20,background:"#EF4444",color:"#fff",whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:5,letterSpacing:0.3,boxShadow:"0 1px 4px #EF444466"}}><span style={{width:6,height:6,borderRadius:"50%",background:"#fff",animation:"liveDotPulse 1.4s ease-in-out infinite"}}/>{label}</span>;}
@@ -11409,6 +11443,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                   : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>🎾 USR {u.usr} · {u.area}</div>}
                 <MemberProgress comm={comm} userId={u.id} status={m.status}/>
                 {isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
+              {isAdmin&&!isMe&&<ContactMenu u={u}/>}
               {(isAdmin||(meIsPlatformAdmin&&m.role==="admin"))&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
                 {openMemberMenu===u.id&&<div style={{position:"absolute",top:38,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:130,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
@@ -16441,6 +16476,7 @@ function ProfileSc({user,me,users,comms,onBack,viewedByAdmin,onEditUser,isMeTab,
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
+    {showContact&&!isMe&&<ContactMenu u={user}/>}
     {(isMe||isPlatformAdmin)&&<SmBtn label="✏️ Edit" onClick={()=>setEditing(true)} color="#6366F1"/>}
   </div>
   {(isMe||isPlatformAdmin)&&editing&&<UserEditModal user={user} isPlatformAdmin={isPlatformAdmin} isMe={isMe} egypt={egypt} myGooglePhotoURL={myGooglePhotoURL} onSave={payload=>onEditUser(user.id,payload)} onRecalcUsr={onRecalcUsr} onClose={()=>setEditing(false)} toast={onToast}/>}
@@ -16874,6 +16910,8 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   const [auditSort,setAuditSort]=useState({key:"ts",dir:"desc"});
   const [auditBucketsOpen,setAuditBucketsOpen]=useState({Today:true,Yesterday:false,"This week":false,"This month":false,"This year":false,Old:false});
   const [linkFilter,setLinkFilter]=useState(null); // null | "linked" | "unlinked" — toggled via the count badges
+  const [genderFilter,setGenderFilter]=useState(null); // null | "male" | "female" | "missing" — same toggle-badge pattern
+  const [phoneFilter,setPhoneFilter]=useState(null); // null | "valid" | "missing" | "invalid" — "invalid" = something's there but not plain digits
   const [newGovName,setNewGovName]=useState("");
   const [areaInputs,setAreaInputs]=useState({}); // gov -> pending new-area text
   const [newCountryName,setNewCountryName]=useState("");
@@ -16913,10 +16951,26 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
     return Object.entries(byEmail).filter(([,us])=>us.length>1);
   })();
   const hasFootprint = uid => comms.some(c=>c.members.some(m=>m.userId===uid)||c.events.some(ev=>ev.registrations.some(r=>r.userId===uid)||(ev.checkedIn||[]).includes(uid)||(ev.eventAdmins||[]).includes(uid)||(ev.retiredIds||[]).includes(uid)||(ev.exempted||[]).includes(uid)));
+  // Gender/phone census (admin request, 2026-09-30) — same always-visible, clickable-badge
+  // pattern as the linked/unlinked counts above (Enhancement #23), so the admin always has a
+  // running tally of who's still missing data, not just a one-off filter.
+  const maleCount = users.filter(u=>u.gender==="male").length;
+  const femaleCount = users.filter(u=>u.gender==="female").length;
+  const noGenderCount = users.length - maleCount - femaleCount;
+  const validPhoneCount = users.filter(u=>isStandardPhone(u.phone)).length;
+  const missingPhoneCount = users.filter(u=>!(u.phone||"").trim()).length;
+  const invalidPhoneCount = users.length - validPhoneCount - missingPhoneCount;
   const q=userSearch.trim().toLowerCase();
   const filteredUsers=users
     .filter(u=>!q||u.nickname?.toLowerCase().includes(q)||u.name?.toLowerCase().includes(q))
-    .filter(u=>!linkFilter||(linkFilter==="linked")===linkedUserIds.has(u.id));
+    .filter(u=>!linkFilter||(linkFilter==="linked")===linkedUserIds.has(u.id))
+    .filter(u=>!genderFilter||(genderFilter==="missing"?!u.gender:u.gender===genderFilter))
+    .filter(u=>{
+      if(!phoneFilter) return true;
+      if(phoneFilter==="missing") return !(u.phone||"").trim();
+      if(phoneFilter==="valid") return isStandardPhone(u.phone);
+      return !!(u.phone||"").trim() && !isStandardPhone(u.phone); // "invalid"
+    });
   useEffect(()=>{ if(tab==="data") onRefreshBackups&&onRefreshBackups(); }, [tab]);
 
   return <><BBtn onBack={onBack} label="Back"/>
@@ -17259,9 +17313,19 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   })()}
 
   {tab==="users"&&<>
-    <div style={{display:"flex",gap:6,marginBottom:12}}>
+    <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
       <div onClick={()=>setLinkFilter(f=>f==="linked"?null:"linked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="linked"?0.4:1}}><Bdg label={`🔗 ${linkedCount} linked${linkFilter==="linked"?" ✕":""}`} color="#34D399"/></div>
       <div onClick={()=>setLinkFilter(f=>f==="unlinked"?null:"unlinked")} style={{cursor:"pointer",opacity:linkFilter&&linkFilter!=="unlinked"?0.4:1}}><Bdg label={`◌ ${users.length-linkedCount} unlinked${linkFilter==="unlinked"?" ✕":""}`} color="#F59E0B"/></div>
+    </div>
+    <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
+      <div onClick={()=>setGenderFilter(f=>f==="male"?null:"male")} style={{cursor:"pointer",opacity:genderFilter&&genderFilter!=="male"?0.4:1}}><Bdg label={`♂ ${maleCount} male${genderFilter==="male"?" ✕":""}`} color="#60A5FA"/></div>
+      <div onClick={()=>setGenderFilter(f=>f==="female"?null:"female")} style={{cursor:"pointer",opacity:genderFilter&&genderFilter!=="female"?0.4:1}}><Bdg label={`♀ ${femaleCount} female${genderFilter==="female"?" ✕":""}`} color="#F472B6"/></div>
+      <div onClick={()=>setGenderFilter(f=>f==="missing"?null:"missing")} style={{cursor:"pointer",opacity:genderFilter&&genderFilter!=="missing"?0.4:1}}><Bdg label={`◌ ${noGenderCount} no gender${genderFilter==="missing"?" ✕":""}`} color="#F59E0B"/></div>
+    </div>
+    <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+      <div onClick={()=>setPhoneFilter(f=>f==="valid"?null:"valid")} style={{cursor:"pointer",opacity:phoneFilter&&phoneFilter!=="valid"?0.4:1}}><Bdg label={`📱 ${validPhoneCount} has phone${phoneFilter==="valid"?" ✕":""}`} color="#34D399"/></div>
+      <div onClick={()=>setPhoneFilter(f=>f==="missing"?null:"missing")} style={{cursor:"pointer",opacity:phoneFilter&&phoneFilter!=="missing"?0.4:1}}><Bdg label={`◌ ${missingPhoneCount} no phone${phoneFilter==="missing"?" ✕":""}`} color="#F59E0B"/></div>
+      {invalidPhoneCount>0&&<div onClick={()=>setPhoneFilter(f=>f==="invalid"?null:"invalid")} style={{cursor:"pointer",opacity:phoneFilter&&phoneFilter!=="invalid"?0.4:1}}><Bdg label={`⚠️ ${invalidPhoneCount} invalid format${phoneFilter==="invalid"?" ✕":""}`} color="#EF4444"/></div>}
     </div>
     <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} placeholder="🔍 Search by name..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>
     <Btn label="+ Add User" primary onClick={()=>setEditing("new")} style={{width:"100%",marginBottom:12}}/>
@@ -17285,6 +17349,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           <div style={{fontSize:11,color:"var(--po-dim)"}}>{u.name||"—"} · USR {u.usr} · seed {u.seedUsr??u.usr}</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{u.area} · {u.gov} · {u.country||"مصر"}</div>
         </div>
+        <ContactMenu u={u}/>
         <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
           <div onClick={()=>setOpenUserMenu(o=>o===u.id?null:u.id)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
           {openUserMenu===u.id&&<div style={{position:"absolute",top:34,right:0,zIndex:10,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,padding:6,display:"flex",flexDirection:"column",gap:4,minWidth:160,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>

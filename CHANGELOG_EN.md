@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.16.98 (current) — Persistent on-device Match Mode / whistle diagnostic log
+## V0.16.99 (current) — Gender and phone number are now required (hard block) for every user
+
+- **The ask:** the admin wants to collect gender and phone number (with country dial code) for every player, fast — this data was completely missing (gender never existed as a field, and phone was only ever entered manually by an admin for guests).
+- **The fix:** a new screen appears as a **hard block** — the app is unusable until it's filled in, no skip — the moment any user (existing or new) opens the app without a gender or phone on file. Shows exactly once per person, styled the same way as the existing block screens ("Update Required", "Account Suspended").
+- **Phone number is NOT verified** (deliberate call) — a plain data field, same convention already used for guests, no SMS OTP cost or complexity.
+- **A dial-code list is included** (Egypt default, plus the Gulf countries, Jordan, Lebanon) — freely changeable.
+- **Actually tested, not just reviewed** — a real Playwright run against live padelos-dev data confirmed the gate appears, the button stays disabled until both fields are filled, the save persists, and the gate correctly never reappears after a reload.
+
+---
+
+## V0.16.98 — Persistent on-device Match Mode / whistle diagnostic log
 
 - **The problem:** the admin reported the whistle sometimes rings and sometimes doesn't — it happened yesterday and there was no way to analyze it afterward, since the existing "MatchModeDiag" diagnostics only went to logcat (requires a laptop plugged in via USB, actively recording, at the exact moment it happens — not practical mid-event).
 - **The fix:** every diagnostic line that already existed (scheduling each whistle, confirming it registered, the self-healing checkpoint that re-arms anything missing, the actual moment a whistle fires) now also writes to a **persistent file in the app's own storage** (`MatchModeDiagLog`), not just logcat. The file starts fresh every time Match Mode is armed, and stops growing on its own once the last round passes (reusing the existing checkpoint's own end-of-match detection — no extra timer needed).

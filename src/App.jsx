@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.16.98";
+const APP_VERSION = "V0.16.99";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5959,6 +5959,60 @@ function LoginScreen(){
 // confirmation (see pendingInviteConfirm below); anyone signing in with no such invite pending
 // just gets a brand-new profile automatically (see the auto-fresh-profile effect below).
 
+// Common dial codes for this app's userbase (Egypt-centric, plus the Gulf countries that keep
+// coming up) — not an exhaustive ISO list; "Other" lets anyone else type their own code. Egypt
+// defaults first since that's this app's home country (see AreaSel/"مصر" default elsewhere).
+const DIAL_CODES = [
+  {code:"+20", label:"🇪🇬 +20 Egypt"},
+  {code:"+966", label:"🇸🇦 +966 Saudi Arabia"},
+  {code:"+971", label:"🇦🇪 +971 UAE"},
+  {code:"+965", label:"🇰🇼 +965 Kuwait"},
+  {code:"+974", label:"🇶🇦 +974 Qatar"},
+  {code:"+973", label:"🇧🇭 +973 Bahrain"},
+  {code:"+968", label:"🇴🇲 +968 Oman"},
+  {code:"+962", label:"🇯🇴 +962 Jordan"},
+  {code:"+961", label:"🇱🇧 +961 Lebanon"},
+];
+
+// Hard-block gate (admin request, 2026-09-30): collects Gender + Phone (with a country dial
+// code, kept as its own field rather than folded into the existing free-text `phone`, since that
+// field predates this and is used as-is elsewhere) from every user missing either one, the moment
+// they open the app — no skip, matching the existing blockedByMinVersion/suspended gates' own
+// full-screen style exactly. Deliberately NOT verified (no SMS OTP) — a data-collection field for
+// an already-trusted community roster, not a public signup gate; see the existing `phone` field
+// elsewhere in this file for the same already-established unverified convention.
+function CompleteProfileGate({me, onSave}){
+  const [gender,setGender] = useState("");
+  const [dialCode,setDialCode] = useState("+20");
+  const [phone,setPhone] = useState(me.phone||"");
+  const [saving,setSaving] = useState(false);
+  const canSave = !!gender && !!phone.trim();
+  const save = () => {
+    if (!canSave || saving) return;
+    setSaving(true);
+    const ok = onSave({gender, dialCode, phone: phone.trim()});
+    if (ok===false) setSaving(false);
+  };
+  return <div style={{minHeight:"100vh",background:"#0E1117",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <div style={{maxWidth:360,width:"100%",textAlign:"center"}}>
+      <div style={{fontSize:32,marginBottom:12}}>👤</div>
+      <div style={{fontSize:17,fontWeight:700,color:"#F1F5F9",marginBottom:8}}>Just a couple of details</div>
+      <div style={{fontSize:13,color:"#64748B",marginBottom:20}}>We're missing your gender and phone number — takes a few seconds, and you'll only see this once.</div>
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        {["male","female"].map(g=><button key={g} onClick={()=>setGender(g)} style={{flex:1,padding:"12px",borderRadius:10,border:`1.5px solid ${gender===g?"#6366F1":"#2A3142"}`,background:gender===g?"#6366F122":"#151A26",color:gender===g?"#818CF8":"#94A3B8",fontSize:14,fontWeight:600,cursor:"pointer"}}>{g==="male"?"♂ Male":"♀ Female"}</button>)}
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        <select value={dialCode} onChange={e=>setDialCode(e.target.value)} style={{width:110,padding:"12px 6px",borderRadius:10,border:"1.5px solid #2A3142",background:"#151A26",color:"#F1F5F9",fontSize:13}}>
+          {DIAL_CODES.map(d=><option key={d.code} value={d.code}>{d.label}</option>)}
+        </select>
+        <input type="tel" value={phone} onChange={e=>setPhone(e.target.value.replace(/[^\d]/g,""))} placeholder="Phone number" style={{flex:1,padding:"12px",borderRadius:10,border:"1.5px solid #2A3142",background:"#151A26",color:"#F1F5F9",fontSize:14,boxSizing:"border-box"}}/>
+      </div>
+      <button onClick={save} disabled={!canSave||saving} style={{width:"100%",padding:"12px",borderRadius:10,border:"none",background:canSave?"#6366F1":"#2A3142",color:canSave?"#fff":"#64748B",fontSize:14,fontWeight:700,cursor:canSave?"pointer":"default"}}>{saving?"Saving…":"Continue"}</button>
+      <div onClick={()=>signOut(fbAuth)} style={{fontSize:11,color:"#475569",cursor:"pointer",marginTop:14}}>Sign out</div>
+    </div>
+  </div>;
+}
+
 export default function Matchkeeper() {
   useEffect(() => { document.title = `Matchkeeper ${APP_VERSION}${IS_DEV_ENV?" (DEV)":""}`; }, []);
   const [users,  setUsers]  = useState(INIT_USERS);
@@ -10388,6 +10442,9 @@ export default function Matchkeeper() {
         </div>
       ) : <div style={{color:"#64748B",fontSize:14}}>Setting up your profile…</div>}
     </div>;
+  }
+  if (!linkedMe.gender || !linkedMe.phone) {
+    return <CompleteProfileGate me={linkedMe} onSave={(f)=>editUser(linkedMe.id, f)}/>;
   }
 
   return (

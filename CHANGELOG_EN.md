@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.01 (current) — Small follow-up to V0.17.00: Contact menu icon changed to 📞
+## V0.17.02 (current) — Manual "🔄 Refresh Whistle" button + email/phone visible on Platform Admin's user card
+
+- **New "🔄 Refresh Whistle" button** (real Android only, admin, while Match Mode is running) — shown on the Rounds tab (CI) and Matches tab (CT). Tapping it re-sends the exact same whistle-scheduling call that already fires automatically the moment Match Mode starts. If a whistle didn't ring for whatever reason, this lets the admin confirm the rest of the event keeps working correctly right away, instead of waiting on the automatic checkpoint (which re-verifies every 2 minutes) or writing off the whole event as broken.
+- **Technical note:** this reuses the exact same scheduling mechanism that already exists (no change to the actual whistle/alarm logic itself) — it just makes it callable on demand instead of only once, automatically, at Match Mode start.
+- **Email and phone now show directly** on a user's card in Platform Admin → Users (matching what a community's member list already showed) — no need to open their profile.
+
+---
+
+## V0.17.01 — Small follow-up to V0.17.00: Contact menu icon changed to 📞
 
 - **Small tweak:** the button that opens the Call/SMS/WhatsApp menu (ContactMenu) changed from 📇 to 📞 (a phone receiver), per admin request.
 

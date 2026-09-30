@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.01";
+const APP_VERSION = "V0.17.02";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -14148,6 +14148,30 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     setCtSel(null);
   };
 
+  // Manual "re-arm the whistle" recovery button (admin request, 2026-09-30): "I want to be
+  // able to imagine the first whistle just doesn't ring, and have a button that refreshes the
+  // whistle system so it keeps working correctly for the rest of the event, instead of writing
+  // off the whole event as broken." The automatic checkpoint (MatchModeService.
+  // verifyAndReschedule, native side) already re-verifies every 2 minutes on its own — this is
+  // deliberately NOT a new alarm-scheduling mechanism, just a way for the admin to trigger the
+  // exact same scheduleWhistles call that already runs automatically at Match Mode start,
+  // on demand, for their own immediate peace of mind rather than waiting on the silent
+  // background checkpoint. Bypasses the mmScheduledFor dedup flag on purpose — a manual
+  // recovery tap should always actually re-arm, not silently no-op because "it already ran once."
+  const forceRearmWhistles = () => {
+    if (!plan?.matchModeStartAt) return;
+    const tr = plan.totalRounds || 1;
+    const rd = plan.roundDuration || plan.matchDuration || 20;
+    const delayMin = plan.matchModeDelayMin ?? 0;
+    const offsets = computeRoundEndOffsets(tr, rd, durationHrs*60, delayMin);
+    const startMs = new Date(plan.matchModeStartAt).getTime();
+    const schedule = [];
+    for (let r=1; r<=tr; r++) schedule.push({ round: r, whistleAt: String(startMs + (offsets[r]||r*rd)*60000) });
+    MatchMode.scheduleWhistles({ eventId: String(effEv.id), schedule, startAt: String(startMs) })
+      .then(()=>onToast&&onToast("🔄 Whistle re-armed for the rest of the event ✓"))
+      .catch(()=>onToast&&onToast("Couldn't re-arm the whistle — try again","err"));
+  };
+
   // ── Match Mode Persistent Notification (native Android, CI events, admin only) ──
   // Starts the foreground-service notification once Match Mode begins, refreshes it
   // whenever a new round is generated, and tears it down when the event ends. The
@@ -15611,6 +15635,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             </div>
             {effCollapsed?null:<>
             {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode} isCompleted={isCompleted}/>}
+            {isLatest&&isAdmin&&!sim&&!isCompleted&&Capacitor.isNativePlatform()&&plan.matchModeStartAt&&
+              <SmBtn label="🔄 Refresh Whistle" onClick={forceRearmWhistles} color="#F59E0B" style={{width:"100%",marginBottom:10}}/>}
             {round.onBreak.length>0&&<div style={{background:"var(--po-inp)",border:"0.5px solid #F59E0B33",borderRadius:10,padding:"10px 12px",marginBottom:10}}><div style={{fontSize:11,color:"#F59E0B",fontWeight:600,marginBottom:8}}>🪑 On Break — {bp} pts each</div><div style={{display:"flex",flexWrap:"wrap",gap:4}}>{round.onBreak.map(p=><PChip key={p.userId} p={p} ri={ri} isBreakList reasonInfo={{title:`${p.nickname} R${ri+1} Break`, bullets:round.breakReasons?.[p.userId]}}/>)}</div></div>}
             {round.matches.map((m,mi)=>{
               const avgA=m.teamA.reduce((s,p)=>s+p.usr,0)/m.teamA.length, avgB=m.teamB.reduce((s,p)=>s+p.usr,0)/m.teamB.length;
@@ -15817,6 +15843,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     {tab==="breaks"&&isCT&&plan&&plan.format==="ladder"&&<CTBreaksTab plan={plan} ev={effEv} tc={tc} onRegenBreaks={act.regenCTBreaks} onSetBreakState={act.setCTBreakState} onSetConcentrateIds={act.setBreakConcentrateIds} onSetAvoidIds={act.setBreakAvoidIds} onSetBreakEngine={act.setBreakEngine} isAdmin={isAdmin}/>}
 
     {/* CT MATCHES */}
+    {tab==="matches"&&isCT&&plan&&isAdmin&&!sim&&!isCompleted&&Capacitor.isNativePlatform()&&plan.matchModeStartAt&&
+      <SmBtn label="🔄 Refresh Whistle" onClick={forceRearmWhistles} color="#F59E0B" style={{width:"100%",marginBottom:10}}/>}
     {tab==="matches"&&isCT&&plan&&<CTMatchesTab plan={plan} sport={effEv.sport} comms={comms} onSetWinCT={act.setWinCT} onSetCTScorers={act.setCTScorers} onToggleCTLeagueLive={act.toggleCTLeagueLive} onApplyPromo={act.applyPromo} onNextFootballRound={act.nextFootballRound} onNextCTLadder={act.nextCTLadder} onSwapCTLadder={act.swapCTLadder} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onSetMatchModeStart={act.setMatchModeStart} onStopMatchMode={onStopMatchMode} isAdmin={isAdmin} isCancelled={isCancelled}/>}
 
     {/* CT STANDINGS */}
@@ -17348,6 +17376,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
           </div>
           <div style={{fontSize:11,color:"var(--po-dim)"}}>{u.name||"—"} · USR {u.usr} · seed {u.seedUsr??u.usr}</div>
           <div style={{fontSize:10,color:"var(--po-dim)"}}>{u.area} · {u.gov} · {u.country||"مصر"}</div>
+          <div style={{fontSize:10,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>
         </div>
         <ContactMenu u={u}/>
         <div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>

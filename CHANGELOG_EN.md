@@ -4,7 +4,13 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.00 (current) — Gender/phone census in Platform Admin + a Contact (Call/SMS/WhatsApp) menu next to users
+## V0.17.01 (current) — Small follow-up to V0.17.00: Contact menu icon changed to 📞
+
+- **Small tweak:** the button that opens the Call/SMS/WhatsApp menu (ContactMenu) changed from 📇 to 📞 (a phone receiver), per admin request.
+
+---
+
+## V0.17.00 — Gender/phone census in Platform Admin + a Contact (Call/SMS/WhatsApp) menu next to users
 
 - **Always-visible census in Platform Admin → Users:** clickable badges (same pattern as the existing Linked/Unlinked ones) always show: male count, female count, missing-gender count — and separately: how many have a phone in clean digit format, how many have none at all, and how many have something entered that isn't a clean number. Each badge doubles as a filter.
 - **What counts as "standard":** digits only (7-15 of them), no spaces, symbols, or letters — that's the rule the system uses to tell these apart.

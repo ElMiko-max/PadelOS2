@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.00";
+const APP_VERSION = "V0.17.01";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5496,7 +5496,7 @@ function ContactMenu({u}){
     {icon:"🟢",label:"WhatsApp",href:`https://wa.me/${digits}`},
   ];
   return <div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
-    <div onClick={()=>setOpen(o=>!o)} style={{width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:"var(--po-dim)",fontSize:15,flexShrink:0}}>📇</div>
+    <div onClick={()=>setOpen(o=>!o)} style={{width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:"var(--po-dim)",fontSize:15,flexShrink:0}}>📞</div>
     {open&&<>
       <div onClick={()=>setOpen(false)} style={{position:"fixed",inset:0,zIndex:299}}/>
       <div style={{position:"absolute",top:"100%",right:0,marginTop:4,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:10,boxShadow:"0 4px 16px #00000044",zIndex:300,minWidth:130,overflow:"hidden"}}>

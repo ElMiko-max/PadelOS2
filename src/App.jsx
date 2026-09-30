@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.02";
+const APP_VERSION = "V0.17.03";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5477,11 +5477,20 @@ function Av({u,size=36}){
   return <div style={{width:size,height:size,borderRadius:"50%",flexShrink:0,background:`${lv.c}22`,border:`1.5px solid ${lv.c}55`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.36,fontWeight:600,color:lv.c}}>{u.avatar||ini2(u.nickname)}</div>;
 }
 function Bdg({label,color}){return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:`${color}22`,color,border:`0.5px solid ${color}44`,whiteSpace:"nowrap"}}>{label}</span>;}
-// Full E.164-ish digit string for wa.me / tel: — best-effort: prepends the dial code (only
-// collected from V0.16.99 onward via CompleteProfileGate) when we have one, otherwise falls back
-// to the bare phone digits as-is, same graceful-degradation the existing `tel:${u.phone}` links
-// already rely on for pre-V0.16.99 data.
-const contactDigits = u => `${(u.dialCode||"").replace(/\D/g,"")}${(u.phone||"").replace(/\D/g,"")}`;
+// Full E.164-ish digit string for wa.me / tel:. Real bug, confirmed 2026-09-30: a phone entered
+// via the plain admin "Phone" field (UserEditModal — no country selector, predates V0.16.99's
+// CompleteProfileGate) is stored in local Egyptian format ("01XXXXXXXXX", 11 digits, leading
+// trunk 0) with no dialCode on file at all — WhatsApp rejects that outright ("missing a country
+// code or has the wrong one"), since wa.me needs the trunk 0 dropped and +20 prepended instead.
+// This app defaults to Egypt everywhere else it asks for a country (AreaSel, DIAL_CODES), so
+// apply that same default assumption here rather than sending a number that can never work.
+const contactDigits = u => {
+  const rawPhone = (u.phone||"").replace(/\D/g,"");
+  if (!rawPhone) return "";
+  if (u.dialCode) return `${u.dialCode.replace(/\D/g,"")}${rawPhone}`;
+  if (rawPhone.length===11 && rawPhone.startsWith("0")) return `20${rawPhone.slice(1)}`;
+  return rawPhone; // no dialCode and not the recognizable local format — best effort, as-is
+};
 // Small "reach this person" menu — Call / SMS / WhatsApp — meant to sit right next to a user's
 // name/avatar anywhere one appears (admin request, 2026-09-30), not just on their full profile
 // page, so contacting someone never needs an extra navigation step. Renders nothing at all if
@@ -5491,9 +5500,9 @@ function ContactMenu({u}){
   if (!(u.phone||"").trim()) return null;
   const digits = contactDigits(u);
   const items = [
-    {icon:"📞",label:"Call",href:`tel:${digits}`},
-    {icon:"💬",label:"SMS",href:`sms:${digits}`},
-    {icon:"🟢",label:"WhatsApp",href:`https://wa.me/${digits}`},
+    {icon:"📞",label:"Call",href:`tel:+${digits}`},
+    {icon:"💬",label:"SMS",href:`sms:+${digits}`},
+    {icon:"🟢",label:"WhatsApp",href:`https://wa.me/${digits}`}, // wa.me wants no leading +
   ];
   return <div style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
     <div onClick={()=>setOpen(o=>!o)} style={{width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:"var(--po-dim)",fontSize:15,flexShrink:0}}>📞</div>

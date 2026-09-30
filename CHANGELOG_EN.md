@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.02 (current) — Manual "🔄 Refresh Whistle" button + email/phone visible on Platform Admin's user card
+## V0.17.03 (current) — Fix: legacy phone numbers (no country code) were failing on WhatsApp
+
+- **The problem:** a phone entered the old way (the plain "Phone" field in user editing, before there was a country-code picker) was stored in local Egyptian format (`01XXXXXXXXX`) with no dial code saved at all. Tapping WhatsApp from the Contact menu got rejected with "missing a country code or has the wrong one" - WhatsApp needs the international format (`20` instead of the leading `0`).
+- **The fix:** when there's no dial code on file and the number matches the recognizable Egyptian local shape (11 digits, leading zero), the system now assumes Egypt (+20) and drops the leading zero automatically - the same default assumption used everywhere else in the app. Verified directly against the exact number from the admin's screenshot.
+- **Also:** Call/SMS now use the correct international `+` format instead of bare digits.
+
+---
+
+## V0.17.02 — Manual "🔄 Refresh Whistle" button + email/phone visible on Platform Admin's user card
 
 - **New "🔄 Refresh Whistle" button** (real Android only, admin, while Match Mode is running) — shown on the Rounds tab (CI) and Matches tab (CT). Tapping it re-sends the exact same whistle-scheduling call that already fires automatically the moment Match Mode starts. If a whistle didn't ring for whatever reason, this lets the admin confirm the rest of the event keeps working correctly right away, instead of waiting on the automatic checkpoint (which re-verifies every 2 minutes) or writing off the whole event as broken.
 - **Technical note:** this reuses the exact same scheduling mechanism that already exists (no change to the actual whistle/alarm logic itself) — it just makes it callable on demand instead of only once, automatically, at Match Mode start.

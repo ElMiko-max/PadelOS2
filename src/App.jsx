@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.03";
+const APP_VERSION = "V0.17.04";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -11451,7 +11451,10 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
                       : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>⚽ FSR {u.footballSkill||"Not Rated"} · {u.area}</div>)
                   : <div style={{fontSize:11,color:"var(--po-dim)",marginTop:2}}>🎾 USR {u.usr} · {u.area}</div>}
                 <MemberProgress comm={comm} userId={u.id} status={m.status}/>
-                {isAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
+                {/* Raw visible contact info: real Platform Admin only (privacy policy,
+                    2026-10-01) — a community admin can still reach this person via the
+                    ContactMenu icon right after, which never displays the digits itself. */}
+                {meIsPlatformAdmin&&<div style={{fontSize:11,color:"var(--po-dim)",marginTop:1}}>✉️ {u.email||"—"} · 📱 {u.phone||"—"}</div>}</div>
               {isAdmin&&!isMe&&<ContactMenu u={u}/>}
               {(isAdmin||(meIsPlatformAdmin&&m.role==="admin"))&&!isMe&&m.role!=="owner"&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <div onClick={()=>setOpenMemberMenu(o=>o===u.id?null:u.id)} style={{width:32,height:32,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
@@ -15162,7 +15165,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 {suspendedIds.has(u.id)&&<span style={{marginLeft:4,fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 {uIsEventAdmin&&<span style={{marginLeft:4,fontSize:10,color:"#A78BFA",fontWeight:700}}>🛡️ EVENT ADMIN</span>}
               </div>
-              {isAdmin&&isGuestPerson&&u.phone&&<a href={`tel:${u.phone}`} onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:4,fontSize:10.5,color:"var(--po-dim)",marginTop:1,textDecoration:"none"}}>📱 {u.phone}</a>}
+              {/* Raw visible number: real Platform Admin only (privacy policy, 2026-10-01 — a
+                  community/event admin must be able to REACH a player, but never see their
+                  contact info as plain text). Any admin still gets the ContactMenu icon right
+                  after, which opens Call/SMS/WhatsApp without ever displaying the digits here. */}
+              {isPlatformAdmin&&isGuestPerson&&u.phone&&<a href={`tel:${u.phone}`} onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:4,fontSize:10.5,color:"var(--po-dim)",marginTop:1,textDecoration:"none"}}>📱 {u.phone}</a>}
+              {isAdmin&&u.id!==me.id&&<ContactMenu u={u}/>}
               {/* Football events show/edit footballSkill instead of padel USR — the padel USR
                   override machinery (guest USR, event-only USR) has no meaning for football. */}
               {effEv.sport==="Football"
@@ -15297,7 +15305,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <div style={{fontWeight:600,fontSize:13,color:"var(--po-text)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                   <span>{u.nickname}{effEv.sport!=="Football"&&<span style={{fontWeight:400,color:"var(--po-dim)"}}> ({historicUsr(u.id,effEv.plan,u.usr)})</span>}</span>
                   {wMStatus&&sBdg(wMStatus)}
-                  {u.isGuest&&<span style={{fontSize:10,color:"#F59E0B"}}>GUEST{isAdmin&&u.phone?` · ${u.phone}`:""}</span>}
+                  {u.isGuest&&<span style={{fontSize:10,color:"#F59E0B"}}>GUEST{isPlatformAdmin&&u.phone?` · ${u.phone}`:""}</span>}
+                  {isAdmin&&u.id!==me.id&&<ContactMenu u={u}/>}
                   {suspendedIds.has(u.id)&&<span style={{fontSize:10,color:"#F59E0B",fontWeight:700}}>🚫 SUSPENDED</span>}
                 </div>
                 <div style={{fontSize:11,color:"#F59E0B"}}>{suspendedIds.has(u.id)
@@ -16513,7 +16522,12 @@ function ProfileSc({user,me,users,comms,onBack,viewedByAdmin,onEditUser,isMeTab,
       {showContact&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>{user.phone ? <a href={`tel:${user.phone}`} style={{color:"inherit",textDecoration:"none"}}>📱 {user.phone}</a> : <>📱 <span style={{color:"var(--po-bdr)"}}>—</span></>}</div>}
       <div style={{fontSize:12,color:"var(--po-dim)",marginTop:2}}>☕ Break Preference: {BREAK_PREF_LABELS[user.breakPref||"none"]}</div>
     </div>
-    {showContact&&!isMe&&<ContactMenu u={user}/>}
+    {/* Contact ability is broader than raw-text visibility (privacy policy, 2026-10-01): a
+        community admin who shares a community with this person can still reach them even
+        though showContact (self-or-platform-admin-only) keeps the actual digits hidden above.
+        canManageCombo already encodes exactly that same "self, platform admin, or shared-
+        community admin" boundary, so it's reused here rather than a new check. */}
+    {canManageCombo&&!isMe&&<ContactMenu u={user}/>}
     {(isMe||isPlatformAdmin)&&<SmBtn label="✏️ Edit" onClick={()=>setEditing(true)} color="#6366F1"/>}
   </div>
   {(isMe||isPlatformAdmin)&&editing&&<UserEditModal user={user} isPlatformAdmin={isPlatformAdmin} isMe={isMe} egypt={egypt} myGooglePhotoURL={myGooglePhotoURL} onSave={payload=>onEditUser(user.id,payload)} onRecalcUsr={onRecalcUsr} onClose={()=>setEditing(false)} toast={onToast}/>}

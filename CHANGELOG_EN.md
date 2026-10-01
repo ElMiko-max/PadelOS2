@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.03 (current) — Fix: legacy phone numbers (no country code) were failing on WhatsApp
+## V0.17.04 (current) — Email/phone privacy: visible only to Platform Admin, but still contactable by others
+
+- **New rule:** a user's email and phone number are now shown as **visible text** only to the real Platform Admin (or the person themselves, on their own page). A community admin or event admin no longer sees the raw number/email as text at all.
+- **Contacting them still works:** any community or event admin can still tap the 📞 icon (Call/SMS/WhatsApp) next to a player to reach them directly — the number is never displayed inside the app itself, it just opens the matching app (phone/messages/WhatsApp) pre-filled. This is a deliberate exception for actually reaching someone, not a privacy hole.
+- **Where this was fixed:** a community's member list, the profile screen, and an event's Players tab (which also got the 📞 button for the first time, now for every player, not just guests).
+- **Platform Admin still sees everything** exactly as before, everywhere (Platform Admin → Users and every other place) - nothing changes for that role.
+
+---
+
+## V0.17.03 — Fix: legacy phone numbers (no country code) were failing on WhatsApp
 
 - **The problem:** a phone entered the old way (the plain "Phone" field in user editing, before there was a country-code picker) was stored in local Egyptian format (`01XXXXXXXXX`) with no dial code saved at all. Tapping WhatsApp from the Contact menu got rejected with "missing a country code or has the wrong one" - WhatsApp needs the international format (`20` instead of the leading `0`).
 - **The fix:** when there's no dial code on file and the number matches the recognizable Egyptian local shape (11 digits, leading zero), the system now assumes Egypt (+20) and drops the leading zero automatically - the same default assumption used everywhere else in the app. Verified directly against the exact number from the admin's screenshot.

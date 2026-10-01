@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.04 (current) — Email/phone privacy: visible only to Platform Admin, but still contactable by others
+## V0.17.05 (current) — Gender now shown on the profile screen and Platform Admin's card, and editable
+
+- **Profile screen:** gender (♂ Male / ♀ Female) now shows next to location - visible to anyone who can see this profile at all (not restricted like email/phone).
+- **Platform Admin → Users card:** gender (♂/♀) now shows on the location line.
+- **User edit screen:** a new "Gender" dropdown (Male/Female/not set) right under Phone - anyone can set/change their own gender this way (or an admin editing someone else).
+
+---
+
+## V0.17.04 — Email/phone privacy: visible only to Platform Admin, but still contactable by others
 
 - **New rule:** a user's email and phone number are now shown as **visible text** only to the real Platform Admin (or the person themselves, on their own page). A community admin or event admin no longer sees the raw number/email as text at all.
 - **Contacting them still works:** any community or event admin can still tap the 📞 icon (Call/SMS/WhatsApp) next to a player to reach them directly — the number is never displayed inside the app itself, it just opens the matching app (phone/messages/WhatsApp) pre-filled. This is a deliberate exception for actually reaching someone, not a privacy hole.

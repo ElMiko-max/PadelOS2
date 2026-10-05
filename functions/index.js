@@ -6,6 +6,20 @@ const {getMessaging} = require("firebase-admin/messaging");
 const {getFirestore, FieldValue} = require("firebase-admin/firestore");
 initializeApp();
 
+// Firestore batches cap at 500 operations — splits a flat list of {ref, data} writes into
+// chunks and commits each as its own batch. Needed because dispatchMatchModeAlarms/
+// dispatchEventReminders can legitimately have a large backlog in one run (e.g. right after a
+// fix ships and every entry queued up during an outage is suddenly "due" at once), so a single
+// unchunked batch could exceed the limit and the whole write would be rejected outright.
+async function commitInChunks(db, writes) {
+  const CHUNK = 450; // margin under Firestore's hard 500-op batch limit
+  for (let i = 0; i < writes.length; i += CHUNK) {
+    const batch = db.batch();
+    for (const w of writes.slice(i, i + CHUNK)) batch.set(w.ref, w.data);
+    await batch.commit();
+  }
+}
+
 // Real production outage, confirmed 2026-09-15: notifications used to live as one shared array
 // inside a single Firestore document (padelos/notifications) — this trigger fired on every
 // write to that one doc and diffed the array to find "new" entries. That document grew to 4897
@@ -58,9 +72,20 @@ exports.warnOnLegacyCommsWrite = onDocumentWritten("padelos/comms", async (event
 });
 
 // Runs every minute. Checks padelos/matchModeSchedule for any round whose end time
-// has passed and hasn't been notified yet, then appends entries to padelos/notifications
-// (which sendPushOnNotification above already watches and sends pushes for — no duplicate
-// send logic needed here).
+// has passed and hasn't been notified yet, then writes one padelos_notifications/{id}
+// document per recipient (sendPushOnNotification above watches that collection and sends
+// the push — no duplicate send logic needed here).
+//
+// Real outage, confirmed 2026-10-04: this (and dispatchEventReminders below) were never
+// updated when notifications moved to the one-doc-per-notification padelos_notifications
+// collection (V0.16.28) — they kept writing into the old shared padelos/notifications array
+// doc, which nothing else in the app has read or written since that migration. That doc was
+// already sitting at 4,897 entries / 1,048,349 bytes (right at Firestore's 1,048,487-byte
+// per-field limit) from before the migration and was never pruned, so every write from here
+// started failing ("property value is longer than..."), every minute, since ~Sep 14 — the
+// schedule entry's `sent` flag never got set, so the same due item was reprocessed forever.
+// Fixed at the source: write directly into padelos_notifications like everything else already
+// does, so this can never hit a shared-document size ceiling again regardless of volume.
 exports.dispatchMatchModeAlarms = onSchedule("every 1 minutes", async () => {
   const db = getFirestore();
   const scheduleRef = db.collection("padelos").doc("matchModeSchedule");
@@ -77,35 +102,37 @@ exports.dispatchMatchModeAlarms = onSchedule("every 1 minutes", async () => {
   }
   console.log(`[matchMode] ${due.length} round(s) due, dispatching...`);
 
-  const notifRef = db.collection("padelos").doc("notifications");
-  const notifSnap = await notifRef.get();
-  const notifications = notifSnap.exists ? JSON.parse(notifSnap.data().value || "[]") : [];
-
-  const newNotifs = [];
+  const nowIso = new Date().toISOString();
+  const writes = [];
   for (const s of due) {
     for (const userId of (s.userIds || [])) {
-      newNotifs.push({
-        id: `mm-${s.id}-${userId}`,
+      writes.push({ ref: db.collection("padelos_notifications").doc(), data: {
         userId,
+        type: "matchModeRoundEnd",
+        eventId: s.eventId ?? null,
+        communityId: s.communityId ?? null,
+        eventName: s.label ?? null,
         title: "⏱ Round ended",
         body: `${s.label} — Round ${s.round} is done, swap courts!`,
-        createdAt: new Date().toISOString(),
-      });
+        createdAt: nowIso,
+        read: false,
+      }});
     }
   }
 
-  await notifRef.set({value: JSON.stringify([...notifications, ...newNotifs])});
-
   const updatedSchedule = schedule.map(s => due.includes(s) ? {...s, sent: true} : s);
-  await scheduleRef.set({value: JSON.stringify(updatedSchedule)});
+  writes.push({ ref: scheduleRef, data: {value: JSON.stringify(updatedSchedule)} });
 
-  console.log(`[matchMode] sent ${newNotifs.length} notification(s)`);
+  await commitInChunks(db, writes);
+
+  console.log(`[matchMode] sent ${writes.length - 1} notification(s)`);
 });
 
 // Runs every minute. Checks padelos/eventReminderSchedule for any 24h/3h/1h reminder
 // whose time has arrived, looks up who is CURRENTLY registered for that event (so
 // late registrations and cancellations are respected even though the reminder was
-// scheduled earlier), and appends entries to padelos/notifications.
+// scheduled earlier), and writes one padelos_notifications/{id} document per recipient
+// (see dispatchMatchModeAlarms above for why — same outage, same fix, same reasoning).
 exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   const db = getFirestore();
   const scheduleRef = db.collection("padelos").doc("eventReminderSchedule");
@@ -122,12 +149,8 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   }
   console.log(`[eventReminder] ${due.length} reminder(s) due, dispatching...`);
 
-  const notifRef = db.collection("padelos").doc("notifications");
-  const notifSnap = await notifRef.get();
-  const notifications = notifSnap.exists ? JSON.parse(notifSnap.data().value || "[]") : [];
-
   const labelMap = {"24h": "tomorrow", "3h": "in 3 hours", "1h": "in 1 hour"};
-  const newNotifs = [];
+  const writes = [];
   const stillValid = []; // reminders we could actually process (event found) — used to mark sent
 
   for (const s of due) {
@@ -152,24 +175,29 @@ exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
     // field read.
     const regsSnap = await evSnap.ref.collection("registrations").get();
     const userIds = regsSnap.docs.map(d => d.data().userId);
+    const reminderType = "reminder_h" + String(s.reminderType || "").replace("h", "");
     for (const userId of userIds) {
-      newNotifs.push({
-        id: `evr-${s.id}-${userId}`,
+      writes.push({ ref: db.collection("padelos_notifications").doc(), data: {
         userId,
+        type: reminderType,
+        eventId: s.eventId ?? null,
+        communityId: ev.communityId ?? null,
+        eventName: ev.name ?? null,
         title: "📅 Event reminder",
         body: `${ev.name} is ${labelMap[s.reminderType] || "coming up"}${ev.time ? " — " + ev.time : ""}`,
         createdAt: new Date().toISOString(),
-      });
+        read: false,
+      }});
     }
     stillValid.push(s);
   }
 
-  await notifRef.set({value: JSON.stringify([...notifications, ...newNotifs])});
-
   const updatedSchedule = schedule.map(s => stillValid.includes(s) ? {...s, sent: true} : s);
-  await scheduleRef.set({value: JSON.stringify(updatedSchedule)});
+  writes.push({ ref: scheduleRef, data: {value: JSON.stringify(updatedSchedule)} });
 
-  console.log(`[eventReminder] sent ${newNotifs.length} notification(s)`);
+  await commitInChunks(db, writes);
+
+  console.log(`[eventReminder] sent ${writes.length - 1} notification(s)`);
 });
 
 // Backstop cleanup for padelos_practice_sessions (see App.jsx's startSim/the autosave effect

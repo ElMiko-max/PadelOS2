@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.05 (current) — Gender now shown on the profile screen and Platform Admin's card, and editable
+## V0.17.06 (current) — New notification for every event cancellation, not just last-minute ones
+
+- **The problem:** there was only one cancellation alert (`lastMinuteCancel`), and it's deliberately scoped to fire only within the final 3 hours before an event. Any earlier cancellation never notified the admin at all.
+- **The fix:** a new, separate notification (↩️) now goes to event/community admins for **any cancellation, at any time** — whether the player cancelled themselves or an admin removed them. This is additive, not a replacement for `lastMinuteCancel` — a true last-minute drop still triggers both (the regular one plus the urgent warning).
+- **The "approaching minimum headcount" alerts (eventNearMin/eventAtMin/eventBelowMin) are unchanged** — those were already working correctly.
+
+---
+
+## V0.17.05 — Gender now shown on the profile screen and Platform Admin's card, and editable
 
 - **Profile screen:** gender (♂ Male / ♀ Female) now shows next to location - visible to anyone who can see this profile at all (not restricted like email/phone).
 - **Platform Admin → Users card:** gender (♂/♀) now shows on the location line.

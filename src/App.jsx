@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.05";
+const APP_VERSION = "V0.17.06";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9413,6 +9413,16 @@ export default function Matchkeeper() {
         if (eventHealthRecipients.length) notify(eventHealthRecipients, "lastMinuteCancel", ev, `⚠️ Last-minute cancellation — ${ev.name}`, `${u?.nickname||"A player"} dropped out ${hoursUntil<1?"less than an hour":`~${Math.round(hoursUntil)}h`} before start.`);
       }
     }
+    // General cancellation alert (admin request, 2026-10-05): "any إنسحاب من الإيفنت انا احب
+    // يجيلي نوتيفيكيشن عليه" — lastMinuteCancel above only fires inside the final 3 hours before
+    // start; every earlier cancellation was previously silent, which is exactly what got missed
+    // today. This fires for every single withdrawal regardless of timing, same recipients/guard
+    // as the minimum-headcount alert below (skip completed/cancelled events, only for someone who
+    // actually had a registration to begin with) — intentionally separate from lastMinuteCancel
+    // rather than replacing it, so a true last-minute drop still gets its own escalated alert too.
+    if (ev && hadReg && ev.status!=="completed" && ev.status!=="cancelled") {
+      if (eventHealthRecipients.length) notify(eventHealthRecipients, "playerCancelled", ev, `↩️ Cancellation — ${ev.name}`, `${u?.nickname||"A player"} ${uid===me.id?"cancelled their registration":"was removed"}.`);
+    }
     // Minimum-headcount alert — as the roster drains toward (and past) an event's minimum
     // viable size (courts×4), the admin needs the heads-up early enough to actually recruit
     // replacements, not just discover a doomed event on the day. `ev` here is still the
@@ -17786,7 +17796,7 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
 function NotificationsSc({notifications,me,onBack,onMarkAllRead,onOpen}){
   const myNotifs = notifications.filter(n=>n.userId===me.id);
   const unreadCount = myNotifs.filter(n=>!n.read).length;
-  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗",lastMinuteCancel:"⚠️",eventNearMin:"⚠️",eventAtMin:"🔶",eventBelowMin:"🚨",eventDeleted:"🗑"};
+  const icons = {reg_open:"🎾",registered:"✓",event_updated:"✏️",reminder_h24:"⏰",reminder_h3:"⏰",reminder_h1:"⏰",announcement:"📢",eventAnnouncement:"📢",announcementReply:"💬",eventAnnouncementReply:"💬",waitlisted:"⏳",waitlistPromoted:"🎉",eventJoinRequest:"🙋",new_community:"🌱",new_event_platform:"🆕",eventRegistration:"🎾",inviteClaimed:"🔗",lastMinuteCancel:"⚠️",playerCancelled:"↩️",eventNearMin:"⚠️",eventAtMin:"🔶",eventBelowMin:"🚨",eventDeleted:"🗑"};
   return <><BBtn onBack={onBack} label="Back"/>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>

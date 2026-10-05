@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.06 (current) — New notification for every event cancellation, not just last-minute ones
+## V0.17.07 (current) — Clean up stale data on unregister + record court<->court manual swaps
+
+- **Serious bug (money):** if a player was set as an event's payment collector (`settlementPayerId`) and then unregistered, the screen showed a fallback name, but the real payment link generated still pointed at the former registrant's own InstaPay. `settlementPayerId` now clears automatically on unregister if it pointed at the leaving player.
+- **Same staleness in two other lists:** a player added to "Concentrate Breaks" or "Avoid Breaks" who later unregistered stayed stuck in that list forever, with no visible way to remove the flag (they no longer appear in the picker). Both now clear automatically on unregister, along with `exempted`/`paidIds`/`directIds`.
+- **A manual swap between two players already on court (no break involved) recorded nothing:** swapping Court 2 <-> Court 3 directly left zero trace — it looked like an unexplained engine pick. Now writes a clear reason ("🔧 Manually swapped...") visible via ℹ️ Why? for both players.
+
+---
+
+## V0.17.06 — New notification for every event cancellation, not just last-minute ones
 
 - **The problem:** there was only one cancellation alert (`lastMinuteCancel`), and it's deliberately scoped to fire only within the final 3 hours before an event. Any earlier cancellation never notified the admin at all.
 - **The fix:** a new, separate notification (↩️) now goes to event/community admins for **any cancellation, at any time** — whether the player cancelled themselves or an admin removed them. This is additive, not a replacement for `lastMinuteCancel` — a true last-minute drop still triggers both (the regular one plus the urgent warning).

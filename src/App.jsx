@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.06";
+const APP_VERSION = "V0.17.07";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9393,7 +9393,25 @@ export default function Matchkeeper() {
     // no correctness dependency on each other (a checkedIn entry with no matching registration
     // is harmless, purely cosmetic; a not-yet-closed gap self-heals the moment this runs again).
     deleteRegistrationDoc(eid, uid).catch(e=>console.log("removeFromEvent deleteRegistrationDoc failed", e));
-    updEvent(cid,eid,ev=>({...ev,checkedIn:ev.checkedIn.filter(id=>id!==uid)}),{silent:true});
+    // Real bugs, admin report (2026-10-06, live event #187): removing a player never cleaned up
+    // any other event field that references their id — breakConcentrateIds/breakAvoidIds kept
+    // a dead id forever (so the Concentrate/Avoid pickers quietly held a ghost entry nobody could
+    // see or remove, since the picker only lists currently-registered players), and worse,
+    // settlementPayerId kept pointing at them even after they left: the Financial tab's own
+    // payerId fallback (`settlementPayerId ?? createdBy ?? attendeeIds[0]`) only ever kicks in
+    // when the field is null, so a stale-but-still-set id silently kept generating a real
+    // InstaPay payment link for someone no longer even in the event — a genuine wrong-recipient
+    // risk, not just a display glitch. Same treatment for exempted/paidIds/directIds, the other
+    // flat "is this id a member of this list" fields with the identical staleness risk.
+    updEvent(cid,eid,ev=>({...ev,
+      checkedIn:ev.checkedIn.filter(id=>id!==uid),
+      exempted:(ev.exempted||[]).filter(id=>id!==uid),
+      paidIds:(ev.paidIds||[]).filter(id=>id!==uid),
+      directIds:(ev.directIds||[]).filter(id=>id!==uid),
+      breakConcentrateIds:(ev.breakConcentrateIds||[]).filter(id=>id!==uid),
+      breakAvoidIds:(ev.breakAvoidIds||[]).filter(id=>id!==uid),
+      settlementPayerId:ev.settlementPayerId===uid?null:ev.settlementPayerId,
+    }),{silent:true});
     syncOrdering(cid,eid).catch(e=>console.log("removeFromEvent syncOrdering failed", e));
     toast2("Removed from event");
     if (promoted && ev) notify([promoted.userId], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}!`, "A spot opened up — you've been moved off the waitlist.");
@@ -9787,6 +9805,13 @@ export default function Matchkeeper() {
       // status; a break<->break or court<->court swap leaves both players' tags untouched.
       // Landing on COURT always clears any prior tag — it no longer describes their situation.
       const crossesLine=lA.w!==lB.w;
+      // Real bug, admin report (2026-10-06): a swap between two players BOTH already on court
+      // (e.g. Court 2 <-> Court 3, no break involved at all) wrote nothing anywhere — crossesLine
+      // is false so the block below never ran, and nothing else in this function touches a
+      // court<->court move. The admin had no way to tell this happened versus the engine having
+      // placed them there itself. Tag and record it separately, since it's a real case the
+      // crossesLine-only logic was never meant to cover.
+      const courtToCourtSwap=lA.w==="court"&&lB.w==="court";
       const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
       // Real bug, admin report (2026-09-23, event #212): `via` (win/loss/stay/bench, see
       // Enhancement #39's ↑/↓/🏆/⚓ icons) describes how a player arrived at their CURRENT court —
@@ -9798,7 +9823,9 @@ export default function Matchkeeper() {
       const clearTag=(p)=>{const{manualSwap,manualSwapAt,manualSwapBy,via,...rest}=p;return rest;};
       const pAOut=lB.w==="court"?clearTag(pA):(crossesLine?{...clearTag(pA),...manualStamp,...(lA.w==="court"?{wouldBeCourt:r.matches[lA.mi].court}:{})}:pA);
       const pBOut=lA.w==="court"?clearTag(pB):(crossesLine?{...clearTag(pB),...manualStamp,...(lB.w==="court"?{wouldBeCourt:r.matches[lB.mi].court}:{})}:pB);
-      set(lA,pBOut);set(lB,pAOut);
+      const pAFinal=courtToCourtSwap?{...pAOut,...manualStamp}:pAOut;
+      const pBFinal=courtToCourtSwap?{...pBOut,...manualStamp}:pBOut;
+      set(lA,pBFinal);set(lB,pAFinal);
       // Admin request (2026-09-23, event #212 wording review): a manually-swapped player never
       // got a breakReasons entry at all, so their ℹ️ Why? modal fell back to the generic "Not
       // available — this round was generated before the Decision Trail feature shipped" — which
@@ -9819,6 +9846,16 @@ export default function Matchkeeper() {
           "⚖️ Still counts toward their normal fair share — not an extra break on top of it.",
         ];
         delete r.breakReasons[uidNowOnCourt];
+      }
+      if (courtToCourtSwap) {
+        const courtOfA=r.matches[lA.mi].court, courtOfB=r.matches[lB.mi].court;
+        r.returnReasons = {...(r.returnReasons||{})};
+        r.returnReasons[uidA] = [`🔧 Manually swapped with ${pB.nickname||"another player"} — moved from Court ${courtOfA} to Court ${courtOfB} by the admin.`];
+        r.returnReasons[uidB] = [`🔧 Manually swapped with ${pA.nickname||"another player"} — moved from Court ${courtOfB} to Court ${courtOfA} by the admin.`];
+        // Marks this round so the ℹ️ Why? button shows for these two even though — unlike a real
+        // return from break — they were already on a court last round too, which is what
+        // cameFromBreakOrNew normally keys off of.
+        r.manualCourtSwapIds = [...new Set([...(r.manualCourtSwapIds||[]), uidA, uidB])];
       }
       r.onBreakIds=r.onBreak.map(p=>p.userId);
       // Sync breakPlan[ri] with the updated onBreakIds
@@ -10262,6 +10299,9 @@ export default function Matchkeeper() {
       // direct result of this swap, so history reads it as an admin override, not an
       // engine pick. See swapCI's comment for the full reasoning.
       const crossesLine=lA.w!==lB.w;
+      // Same court<->court tracking fix as swapCI above (2026-10-06 admin report) — a swap
+      // between two teams BOTH already in a match wrote nothing anywhere before this.
+      const courtToCourtSwap=lA.w==="match"&&lB.w==="match";
       const manualStamp={manualSwap:true,manualSwapAt:Date.now(),manualSwapBy:me?.nickname||null};
       // Same via-clearing fix as swapCI's — see its comment for the full reasoning.
       const clearTag=(t)=>{const{manualSwap,manualSwapAt,manualSwapBy,via,...rest}=t;return rest;};
@@ -10270,7 +10310,9 @@ export default function Matchkeeper() {
       // result, neediest open court" the moment they're swapped out of an in-progress match.
       const tAOut=lB.w==="match"?clearTag(tA):(crossesLine?{...clearTag(tA),...manualStamp,...(lA.w==="match"?{wouldBeCourt:r.matchesA[lA.mi].court}:{})}:tA);
       const tBOut=lA.w==="match"?clearTag(tB):(crossesLine?{...clearTag(tB),...manualStamp,...(lB.w==="match"?{wouldBeCourt:r.matchesA[lB.mi].court}:{})}:tB);
-      setT(lA,tBOut);setT(lB,tAOut);
+      const tAFinal=courtToCourtSwap?{...tAOut,...manualStamp}:tAOut;
+      const tBFinal=courtToCourtSwap?{...tBOut,...manualStamp}:tBOut;
+      setT(lA,tBFinal);setT(lB,tAFinal);
       // Same fix as swapCI's — see its comment for the full reasoning.
       if (crossesLine) {
         const tidNowOnBreak = lA.w==="match" ? tidA : tidB;
@@ -10282,6 +10324,13 @@ export default function Matchkeeper() {
           "⚖️ Still counts toward their normal fair share — not an extra break on top of it.",
         ];
         delete r.breakReasons[tidNowOnCourt];
+      }
+      if (courtToCourtSwap) {
+        const courtOfA=r.matchesA[lA.mi].court, courtOfB=r.matchesA[lB.mi].court;
+        r.returnReasons = {...(r.returnReasons||{})};
+        r.returnReasons[tidA] = [`🔧 Manually swapped with ${tB.name||"another team"} — moved from Court ${courtOfA} to Court ${courtOfB} by the admin.`];
+        r.returnReasons[tidB] = [`🔧 Manually swapped with ${tA.name||"another team"} — moved from Court ${courtOfB} to Court ${courtOfA} by the admin.`];
+        r.manualCourtSwapIds = [...new Set([...(r.manualCourtSwapIds||[]), tidA, tidB])];
       }
       r.onBreakIds=r.onBreak.map(t=>t.id);
       return{...ev,plan:{...ev.plan,rounds}};
@@ -13116,6 +13165,7 @@ function CTMatchesTab({plan,sport,comms,onSetWinCT,onSetCTScorers,onToggleCTLeag
   // Ladder-only — League/Football have no break concept at all.
   const cameFromBreakOrNew=(tid,ri)=>{
     if(plan.format!=="ladder"||ri===0||tid==null) return false;
+    if((plan.rounds[ri]?.manualCourtSwapIds||[]).includes(tid)) return true;
     const prev=plan.rounds[ri-1];
     return !(prev?.matchesA||[]).some(m=>m.teamA?.id===tid||m.teamB?.id===tid);
   };
@@ -14663,6 +14713,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // check itself works for old rounds too — only the stored reasoning text may be missing).
   const cameFromBreakOrNew = (uid, ri) => {
     if (ri===0 || !plan) return false;
+    // A manual court<->court swap leaves the player with no break/new-registration history at
+    // all (they were on a court last round too) — manualCourtSwapIds (set by swapCI) is the only
+    // signal that this round's returnReasons entry for them is real and should be shown.
+    if ((plan.rounds[ri]?.manualCourtSwapIds||[]).includes(uid)) return true;
     const prev = plan.rounds[ri-1];
     return !prev.matches.some(m=>m.teamA.some(x=>x.userId===uid)||m.teamB.some(x=>x.userId===uid));
   };

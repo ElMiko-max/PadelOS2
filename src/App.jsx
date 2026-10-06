@@ -239,7 +239,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.07";
+const APP_VERSION = "V0.17.08";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -11351,11 +11351,19 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
   // see the App-level godMode state and the matching second-confirm gate in updC.
   const isAdmin=myRole==="owner"||myRole==="admin"||(meIsPlatformAdmin&&godMode);
   const isMember=!!myRole;
+  // Real bug, admin report (2026-10-06): a guest-tier member (e.g. auto-added via an event
+  // invite, before they ever joined the community itself) already has a members[] row, so
+  // isMember was true for them — which hid the one "+ Request to Join" button that could ever
+  // move them out of guest, with nothing else on this screen offering a path. The admin was
+  // explicit: no auto-promotion by attendance count or time, just let the guest actually ask.
+  // requestJoin/approveReq already handle this case correctly (approveReq upgrades the existing
+  // guest row in place rather than creating a duplicate) — only the button's visibility was wrong.
+  const isRealMember=isMember&&myMember.status!=="guest";
   // "Private" was previously cosmetic — a non-member could see the full roster, stats, and
   // events regardless. Platform Admin can always see through it for oversight. A guest-tier
   // member (e.g. auto-added via an event invite) is deliberately NOT a "real" member for this
   // purpose — the whole point of the guest tier is minimal visibility until promoted.
-  const canViewPrivate=comm.type!=="private"||(isMember&&myMember.status!=="guest")||meIsPlatformAdmin;
+  const canViewPrivate=comm.type!=="private"||isRealMember||meIsPlatformAdmin;
   const hasPendingJoin=comm.joinRequests.some(r=>r.userId===me.id);
   const regs=comm.members.filter(m=>m.status!=="inactive");
   const regularCount=regs.filter(m=>m.status==="regular").length;
@@ -11446,7 +11454,7 @@ function CommDetail({comm,users,venues,me,uidLinks,onBack,onEdit,onApprove,onRej
       </div>
       <div style={{fontSize:12,color:"var(--po-dim)"}}>📍 {comm.area} · {comm.gov} · {comm.country||"مصر"} · Founded {fmtD(comm.founded)}</div>
       <div style={{fontSize:13,color:"var(--po-sub)",marginTop:10}}>{comm.description}</div>
-      {!isMember&&<div style={{marginTop:14}}>
+      {!isRealMember&&<div style={{marginTop:14}}>
         {hasPendingJoin
           ? <div style={{textAlign:"center",fontSize:13,fontWeight:600,color:"var(--po-dim)",background:"var(--po-inp)",borderRadius:8,padding:"10px 0"}}>⏳ Request pending approval</div>
           : <Btn label="+ Request to Join" primary onClick={onRequestJoin} style={{width:"100%"}}/>}

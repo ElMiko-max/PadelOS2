@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.07 (current) — Clean up stale data on unregister + record court<->court manual swaps
+## V0.17.08 (current) — Guests can now actually Request to Join
+
+- **The bug:** anyone who'd become a "Community Guest" (e.g. joined an event via invite link before ever joining the community itself) opened the community page and found no "+ Request to Join" button at all — the screen already treated them as a real member (they already have a members[] row, just status "guest"), which hid the one button that could ever move them out of guest.
+- **The fix:** "+ Request to Join" now shows for anyone still at guest status, exactly as if they weren't a member at all. The admin sees the request on the Requests tab like any other, and approving it promotes guest -> Casual (or Regular, depending on the community's settings) in place, no duplicate row.
+- **Deliberate:** no auto-promotion by attendance count or time — this is purely the guest's own explicit request, same as any new member.
+
+---
+
+## V0.17.07 — Clean up stale data on unregister + record court<->court manual swaps
 
 - **Serious bug (money):** if a player was set as an event's payment collector (`settlementPayerId`) and then unregistered, the screen showed a fallback name, but the real payment link generated still pointed at the former registrant's own InstaPay. `settlementPayerId` now clears automatically on unregister if it pointed at the leaving player.
 - **Same staleness in two other lists:** a player added to "Concentrate Breaks" or "Avoid Breaks" who later unregistered stayed stuck in that list forever, with no visible way to remove the flag (they no longer appear in the picker). Both now clear automatically on unregister, along with `exempted`/`paidIds`/`directIds`.

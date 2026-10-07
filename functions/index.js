@@ -464,6 +464,21 @@ exports.registerForEvent = onCall(async (request) => {
   if (!linkSnap.exists) throw new HttpsError("failed-precondition", "No linked player profile for this account yet.");
   const userId = linkSnap.data().userId;
 
+  // Server-side backstop for the client's CompleteProfileGate (src/App.jsx, V0.16.99): the gate
+  // already blocks every screen in the app — including an invite-link registration — until
+  // gender+phone are set, so in normal use nobody can reach this call missing either. This closes
+  // the same gap addMemberToEvent's own comment already documents for admin auth (admin request,
+  // 2026-10-07: "what if someone calls the API directly, bypassing the client entirely") — a
+  // stale cached client (one built before V0.16.99) could otherwise call straight through. Only
+  // this self-service path is checked, not addMemberToEvent/approveEventJoinRequest — an admin
+  // adding/approving someone specific (e.g. a new guest who hasn't been asked for a phone yet) is
+  // a deliberate judgment call, same precedent as the minUsrFloor check just below.
+  const regUsersSnap = await db.collection("padelos").doc("users").get();
+  const regUser = (JSON.parse(regUsersSnap.data()?.value || "[]")).find(u => u.id === userId);
+  if (!regUser?.gender || !regUser?.phone) {
+    throw new HttpsError("failed-precondition", "Please finish setting up your profile (gender + phone) in the app before registering.");
+  }
+
   const evRef = db.collection("padelos_events").doc(String(eventId));
   const commRef = db.collection("padelos_communities").doc(String(communityId));
   const regRef = evRef.collection("registrations").doc(String(userId));

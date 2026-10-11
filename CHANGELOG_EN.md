@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.09 (current) — "Delete My Account" button (Apple App Store prep)
+## V0.17.10 (current) — Real Privacy Policy page (Apple App Store prep)
+
+- **New page, actually published:** `matchkeeper.app/privacy-policy.html` — Apple requires a real URL to one for any App Store listing. Explains exactly what data Matchkeeper collects, who can see what, and how to delete your account.
+- **Updated the existing in-app "Terms & Privacy" blurb (Settings):** it still claimed phone numbers were visible to community admins — that's been wrong since V0.17.04 (the number is private now, with a contact button instead). Fixed the text and linked it to the new Privacy Policy page.
+
+---
+
+## V0.17.09 — "Delete My Account" button (Apple App Store prep)
 
 - **Why:** Apple App Store review requires that any app offering in-app account creation also offer in-app account deletion — this was entirely missing.
 - **The fix:** a new "🗑 Delete My Account" button in Settings → Account. It wipes personal-identity fields (name, email, phone, gender, location, InstaPay link) and permanently closes the login — but **match history and results stay** (other players' standings/stats depend on them), just under "Deleted Player" instead of the real name.

@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.09";
+const APP_VERSION = "V0.17.10";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -17916,7 +17916,11 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
         <span style={{color:"var(--po-dim)"}}>{infoPanel==="terms"?"▲":"▼"}</span>
       </div>
       {infoPanel==="terms"&&<div style={{padding:"4px 16px 16px",fontSize:12,color:"var(--po-sub)",lineHeight:1.6}}>
-        Matchkeeper is an internal tool used to organize your community's events. Your name, phone number, and match history are visible only to your community's admins and members — never sold or shared outside it. For any question about your data, contact the community admin directly above.
+        {/* Was stale since V0.17.04's privacy rule shipped (2026-10-01) — used to claim phone was
+            visible to "community's admins and members", no longer true: raw email/phone are
+            Platform-Admin/self-only now, other admins get a contact button instead (see
+            ContactMenu). Kept in sync with the real policy page below, not re-describing it. */}
+        Your name, USR rating, and match history are visible to your community's admins and members. Your email and phone number are kept private — only you and the Platform Admin can see them as text; other admins can still reach you (call/SMS/WhatsApp) without seeing the number itself. Full details: <a href="https://www.matchkeeper.app/privacy-policy.html" target="_blank" rel="noreferrer" style={{color:"#818CF8"}}>Privacy Policy</a>. For any question about your data, contact the community admin directly above.
       </div>}
     </Card>
     <div style={{textAlign:"center",marginTop:24,fontSize:12,color:"var(--po-bdr)"}}>Matchkeeper {APP_VERSION}</div>

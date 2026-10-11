@@ -30,6 +30,13 @@ import {
   signInWithPopup,
   signInWithCredential,
   updateProfile,
+  // Aliased — Matchkeeper() already declares its own local `deleteUser(id)` (the admin's
+  // permanent-delete-a-player action, further down). Importing the SDK's own deleteUser under
+  // its real name would silently shadow that local one everywhere below this line; a real bug
+  // this caused once (deleteMyAccount calling the WRONG deleteUser, passing the raw Auth User
+  // object where the local one expected a player id, corrupting a padelos_audit write) is why
+  // this is aliased instead.
+  deleteUser as deleteAuthUser,
 } from "firebase/auth";
 import { getFirestore, doc, setDoc, getDoc, getDocFromServer, updateDoc, onSnapshot, collection, collectionGroup, getDocs, getDocsFromServer, deleteDoc, addDoc, query, where, orderBy, limit, startAfter, runTransaction, writeBatch, arrayUnion } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -239,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.08";
+const APP_VERSION = "V0.17.09";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -7114,6 +7121,58 @@ export default function Matchkeeper() {
     toast2(next?"Suspended":"Unsuspended ✓");
     logAudit(next?"user.suspend":"user.unsuspend", `${me.nickname} ${next?"suspended":"unsuspended"} ${u?.nickname||id}`, "user", id);
   };
+  // Self-service account deletion (admin request, 2026-10-11, for Apple App Store Guideline
+  // 5.1.1(v) — any app with in-app account creation must also offer in-app account deletion).
+  // Chose anonymize-in-place over a true delete, same reasoning suspendUser's own comment above
+  // already documents: this player's real match history/standings are shared data other players
+  // depend on, not purely theirs to erase. "Deleted" here means: every personal-identity field is
+  // wiped (name/nickname/email/phone/gender/location/avatar/InstaPay), suspended is set so the
+  // profile can never sign in or be selected again even if somehow re-linked, the padelos_links
+  // entry is removed outright (same doc unlinkUser above already targets, via the same
+  // uidLinks-reverse-lookup pattern), and finally the Firebase Auth credential itself is deleted.
+  //
+  // Real bug caught live on padelos-dev before this shipped: the first version called the normal
+  // setUsers(...) + fire-and-forget deleteDoc(...), THEN deleteUser() — but setUsers only queues a
+  // React state update; the actual Firestore write happens in a separate debounced [users,
+  // dataLoaded] effect. deleteUser() ends the session fast enough that dataLoaded can flip false
+  // (listeners tearing down on the now-null authUser) before that effect ever fires, so the
+  // anonymizing write silently never happened — the account lost its login but kept every real
+  // field. Fixed by writing directly and AWAITING both Firestore writes — bypassing the
+  // local-state+debounced-effect path entirely for this one case — so they're confirmed committed
+  // before the session-ending, unrecoverable deleteUser() call ever runs.
+  const deleteMyAccount = async () => {
+    if (me.id===1) { toast2("Can't delete the platform owner account", "err"); return; }
+    const entry = Object.entries(uidLinks).find(([,uid])=>uid===me.id);
+    const firebaseUid = entry?.[0] || fbAuth.currentUser?.uid;
+    const anonymizedUsers = users.map(u => u.id===me.id ? {...u,
+      name:"Deleted Player", nickname:`Deleted Player #${me.id}`, email:"", phone:"", gender:"",
+      area:"", gov:"", country:"", avatar:"✕", photoURL:"", instapayLink:"", suspended:true,
+      accountDeleted:true, accountDeletedAt:new Date().toISOString(),
+    } : u);
+    try {
+      await setDoc(doc(db,"padelos","users"), {value:JSON.stringify(anonymizedUsers)});
+      if (firebaseUid) await deleteDoc(doc(db,"padelos_links",firebaseUid));
+      await logAudit("user.selfDelete", `${me.nickname} deleted their own account`, "user", me.id);
+    } catch(e) {
+      console.log("deleteMyAccount Firestore step failed", e);
+      toast2("Couldn't delete your account — check your connection and try again.", "err");
+      return;
+    }
+    setUsers(anonymizedUsers);
+    if (firebaseUid) setUidLinks(links => { const n={...links}; delete n[firebaseUid]; return n; });
+    try {
+      if (fbAuth.currentUser) await deleteAuthUser(fbAuth.currentUser);
+    } catch(e) {
+      console.log("deleteUser failed", e);
+      if (e?.code === "auth/requires-recent-login") {
+        toast2("Your profile data is gone, but for security Apple/Google requires a fresh sign-in to fully close the login itself — please sign out and back in, then repeat this once more.", "err");
+      } else {
+        toast2("Your profile data is gone, but closing the login itself failed — try again, or contact support.", "err");
+      }
+      return;
+    }
+    toast2("Account deleted ✓");
+  };
   // Manual activation bridge (Enhancement #17, Phase 1) — until Paymob is live, this is how a
   // real payment actually gets applied: someone sends an InstaPay/Vodafone Cash/bank transfer
   // directly, the admin confirms it arrived, and sets their access here. `status:"comped"` never
@@ -10815,6 +10874,7 @@ export default function Matchkeeper() {
           onPlatformAdmin={()=>{setNavHistory(h=>[...h,{nav,view}]);setNav("platform");setView({screen:"admin"});}}
           onVersionUpdates={()=>setShowVersionUpdates(true)}
           onSignOut={async()=>{await logAudit("auth.signout", `${me.nickname} signed out`, "user", me.id);signOut(fbAuth);}}
+          onDeleteAccount={deleteMyAccount}
         />}
         {nav==="notifications"&&<NotificationsSc notifications={notifications} me={me}
           onBack={goBack} onMarkAllRead={markAllNotifRead}
@@ -17690,7 +17750,7 @@ function PlatformAdminSc({users,comms,venues,uidLinks,onCreateInvite,initialTab,
   </>;
 }
 
-function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onPlatformAdmin,onVenues,onVersionUpdates,onSignOut,
+function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,onToggleDark,onSendTestNotif,onPlatformAdmin,onVenues,onVersionUpdates,onSignOut,onDeleteAccount,
   isAndroidWeb,apkVersion,apkVersionFetched,apkUrl,nativeUpdateAvailable}){
   const [pushStatus,setPushStatus] = useState("idle"); // idle | working | on | off | error
   const [pushErrDetail,setPushErrDetail] = useState("");
@@ -17764,6 +17824,14 @@ function SettingsSc({user,users,comms,eventCommFilter,onSetEventCommFilter,dark,
         ]:[]),
       ].map(item=><ListRow key={item.l} icon={item.i} label={item.l} onClick={item.fn} muted={item.muted}/>)}
       <ListRow icon="🚪" label="Sign Out" onClick={onSignOut}/>
+      {/* Apple App Store Guideline 5.1.1(v) (admin request, 2026-10-11): any app offering in-app
+          account creation must also offer in-app account deletion. Anonymizes rather than
+          erases — see deleteMyAccount's own comment for why — but the confirm text below is
+          explicit about that distinction so nobody taps this expecting their match history to
+          vanish too. Hidden for the platform owner (id 1) — same self-lockout guard as Suspend. */}
+      {user.id!==1&&<ListRow icon="🗑" label="Delete My Account" danger onClick={()=>{
+        if(window.confirm(`Delete your Matchkeeper account?\n\nThis removes your name, email, phone, and other personal info, and permanently signs you out — you won't be able to sign back in to this account.\n\nYour match history and standings stay (other players' stats depend on them), but with your identity removed — you'll show up as "Deleted Player" instead of your name.\n\nThis can't be undone. Continue?`)) onDeleteAccount();
+      }}/>}
     </div>
     <ST>Notifications</ST>
     <Card style={{marginBottom:16}}>

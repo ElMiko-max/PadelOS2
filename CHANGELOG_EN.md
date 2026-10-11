@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.08 (current) — Guests can now actually Request to Join
+## V0.17.09 (current) — "Delete My Account" button (Apple App Store prep)
+
+- **Why:** Apple App Store review requires that any app offering in-app account creation also offer in-app account deletion — this was entirely missing.
+- **The fix:** a new "🗑 Delete My Account" button in Settings → Account. It wipes personal-identity fields (name, email, phone, gender, location, InstaPay link) and permanently closes the login — but **match history and results stay** (other players' standings/stats depend on them), just under "Deleted Player" instead of the real name.
+- **Self-service only** — nobody can delete someone else's account this way, and the platform owner account is excluded (same guard as Suspend).
+- Tested end-to-end on padelos-dev with a real throwaway account (actually deleted, confirmed data was anonymized and login was closed) before shipping.
+
+---
+
+## V0.17.08 — Guests can now actually Request to Join
 
 - **The bug:** anyone who'd become a "Community Guest" (e.g. joined an event via invite link before ever joining the community itself) opened the community page and found no "+ Request to Join" button at all — the screen already treated them as a real member (they already have a members[] row, just status "guest"), which hid the one button that could ever move them out of guest.
 - **The fix:** "+ Request to Join" now shows for anyone still at guest status, exactly as if they weren't a member at all. The admin sees the request on the Requests tab like any other, and approving it promotes guest -> Casual (or Regular, depending on the community's settings) in place, no duplicate row.

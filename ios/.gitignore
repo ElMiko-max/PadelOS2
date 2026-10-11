@@ -1,0 +1,17 @@
+App/build
+App/Pods
+App/output
+App/App/public
+DerivedData
+xcuserdata
+
+# Cordova plugins for Capacitor
+capacitor-cordova-ios-plugins
+
+# Generated Config files
+App/App/capacitor.config.json
+App/App/config.xml
+
+# Firebase config (matches android/.gitignore's own google-services.json convention) — kept
+# locally, regenerated via `firebase apps:sdkconfig IOS <app-id> --project padelos-6f999`
+App/App/GoogleService-Info.plist

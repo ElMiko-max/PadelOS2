@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.10 (current) — Real Privacy Policy page (Apple App Store prep)
+## V0.17.11 (current) — Check-in works past the event date + cleaned up the Close button for Open events
+
+- **Bug, admin report (2026-10-13):** Check-In (both the player's own button and the admin's) only worked on the exact calendar date of the event — once the date passed, there was no way to check someone in at all, even to go back and fix up attendance afterward. Now works from the event date onward (still doesn't work before it).
+- **The Close button said "Close (Court-Based)" even for Open events** — which have no court-based calculation or standings at all. Now says "Close & Finish Event" for Open events, same label football already used.
+- **Clarification:** there is no hidden way to add a player past Max Players, by design — a deliberate defensive safeguard exists in the code after a real past bug. To actually raise the headcount, raise "Max Players" itself on the event — ordering re-syncs automatically afterward.
+
+---
+
+## V0.17.10 — Real Privacy Policy page (Apple App Store prep)
 
 - **New page, actually published:** `matchkeeper.app/privacy-policy.html` — Apple requires a real URL to one for any App Store listing. Explains exactly what data Matchkeeper collects, who can see what, and how to delete your account.
 - **Updated the existing in-app "Terms & Privacy" blurb (Settings):** it still claimed phone numbers were visible to community admins — that's been wrong since V0.17.04 (the number is private now, with a contact button instead). Fixed the text and linked it to the new Privacy Policy page.

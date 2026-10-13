@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.10";
+const APP_VERSION = "V0.17.11";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -14274,7 +14274,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     return splitRegsByCapacity(simEv,comm).waitlisted.some(r=>r.userId===me.id);
   })();
   const myEventJoinPending = (effEv.joinRequests||[]).some(r=>r.userId===me.id);
-  const isDay  = sim||effEv.date===today;
+  // Real admin request (2026-10-13), after an Open-Day event's check-in never happened on the
+  // night itself and the admin needed to go back in the next day to fix attendance/financials:
+  // was a strict === (check-in only worked on the exact calendar date, both for a player's own
+  // button and the admin's per-player one), which is reasonable going forward (no checking in for
+  // an event that hasn't happened yet) but actively blocked exactly this kind of after-the-fact
+  // cleanup, with zero way around it. <= keeps the "not before the date" half intact and just
+  // removes the matching "not after it either" half the admin never actually wanted.
+  const isDay  = sim||effEv.date<=today;
   const plan   = effEv.plan;
   const isCompleted = effEv.status==="completed";
   const isCancelled = effEv.status==="cancelled";
@@ -15090,7 +15097,14 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <span style={{writingMode:"vertical-rl",textOrientation:"mixed",fontSize:9.5,fontWeight:800,color:"var(--po-dim)",textTransform:"uppercase",letterSpacing:1,whiteSpace:"nowrap"}}>Admin</span>
           </div>}
           {isAdmin&&!sim&&<div style={{flex:"0 1 58%",minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
-            <Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🏁 Close (Court-Based)":"🏁 Close & Finish Event"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{padding:"8px 6px",fontSize:11.5}}/>
+            {/* "Court-Based" was labeled on this button for every event, including Open — but
+                closeEvent only ever runs CI/CT standings math (the actual "court-based formula"
+                the label refers to) when ev.type is closed_ind/closed_teams; an Open event has no
+                standings or USR calculation at all, closing it is just a plain status flip. Admin
+                report (2026-10-13): the label was claiming a scoring method that doesn't exist for
+                Open events, alongside a Court-vs-Performance "choice" that isn't real since the
+                second option is already correctly hidden below for Open — just this label lied. */}
+            <Btn label={isOpen||(effEv.sport||DEFAULT_SPORT)!=="Padel Tennis"?"🏁 Close & Finish Event":"🏁 Close (Court-Based)"} danger onClick={()=>{if(window.confirm(`Close "${ev.name}"?\n\nThis freezes final rankings and locks all results permanently — no more score changes after this. Make sure every match result is entered first.`))act.closeEvent();}} style={{padding:"8px 6px",fontSize:11.5}}/>
             {/* "Performance-Based" (18 chars) was overflowing this half-width button on real
                 devices — admin follow-up, 2026-09-16: "the problem was with the word
                 performance". Shortened to "Perf-Based" here; "Court-Based" above wasn't

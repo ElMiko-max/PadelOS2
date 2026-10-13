@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.11";
+const APP_VERSION = "V0.17.12";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8002,6 +8002,19 @@ export default function Matchkeeper() {
   // assigns a real dense confirmOrder and closes the gap left behind on the waitlist, exactly
   // like any other promotion. Confirmed via a real confirm() since this visibly cuts ahead of
   // whoever the fair order would have promoted next (admin request, 2026-09-14).
+  // Real admin request (2026-10-13): there was genuinely no way, for any event type, to add a
+  // player past Max Players — not even as a deliberate admin exception ("I know there's really
+  // room, let me in anyway"). The admin's first instinct (just raise Max Players directly) turned
+  // out to be a dead end too: padel's cap is derived from courts×5 at creation time (see
+  // createEvent's comment) with no manual override field in the edit form at all — bumping courts
+  // to fit one extra player would wildly overshoot (and corrupt courts-driven cost/insufficient-
+  // players math elsewhere). So the override lives right here instead, at the one point it's
+  // actually needed: promoting a specific waitlisted player. When at capacity, this now raises
+  // ev.maxPlayers to exactly fit them (instead of refusing) — a real, persisted change, not a
+  // hidden bypass, so every other screen reading maxPlayers (the "Insufficient Players" banner,
+  // the registered-count badge, etc.) stays honest about what actually happened. Gated behind two
+  // separate confirms specifically for this path (admin's own request — one isn't scary enough
+  // for a capacity override) instead of the normal promote's single one.
   const forcePromoteFromWaitlist = async (cid, eid, uid) => {
     const ev = getEv(cid, eid);
     if (!ev) { toast2("Event not found", "err"); return; }
@@ -8009,12 +8022,19 @@ export default function Matchkeeper() {
     const u = users.find(x=>x.id===uid);
     const maxPlayers = getMaxPlayers(ev);
     const {active, waitlisted} = splitRegsByCapacity(ev, comm);
-    if (maxPlayers!=null && active.length>=maxPlayers) { toast2("No open seat — the active list is already full", "err"); return; }
     if (!waitlisted.some(r=>r.userId===uid)) { toast2("This player isn't on the waitlist", "err"); return; }
-    if (!window.confirm(`Move ${u?.nickname||uid} straight to an active seat in "${ev.name}"?\n\nThis skips everyone ahead of them on the waitlist — only do this if you have a specific reason to bypass the normal order.`)) return;
+    const overCapacity = maxPlayers!=null && active.length>=maxPlayers;
+    if (overCapacity) {
+      const newMax = active.length + 1;
+      if (!window.confirm(`⚠️ "${ev.name}" is already full (${active.length}/${maxPlayers}). Moving ${u?.nickname||uid} to an active seat means going OVER capacity.\n\nOnly do this if you've actually got room for them (an extra court, a no-show's freed spot) — Max Players will be raised to ${newMax} to match.\n\nContinue?`)) return;
+      if (!window.confirm(`Last check — force ${u?.nickname||uid} in and raise this event's Max Players from ${maxPlayers} to ${newMax}?`)) return;
+    } else {
+      if (!window.confirm(`Move ${u?.nickname||uid} straight to an active seat in "${ev.name}"?\n\nThis skips everyone ahead of them on the waitlist — only do this if you have a specific reason to bypass the normal order.`)) return;
+    }
     const colRef = collection(db,"padelos_events",String(eid),"registrations");
     const preSnap = await getDocs(colRef);
     const refs = preSnap.docs.map(d=>d.ref);
+    const evRef = doc(db,"padelos_events",String(eid));
     try {
       await runTransaction(db, async (tx) => {
         const snaps = await Promise.all(refs.map(r=>tx.get(r)));
@@ -8023,12 +8043,19 @@ export default function Matchkeeper() {
         if (!target) throw new Error("Registration no longer exists");
         if (target.confirmOrder!=null) throw new Error("Already on an active seat");
         const {active:freshActive} = splitRegsByCapacity({...ev, registrations:freshRegs}, comm);
-        if (maxPlayers!=null && freshActive.length>=maxPlayers) throw new Error("No open seat — the active list is already full");
+        let evForOrdering = ev;
+        if (overCapacity) {
+          const newMax = freshActive.length + 1;
+          evForOrdering = {...ev, maxPlayers:newMax};
+          tx.update(evRef, {maxPlayers:newMax});
+        } else if (maxPlayers!=null && freshActive.length>=maxPlayers) {
+          throw new Error("No open seat — the active list is already full");
+        }
         // Infinity sorts last among already-numbered confirmed seats (renumberSequence sorts by
         // this field ascending) — this person should get the NEXT new number, never steal an
         // earlier confirmed player's existing one.
         const overriddenRegs = freshRegs.map(r => String(r.userId)===String(uid) ? {...r, confirmOrder:Infinity} : r);
-        const patches = computeOrderingUpdates(overriddenRegs, ev, comm);
+        const patches = computeOrderingUpdates(overriddenRegs, evForOrdering, comm);
         const byId = new Map(freshRegs.map(r=>[String(r.userId), r]));
         patches.forEach((patch, patchUid) => {
           const ref = refs.find(rf=>rf.id===String(patchUid));
@@ -8045,14 +8072,14 @@ export default function Matchkeeper() {
           // same person (this target); everyone else just gets their own position-change line.
           const note = describeOrderingChange(prevReg, data);
           const entries = [];
-          if (String(patchUid)===String(uid)) entries.push({ts:new Date().toISOString(), note:`Moved to active list out of turn (by ${me.nickname})`});
+          if (String(patchUid)===String(uid)) entries.push({ts:new Date().toISOString(), note:overCapacity?`Force-added over capacity — Max Players raised to fit (by ${me.nickname})`:`Moved to active list out of turn (by ${me.nickname})`});
           if (note) entries.push({ts:new Date().toISOString(), note});
           if (entries.length) tx.set(doc(db,"padelos_events",String(eid),"regHistory",String(patchUid)), {userId:prevReg.userId, entries:arrayUnion(...entries)}, {merge:true});
         });
       }, {maxAttempts:10});
-      logAudit("event.force_promote", `${me.nickname} moved ${u?.nickname||uid} from the waitlist to an active seat out of turn in "${ev.name}"`, "event", eid);
+      logAudit(overCapacity?"event.force_promote_over_capacity":"event.force_promote", `${me.nickname} moved ${u?.nickname||uid} from the waitlist to an active seat${overCapacity?` — OVER capacity, Max Players raised to ${active.length+1} to fit`:" out of turn"} in "${ev.name}"`, "event", eid);
       notify([uid], "waitlistPromoted", ev, `🎉 You're in for ${ev.name}`, `An admin moved you up to an active seat.`);
-      toast2(`${u?.nickname||"Player"} moved to active ✓`);
+      toast2(`${u?.nickname||"Player"} moved to active ✓${overCapacity?` — Max Players raised to ${active.length+1}`:""}`);
     } catch(e) {
       console.log("forcePromoteFromWaitlist failed", e);
       toast2(e?.message || "That didn't work — please try again", "err");
@@ -15462,7 +15489,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                     :`#${r.waitlistOrder??"—"} on the waitlist — joins automatically if a spot opens`}</div>
               </div>
               <div onClick={e=>{e.stopPropagation();toggleRegHistory(u.id);}} title="Registration history" style={{width:22,height:22,borderRadius:6,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"var(--po-dim)",cursor:"pointer",transform:expandedRegHistory.has(u.id)?"rotate(180deg)":"none",transition:"transform .15s"}}>▼</div>
-              {isAdmin&&hasRoom&&<SmBtn label="⚡ Promote" onClick={(e)=>{e.stopPropagation();act.forcePromote(u.id);}} color="#34D399" style={{padding:"4px 8px",fontSize:11}}/>}
+              {/* hasRoom no longer hides this when full — forcePromoteFromWaitlist itself now
+                  offers a (double-confirmed) over-capacity override instead of a hard refusal,
+                  so the button needs to stay reachable at full capacity too; relabeled so it's
+                  obviously a different, more serious action than the normal in-order promote. */}
+              {isAdmin&&<SmBtn label={hasRoom?"⚡ Promote":"⚠️ Force In"} onClick={(e)=>{e.stopPropagation();act.forcePromote(u.id);}} color={hasRoom?"#34D399":"#F59E0B"} style={{padding:"4px 8px",fontSize:11}}/>}
               {isAdmin&&<SmBtn label="✕" onClick={(e)=>{e.stopPropagation();if(window.confirm(`Remove ${u.nickname} from the waitlist?`))act.removeFromEvent(u.id);}} color="#EF4444" style={{padding:"4px 8px",fontSize:11}}/>}
             </div>
             {expandedRegHistory.has(u.id)&&<RegHistoryPanel entries={regHistoryData[u.id]} fallbackRegisteredAt={r.registeredAt}/>}

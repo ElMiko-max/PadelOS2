@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.11 (current) — Check-in works past the event date + cleaned up the Close button for Open events
+## V0.17.12 (current) — "⚠️ Force In" — add a waitlisted player past Max Players, as an explicit admin call
+
+- **Admin request (2026-10-13):** there was previously no way, for any event type, to move a waitlisted player into an active seat past Max Players — not even as a deliberate admin exception. The button simply refused.
+- **The fix:** "⚡ Promote" becomes "⚠️ Force In" (different color) once an event is full. Requires two separate confirms (not one) spelling out that this exceeds capacity, and on acceptance actually raises Max Players to fit — a real, persisted number, not a hidden bypass, so everything else reading Max Players (like the "Insufficient Players" warning) stays accurate.
+- **Why this isn't a bypass:** a deliberate defensive safeguard in the code (`computeOrderingUpdates`) refuses to ever let the active count exceed Max Players — this works with that safeguard instead of fighting it, by raising the number itself before the ordering math runs.
+- Tested end-to-end on padelos-dev with a real full event (15/15, 13 waitlisted) before shipping, then reverted back to its original state.
+
+---
+
+## V0.17.11 — Check-in works past the event date + cleaned up the Close button for Open events
 
 - **Bug, admin report (2026-10-13):** Check-In (both the player's own button and the admin's) only worked on the exact calendar date of the event — once the date passed, there was no way to check someone in at all, even to go back and fix up attendance afterward. Now works from the event date onward (still doesn't work before it).
 - **The Close button said "Close (Court-Based)" even for Open events** — which have no court-based calculation or standings at all. Now says "Close & Finish Event" for Open events, same label football already used.

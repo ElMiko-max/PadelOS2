@@ -4,7 +4,15 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.12 (current) — "⚠️ Force In" — add a waitlisted player past Max Players, as an explicit admin call
+## V0.17.13 (current) — Full Duplicate screen — every event field shown and editable before copying
+
+- **Admin request (2026-10-15):** the old "Duplicate" panel only exposed name/date/time — every other field (description, courts, event type, visibility...) was silently copied with no way to see or change it. **Minimum USR was lost entirely** — it never even made it into the copy.
+- **The fix:** Duplicate is now the exact same screen as Edit Event — every field (name, description, date, time, venue, visibility, Minimum USR, courts, type) is shown and editable before you tap "Create Copy", plus the existing "Copy registered players too" toggle.
+- Tested end-to-end on padelos-dev — changed Minimum USR to a new value and created a copy, confirmed it actually persisted (it was being silently lost before).
+
+---
+
+## V0.17.12 — "⚠️ Force In" — add a waitlisted player past Max Players, as an explicit admin call
 
 - **Admin request (2026-10-13):** there was previously no way, for any event type, to move a waitlisted player into an active seat past Max Players — not even as a deliberate admin exception. The button simply refused.
 - **The fix:** "⚡ Promote" becomes "⚠️ Force In" (different color) once an event is full. Requires two separate confirms (not one) spelling out that this exceeds capacity, and on acceptance actually raises Max Players to fit — a real, persisted number, not a hidden bypass, so everything else reading Max Players (like the "Insufficient Players" warning) stays accurate.

@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.12";
+const APP_VERSION = "V0.17.13";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -8763,35 +8763,50 @@ export default function Matchkeeper() {
       }
     }
   };
-  const duplicateEvent=(cid,eid,newDate,keepPlayers,newTime,newTimeTo,newName)=>{
+  // Admin request (2026-10-15): the old signature only ever took a handful of positional args
+  // (date/time/name) — every other field (including minUsrFloor, which wasn't even in the old
+  // `copy` object at all — it just silently vanished on every duplicate) was copied verbatim from
+  // the source event with no way to review or change it first. `d` is now the exact same payload
+  // shape EventEditForm already produces for editEvent (see its isDuplicate branch) — whatever the
+  // admin actually reviewed and submitted on the Duplicate screen is what the copy gets, full
+  // stop, not a silent re-read of the original event's fields.
+  const duplicateEvent=(cid,eid,d,keepPlayers)=>{
     const ev=getEv(cid,eid);if(!ev){toast2("Event not found","err");return;}
     const id=_eid++;
-    const v=venues.find(x=>x.id===ev.venueId);
+    const v=venues.find(x=>x.id===parseInt(d.venueId));
     const validUserIds = new Set(users.map(u=>u.id));
     const liveRegs = ev.registrations.filter(r=>validUserIds.has(r.userId));
     const droppedCount = ev.registrations.length - liveRegs.length;
     const dupNote = `Duplicated from #${eid} "${ev.name}"`;
     const copy={
-      // ── Header — carried over from the original event ──
+      // ── Reviewed/edited on the Duplicate screen itself — see EventEditForm's isDuplicate
+      // branch for the exact same payload shape editEvent uses. ──
       id, communityId:cid,
-      name:newName&&newName.trim()?newName.trim():ev.name,
-      description: ev.description ? `${ev.description}\n${dupNote}` : dupNote,
+      name:d.name?.trim()||ev.name,
+      description: d.description ? `${d.description}\n${dupNote}` : dupNote,
       createdBy:ev.createdBy,
-      date:newDate,
-      time:newTime||ev.time,
-      timeTo:newTimeTo||ev.timeTo,
-      venueId:ev.venueId,
-      sport:ev.sport,
-      courts:ev.courts,
-      type:ev.type,
+      date:d.date,
+      time:d.time,
+      timeTo:d.timeTo,
+      venueId:parseInt(d.venueId),
+      sport:d.sport,
+      courts:d.courts,
+      type:d.type,
+      visibility:d.visibility,
+      excludeFromAttendance:d.excludeFromAttendance,
+      minUsrFloor:d.minUsrFloor,
+      // rotationMin/reservedCourts aren't exposed on the form (same as plain Edit) — carried over
+      // from the source event untouched, same convention Edit already follows for these two.
       rotationMin:ev.rotationMin,
       reservedCourts:ev.reservedCourts,
-      costPerCourt:getVenuePricing(v,ev.sport).pricePerHour, // re-derived from the venue, not copied from the old event
-      extraFee:getVenuePricing(v,ev.sport).extraFee,
-      maxPlayers:ev.maxPlayers??null,
+      costPerCourt:getVenuePricing(v,d.sport).pricePerHour, // re-derived from the (possibly new) venue, not copied from the old event
+      extraFee:getVenuePricing(v,d.sport).extraFee,
+      maxPlayers:d.maxPlayers??null,
+      // Pitch selection isn't editable on the form either (football), same note as Edit's own —
+      // carried over as-is.
       pitches:ev.pitches,
-      teamSize:ev.teamSize,
-      numTeams:ev.numTeams,
+      teamSize:d.teamSize,
+      numTeams:d.numTeams,
       // ── Everything else — every other tab starts completely fresh ──
       status:"registration_open",
       closedAt:null,
@@ -10810,10 +10825,10 @@ export default function Matchkeeper() {
         {nav==="communities"&&view.screen==="editComm"&&comm&&<CommForm comm={comm} onBack={goBack} onSave={d=>saveComm(comm.id,d)} egypt={egypt}/>}
         {nav==="communities"&&view.screen==="comm"&&comm&&<CommDetail comm={comm} users={users} venues={venues} me={me} uidLinks={uidLinks} onBack={goBack} onEdit={()=>go("editComm",{cid:comm.id})} onApprove={uid=>approveReq(comm.id,uid)} onReject={uid=>rejectReq(comm.id,uid)} onRequestJoin={()=>requestJoin(comm.id)} onPromote={uid=>promoteM(comm.id,uid)} onDemote={uid=>demoteM(comm.id,uid)} onKick={uid=>kickM(comm.id,uid)} onTransferOwnership={uid=>transferOwnership(comm.id,uid)} onToggleStatus={uid=>toggleMemberStatus(comm.id,uid)} onConvertGuest={uid=>convertGuestToMember(comm.id,uid)} onInvite={uid=>inviteUser(comm.id,uid)} onOpenEv={eid=>go("event",{cid:comm.id,eid})} onCreateEv={()=>go("createEvent",{cid:comm.id})} onViewProfile={uid=>{setNav("profile");setNavHistory(h=>[...h,{nav,view}]);setView({screen:"profile",uid,backCid:comm.id});}} onCreateInvite={createInvite} initialTab={view.tab} highlightAid={view.highlightAid} onTabChange={t=>setView(v=>v.tab===t?v:{...v,tab:t})} onSetBookkeeping={fields=>setBookkeeping(comm.id,fields)} onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)} onAddLedgerEntries={entriesArr=>addLedgerEntries(comm.id,entriesArr)} onDeleteLedgerEntry={eid=>deleteLedgerEntry(comm.id,eid)} onSetFootballSkill={setFootballSkill} expenseCategories={expenseCategories} onPostAnnouncement={(message,pollOptions)=>postAnnouncement(comm.id,message,pollOptions)} onVoteAnnouncementPoll={(aid,key)=>voteAnnouncementPoll(comm.id,aid,key)} onDeleteAnnouncement={aid=>deleteAnnouncement(comm.id,aid)} onReplyAnnouncement={(aid,message)=>postAnnouncementReply(comm.id,aid,message)} onDeleteAnnouncementReply={(aid,rid)=>deleteAnnouncementReply(comm.id,aid,rid)} onSetBanner={url=>setCommunityBanner(comm.id,url)} onRemoveBanner={()=>removeCommunityBanner(comm.id)} godMode={godMode}/>}
         {nav==="communities"&&view.screen==="createEvent"&&comm&&<EventForm venues={venues} commName={comm.name} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onCreate={d=>createEvent(comm.id,d)}/>}
-        {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} onSave={d=>editEvent(comm.id,event.id,d)}/>}
+        {nav==="communities"&&view.screen==="editEvent"&&comm&&event&&<EventEditForm ev={event} venues={venues} commSports={comm.sports?.length?comm.sports:[DEFAULT_SPORT]} onBack={goBack} isDuplicate={!!view.dup} onSave={(d,keepPlayers)=>view.dup?duplicateEvent(comm.id,event.id,d,keepPlayers):editEvent(comm.id,event.id,d)}/>}
         {nav==="communities"&&view.screen==="event"&&comm&&event&&
           <EvDetail key={event.id} ev={event} comm={comm} comms={comms} users={users} venues={venues} me={me} uidLinks={uidLinks} godMode={godMode} subscriptionSettings={subscriptionSettings} usrWindowSize={usrWindowSize} onToast={msg=>toast2(msg)} onOpenCommunity={()=>goComm(comm.id)}
-            onDuplicate={(newDate,keepPlayers,newTime,newTimeTo,newName)=>duplicateEvent(comm.id,event.id,newDate,keepPlayers,newTime,newTimeTo,newName)}
+            onDuplicateEvent={()=>go("editEvent",{cid:comm.id,eid:event.id,dup:true})}
             onDelete={()=>deleteEvent(comm.id,event.id)}
             onArchive={()=>archiveEvent(comm.id,event.id)}
             onUnarchive={()=>unarchiveEvent(comm.id,event.id)}
@@ -12340,9 +12355,20 @@ function EventForm({venues,onBack,onCreate,commName,commSports}){
 }
 
 // ── Event Edit Form (courts + times only) ─────────────
-function EventEditForm({ev,venues,commSports,onBack,onSave}){
+// Admin request (2026-10-15): the old "Duplicate" flow was a small inline panel exposing only
+// name/date/time — every other field (description, minUsrFloor, courts, venue, visibility...)
+// got silently carried over from the source event with zero chance to review or change it before
+// the copy was created, and minUsrFloor specifically wasn't even carried over — it just silently
+// vanished (duplicateEvent's old copy object never included that key at all). Rather than build
+// and maintain a second, parallel field list, isDuplicate reuses this exact form (every field
+// Edit already exposes is now reachable at duplicate time too) — only the title/banner/button
+// text, the locked-field logic (a brand-new copy is never locked by the SOURCE's completed
+// status or existing plan), the pre-filled date (+7 days, matching the old quick-panel's own
+// default), and the duplicate-only "copy players" toggle differ from the normal Edit path.
+function EventEditForm({ev,venues,commSports,onBack,onSave,isDuplicate}){
   const sportOptions=commSports?.length?commSports:[DEFAULT_SPORT];
-  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",endMode:"time",durationHrs:durationLabel(ev.time,ev.timeTo)==="—"?2:(()=>{const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=(ev.timeTo||"").split(":").map(Number);let mins=(eh*60+em)-(sh*60+sm);if(mins<=0)mins+=24*60;return mins/60;})(),eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance,minUsrFloor:ev.minUsrFloor?String(ev.minUsrFloor):""});
+  const [f,setF]=useState({name:ev.name,description:ev.description||"",date:isDuplicate?(()=>{const d=new Date(ev.date);d.setDate(d.getDate()+7);return d.toISOString().split("T")[0];})():ev.date,courts:String(ev.courts),time:ev.time,timeTo:ev.timeTo||"",endMode:"time",durationHrs:durationLabel(ev.time,ev.timeTo)==="—"?2:(()=>{const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=(ev.timeTo||"").split(":").map(Number);let mins=(eh*60+em)-(sh*60+sm);if(mins<=0)mins+=24*60;return mins/60;})(),eventType:ev.type||"open",visibility:ev.visibility||"public",venueId:String(ev.venueId||""),sport:ev.sport||sportOptions[0],maxPlayers:ev.maxPlayers?String(ev.maxPlayers):"",teamSize:ev.teamSize?String(ev.teamSize):"5",numTeams:ev.numTeams?String(ev.numTeams):"3",excludeFromAttendance:!!ev.excludeFromAttendance,minUsrFloor:ev.minUsrFloor?String(ev.minUsrFloor):""});
+  const [dupKeepPlayers,setDupKeepPlayers] = useState(false);
   const set=(k,val)=>setF(p=>({...p,[k]:val}));
   const v=venues.find(x=>x.id===parseInt(f.venueId));
   const maxC=v?v.courts.length:10;
@@ -12358,12 +12384,14 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
     const computed=isFootball?(parseInt(f.teamSize)||0)*(parseInt(f.numTeams)||0):(parseInt(f.courts)||0)*5;
     if(computed>0) set("maxPlayers",String(computed));
   },[isFootball,f.teamSize,f.numTeams,f.courts]);
-  const isCompleted = ev.status==="completed";
-  const lockedType = !!ev.plan || isCompleted; // can't change type once a plan has been generated or event is completed
-  const lockedCourts = isCompleted; // court count locked once completed — would corrupt historical match/break records
-  return <><BBtn onBack={onBack} label={ev.name}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>Edit Event</div>
+  // A duplicate is always a brand-new, plan-free event — the SOURCE event's own completed/locked
+  // status has no bearing on what the copy is allowed to start as.
+  const isCompleted = !isDuplicate && ev.status==="completed";
+  const lockedType = !isDuplicate && (!!ev.plan || isCompleted); // can't change type once a plan has been generated or event is completed
+  const lockedCourts = !isDuplicate && isCompleted; // court count locked once completed — would corrupt historical match/break records
+  return <><BBtn onBack={onBack} label={ev.name}/><div className="po-text" style={{fontSize:18,fontWeight:600,color:"var(--po-text)",marginBottom:16}}>{isDuplicate?"Duplicate Event":"Edit Event"}</div>
     <Card>
-      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>ℹ️ {isCompleted?"This event is completed — date, time, and venue can still be corrected, but courts and type are locked to protect historical results.":lockedType?"Type is locked — a plan has already been generated for this event.":"Players and plan stay unchanged unless you change the event type."}</div>
+      <div style={{fontSize:12,color:"var(--po-dim)",marginBottom:14,padding:"8px 12px",background:"var(--po-card)",borderRadius:8}}>ℹ️ {isDuplicate?"Creates a brand-new event — review and change anything below, including the date.":isCompleted?"This event is completed — date, time, and venue can still be corrected, but courts and type are locked to protect historical results.":lockedType?"Type is locked — a plan has already been generated for this event.":"Players and plan stay unchanged unless you change the event type."}</div>
       <div style={{display:"flex",alignItems:"flex-end",gap:8}}>
         <div style={{flex:1}}><Inp label="Event Name" value={f.name} onChange={v2=>set("name",v2)} placeholder="e.g. Monday at Galleria"/></div>
         <button type="button" onClick={()=>set("name",suggestEventName({date:f.date,time:f.time,venueName:v?.name,sport:f.sport}))} title="Suggest a name" style={{marginBottom:14,padding:"9px 12px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨ Suggest</button>
@@ -12430,7 +12458,17 @@ function EventEditForm({ev,venues,commSports,onBack,onSave}){
           </div>)}
         </div>
       </>}
-      <Btn label="Save Changes" primary onClick={()=>onSave(lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,minUsrFloor:isFootball?null:(parseInt(f.minUsrFloor)||null),...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,minUsrFloor:isFootball?null:(parseInt(f.minUsrFloor)||null),...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})})} style={{width:"100%"}}/>
+      {isDuplicate&&<div onClick={()=>setDupKeepPlayers(o=>!o)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,background:"var(--po-inp)",cursor:"pointer",marginBottom:14}}>
+        <Toggle on={dupKeepPlayers} onChange={()=>setDupKeepPlayers(o=>!o)} onColor="#6366F1"/>
+        <div style={{flex:1}}>
+          <div style={{fontSize:12.5,fontWeight:600,color:"var(--po-text)"}}>Copy registered players too</div>
+          <div style={{fontSize:11,color:"var(--po-dim)"}}>{dupKeepPlayers?"Same players will be pre-registered":"New event starts with no players"}</div>
+        </div>
+      </div>}
+      <Btn label={isDuplicate?"Create Copy":"Save Changes"} primary onClick={()=>{
+        const payload = lockedCourts?{name:f.name,description:f.description,date:f.date,time:f.time,timeTo:f.timeTo,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,minUsrFloor:isFootball?null:(parseInt(f.minUsrFloor)||null),...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})}:{name:f.name,description:f.description,date:f.date,courts:parseInt(f.courts),time:f.time,timeTo:f.timeTo,type:f.eventType,visibility:f.visibility,venueId:parseInt(f.venueId),sport:f.sport,maxPlayers:f.maxPlayers?parseInt(f.maxPlayers)||null:null,excludeFromAttendance:f.excludeFromAttendance,minUsrFloor:isFootball?null:(parseInt(f.minUsrFloor)||null),...(isFootball?{teamSize:parseInt(f.teamSize)||5,numTeams:parseInt(f.numTeams)||3}:{})};
+        onSave(payload, isDuplicate?dupKeepPlayers:undefined);
+      }} style={{width:"100%"}}/>
     </Card>
   </>;
 }
@@ -13745,7 +13783,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicate,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -14606,19 +14644,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const ciStands = isCI?calcCIStandings(plan,users):[];
   const ctStands = isCT?calcCTStandings(plan, effEv.sport):[];
   const [sharing,setSharing] = useState(false);
-  const [showDup,setShowDup] = useState(false);
-  const [dupDate,setDupDate] = useState(()=>{const d=new Date(ev.date);d.setDate(d.getDate()+7);return d.toISOString().split("T")[0];});
-  const [dupTime,setDupTime] = useState(ev.time);
-  const [dupTimeTo,setDupTimeTo] = useState(ev.timeTo||"");
-  const [dupEndMode,setDupEndMode] = useState("time");
-  const [dupDurationHrs,setDupDurationHrs] = useState(()=>{
-    if(!ev.time||!ev.timeTo) return 2;
-    const[sh,sm]=ev.time.split(":").map(Number),[eh,em]=ev.timeTo.split(":").map(Number);
-    let mins=(eh*60+em)-(sh*60+sm); if(mins<=0) mins+=24*60;
-    return mins/60;
-  });
-  const [dupKeepPlayers,setDupKeepPlayers] = useState(false);
-  const [dupName,setDupName] = useState(ev.name);
   const [shareDiag,setShareDiag] = useState(null);
 
   const sharePlayers = effEv.registrations.map(r=>{const u=users.find(u=>u.id===r.userId);return u?{...u,usr:r.eventUsr??u.usr}:null;}).filter(Boolean);
@@ -14964,7 +14989,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             <div onClick={()=>setShowHeaderMenu(o=>!o)} style={{width:30,height:30,borderRadius:"50%",background:"var(--po-inp)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700,color:"var(--po-dim)",cursor:"pointer"}}>⋮</div>
             {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,width:200,padding:6,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
               <ListRow icon="✏️" label="Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}}/>
-              <ListRow icon="⧉" label="Duplicate" onClick={()=>{setShowDup(o=>!o);setShowHeaderMenu(false);}}/>
+              <ListRow icon="⧉" label="Duplicate" onClick={()=>{onDuplicateEvent();setShowHeaderMenu(false);}}/>
               {ev.archived&&<ListRow icon="📤" label="Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}}/>}
               {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"4px 2px"}}/>}
               {canDeleteOrArchive&&!isCompleted&&<ListRow icon="🗑" label="Delete Event" danger onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}}/>}
@@ -14983,47 +15008,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
         {ev.description&&<div style={{fontSize:12,color:"var(--po-sub)",marginTop:6,padding:"6px 10px",background:"var(--po-inp)",borderRadius:6,fontStyle:"italic"}}>📝 {ev.description}</div>}
       </div>
-      {showDup&&<div style={{marginTop:12,marginBottom:0,padding:"12px",background:"var(--po-inp)",borderRadius:10,border:"0.5px solid #F59E0B44"}}>
-        <div style={{fontSize:12,fontWeight:600,color:"#F59E0B",marginBottom:8}}>⧉ Duplicate this event — pick a new date and time</div>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-          <input type="text" value={dupName} onChange={e=>setDupName(e.target.value)} placeholder="Event name" className="po-inp"
-            style={{flex:1,padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-          <button type="button" onClick={()=>setDupName(suggestEventName({date:dupDate,time:dupTime,venueName:venues.find(v2=>v2.id===ev.venueId)?.name,sport:ev.sport}))} title="Suggest a name" style={{padding:"8px 10px",borderRadius:8,border:"0.5px solid #6366F1",background:"#6366F122",color:"#A5B4FC",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>✨</button>
-        </div>
-        <input type="date" value={dupDate} onChange={e=>setDupDate(e.target.value)} className="po-inp"
-          style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,marginBottom:10,boxSizing:"border-box"}}/>
-        <div style={{marginBottom:10}}>
-          <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:3}}>Start time</div>
-          <input type="time" value={dupTime} onChange={e=>{ const t=e.target.value; setDupTime(t); if(dupEndMode==="duration") setDupTimeTo(addHoursToTime(t,dupDurationHrs)); }} className="po-inp"
-            style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-        </div>
-        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-          <SmBtn label="🕐 End Time" onClick={()=>setDupEndMode("time")} active={dupEndMode!=="duration"} color="#6366F1"/>
-          <SmBtn label="⏱ Duration" onClick={()=>{setDupEndMode("duration");setDupTimeTo(addHoursToTime(dupTime,dupDurationHrs));}} active={dupEndMode==="duration"} color="#6366F1"/>
-        </div>
-        {dupEndMode==="duration"
-          ? <div style={{marginBottom:10}}>
-              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
-                {[0.5,1,2].map(h=><SmBtn key={h} label={h<1?`${h*60}min`:`${h}h`} onClick={()=>{setDupDurationHrs(h);setDupTimeTo(addHoursToTime(dupTime,h));}} active={dupDurationHrs===h} color="#F59E0B"/>)}
-              </div>
-              <div style={{fontSize:11,color:"var(--po-dim)"}}>Ends at {fmtT(dupTimeTo)}{dupTimeTo<=dupTime?" — 🌙 after midnight, next day":""}</div>
-            </div>
-          : <div style={{marginBottom:10}}>
-              <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:3}}>End time</div>
-              <input type="time" value={dupTimeTo} onChange={e=>setDupTimeTo(e.target.value)} className="po-inp"
-                style={{width:"100%",padding:"8px 10px",borderRadius:8,border:"0.5px solid var(--po-bdr)",background:"var(--po-card)",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}/>
-              {dupTime&&dupTimeTo&&dupTimeTo<=dupTime&&<div style={{marginTop:6,fontSize:11,color:"#38BDF8"}}>🌙 Ends after midnight, the next day — {durationLabel(dupTime,dupTimeTo)}</div>}
-            </div>}
-        <div onClick={()=>setDupKeepPlayers(o=>!o)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",borderRadius:8,background:"var(--po-card)",cursor:"pointer",marginBottom:10}}>
-          <Toggle on={dupKeepPlayers} onChange={()=>setDupKeepPlayers(o=>!o)} onColor="#6366F1"/>
-          <div style={{flex:1}}>
-            <div style={{fontSize:12,fontWeight:600,color:"var(--po-text)"}}>Copy registered players too</div>
-            <div style={{fontSize:10,color:"var(--po-dim)"}}>{dupKeepPlayers?"Same players will be pre-registered":"New event starts with no players"}</div>
-          </div>
-        </div>
-        <Btn label="Create Copy" primary onClick={()=>{if(dupDate&&dupTime){onDuplicate(dupDate,dupKeepPlayers,dupTime,dupTimeTo,dupName);setShowDup(false);}}} style={{width:"100%"}}/>
-        <div style={{fontSize:11,color:"var(--po-dim)",marginTop:6}}>Creates a fresh copy of "{ev.name}" with no results — same venue, courts, and type.</div>
-      </div>}
 
       {shareDiag&&<div style={{marginBottom:12,padding:"10px 12px",background:"#EF444411",border:"0.5px solid #EF444444",borderRadius:8}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>

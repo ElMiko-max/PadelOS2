@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.13";
+const APP_VERSION = "V0.17.14";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1784,6 +1784,24 @@ function genNextRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
   // equals breakPlan[ri] in that branch) and fixes Dynamic.
   const breakPlanOut=(plan.breakPlan||[]).map((b,i)=>i===ri?newBreakIds:b);
   return {...plan,rounds:[...rounds,{round:ri+1,matches,onBreak,onBreakIds:newBreakIds.filter(id=>!retiredIds.includes(id)),breakReasons,returnReasons}],partnerHistory:ph,breakPlan:breakPlanOut};
+}
+// Exact inverse of genNextRoundCI: drops the last generated round and rolls back what that
+// generation folded into the plan (partnerHistory got the pairs of the round BEFORE it, which is
+// the new last round once this one is dropped). Admin request 2026-10-20: a wrong result was only
+// noticed after the next round was already generated, and there was no way back to fix it.
+function undoLastRoundCI(plan, retiredIds=[], concentrateOn=[], avoidOn=[]) {
+  if (!plan || plan.rounds.length<2) return plan;
+  const rounds=plan.rounds.slice(0,-1);
+  const prev=rounds[rounds.length-1];
+  const ph=JSON.parse(JSON.stringify(plan.partnerHistory||{}));
+  prev.matches.forEach(m=>{[m.teamA,m.teamB].forEach(team=>{const[a,b]=team;if(!a||!b)return;
+    [[a,b],[b,a]].forEach(([x,y])=>{ if(ph[x.userId]?.[y.userId]){ ph[x.userId][y.userId]-=1; if(ph[x.userId][y.userId]<=0) delete ph[x.userId][y.userId]; } });
+  });});
+  const rolled={...plan,rounds,partnerHistory:ph};
+  // Dynamic engines keep a stored prediction for the not-yet-generated rounds — recompute it from
+  // the rounds that remain (same call nextRoundCI makes right after generating).
+  if (plan.breakEngine==="dynamic") return {...rolled,breakPlan:regenerateBreakPlan(rolled,rounds.length,retiredIds,concentrateOn,avoidOn)};
+  return rolled;
 }
 function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[], avoidOn=[]) {
   // Keep breaks for played rounds as-is
@@ -8379,39 +8397,11 @@ export default function Matchkeeper() {
     if (n.communityId) { goComm(n.communityId); return; }
   };
 
-  // Reminder engine — checks upcoming events every minute and fires a one-time
-  // notification per threshold (24h/3h/1h before start) to all registered players.
-  // Fired flags are stored on the event itself so reminders never repeat, even across reloads.
-  // Reads comms via a ref (kept fresh below) rather than depending on `comms` directly —
-  // this effect writes to comms itself (via updC), so depending on comms here would tear
-  // down and rebuild this effect every time it fires a reminder, re-running checkReminders()
-  // immediately each time and risking a runaway update loop when an event is near a threshold.
+  // Reminder engine removed 2026-10-20: reminders are sent ONLY by the dispatchEventReminders
+  // Cloud Function now. The old in-app engine ran on every open device, so each one raced to send
+  // the same reminder (event #193 got its "~1h" reminder 5 times).
   const commsRef = useRef(comms);
   useEffect(() => { commsRef.current = comms; }, [comms]);
-  useEffect(() => {
-    const checkReminders = () => {
-      const now = Date.now();
-      commsRef.current.forEach(c => {
-        c.events.forEach(ev => {
-          if (!ev.date || !ev.time || ev.status==="completed" || ev.status==="cancelled" || ev.deleted) return;
-          const start = new Date(`${ev.date}T${ev.time}`).getTime();
-          if (isNaN(start)) return;
-          const hoursLeft = (start-now)/3600000;
-          const fired = ev.remindersFired || {};
-          [[24,"h24","~24h"],[3,"h3","~3h"],[1,"h1","~1h"]].forEach(([h,key,label])=>{
-            if (hoursLeft<=h && hoursLeft>0 && !fired[key]) {
-              const recipients = ev.registrations.map(r=>r.userId);
-              notify(recipients, `reminder_${key}`, ev, `⏰ ${ev.name} starts in ${label}`, `${fmtD(ev.date)} · ${fmtT(ev.time)}`);
-              updEvent(ev.communityId, ev.id, e=>({...e,remindersFired:{...(e.remindersFired||{}),[key]:true}}));
-            }
-          });
-        });
-      });
-    };
-    checkReminders();
-    const iv = setInterval(checkReminders, 60000);
-    return () => clearInterval(iv);
-  }, []);
   // Poll voting already closes itself purely at render time (see the `closed` calc in
   // CommDetail) — nothing here is needed for that. This just puts a matching audit-trail
   // entry on record once a poll's end time has actually passed, same "fired flag so retries/
@@ -8684,24 +8674,6 @@ export default function Matchkeeper() {
     if(editId){setVenues(vs=>vs.map(v=>v.id===editId?{...v,...numericD,courts,pitches,status:"pending_edit"}:v));toast2("Saved · Pending review");}else{const id=_vid++;setVenues(vs=>[...vs,{id,...numericD,courts,pitches,status:"pending"}]);toast2("Added · Pending review");}go("list");};
 
   // Event
-  const scheduleEventReminders = async (cid, eid, date, time) => {
-    if (!date || !time) return;
-    const startMs = new Date(`${date}T${time}`).getTime();
-    if (isNaN(startMs)) return;
-    const now = Date.now();
-    const offsets = [{type:"24h", ms:24*3600000}, {type:"3h", ms:3*3600000}, {type:"1h", ms:1*3600000}, {type:"2m", ms:2*60000, audience:"admins"}];
-    const entries = offsets
-      .map(o => ({id:`${eid}-${o.type}`, eventId:eid, communityId:cid, reminderType:o.type, audience:o.audience||"registrants", firesAt:new Date(startMs-o.ms).toISOString(), sent:false}))
-      .filter(e => new Date(e.firesAt).getTime() > now); // skip reminders whose moment has already passed
-    if (entries.length === 0) return;
-    try {
-      const ref = doc(db,"padelos","eventReminderSchedule");
-      const snap = await getDoc(ref);
-      const existing = snap.exists() ? JSON.parse(snap.data().value||"[]") : [];
-      const filtered = existing.filter(x=>x.eventId!==eid); // drop this event's old schedule (re-edit replaces it)
-      await setDoc(ref, {value: JSON.stringify([...filtered, ...entries])});
-    } catch(e) { console.log("eventReminderSchedule write failed", e); }
-  };
   const createEvent=(cid,d)=>{
     const id=_eid++;const v=venues.find(x=>x.id===parseInt(d.venueId));
     const isFootballEv=d.sport==="Football";
@@ -8725,7 +8697,6 @@ export default function Matchkeeper() {
     // pickers start from before the admin generates anything.
     const ev={id,communityId:cid,name:d.name,description:d.description||"",sport:d.sport||DEFAULT_SPORT,createdBy:me.id,date:d.date,time:d.time,timeTo:d.timeTo||"",venueId:parseInt(d.venueId),courts:courtsCount,type:d.eventType,visibility:d.visibility||"public",status:"registration_open",regOpenAt:new Date().toISOString(),regularUntil:new Date(Date.now()+24*3600000).toISOString(),registrations:[],checkedIn:[],rotationMin:20,costPerCourt:getVenuePricing(v,d.sport).pricePerHour,extraFee:getVenuePricing(v,d.sport).extraFee,plan:null,reservedCourts:isFootballEv?courtsCount:(v?.courts.length||2),maxPlayers:derivedMaxPlayers,pitches:isFootballEv?(d.pitchNames||[]):undefined,teamSize:footballTeamSize,numTeams:footballNumTeams,excludeFromAttendance:!!d.excludeFromAttendance,minUsrFloor:isFootballEv?null:(parseInt(d.minUsrFloor)||null)};
     createEventDoc(ev);toast2("Event created ✓");go("event",{cid,eid:id});
-    scheduleEventReminders(cid, id, ev.date, ev.time);
     const comm = comms.find(c=>c.id===cid);
     if (me.id!==1) notify([1], "new_event_platform", ev, "🎾 New event created", `${me.nickname} created "${ev.name}" in ${comm?.name||"a community"}`);
     logAudit("event.create", `${me.nickname} created event "${ev.name}" in ${comm?.name||cid}`, "event", id);
@@ -8754,7 +8725,6 @@ export default function Matchkeeper() {
       if (d.venueId!==undefined && parseInt(d.venueId)!==before.venueId) changed.push("venue");
       if (d.courts!==undefined && parseInt(d.courts)!==before.courts) changed.push("courts");
       if (changed.includes("date")||changed.includes("time")) {
-        scheduleEventReminders(cid, eid, d.date??before.date, d.time??before.time);
       }
       if (changed.length>0) {
         const uniqChanged = [...new Set(changed)];
@@ -9850,6 +9820,17 @@ export default function Matchkeeper() {
     toast2("Next round generated ✓");
     return true;
   };
+  // Step back one round: removes the latest generated round (see undoLastRoundCI) so a wrong
+  // result in the round before it can be undone, corrected, and the next round generated again.
+  const undoRoundCI=(cid,eid)=>{
+    const ev=getEv(cid,eid);if(!ev?.plan||ev.plan.rounds.length<2)return false;
+    updEvent(cid,eid,e=>{
+      if(!e.plan||e.plan.rounds.length<2)return e;
+      return {...e,plan:undoLastRoundCI(e.plan,e.retiredIds||[],e.breakConcentrateIds||[],e.breakAvoidIds||[])};
+    },{silent:true}).catch(()=>toast2("That didn't save — please try again","err"));
+    toast2(`Round ${ev.plan.rounds.length} removed — fix the previous result, then generate again ✓`);
+    return true;
+  };
   // sA/sB default to an implied 1-0/0-1 when omitted (native widget taps, which only ever
   // declare a winner, no real score) — same pattern CT Ladder's widget already uses.
   const setWinCI=(cid,eid,ri,mi,w,sA,sB)=>{
@@ -10880,6 +10861,7 @@ export default function Matchkeeper() {
             onStartCI={(n,dur,breakEngine)=>startCI(comm.id,event.id,n,dur,breakEngine)}
             onSetWinCI={(ri,mi,w,sA,sB)=>setWinCI(comm.id,event.id,ri,mi,w,sA,sB)}
             onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
+            onUndoRound={()=>undoRoundCI(comm.id,event.id)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
             onRebalanceCourt={(ri,mi)=>rebalanceCourtCI(comm.id,event.id,ri,mi)}
             onEditBreak={(ri,uid,v)=>editBreakCI(comm.id,event.id,ri,uid,v)}
@@ -13783,7 +13765,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onUndoRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -14080,6 +14062,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     nextRound: () => sim
       ? simMutate(e => e.plan ? {...e, plan: genNextRoundCI(e.plan,e.retiredIds||[],e.breakConcentrateIds||[],e.breakAvoidIds||[])} : e)
       : onNextRound(),
+    undoRound: () => sim
+      ? simMutate(e => e.plan ? {...e, plan: undoLastRoundCI(e.plan,e.retiredIds||[],e.breakConcentrateIds||[],e.breakAvoidIds||[])} : e)
+      : onUndoRound&&onUndoRound(),
     swap: (ri,a,b) => sim
       ? simMutate(e => {
           if(!e.plan) return e;
@@ -14854,7 +14839,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       const wT=m.winner==="A"?m.teamA:m.teamB;
       const wScore=m.winner==="A"?m.scoreA:m.scoreB, lScore=m.winner==="A"?m.scoreB:m.scoreA;
       const scoreLabel=(wScore!=null&&lScore!=null)?` ${wScore}–${lScore}`:"";
-      return <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}><div style={{flex:1,padding:"9px",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:12,fontWeight:600,color:"#34D399",textAlign:"center"}}>✓ {wT.map(p=>p.nickname).join(" & ")} won{scoreLabel}</div>{!isCompleted&&isAdmin&&<SmBtn label="↩" onClick={()=>act.setWinCI(ri,mi,null)} color="#EF4444"/>}</div>;
+      return <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}><div style={{flex:1,padding:"9px",background:"#34D39922",border:"0.5px solid #34D39944",borderRadius:8,fontSize:12,fontWeight:600,color:"#34D399",textAlign:"center"}}>✓ {wT.map(p=>p.nickname).join(" & ")} won{scoreLabel}</div>{!isCompleted&&isAdmin&&<SmBtn label="↩" onClick={()=>{
+        // Later rounds were generated from this result and won't change on their own — make that
+        // explicit instead of letting the admin quietly edit history under an already-built round.
+        if(ri<plan.rounds.length-1&&!window.confirm(`Round ${plan.rounds[ri].round} is not the latest round — Round ${plan.rounds.length} was already generated from its results and will NOT update.\n\nTo redo it properly, cancel and use "↩ Undo Round ${plan.rounds.length}" first.\n\nUndo this result anyway?`))return;
+        act.setWinCI(ri,mi,null);
+      }} color="#EF4444"/>}</div>;
     }
     if(isCompleted) return null;
     if(!isAdmin) return <div style={{textAlign:"center",fontSize:11,color:"var(--po-dim)",marginTop:10}}>⏳ Waiting for result</div>;
@@ -15813,6 +15803,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
               {isRoundComplete&&<Bdg label="✓ Complete" color="#34D399"/>}
             </div>
             {effCollapsed?null:<>
+            {isLatest&&isAdmin&&!isCompleted&&plan.rounds.length>1&&<SmBtn label={`↩ Undo Round ${round.round} (go back to Round ${round.round-1})`} color="#F59E0B" style={{width:"100%",marginBottom:10}} onClick={()=>{
+              const hasResults=round.matches.some(m=>m.winner!=null);
+              if(window.confirm(`Remove Round ${round.round}?\n\n${hasResults?"Results already recorded in this round will be discarded. ":""}You can then undo/correct a result in Round ${round.round-1} and generate Round ${round.round} again.`))act.undoRound();
+            }}/>}
             {isLatest&&<MatchTimerWidget plan={plan} roundDuration={plan.roundDuration||roundDur} totalRounds={plan.totalRounds} totalBookingMin={durationHrs*60} eventDate={effEv.date} eventTime={effEv.time} eventId={effEv.id} sim={sim} onStart={act.setMatchModeStart} onStop={onStopMatchMode} isCompleted={isCompleted}/>}
             {isLatest&&isAdmin&&!sim&&!isCompleted&&Capacitor.isNativePlatform()&&plan.matchModeStartAt&&
               <SmBtn label="🔄 Refresh Whistle" onClick={forceRearmWhistles} color="#F59E0B" style={{width:"100%",marginBottom:10}}/>}

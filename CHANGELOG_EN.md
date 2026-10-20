@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.13 (current) — Full Duplicate screen — every event field shown and editable before copying
+## V0.17.14 (current) — Undo Round (step back after generating) + reminders sent exactly once
+
+- **Admin request (2026-10-20):** a wrong result was recorded in Round 4, Round 5 was generated, and then there was no way to fix it — the result could be undone, but Round 5 stayed built on the wrong outcome and couldn't be regenerated. It skewed that day's standings.
+- **New "↩ Undo Round N" button** (admin, on the latest round, Individuals events): removes the latest generated round and rolls back partner history and the break forecast, so you can undo/correct the previous round's result and tap Generate again. It warns first if the round already has recorded results. Also works in Practice Session.
+- **Safety net:** tapping ↩ on a result in a round that is *not* the latest now warns that the later round(s) won't update, and points to Undo Round.
+- **Duplicate reminders fixed:** one event (#193) sent the same "starts in ~1h" reminder 5 times. The in-app reminder engine ran on every open device and raced; it is removed. The server (`dispatchEventReminders`) is now the only sender: it reads upcoming events directly (no schedule blob that could lose entries) and uses an atomic once-only lock per event + reminder type. An event created inside the last hour fires only the 1h reminder, not 24h + 3h + 1h together.
+
+---
+
+## V0.17.13 — Full Duplicate screen — every event field shown and editable before copying
 
 - **Admin request (2026-10-15):** the old "Duplicate" panel only exposed name/date/time — every other field (description, courts, event type, visibility...) was silently copied with no way to see or change it. **Minimum USR was lost entirely** — it never even made it into the copy.
 - **The fix:** Duplicate is now the exact same screen as Edit Event — every field (name, description, date, time, venue, visibility, Minimum USR, courts, type) is shown and editable before you tap "Create Copy", plus the existing "Copy registered players too" toggle.

@@ -128,76 +128,70 @@ exports.dispatchMatchModeAlarms = onSchedule("every 1 minutes", async () => {
   console.log(`[matchMode] sent ${writes.length - 1} notification(s)`);
 });
 
-// Runs every minute. Checks padelos/eventReminderSchedule for any 24h/3h/1h reminder
-// whose time has arrived, looks up who is CURRENTLY registered for that event (so
-// late registrations and cancellations are respected even though the reminder was
-// scheduled earlier), and writes one padelos_notifications/{id} document per recipient
-// (see dispatchMatchModeAlarms above for why — same outage, same fix, same reasoning).
+// Runs every minute. Finds events starting within the next 24h and, for each 24h/3h/1h
+// threshold that has been reached, sends ONE reminder to everyone CURRENTLY registered (so late
+// registrations and cancellations are respected).
+//
+// Rewritten 2026-10-20 after event #193 got the same reminder 5 times: reminders used to come
+// from two places — a client-side engine in App.jsx (every open device raced to send, and a
+// stale device's write could wipe the "already fired" flag) and this function driven by a
+// read-modify-write schedule blob (padelos/eventReminderSchedule) that concurrent writers
+// clobbered, so event #193 was never in it at all. Now the events themselves are the source of
+// truth (no schedule blob to lose entries from), and "already sent" is an atomic create() on
+// padelos_reminder_log/{eventId}_{type} — create() fails if the doc exists, so even overlapping
+// runs can never both send. The client-side engine was removed in the same release.
+const EVENT_TZ = "Africa/Cairo"; // event date/time are wall-clock strings; the community is Egypt-based
+function eventStartMs(date, time) {
+  const guess = Date.parse(`${date}T${time}:00Z`);
+  if (isNaN(guess)) return NaN;
+  const parts = new Intl.DateTimeFormat("en-US", {timeZone: EVENT_TZ, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"})
+    .formatToParts(new Date(guess)).reduce((o, p) => (o[p.type] = p.value, o), {});
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return guess - (asUtc - guess); // guess is the wall-clock read as UTC; shift by the zone's offset
+}
 exports.dispatchEventReminders = onSchedule("every 1 minutes", async () => {
   const db = getFirestore();
-  const scheduleRef = db.collection("padelos").doc("eventReminderSchedule");
-  const scheduleSnap = await scheduleRef.get();
-  if (!scheduleSnap.exists) return;
-
-  const schedule = JSON.parse(scheduleSnap.data().value || "[]");
   const now = Date.now();
-  const due = schedule.filter(s => !s.sent && new Date(s.firesAt).getTime() <= now);
+  const iso = ms => new Date(ms).toISOString().slice(0, 10);
+  // events.date is a plain "YYYY-MM-DD" string — one-day margin each side covers the timezone gap.
+  const evSnap = await db.collection("padelos_events")
+    .where("date", ">=", iso(now - 86400000)).where("date", "<=", iso(now + 2 * 86400000)).get();
 
-  if (due.length === 0) {
-    console.log("[eventReminder] nothing due");
-    return;
-  }
-  console.log(`[eventReminder] ${due.length} reminder(s) due, dispatching...`);
-
-  const labelMap = {"24h": "tomorrow", "3h": "in 3 hours", "1h": "in 1 hour"};
-  const writes = [];
-  const stillValid = []; // reminders we could actually process (event found) — used to mark sent
-
-  for (const s of due) {
-    // comms-split migration: each event is its own document now, looked up directly by id
-    // instead of scanning a whole-platform blob — communityId on the schedule entry isn't even
-    // needed for this lookup anymore.
-    const evSnap = await db.collection("padelos_events").doc(String(s.eventId)).get();
-    const ev = evSnap.exists ? evSnap.data() : null;
-    // ev.deleted was missing here (real bug, found live 2026-09-09): this scheduled function
-    // fires independently of any client having the app open, so a deleted event's already-queued
-    // reminder entries kept firing real push notifications to registered players straight through
-    // deletion — the client-side reminder gate (App.jsx's checkReminders) never even got a chance
-    // to matter, since THIS is what actually dispatches reminders in production.
-    if (!ev || ev.status === "cancelled" || ev.deleted) {
-      console.log(`[eventReminder] skipping ${s.id}: event not found, cancelled, or deleted`);
-      stillValid.push(s);
-      continue;
+  const thresholds = [{type: "24h", ms: 24 * 3600000, label: "tomorrow"}, {type: "3h", ms: 3 * 3600000, label: "in 3 hours"}, {type: "1h", ms: 3600000, label: "in 1 hour"}];
+  let sent = 0;
+  for (const doc of evSnap.docs) {
+    const ev = doc.data();
+    if (!ev.date || !ev.time || ev.deleted || ev.status === "cancelled" || ev.status === "completed") continue;
+    const start = eventStartMs(ev.date, ev.time);
+    const untilStart = start - now;
+    if (isNaN(start) || untilStart <= 0) continue;
+    // Only the tightest threshold that's been reached — an event created/edited inside the 1h
+    // window must not fire the 24h and 3h reminders at the same moment.
+    const due = thresholds.filter(t => untilStart <= t.ms).pop();
+    if (!due) continue;
+    try {
+      await db.collection("padelos_reminder_log").doc(`${doc.id}_${due.type}`).create({eventId: ev.id ?? null, type: due.type, sentAt: new Date().toISOString()});
+    } catch (e) {
+      continue; // already sent (doc exists) — or a concurrent run won the race; either way, not ours to send
     }
-    // Phase 2: registrations live in their own subcollection, not the `.registrations` array
-    // field — same "who's currently registered" semantics (respects late registrations and
-    // cancellations even though the reminder was scheduled earlier), just a query instead of a
-    // field read.
-    const regsSnap = await evSnap.ref.collection("registrations").get();
-    const userIds = regsSnap.docs.map(d => d.data().userId);
-    const reminderType = "reminder_h" + String(s.reminderType || "").replace("h", "");
-    for (const userId of userIds) {
-      writes.push({ ref: db.collection("padelos_notifications").doc(), data: {
-        userId,
-        type: reminderType,
-        eventId: s.eventId ?? null,
-        communityId: ev.communityId ?? null,
-        eventName: ev.name ?? null,
-        title: "📅 Event reminder",
-        body: `${ev.name} is ${labelMap[s.reminderType] || "coming up"}${ev.time ? " — " + ev.time : ""}`,
-        createdAt: new Date().toISOString(),
-        read: false,
-      }});
-    }
-    stillValid.push(s);
+    const regsSnap = await doc.ref.collection("registrations").get();
+    const writes = regsSnap.docs.map(d => ({ref: db.collection("padelos_notifications").doc(), data: {
+      userId: d.data().userId,
+      type: "reminder_h" + due.type.replace("h", ""),
+      eventId: ev.id ?? null,
+      communityId: ev.communityId ?? null,
+      eventName: ev.name ?? null,
+      title: "📅 Event reminder",
+      body: `${ev.name} is ${due.label}${ev.time ? " — " + ev.time : ""}`,
+      createdAt: new Date().toISOString(),
+      read: false,
+    }}));
+    await commitInChunks(db, writes);
+    sent += writes.length;
+    console.log(`[eventReminder] ${doc.id} ${due.type}: ${writes.length} notification(s)`);
   }
-
-  const updatedSchedule = schedule.map(s => stillValid.includes(s) ? {...s, sent: true} : s);
-  writes.push({ ref: scheduleRef, data: {value: JSON.stringify(updatedSchedule)} });
-
-  await commitInChunks(db, writes);
-
-  console.log(`[eventReminder] sent ${writes.length - 1} notification(s)`);
+  if (!sent) console.log("[eventReminder] nothing due");
 });
 
 // Backstop cleanup for padelos_practice_sessions (see App.jsx's startSim/the autosave effect

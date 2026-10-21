@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.14";
+const APP_VERSION = "V0.17.15";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -1937,13 +1937,24 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
   return [...fixedPlan, ...futurePlan];
 }
 
+// Most breaks any one player can SCORE in an event: the fair-share ceiling the break engines
+// already enforce (max breaks minus min breaks never exceeds 1, so the max is total planned break
+// slots / players, rounded up). Admin request 2026-10-20: a player who sat out more than that
+// (asked to rest, or left early while still scheduled on break) was collecting break points for
+// the extras. Only the first `cap` breaks earn points now; the rest are worth 0.
+function ciBreakCap(plan){
+  const n=plan?.sorted?.length||0;
+  if(!n||!plan.breakPlan) return Infinity;
+  const total=plan.breakPlan.slice(0,plan.totalRounds).reduce((t,r)=>t+(r?.length||0),0);
+  return Math.ceil(total/n);
+}
 function calcCIStandings(plan, users) {
-  if(!plan)return[]; const tc=plan.courts, pts={};
-  plan.rounds.forEach(r=>{(r.onBreak||[]).forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,played:0,courtWinSum:0};pts[p.userId].pts+=breakPts(tc);pts[p.userId].breaks++;});r.matches.forEach(m=>{if(!m.winner)return;const wp=courtPts(m.court,tc),W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;
+  if(!plan)return[]; const tc=plan.courts, pts={}, cap=ciBreakCap(plan);
+  plan.rounds.forEach(r=>{(r.onBreak||[]).forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,scoredBreaks:0,played:0,courtWinSum:0};pts[p.userId].breaks++;if(pts[p.userId].scoredBreaks<cap){pts[p.userId].scoredBreaks++;pts[p.userId].pts+=breakPts(tc);}});r.matches.forEach(m=>{if(!m.winner)return;const wp=courtPts(m.court,tc),W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;
     // courtWinSum: higher-level courts (lower court number = stronger) contribute more — use (tc - court + 1) as weight
     const courtWeight = tc - m.court + 1;
-    W.forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,played:0,courtWinSum:0};pts[p.userId].pts+=wp;pts[p.userId].wins++;pts[p.userId].played++;pts[p.userId].courtWinSum+=courtWeight;});
-    L.forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,played:0,courtWinSum:0};pts[p.userId].played++;});});});
+    W.forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,scoredBreaks:0,played:0,courtWinSum:0};pts[p.userId].pts+=wp;pts[p.userId].wins++;pts[p.userId].played++;pts[p.userId].courtWinSum+=courtWeight;});
+    L.forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,scoredBreaks:0,played:0,courtWinSum:0};pts[p.userId].played++;});});});
   return Object.entries(pts).map(([uid,s])=>({...s,user:users.find(u=>u.id===parseInt(uid))})).filter(s=>s.user).sort((a,b)=>
     b.pts-a.pts ||           // 1. Points
     b.wins-a.wins ||         // 2. Total wins (absolute)
@@ -4928,7 +4939,7 @@ function buildStandingsCard(ev,venue,ciStands,tc,plan,communityName){
   y = drawEventStrip(ctx, w, y, ev, venue);
 
   ciStands.forEach((s,i)=>{
-    const maxPts = personalMaxCI(s.breaks, personalRoundsCI(s.user.id, plan), tc);
+    const maxPts = personalMaxCI(s.scoredBreaks??s.breaks, personalRoundsCI(s.user.id, plan), tc);
     const pes = maxPts>0 ? Math.round((s.pts/maxPts)*100*10)/10 : 0;
     const isTop = i===0;
     ctx.fillStyle = isTop ? "#FEF3C7" : COLORS.card;
@@ -4988,7 +4999,7 @@ function buildResultsTableCard(ev,venue,plan,ciStands,tc,communityName){
   };
   const rowH = 30;
   ciStands.forEach((s,i)=>{
-    const maxPts = personalMaxCI(s.breaks, personalRoundsCI(s.user.id, plan), tc);
+    const maxPts = personalMaxCI(s.scoredBreaks??s.breaks, personalRoundsCI(s.user.id, plan), tc);
     const pes = maxPts>0 ? Math.round((s.pts/maxPts)*100*10)/10 : 0;
     ctx.fillStyle = i%2===0 ? COLORS.card : COLORS.cardAlt;
     ctx.fillRect(tableX, y, tableW, rowH);
@@ -7019,7 +7030,7 @@ export default function Matchkeeper() {
         const stands = standingsCache[ev.id];
         const s = stands.find(s => s.user.id === u.id);
         if (!s) return;
-        const maxPts = personalMaxCI(s.breaks, personalRoundsCI(u.id, plan), plan.courts);
+        const maxPts = personalMaxCI(s.scoredBreaks??s.breaks, personalRoundsCI(u.id, plan), plan.courts);
         if (maxPts <= 0) return;
         const pes = Math.round((s.pts / maxPts) * 100 * 10) / 10;
         updatedUser.usrHistory.push({eventId: ev.id, eventName: ev.name, date: ev.date, pes, type:"ci", retired:(ev.retiredIds||[]).includes(u.id)});
@@ -8915,7 +8926,7 @@ export default function Matchkeeper() {
       setUsers(us=>us.map(u=>{
         const s=stands.find(s=>s.user.id===u.id);
         if(!s)return u;
-        const maxPts=personalMaxCI(s.breaks,personalRoundsCI(u.id,plan),plan.courts);
+        const maxPts=personalMaxCI(s.scoredBreaks??s.breaks,personalRoundsCI(u.id,plan),plan.courts);
         if(maxPts<=0)return u;
         const standardPes=Math.round((s.pts/maxPts)*100*10)/10;
         const xEntry=xPreview?.find(x=>x.userId===u.id);
@@ -11207,7 +11218,7 @@ function CommStatsTab({comm, users, onViewProfile}){
       if(ev.type==="closed_ind"&&ev.plan){
         const stands=ciCache[ev.id];
         const s=stands.find(s=>s.user.id===u.id);
-        if(s){wins+=s.wins; totalPts+=s.pts; totalMaxPts+=personalMaxCI(s.breaks,personalRoundsCI(u.id,ev.plan),ev.plan.courts);}
+        if(s){wins+=s.wins; totalPts+=s.pts; totalMaxPts+=personalMaxCI(s.scoredBreaks??s.breaks,personalRoundsCI(u.id,ev.plan),ev.plan.courts);}
       }
       if(ev.type==="closed_teams"&&ev.plan){
         const stands=ctCache[ev.id];
@@ -12488,7 +12499,7 @@ function ResultsTable({plan, ciStands, tc, maxPts}){
         {ciStands.map((s,i)=>{
           // detect ties for bracket display
           const tied = ciStands.filter(x=>x.pts===s.pts&&x.wins===s.wins&&x.courtWinSum===s.courtWinSum).length>1;
-          const mp = personalMaxCI(s.breaks, personalRoundsCI(s.user.id, plan), tc);
+          const mp = personalMaxCI(s.scoredBreaks??s.breaks, personalRoundsCI(s.user.id, plan), tc);
           const pes = mp>0 ? Math.round((s.pts/mp)*100*10)/10 : 0;
           return <tr key={s.user.id}>
             <td style={{position:"sticky",left:0,zIndex:2,background:rowBg(i),padding:"6px 10px",fontSize:12,fontWeight:600,color:"var(--po-text)",whiteSpace:"nowrap",borderBottom:"0.5px solid var(--po-bdr)",boxShadow:"2px 0 4px -2px rgba(0,0,0,0.3)"}}>
@@ -15870,7 +15881,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {standingsView==="pes"&&<>
         <div style={{marginBottom:10,padding:"8px 12px",background:"var(--po-card)",borderRadius:8,fontSize:12,color:"var(--po-dim)"}}>{Array.from({length:tc},(_,i)=>`Court ${i+1}=${courtPts(i+1,tc)}pts`).join(" · ")} · Break={bp}pts</div>
         {ciStands.length===0?<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>Record winners to see standings.</div></Card>:<>
-          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;
+          {ciStands.map((s,i)=>{const mp=plan?personalMaxCI(s.scoredBreaks??s.breaks,personalRoundsCI(s.user.id,plan),tc):0,pes=mp>0?Math.round((s.pts/mp)*100*10)/10:0;
             // Works whether the event's still open (a live "if closed now" preview) or already
             // closed (a real "what this event's court-based PES actually did/would have done"
             // recompute) — see previewUsrDelta's own comment for how it tells the two apart.
@@ -15903,7 +15914,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
           let courtPes=null, courtUsrDelta=null, courtRank=null;
           if(compareCourtBased){
             const csIdx=ciStands.findIndex(s=>s.user.id===p.userId);
-            if(csIdx!==-1){ const cs=ciStands[csIdx]; const mp=personalMaxCI(cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=previewUsrDelta(p.user,courtPes,effEv,usrWindowSize); courtRank=csIdx+1; }
+            if(csIdx!==-1){ const cs=ciStands[csIdx]; const mp=personalMaxCI(cs.scoredBreaks??cs.breaks,personalRoundsCI(p.userId,plan),tc); courtPes=mp>0?Math.round((cs.pts/mp)*100*10)/10:0; courtUsrDelta=previewUsrDelta(p.user,courtPes,effEv,usrWindowSize); courtRank=csIdx+1; }
           }
           return {key:p.userId,name:p.user.nickname,entryUsr:p.entryUsr,avgDelta:p.avgDelta,score:p.outputPES,usrDelta,courtPes,courtUsrDelta,courtRank};
         }).sort((a,b)=>b.score-a.score)}/>:<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"24px 0"}}>No rounds yet.</div></Card>}

@@ -4,7 +4,17 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.14 (current) — Undo Round (step back after generating) + reminders sent exactly once
+## V0.17.15 (current) — Break points are capped at the event's fair-share maximum
+
+- **Admin request (2026-10-20):** a player who sat out more breaks than the event allows (asked to rest, or left early while still scheduled on break) was collecting break points for every extra break.
+- **The rule:** only breaks up to the event's maximum score points. The maximum is the fair-share ceiling the break engine already enforces (total break slots ÷ players, rounded up) — e.g. 18 break slots across 15 players = max 2. Any break beyond that is worth **0 points**.
+- **PES stays fair:** the player's personal maximum is calculated with the capped break count too, so the extra break rounds count as missed playing opportunities instead of free points.
+- Applies to Individuals events everywhere standings/PES are computed (Standings tab, PES/USR close-out, share images, profile stats). The Breaks count shown next to a name is still the real number of breaks taken.
+- Checked on real event #193: Haitham Ahmed took 3 breaks → 2 score, his total is 5 pts instead of 6.
+
+---
+
+## V0.17.14 — Undo Round (step back after generating) + reminders sent exactly once
 
 - **Admin request (2026-10-20):** a wrong result was recorded in Round 4, Round 5 was generated, and then there was no way to fix it — the result could be undone, but Round 5 stayed built on the wrong outcome and couldn't be regenerated. It skewed that day's standings.
 - **New "↩ Undo Round N" button** (admin, on the latest round, Individuals events): removes the latest generated round and rolls back partner history and the break forecast, so you can undo/correct the previous round's result and tap Generate again. It warns first if the round already has recorded results. Also works in Practice Session.

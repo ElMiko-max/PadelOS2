@@ -1018,7 +1018,7 @@ function genRound1(players, courts, totalRounds, concentrateOn=[], avoidOn=[]) {
       isConc: concSet0.has(uid), isAvoid: avoidSet0.has(uid), breakPref: p?.breakPref, ri: 0, totalRounds,
     });
   });
-  return {rounds:[{round:1,matches,onBreak,onBreakIds,breakReasons}],courts,totalRounds,breakPlan,partnerHistory:{},sorted};
+  return {rounds:[{round:1,matches,onBreak,onBreakIds,breakReasons}],courts,totalRounds,breakPlan,partnerHistory:{},sorted,breakCapOn:true};
 }
 // ── Dynamic Break Engine v2 — "target-court cascade" (2026-09-20, full spec from the admin
 // after auditing v1's fairness on a real event) ─────────────────────────────────────────────
@@ -1942,6 +1942,8 @@ function regenerateBreakPlan(plan, playedRounds, retiredIds=[], concentrateOn=[]
 // slots / players, rounded up). Admin request 2026-10-20: a player who sat out more than that
 // (asked to rest, or left early while still scheduled on break) was collecting break points for
 // the extras. Only the first `cap` breaks earn points now; the rest are worth 0.
+// Opt-in per event via plan.breakCapOn (set at Start, and on open events the first time an admin
+// opens them) — an already-closed event never has it, so its recorded results stay as they were.
 function ciBreakCap(plan){
   const n=plan?.sorted?.length||0;
   if(!n||!plan.breakPlan) return Infinity;
@@ -1949,7 +1951,7 @@ function ciBreakCap(plan){
   return Math.ceil(total/n);
 }
 function calcCIStandings(plan, users) {
-  if(!plan)return[]; const tc=plan.courts, pts={}, cap=ciBreakCap(plan);
+  if(!plan)return[]; const tc=plan.courts, pts={}, cap=plan.breakCapOn?ciBreakCap(plan):Infinity;
   plan.rounds.forEach(r=>{(r.onBreak||[]).forEach(p=>{if(!pts[p.userId])pts[p.userId]={pts:0,wins:0,breaks:0,scoredBreaks:0,played:0,courtWinSum:0};pts[p.userId].breaks++;if(pts[p.userId].scoredBreaks<cap){pts[p.userId].scoredBreaks++;pts[p.userId].pts+=breakPts(tc);}});r.matches.forEach(m=>{if(!m.winner)return;const wp=courtPts(m.court,tc),W=m.winner==="A"?m.teamA:m.teamB,L=m.winner==="A"?m.teamB:m.teamA;
     // courtWinSum: higher-level courts (lower court number = stronger) contribute more — use (tc - court + 1) as weight
     const courtWeight = tc - m.court + 1;
@@ -2577,7 +2579,7 @@ function generateCTPlan(players, courts, format, ev=null, matchDuration=20, topP
       });
     });
     return { format:"ladder", teams, groupA, groupB, courts, courtsA, courtsB, leagueRound:1, maxRounds:maxR, roundDuration:matchDuration, matchDuration,
-      breakPlan: ladderBreakPlan, sorted,
+      breakPlan: ladderBreakPlan, sorted, breakCapOn:true,
       rounds:[{ roundNum:1, type:"ladder", matchesA:matches, matchesB:[], onBreak, onBreakIds, breakReasons }] };
   }
 
@@ -3523,7 +3525,8 @@ function ctTeamMaxPts(teamId, plan){
     (r.onBreak||[]).some(t=>(t.id||t.teamId)===teamId) ||
     (r.onBreakIds||[]).includes(teamId)
   ).length;
-  return (totalRounds - breakCount) * c1 + breakCount * bp;
+  const scored = plan.breakCapOn ? Math.min(breakCount, ctBreakCap(plan)) : breakCount; // see ctBreakCap
+  return (totalRounds - scored) * c1 + scored * bp;
 }
 // Event-level max (shown in UI header):
 // Base = rounds × court1Pts
@@ -3596,6 +3599,13 @@ function nextFootballLeagueRound(plan) {
     rounds: [...rounds, {roundNum:base+1, type:"league", matchesA:allMatches, matchesB:[], onBreak:[]}] };
 }
 
+// CT Ladder counterpart of ciBreakCap: most breaks one team can SCORE = fair-share ceiling of
+// (break slots per round x rounds) / teams. Same opt-in flag (plan.breakCapOn) and same reason.
+function ctBreakCap(plan){
+  const n=plan?.teams?.length||0, maxR=plan?.maxRounds||0;
+  if(!n||!maxR) return Infinity;
+  return Math.ceil((Math.max(0,n-plan.courts*2)*maxR)/n);
+}
 // CT Standings — cumulative all rounds
 function calcCTStandings(plan, sport) {
   if (!plan) return [];
@@ -3604,9 +3614,9 @@ function calcCTStandings(plan, sport) {
   plan.teams.forEach(t => { stats[t.id] = { wins:0, draws:0, losses:0, scoreDiff:0, goalsFor:0, goalsAgainst:0, played:0, breaks:0, pts:0, team:t }; });
 
   if (plan.format === "ladder") {
-    const tc = plan.courts;
+    const tc = plan.courts, cap = plan.breakCapOn ? ctBreakCap(plan) : Infinity;
     plan.rounds.forEach(r => {
-      (r.onBreak||[]).forEach(t => { if(stats[t.id]){stats[t.id].pts+=ctLadderBreakPts(tc);stats[t.id].breaks++;} });
+      (r.onBreak||[]).forEach(t => { if(stats[t.id]){stats[t.id].breaks++; if((stats[t.id].scoredBreaks||0)<cap){stats[t.id].scoredBreaks=(stats[t.id].scoredBreaks||0)+1;stats[t.id].pts+=ctLadderBreakPts(tc);}} });
       r.matchesA.forEach(m => {
         if (!m.winner) return;
         const W=m.winner==="A"?m.teamA:m.teamB, L=m.winner==="A"?m.teamB:m.teamA;
@@ -9833,6 +9843,13 @@ export default function Matchkeeper() {
   };
   // Step back one round: removes the latest generated round (see undoLastRoundCI) so a wrong
   // result in the round before it can be undone, corrected, and the next round generated again.
+  // Switches the break-points cap on for an event that was started before it existed (see
+  // ciBreakCap). Called automatically for still-open events; never for completed ones.
+  const enableBreakCap=(cid,eid)=>{
+    const ev=getEv(cid,eid);
+    if(!ev?.plan||ev.plan.breakCapOn||ev.status==="completed"||ev.status==="cancelled")return;
+    updEvent(cid,eid,e=>e.plan&&!e.plan.breakCapOn&&e.status!=="completed"?{...e,plan:{...e.plan,breakCapOn:true}}:e,{silent:true}).catch(()=>{});
+  };
   const undoRoundCI=(cid,eid)=>{
     const ev=getEv(cid,eid);if(!ev?.plan||ev.plan.rounds.length<2)return false;
     updEvent(cid,eid,e=>{
@@ -10873,6 +10890,7 @@ export default function Matchkeeper() {
             onSetWinCI={(ri,mi,w,sA,sB)=>setWinCI(comm.id,event.id,ri,mi,w,sA,sB)}
             onNextRound={(silent)=>nextRoundCI(comm.id,event.id,silent)}
             onUndoRound={()=>undoRoundCI(comm.id,event.id)}
+            onEnableBreakCap={()=>enableBreakCap(comm.id,event.id)}
             onSwap={(ri,a,b)=>swapCI(comm.id,event.id,ri,a,b)}
             onRebalanceCourt={(ri,mi)=>rebalanceCourtCI(comm.id,event.id,ri,mi)}
             onEditBreak={(ri,uid,v)=>editBreakCI(comm.id,event.id,ri,uid,v)}
@@ -13776,7 +13794,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onUndoRound,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onUndoRound,onEnableBreakCap,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -14345,6 +14363,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const isDay  = sim||effEv.date<=today;
   const plan   = effEv.plan;
   const isCompleted = effEv.status==="completed";
+  // Open events started before the break-points cap existed get it switched on the first time an
+  // admin opens them (see ciBreakCap) — completed events are never touched.
+  useEffect(() => {
+    if (isAdmin && !sim && !isCompleted && effEv.plan && !effEv.plan.breakCapOn && (effEv.type==="closed_ind" || (effEv.type==="closed_teams" && effEv.plan.format==="ladder"))) onEnableBreakCap&&onEnableBreakCap();
+  }, [ev.id, ev.status, !!ev.plan?.breakCapOn, isAdmin, sim]);
   const isCancelled = effEv.status==="cancelled";
 
   // First tap selects a player; a second tap on a player from a DIFFERENT team swaps them.

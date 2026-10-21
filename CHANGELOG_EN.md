@@ -9,8 +9,9 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 - **Admin request (2026-10-20):** a player who sat out more breaks than the event allows (asked to rest, or left early while still scheduled on break) was collecting break points for every extra break.
 - **The rule:** only breaks up to the event's maximum score points. The maximum is the fair-share ceiling the break engine already enforces (total break slots ÷ players, rounded up) — e.g. 18 break slots across 15 players = max 2. Any break beyond that is worth **0 points**.
 - **PES stays fair:** the player's personal maximum is calculated with the capped break count too, so the extra break rounds count as missed playing opportunities instead of free points.
-- Applies to Individuals events everywhere standings/PES are computed (Standings tab, PES/USR close-out, share images, profile stats). The Breaks count shown next to a name is still the real number of breaks taken.
-- Checked on real event #193: Haitham Ahmed took 3 breaks → 2 score, his total is 5 pts instead of 6.
+- **Individuals and Closed Teams Ladder** both follow it (Ladder's maximum = break slots per round × rounds ÷ teams, rounded up). The Breaks count shown next to a name is still the real number of breaks taken.
+- **Closed events are untouched.** The cap is switched on per event (`breakCapOn`): new events get it at Start, and an event that's still open gets it automatically the first time an admin opens it — so results already recorded for closed events never change.
+- Checked on real event #193 (still open): Haitham Ahmed took 3 breaks → 2 score, his total drops from 7 to 5 pts.
 
 ---
 

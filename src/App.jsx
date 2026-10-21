@@ -14409,16 +14409,25 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     if(!(totC>0)||isCancelled||(!attendeeIds.includes(me.id)&&!isAdmin)) return null;
     const collector=users.find(u=>u.id===payerId), venuePayer=users.find(u=>u.id===venuePayerId);
     const isCollector=me.id===payerId, isVenuePayer=me.id===venuePayerId;
-    const open=l=>window.open(l,"_blank");
+    // Copies the amount to the clipboard first, then opens InstaPay — so the person can just paste it
+    // into InstaPay's amount field instead of retyping it (admin request 2026-10-21). The copy
+    // starts synchronously inside the tap (browsers only allow clipboard writes from a tap); a
+    // refused copy still tells them the amount in the toast.
+    const open=(link,amount)=>{
+      const n=String(Math.round(Number(amount)));
+      try{ navigator.clipboard.writeText(n).then(()=>onToast&&onToast(`${n} EGP copied — paste it in InstaPay ✓`)).catch(()=>onToast&&onToast(`Amount to pay: ${n} EGP`)); }
+      catch(e){ onToast&&onToast(`Amount to pay: ${n} EGP`); }
+      window.open(link,"_blank");
+    };
     let main=null;
     if(isVenuePayer){
       main=<>
-        {venue?.instapayLink&&<PayBigButton big={`🏟 Pay To Venue · ${totC} EGP`} small={`${venue.name}'s InstaPay`} onClick={()=>open(venue.instapayLink)}/>}
+        {venue?.instapayLink&&<PayBigButton big={`🏟 Pay To Venue · ${totC} EGP`} small={`${venue.name}'s InstaPay`} onClick={()=>open(venue.instapayLink,totC)}/>}
         {splitRoles&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:venue?.instapayLink?8:0}}>{collector?.nickname||"The collector"} sends you what they collect — {sentToPayer} EGP recorded so far{directCnt>0?`, ${directCnt} player(s) paid you directly`:""}.</div>}
       </>;
     } else if(isCollector&&splitRoles){
       main=<>
-        {dueToVenuePayer>0&&venuePayer?.instapayLink&&<PayBigButton big={`💰 Pay To ${venuePayer.nickname} · ${dueToVenuePayer} EGP`} small={`${venuePayer.nickname}'s InstaPay`} onClick={()=>open(venuePayer.instapayLink)}/>}
+        {dueToVenuePayer>0&&venuePayer?.instapayLink&&<PayBigButton big={`💰 Pay To ${venuePayer.nickname} · ${dueToVenuePayer} EGP`} small={`${venuePayer.nickname}'s InstaPay`} onClick={()=>open(venuePayer.instapayLink,dueToVenuePayer)}/>}
         {dueToVenuePayer>0&&<SmBtn label="✓ I sent it" color="#34D399" style={{width:"100%",marginTop:8,textAlign:"center",justifyContent:"center",display:"flex"}} onClick={()=>{if(window.confirm(`Mark ${dueToVenuePayer} EGP as sent to ${venuePayer?.nickname||"the venue payer"}?`))act.recordPayerTransfer(dueToVenuePayer);}}/>}
         <div style={{fontSize:12,color:"var(--po-dim)",marginTop:8}}>Collected {collectedSoFar} EGP · sent to {venuePayer?.nickname||"the venue payer"} {sentToPayer} EGP{dueToVenuePayer===0&&collectedSoFar>0?" — everything collected so far has been sent ✓":""}</div>
       </>;
@@ -14427,7 +14436,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         ? <div style={{fontSize:13,fontWeight:600,color:"#34D399"}}>✓ You've paid your {cpp} EGP share</div>
         : <>
             <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)",marginBottom:8}}>💰 You owe {cpp} EGP{collector?` to ${collector.nickname}`:""}</div>
-            {collector?.instapayLink&&<PayBigButton big="💰 Pay Now" small={`${collector.nickname}'s InstaPay`} onClick={()=>open(collector.instapayLink)}/>}
+            {collector?.instapayLink&&<PayBigButton big="💰 Pay Now" small={`${collector.nickname}'s InstaPay`} onClick={()=>open(collector.instapayLink,cpp)}/>}
           </>;
     }
     const shareBtn = isAdmin ? <div style={{paddingTop:main?8:0}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div> : null;
@@ -15238,7 +15247,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const iPaid=paidIds.has(me.id);
         return <div style={{padding:"9px 10px",background:iPaid?"#34D39922":"#6366F122",border:`0.5px solid ${iPaid?"#34D39944":"#6366F144"}`,borderRadius:8}}>
           <div style={{fontSize:12,fontWeight:600,color:iPaid?"#34D399":"#A5B4FC"}}>{iPaid?`✓ You've paid your ${cpp} EGP share`:`💰 You owe ${cpp} EGP — pay ${payerU?.nickname||"the collector"}`}</div>
-          {!iPaid&&payerU?.instapayLink&&<div style={{marginTop:8}}><PayBigButton big="💰 Pay Now" small={`${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")}/></div>}
+          {!iPaid&&payerU?.instapayLink&&<div style={{marginTop:8}}><PayBigButton big="💰 Pay Now" small={`${payerU.nickname}'s InstaPay`} onClick={()=>{try{navigator.clipboard.writeText(String(cpp)).then(()=>onToast&&onToast(`${cpp} EGP copied — paste it in InstaPay ✓`)).catch(()=>onToast&&onToast(`Amount to pay: ${cpp} EGP`));}catch(e){onToast&&onToast(`Amount to pay: ${cpp} EGP`);}window.open(payerU.instapayLink,"_blank");}}/></div>}
         </div>;
       })()}
       {directIds.has(me.id)&&

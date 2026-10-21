@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.15";
+const APP_VERSION = "V0.17.16";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -5631,6 +5631,15 @@ function Btn({label,onClick,primary,danger,disabled,style={}}){
   const bg=primary?"#6366F1":danger?"#EF444422":"var(--po-inp)", bc=primary?"#6366F1":danger?"#EF4444":"var(--po-bdr)", cl=primary?"#fff":danger?"#EF4444":"var(--po-sub)";
   return <button onClick={onClick} disabled={disabled} style={{padding:"9px 16px",borderRadius:8,border:`0.5px solid ${bc}`,background:disabled?"var(--po-bdr)":bg,color:disabled?"var(--po-dim)":cl,fontSize:13,fontWeight:500,cursor:disabled?"default":"pointer",opacity:disabled?0.6:1,...style}}>{label}</button>;
 }
+// The one prominent payment action on the Financial tab ("Pay Now" / "Pay To ..."): big, solid
+// blue, with the destination in small text underneath. Everything else on that tab stays small so
+// this reads as the primary action (admin request 2026-10-21).
+function PayBigButton({big,small,onClick}){
+  return <button onClick={onClick} style={{width:"100%",border:"none",borderRadius:14,background:"#1F6FEB",color:"#fff",cursor:"pointer",minHeight:62,padding:"10px 14px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,boxShadow:"0 6px 16px rgba(31,111,235,0.35)",fontFamily:"inherit"}}>
+    <span style={{fontSize:19,fontWeight:700,letterSpacing:0.2}}>{big}</span>
+    {small&&<span style={{fontSize:11,opacity:0.85,fontWeight:400}}>({small})</span>}
+  </button>;
+}
 function SmBtn({label,onClick,color="#6366F1",active,style={}}){return <button onClick={onClick} style={{padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap",border:`0.5px solid ${active?"#6366F1":color+"44"}`,background:active?"#6366F133":`${color}11`,color:active?"#A5B4FC":color,...style}}>{label}</button>;}
 // `clickable` gives a Card real "this opens something" affordance — a slightly brighter border
 // and a faint fill lift, so the same border/radius used for a purely static info box no longer
@@ -9503,6 +9512,7 @@ export default function Matchkeeper() {
       breakConcentrateIds:(ev.breakConcentrateIds||[]).filter(id=>id!==uid),
       breakAvoidIds:(ev.breakAvoidIds||[]).filter(id=>id!==uid),
       settlementPayerId:ev.settlementPayerId===uid?null:ev.settlementPayerId,
+      venuePayerId:ev.venuePayerId===uid?null:ev.venuePayerId,
     }),{silent:true});
     syncOrdering(cid,eid).catch(e=>console.log("removeFromEvent syncOrdering failed", e));
     toast2("Removed from event");
@@ -9763,6 +9773,13 @@ export default function Matchkeeper() {
     updEvent(cid,eid,ev=>!ev.plan?ev:{...ev,plan:{...ev.plan,mmScheduledFor:startAt}});
   };
   const updateEventFinance=(cid,eid,fields)=>{updEvent(cid,eid,ev=>({...ev,...fields}));toast2("Updated ✓");};
+  // Collector reports money sent on to whoever pays the venue (payerTransfers). Appended inside the
+  // update callback (not read-then-write) so two quick taps or a second device never drop a record.
+  const recordPayerTransfer=(cid,eid,amount)=>{
+    if(!(amount>0))return;
+    updEvent(cid,eid,ev=>({...ev,payerTransfers:[...(ev.payerTransfers||[]),{amount:Math.round(amount),at:new Date().toISOString(),by:me.id}]}));
+    toast2("Marked as sent ✓");
+  };
   const editGuestUsr=(uid,usr)=>{setUsers(us=>us.map(u=>u.id===uid?{...u,usr:parseInt(usr)||0}:u));toast2("USR updated ✓");
     const u=users.find(u=>u.id===uid);
     logAudit("usr.editGuest", `${me.nickname} set ${u?.nickname||uid}'s guest USR to ${usr}`, "user", uid);
@@ -10865,6 +10882,7 @@ export default function Matchkeeper() {
             onRetirePlayer={(uid,noShow)=>retirePlayer(comm.id,event.id,uid,noShow)}
             onToggleEventAdmin={uid=>toggleEventAdmin(comm.id,event.id,uid)}
             onUpdateEventFinance={fields=>updateEventFinance(comm.id,event.id,fields)}
+            onRecordPayerTransfer={amount=>recordPayerTransfer(comm.id,event.id,amount)}
             onAddLedgerEntry={entry=>addLedgerEntry(comm.id,entry)}
             expenseCategories={expenseCategories}
             onPostEventAnnouncement={message=>postEventAnnouncement(comm.id,event.id,message)}
@@ -13794,7 +13812,7 @@ function MatchTimerWidget({plan,roundDuration,totalRounds,totalBookingMin,eventD
 // ══════════════════════════════════════════════════════
 //  EVENT DETAIL
 // ══════════════════════════════════════════════════════
-function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onUndoRound,onEnableBreakCap,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
+function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity,onEditEvent,onRegister,registering,onCheckIn,onAddMember,onAddGuest,onCloseEvent,onCancelEvent,onStartCI,onSetWinCI,onNextRound,onUndoRound,onEnableBreakCap,onSwap,onRebalanceCourt,onEditBreak,onRegenerateBreaks,onStartCT,onSetWinCT,onSetCTScorers,onToggleCTLeagueLive,onApplyPromo,onNextFootballRound,onNextCTLadder,onSwapCTLadder,onRemoveFromEvent,onAddEventPhoto,onRemoveEventPhoto,onToggleEventPhotoLike,onEditGuestUsr,onEditEventUsr,onSetBreakPrefOverride,onToast,onDuplicateEvent,onDelete,onArchive,onUnarchive,onSetRegistrationOpen,onSyncConfirmOrder,onForcePromote,onViewProfile,onSetCTBreakState,onSetTeamBreakPref,onRegenCTBreaks,onSetBreakConcentrateIds,onSetBreakAvoidIds,onSetBreakEngine,onToggleExempt,onTogglePaid,onToggleDirect,onSetPaymentStatus,onUpdateEventFinance,onRecordPayerTransfer,onSetMatchModeStart,onStopMatchMode,onMarkWhistlesScheduled,onSwapCTTeamPlayers,onRenameTeam,onCreateInvite,onRequestEventJoin,onApproveEventJoin,onRejectEventJoin,onApproveUnqualified,onRejectUnqualified,onSetFootballSkill,onRetirePlayer,onToggleEventAdmin,onAddLedgerEntry,expenseCategories,onPostEventAnnouncement,onDeleteEventAnnouncement,onReplyEventAnnouncement,onDeleteEventAnnouncementReply,initialTab,onTabChange,godMode,subscriptionSettings,usrWindowSize=5}){
   const [tab,setTab]       = useState(initialTab||"players");
   useEffect(()=>{ onTabChange&&onTabChange(tab); }, [tab]);
   const [sim,setSim]       = useState(false);
@@ -14260,6 +14278,9 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     updateFinance: (fields) => sim
       ? simMutate(e=>({...e,...fields}))
       : onUpdateEventFinance&&onUpdateEventFinance(fields),
+    recordPayerTransfer: (amount) => sim
+      ? simMutate(e=>({...e,payerTransfers:[...(e.payerTransfers||[]),{amount:Math.round(amount),at:new Date().toISOString(),by:me.id}]}))
+      : onRecordPayerTransfer&&onRecordPayerTransfer(amount),
   };
 
   const venue  = venues.find(v=>v.id===effEv.venueId);
@@ -14329,11 +14350,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   // collectedSoFar (which specifically tracks cash the collector is actually holding).
   const paidIds     = new Set(effEv.paidIds||[]);
   const directIds   = new Set(effEv.directIds||[]);
-  const payerId     = effEv.settlementPayerId ?? effEv.createdBy ?? attendeeIds[0] ?? null;
-  const directCnt   = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&uid!==payerId&&directIds.has(uid)).length;
-  const paidCnt     = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&uid!==payerId&&!directIds.has(uid)&&paidIds.has(uid)).length;
-  const owingCnt    = Math.max(0, payingCnt - (attendeeIds.includes(payerId)&&!exemptedIds.has(payerId)?1:0) - directCnt); // everyone paying except the collector themself and anyone who paid direct
+  const payerId     = effEv.settlementPayerId ?? effEv.createdBy ?? attendeeIds[0] ?? null; // the COLLECTOR (collects from players)
+  // The person who actually pays the venue (admin request 2026-10-21). Defaults to the collector —
+  // the same person, which is how it always worked before. When it's someone else, they're settled
+  // by nature (they fronted the venue cost), exactly like a "Direct" payer: nobody chases them.
+  const venuePayerId = effEv.venuePayerId ?? payerId;
+  const splitRoles  = venuePayerId!==payerId;
+  const settledByNature = new Set([payerId, venuePayerId]);
+  const directCnt   = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&!settledByNature.has(uid)&&directIds.has(uid)).length;
+  const paidCnt     = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&!settledByNature.has(uid)&&!directIds.has(uid)&&paidIds.has(uid)).length;
+  const owingCnt    = Math.max(0, payingCnt - [...settledByNature].filter(id=>attendeeIds.includes(id)&&!exemptedIds.has(id)).length - directCnt); // everyone paying except the collector, the venue payer, and anyone who paid direct
   const collectedSoFar = payingCnt>0 ? Math.round((totC/payingCnt)*paidCnt) : 0;
+  // Money the collector has already passed on to the venue payer, recorded in batches
+  // (payerTransfers) — what's still to send is what was collected minus what was sent.
+  const sentToPayer = (effEv.payerTransfers||[]).reduce((t,x)=>t+(x.amount||0),0);
+  const dueToVenuePayer = Math.max(0, collectedSoFar - sentToPayer);
   // Casual AND Regular members can self-register directly and land wherever pure chronological
   // order puts them (no tier ever jumps the queue, see splitRegsByCapacity). Guests (and anyone
   // not yet a community member at all) still need admin approval to even queue up — they get
@@ -14369,6 +14400,40 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     if (isAdmin && !sim && !isCompleted && effEv.plan && !effEv.plan.breakCapOn && (effEv.type==="closed_ind" || (effEv.type==="closed_teams" && effEv.plan.format==="ladder"))) onEnableBreakCap&&onEnableBreakCap();
   }, [ev.id, ev.status, !!ev.plan?.breakCapOn, isAdmin, sim]);
   const isCancelled = effEv.status==="cancelled";
+  // Top of the Financial tab: the one payment action that applies to the viewer, then (admin only)
+  // the small Share Payment Info. Collector -> "Pay To <venue payer>" for what's collected and not
+  // yet sent; venue payer -> "Pay To Venue" (only when the venue has an InstaPay link); everyone
+  // else who owes -> "Pay Now" to the collector. Nobody is ever shown a button for money they
+  // don't owe (a collector/venue payer is settled by nature, Direct and Exempt players owe nothing).
+  const renderPayActions = () => {
+    if(!(totC>0)||isCancelled||(!attendeeIds.includes(me.id)&&!isAdmin)) return null;
+    const collector=users.find(u=>u.id===payerId), venuePayer=users.find(u=>u.id===venuePayerId);
+    const isCollector=me.id===payerId, isVenuePayer=me.id===venuePayerId;
+    const open=l=>window.open(l,"_blank");
+    let main=null;
+    if(isVenuePayer){
+      main=<>
+        {venue?.instapayLink&&<PayBigButton big={`🏟 Pay To Venue · ${totC} EGP`} small={`${venue.name}'s InstaPay`} onClick={()=>open(venue.instapayLink)}/>}
+        {splitRoles&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:venue?.instapayLink?8:0}}>{collector?.nickname||"The collector"} sends you what they collect — {sentToPayer} EGP recorded so far{directCnt>0?`, ${directCnt} player(s) paid you directly`:""}.</div>}
+      </>;
+    } else if(isCollector&&splitRoles){
+      main=<>
+        {dueToVenuePayer>0&&venuePayer?.instapayLink&&<PayBigButton big={`💰 Pay To ${venuePayer.nickname} · ${dueToVenuePayer} EGP`} small={`${venuePayer.nickname}'s InstaPay`} onClick={()=>open(venuePayer.instapayLink)}/>}
+        {dueToVenuePayer>0&&<SmBtn label="✓ I sent it" color="#34D399" style={{width:"100%",marginTop:8,textAlign:"center",justifyContent:"center",display:"flex"}} onClick={()=>{if(window.confirm(`Mark ${dueToVenuePayer} EGP as sent to ${venuePayer?.nickname||"the venue payer"}?`))act.recordPayerTransfer(dueToVenuePayer);}}/>}
+        <div style={{fontSize:12,color:"var(--po-dim)",marginTop:8}}>Collected {collectedSoFar} EGP · sent to {venuePayer?.nickname||"the venue payer"} {sentToPayer} EGP{dueToVenuePayer===0&&collectedSoFar>0?" — everything collected so far has been sent ✓":""}</div>
+      </>;
+    } else if(!isCollector&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&!directIds.has(me.id)){
+      main=paidIds.has(me.id)
+        ? <div style={{fontSize:13,fontWeight:600,color:"#34D399"}}>✓ You've paid your {cpp} EGP share</div>
+        : <>
+            <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)",marginBottom:8}}>💰 You owe {cpp} EGP{collector?` to ${collector.nickname}`:""}</div>
+            {collector?.instapayLink&&<PayBigButton big="💰 Pay Now" small={`${collector.nickname}'s InstaPay`} onClick={()=>open(collector.instapayLink)}/>}
+          </>;
+    }
+    const shareBtn = isAdmin ? <div style={{paddingTop:main?8:0}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div> : null;
+    if(!main&&!shareBtn) return null;
+    return <Card style={{marginBottom:8}}>{main}{shareBtn}</Card>;
+  };
 
   // First tap selects a player; a second tap on a player from a DIFFERENT team swaps them.
   // Tapping the same player again, or another player on the SAME team, just clears/reselects.
@@ -15167,14 +15232,13 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         collector or an InstaPay link at all. Shown to any paying, non-exempt attendee who isn't
         the collector themself, whenever a cost has actually been set. Its own card, separate from
         the primary action above, so it doesn't get mistaken for part of the registration status. */}
-    {totC>0&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&me.id!==payerId&&<Card>
+    {totC>0&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&me.id!==payerId&&me.id!==venuePayerId&&<Card>
       {!directIds.has(me.id)&&(()=>{
         const payerU=users.find(u=>u.id===payerId);
         const iPaid=paidIds.has(me.id);
         return <div style={{padding:"9px 10px",background:iPaid?"#34D39922":"#6366F122",border:`0.5px solid ${iPaid?"#34D39944":"#6366F144"}`,borderRadius:8}}>
           <div style={{fontSize:12,fontWeight:600,color:iPaid?"#34D399":"#A5B4FC"}}>{iPaid?`✓ You've paid your ${cpp} EGP share`:`💰 You owe ${cpp} EGP — pay ${payerU?.nickname||"the collector"}`}</div>
-          {!iPaid&&payerU?.instapayLink&&<SmBtn label={`💳 ${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")} color="#6366F1" style={{width:"100%",marginTop:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
-          {!iPaid&&venue?.instapayLink&&<SmBtn label={`🏟 Pay ${venue.name} via InstaPay`} onClick={()=>window.open(venue.instapayLink,"_blank")} color="#94A3B8" style={{width:"100%",marginTop:6,textAlign:"center",justifyContent:"center",display:"flex"}}/>}
+          {!iPaid&&payerU?.instapayLink&&<div style={{marginTop:8}}><PayBigButton big="💰 Pay Now" small={`${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")}/></div>}
         </div>;
       })()}
       {directIds.has(me.id)&&
@@ -15517,6 +15581,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       ? <Card><div style={{fontSize:12,color:"var(--po-dim)"}}>💰 {comm.name} tracks finances centrally — check the Ledger tab in the community for your balance and statement.</div></Card>
       : <>
       <ST>💰 Financial</ST>
+      {renderPayActions()}
       <Card>
         <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"0.5px solid var(--po-bdr)"}}>
           <div style={{fontSize:13,color:"var(--po-dim)"}}>Total event cost</div>
@@ -15528,20 +15593,21 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         </div>
       </Card>
       {attendeeIds.includes(me.id)&&(()=>{
-        const isPayer = me.id===payerId;
+        const isPayer = me.id===payerId || me.id===venuePayerId;
         const isEx = exemptedIds.has(me.id);
         const isDirect = !isPayer&&!isEx&&directIds.has(me.id);
         const isPaid = isPayer || (!isDirect&&paidIds.has(me.id));
         const payer = users.find(u=>u.id===payerId);
         return <Card style={{marginTop:8}}>
           <div style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>Your share</div>
-          <div style={{fontSize:13,color:"var(--po-text)",marginBottom:isPayer||isEx||isDirect?0:10}}>{isEx?"You're exempt from payment.":isPayer?"You're collecting from everyone else.":isDirect?`You paid your ${cpp} EGP share directly — marked settled.`:<>You owe {cpp} EGP{payer&&<> to <span onClick={()=>onViewProfile&&onViewProfile(payer.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{payer.nickname}</span></>}.</>}</div>
+          <div style={{fontSize:13,color:"var(--po-text)",marginBottom:isPayer||isEx||isDirect?0:10}}>{isEx?"You're exempt from payment.":me.id===payerId?"You're collecting from everyone else.":isPayer?"You're paying the venue — nothing owed to the collector.":isDirect?`You paid your ${cpp} EGP share directly — marked settled.`:<>You owe {cpp} EGP{payer&&<> to <span onClick={()=>onViewProfile&&onViewProfile(payer.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{payer.nickname}</span></>}.</>}</div>
           {!isPayer&&!isEx&&!isDirect&&<div onClick={()=>act.togglePaid(me.id)} style={{textAlign:"center",padding:"9px",borderRadius:8,background:isPaid?"#34D39922":"#6366F1",border:`0.5px solid ${isPaid?"#34D39966":"transparent"}`,color:isPaid?"#34D399":"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>{isPaid?"✓ Marked as Paid":"I Paid"}</div>}
         </Card>;
       })()}
     </>)}
 
     {tab==="manage"&&isAdmin&&<>
+      {renderPayActions()}
       {/* A community with the ledger switched on absorbs most event costs centrally (via
           monthly dues, tracked in the community's Ledger tab), so this per-event cost-split
           tool is de-emphasized — collapsed by default — rather than gone entirely, since an
@@ -15602,36 +15668,46 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       {isAdmin&&attCnt>0&&<>
         <ST>💵 Settlement</ST>
         <Card style={{marginBottom:8}}>
-          <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>Who's collecting the {totC} EGP from everyone?</div>
-          <select value={payerId??""} onChange={e=>act.updateFinance({settlementPayerId:parseInt(e.target.value)})} className="po-inp"
-            style={{width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:10}}>
-            {attendeeIds.map(uid=>{const u=users.find(u=>u.id===uid);if(!u)return null;return <option key={uid} value={uid}>{u.nickname}{uid===effEv.createdBy?" (event creator)":""}</option>;})}
-          </select>
+          {/* Only players who have an InstaPay link can be picked (admin request 2026-10-21) — the
+              other side of every payment button is this person's link, so a person without one
+              would leave a button with nowhere to go. The current pick always stays listed so an
+              existing/default choice never silently disappears from its own dropdown. */}
+          {(()=>{
+            const linkOf=uid=>users.find(u=>u.id===uid)?.instapayLink;
+            const optionsFor=cur=>attendeeIds.filter(uid=>linkOf(uid)||uid===cur).map(uid=>{const u=users.find(u=>u.id===uid);return u?<option key={uid} value={uid}>{u.nickname}{uid===effEv.createdBy?" (event creator)":""}{linkOf(uid)?"":" — no InstaPay link"}</option>:null;});
+            const hiddenCnt=attendeeIds.filter(uid=>!linkOf(uid)&&uid!==payerId&&uid!==venuePayerId).length;
+            const selStyle={width:"100%",background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"8px 10px",color:"var(--po-text)",fontSize:13,marginBottom:10};
+            return <>
+              <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>💰 Collector — collects the {totC} EGP from the players</div>
+              <select value={payerId??""} onChange={e=>act.updateFinance({settlementPayerId:parseInt(e.target.value)})} className="po-inp" style={selStyle}>{optionsFor(payerId)}</select>
+              <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>🏟 Payer — pays the venue</div>
+              <select value={effEv.venuePayerId??""} onChange={e=>act.updateFinance({venuePayerId:e.target.value===""?null:parseInt(e.target.value)})} className="po-inp" style={{...selStyle,marginBottom:4}}>
+                <option value="">Same person as the collector</option>
+                {optionsFor(effEv.venuePayerId)}
+              </select>
+              <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:10}}>{hiddenCnt>0?`${hiddenCnt} player(s) without an InstaPay link on their profile aren't listed.`:"Everyone listed has an InstaPay link."}</div>
+            </>;
+          })()}
           <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
             <span style={{fontSize:12,color:"var(--po-dim)"}}>Collected so far</span>
             <span style={{fontSize:13,fontWeight:700,color:"#34D399"}}>{paidCnt}/{owingCnt} paid · {collectedSoFar}/{totC} EGP{directCnt>0?` · ${directCnt} paid direct`:""}</span>
           </div>
-          {/* Collector's own InstaPay (set on their profile) — shown here so the admin can see
-              at a glance whether players even have a way to pay this person from the app. The
-              player-facing "pay the collector" card below is what actually surfaces it to them. */}
-          {(()=>{const payerU=users.find(u=>u.id===payerId);return payerU?.instapayLink&&<div style={{paddingTop:8,borderTop:"0.5px solid var(--po-bdr)"}}><SmBtn label={`💳 ${payerU.nickname}'s InstaPay`} onClick={()=>window.open(payerU.instapayLink,"_blank")} color="#6366F1" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>;})()}
-          {/* Venue InstaPay — for whoever's actually settling the court fees with the venue
-              (usually the collector), not each player individually. */}
-          {venue?.instapayLink&&<div style={{paddingTop:8}}><SmBtn label={`🏟 Pay ${venue.name} via InstaPay`} onClick={()=>window.open(venue.instapayLink,"_blank")} color="#94A3B8" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>}
-          {/* Standalone share, kept deliberately separate from Share Results (see handleShareAfter) —
-              its own button tap means its own single share(), no caption-duplication risk. */}
-          <div style={{paddingTop:8}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div>
+          {splitRoles&&<div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
+            <span style={{fontSize:12,color:"var(--po-dim)"}}>Sent to {users.find(u=>u.id===venuePayerId)?.nickname||"the payer"}</span>
+            <span style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{sentToPayer} EGP{dueToVenuePayer>0?` · ${dueToVenuePayer} still to send`:""}</span>
+          </div>}
         </Card>
         <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:8}}>Tap a player's status badge to set it: Not Paid, Paid, Direct (settled another way, e.g. cash to the venue — no need to chase them), or Exempt.</div>
         {attendeeIds.map(uid=>{
           const u=users.find(u=>u.id===uid); if(!u) return null;
           const isPayer = uid===payerId;
+          const isVenuePayer = splitRoles&&uid===venuePayerId;
           // Mutually exclusive by construction (setPaymentStatus always clears the other two
           // sets before adding to one), so a single derived `status` is safe here.
-          const status = isPayer ? null : exemptedIds.has(uid) ? "exempt" : directIds.has(uid) ? "direct" : paidIds.has(uid) ? "paid" : "unpaid";
+          const status = (isPayer||isVenuePayer) ? null : exemptedIds.has(uid) ? "exempt" : directIds.has(uid) ? "direct" : paidIds.has(uid) ? "paid" : "unpaid";
           const isEx = status==="exempt";
           const isDirect = status==="direct";
-          const isPaid = isPayer || status==="paid";
+          const isPaid = isPayer || isVenuePayer || status==="paid";
           const meta = status && PAYMENT_STATUS_META[status];
           return <Card key={uid} style={{marginBottom:6,background:isEx?"#F59E0B0D":isDirect?"#38BDF80D":isPaid?"#34D39911":"var(--po-card)",borderColor:isEx?"#F59E0B33":isDirect?"#38BDF833":isPaid?"#34D39944":"var(--po-bdr)"}}>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -15640,15 +15716,16 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                   <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{fontSize:13,fontWeight:600,color:"var(--po-text)",cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
                   {isPayer&&<Bdg label="💰 Collector" color="#F59E0B"/>}
+                  {isVenuePayer&&<Bdg label="🏟 Pays venue" color="#1F6FEB"/>}
                   {isDirect&&<Bdg label="↪ Direct" color="#38BDF8"/>}
                 </div>
-                <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":isDirect?`Paid ${cpp} EGP directly — no need to chase`:`${cpp} EGP`}</div>
+                <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":isVenuePayer?"Pays the venue — nothing to chase":isDirect?`Paid ${cpp} EGP directly — no need to chase`:`${cpp} EGP`}</div>
               </div>
               {/* An explicit picker (kebab menu, 4 named options), not a tap-to-cycle button —
                   every choice here is a fixed target, so there's no "compute next from current"
                   step left to race on at all, under rapid taps or otherwise. See
                   setPaymentStatus's comment for the tap-to-cycle version this replaced. */}
-              {!isPayer&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
+              {!isPayer&&!isVenuePayer&&<div style={{position:"relative",flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 {/* Deliberately NOT the Bdg soft-tint recipe (thin low-opacity border, no shadow)
                     — this picker is clickable and sat right next to real Bdgs (Collector/Direct
                     above) looking identical apart from an invisible cursor style (interface-

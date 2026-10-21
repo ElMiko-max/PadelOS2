@@ -4,7 +4,16 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.15 (current) — Break points are capped at the event's fair-share maximum
+## V0.17.16 (current) — Pay Now / Pay To buttons at the top of the Financial tab, with separate Collector and Payer
+
+- **Admin request (2026-10-21):** the small "InstaPay" link buried further down the Financial tab was easy to miss. The payment action is now the first thing on the tab: a large solid-blue button with the destination in small text underneath. "Share Payment Info" stays small, right below it.
+- **Two roles now:** the **Collector** collects from the players, the **Payer** pays the venue. By default they are the same person (the admin), exactly as before. Set both in the Settlement card; the dropdowns only list players who have an InstaPay link on their profile.
+- **What each person sees:** a player who owes gets **💰 Pay Now (Collector's InstaPay)**. The Collector (when someone else pays the venue) gets **💰 Pay To <Payer> · amount** = money collected so far minus what was already sent, plus an "✓ I sent it" button so partial transfers are tracked batch by batch. The Payer gets **🏟 Pay To Venue** (only if the venue has an InstaPay link). Nobody sees a button for money they don't owe; Direct and Exempt players, the Collector and the Payer are never chased.
+- The Payer counts as settled by nature (like a Direct payer), so they're left out of the "who still owes" counts. The Settlement card also shows how much has been sent to the Payer and how much is still to send.
+
+---
+
+## V0.17.15 — Break points are capped at the event's fair-share maximum
 
 - **Admin request (2026-10-20):** a player who sat out more breaks than the event allows (asked to rest, or left early while still scheduled on break) was collecting break points for every extra break.
 - **The rule:** only breaks up to the event's maximum score points. The maximum is the fair-share ceiling the break engine already enforces (total break slots ÷ players, rounded up) — e.g. 18 break slots across 15 players = max 2. Any break beyond that is worth **0 points**.

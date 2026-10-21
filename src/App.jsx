@@ -9513,6 +9513,7 @@ export default function Matchkeeper() {
       breakAvoidIds:(ev.breakAvoidIds||[]).filter(id=>id!==uid),
       settlementPayerId:ev.settlementPayerId===uid?null:ev.settlementPayerId,
       venuePayerId:ev.venuePayerId===uid?null:ev.venuePayerId,
+      reserverId:ev.reserverId===uid?null:ev.reserverId,
     }),{silent:true});
     syncOrdering(cid,eid).catch(e=>console.log("removeFromEvent syncOrdering failed", e));
     toast2("Removed from event");
@@ -14360,7 +14361,17 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const directCnt   = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&!settledByNature.has(uid)&&directIds.has(uid)).length;
   const paidCnt     = attendeeIds.filter(uid=>!exemptedIds.has(uid)&&!settledByNature.has(uid)&&!directIds.has(uid)&&paidIds.has(uid)).length;
   const owingCnt    = Math.max(0, payingCnt - [...settledByNature].filter(id=>attendeeIds.includes(id)&&!exemptedIds.has(id)).length - directCnt); // everyone paying except the collector, the venue payer, and anyone who paid direct
-  const collectedSoFar = payingCnt>0 ? Math.round((totC/payingCnt)*paidCnt) : 0;
+  // The RESERVER books the court and pays the booking fee (the extra fee, ~30 EGP/court/hr) out of
+  // pocket via InstaPay at reservation time (admin request 2026-10-21). That fee is taken off the
+  // total that goes to the venue, and off the reserver's own share as a player. Defaults to the
+  // venue payer (usually the same person); "none" means nobody pre-paid a booking fee. Can be a
+  // plain player — no InstaPay link needed, they don't receive money.
+  const reserverId = effEv.reserverId==="none" ? null : (effEv.reserverId ?? venuePayerId);
+  const reservationFee = reserverId==null ? 0 : Math.max(0, Math.round(effEv.reservationPaid ?? extraFeeTotal));
+  const shareExact = payingCnt>0 ? totC/payingCnt : 0;
+  const dueOf = uid => uid===reserverId ? Math.max(0, Math.round(shareExact-reservationFee)) : Math.round(shareExact);
+  const venueDue = Math.max(0, totC - reservationFee); // what actually goes to the venue
+  const collectedSoFar = Math.round(attendeeIds.filter(uid=>!exemptedIds.has(uid)&&!settledByNature.has(uid)&&!directIds.has(uid)&&paidIds.has(uid)).reduce((t,uid)=>t+(uid===reserverId?Math.max(0,shareExact-reservationFee):shareExact),0));
   // Money the collector has already passed on to the venue payer, recorded in batches
   // (payerTransfers) — what's still to send is what was collected minus what was sent.
   const sentToPayer = (effEv.payerTransfers||[]).reduce((t,x)=>t+(x.amount||0),0);
@@ -14422,7 +14433,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
     let main=null;
     if(isVenuePayer){
       main=<>
-        {venue?.instapayLink&&<PayBigButton big={`🏟 Pay To Venue · ${totC} EGP`} small={`${venue.name}'s InstaPay`} onClick={()=>open(venue.instapayLink,totC)}/>}
+        {venue?.instapayLink&&venueDue>0&&<PayBigButton big={`🏟 Pay To Venue · ${venueDue} EGP`} small={`${venue.name}'s InstaPay`} onClick={()=>open(venue.instapayLink,venueDue)}/>}
+        {reservationFee>0&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:8}}>{totC} EGP total − {reservationFee} EGP booking fee already paid{users.find(u=>u.id===reserverId)?` by ${users.find(u=>u.id===reserverId).nickname}`:""} = {venueDue} EGP to the venue.</div>}
         {splitRoles&&<div style={{fontSize:12,color:"var(--po-dim)",marginTop:venue?.instapayLink?8:0}}>{collector?.nickname||"The collector"} sends you what they collect — {sentToPayer} EGP recorded so far{directCnt>0?`, ${directCnt} player(s) paid you directly`:""}.</div>}
       </>;
     } else if(isCollector&&splitRoles){
@@ -14433,15 +14445,20 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
       </>;
     } else if(!isCollector&&attendeeIds.includes(me.id)&&!exemptedIds.has(me.id)&&!directIds.has(me.id)){
       main=paidIds.has(me.id)
-        ? <div style={{fontSize:13,fontWeight:600,color:"#34D399"}}>✓ You've paid your {cpp} EGP share</div>
-        : <>
-            <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)",marginBottom:8}}>💰 You owe {cpp} EGP{collector?` to ${collector.nickname}`:""}</div>
-            {collector?.instapayLink&&<PayBigButton big="💰 Pay Now" small={`${collector.nickname}'s InstaPay`} onClick={()=>open(collector.instapayLink,cpp)}/>}
+        ? <div style={{fontSize:13,fontWeight:600,color:"#34D399"}}>✓ You've paid your {dueOf(me.id)} EGP share</div>
+        : dueOf(me.id)<=0
+          ? <div style={{fontSize:13,fontWeight:600,color:"#34D399"}}>✓ Nothing to pay — the {reservationFee} EGP booking fee you paid covers your share{reservationFee>shareExact?` (the pool owes you ${Math.round(reservationFee-shareExact)} EGP)`:""}</div>
+          : <>
+            <div style={{fontSize:13,fontWeight:500,color:"var(--po-text)",marginBottom:8}}>💰 You owe {dueOf(me.id)} EGP{collector?` to ${collector.nickname}`:""}{me.id===reserverId?` (${cpp} EGP share − ${reservationFee} EGP booking fee you paid)`:""}</div>
+            {collector?.instapayLink&&<PayBigButton big="💰 Pay Now" small={`${collector.nickname}'s InstaPay`} onClick={()=>open(collector.instapayLink,dueOf(me.id))}/>}
           </>;
     }
+    // A reserver who is also the collector (the payer case is covered by the venue-amount line above)
+    // gets one line saying their booking fee was taken off.
+    const reserverNote = (me.id===reserverId&&reservationFee>0&&(isCollector&&!isVenuePayer)) ? <div style={{fontSize:12,color:"var(--po-dim)",marginTop:8}}>📅 You paid the {reservationFee} EGP booking fee — it's taken off the amount that goes to the venue.</div> : null;
     const shareBtn = isAdmin ? <div style={{paddingTop:main?8:0}}><SmBtn label={sharing?"⏳ Sharing…":"📤 Share Payment Info"} onClick={sharePaymentInfo} color="#34D399" style={{width:"100%",textAlign:"center",justifyContent:"center",display:"flex"}}/></div> : null;
     if(!main&&!shareBtn) return null;
-    return <Card style={{marginBottom:8}}>{main}{shareBtn}</Card>;
+    return <Card style={{marginBottom:8}}>{main}{reserverNote}{shareBtn}</Card>;
   };
 
   // First tap selects a player; a second tap on a player from a DIFFERENT team swaps them.
@@ -15246,8 +15263,8 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const payerU=users.find(u=>u.id===payerId);
         const iPaid=paidIds.has(me.id);
         return <div style={{padding:"9px 10px",background:iPaid?"#34D39922":"#6366F122",border:`0.5px solid ${iPaid?"#34D39944":"#6366F144"}`,borderRadius:8}}>
-          <div style={{fontSize:12,fontWeight:600,color:iPaid?"#34D399":"#A5B4FC"}}>{iPaid?`✓ You've paid your ${cpp} EGP share`:`💰 You owe ${cpp} EGP — pay ${payerU?.nickname||"the collector"}`}</div>
-          {!iPaid&&payerU?.instapayLink&&<div style={{marginTop:8}}><PayBigButton big="💰 Pay Now" small={`${payerU.nickname}'s InstaPay`} onClick={()=>{try{navigator.clipboard.writeText(String(cpp)).then(()=>onToast&&onToast(`${cpp} EGP copied — paste it in InstaPay ✓`)).catch(()=>onToast&&onToast(`Amount to pay: ${cpp} EGP`));}catch(e){onToast&&onToast(`Amount to pay: ${cpp} EGP`);}window.open(payerU.instapayLink,"_blank");}}/></div>}
+          <div style={{fontSize:12,fontWeight:600,color:iPaid?"#34D399":"#A5B4FC"}}>{iPaid?`✓ You've paid your ${dueOf(me.id)} EGP share`:`💰 You owe ${dueOf(me.id)} EGP — pay ${payerU?.nickname||"the collector"}`}</div>
+          {!iPaid&&dueOf(me.id)>0&&payerU?.instapayLink&&<div style={{marginTop:8}}><PayBigButton big="💰 Pay Now" small={`${payerU.nickname}'s InstaPay`} onClick={()=>{const amt=dueOf(me.id);try{navigator.clipboard.writeText(String(amt)).then(()=>onToast&&onToast(`${amt} EGP copied — paste it in InstaPay ✓`)).catch(()=>onToast&&onToast(`Amount to pay: ${amt} EGP`));}catch(e){onToast&&onToast(`Amount to pay: ${amt} EGP`);}window.open(payerU.instapayLink,"_blank");}}/></div>}
         </div>;
       })()}
       {directIds.has(me.id)&&
@@ -15609,7 +15626,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         const payer = users.find(u=>u.id===payerId);
         return <Card style={{marginTop:8}}>
           <div style={{fontSize:12,fontWeight:600,color:"var(--po-dim)",marginBottom:8}}>Your share</div>
-          <div style={{fontSize:13,color:"var(--po-text)",marginBottom:isPayer||isEx||isDirect?0:10}}>{isEx?"You're exempt from payment.":me.id===payerId?"You're collecting from everyone else.":isPayer?"You're paying the venue — nothing owed to the collector.":isDirect?`You paid your ${cpp} EGP share directly — marked settled.`:<>You owe {cpp} EGP{payer&&<> to <span onClick={()=>onViewProfile&&onViewProfile(payer.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{payer.nickname}</span></>}.</>}</div>
+          <div style={{fontSize:13,color:"var(--po-text)",marginBottom:isPayer||isEx||isDirect?0:10}}>{isEx?"You're exempt from payment.":me.id===payerId?"You're collecting from everyone else.":isPayer?"You're paying the venue — nothing owed to the collector.":isDirect?`You paid your ${cpp} EGP share directly — marked settled.`:<>You owe {dueOf(me.id)} EGP{payer&&<> to <span onClick={()=>onViewProfile&&onViewProfile(payer.id)} style={{color:onViewProfile?"#6366F1":"inherit",cursor:onViewProfile?"pointer":"default"}}>{payer.nickname}</span></>}.</>}</div>
           {!isPayer&&!isEx&&!isDirect&&<div onClick={()=>act.togglePaid(me.id)} style={{textAlign:"center",padding:"9px",borderRadius:8,background:isPaid?"#34D39922":"#6366F1",border:`0.5px solid ${isPaid?"#34D39966":"transparent"}`,color:isPaid?"#34D399":"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>{isPaid?"✓ Marked as Paid":"I Paid"}</div>}
         </Card>;
       })()}
@@ -15695,12 +15712,30 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 {optionsFor(effEv.venuePayerId)}
               </select>
               <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:10}}>{hiddenCnt>0?`${hiddenCnt} player(s) without an InstaPay link on their profile aren't listed.`:"Everyone listed has an InstaPay link."}</div>
+              <div style={{fontSize:11,color:"var(--po-dim)",marginBottom:6}}>📅 Reserver — booked the courts and paid the booking fee</div>
+              <select value={effEv.reserverId??""} onChange={e=>act.updateFinance({reserverId:e.target.value===""?null:e.target.value==="none"?"none":parseInt(e.target.value)})} className="po-inp" style={{...selStyle,marginBottom:4}}>
+                <option value="">Same person as the payer</option>
+                <option value="none">No reserver (nobody pre-paid a booking fee)</option>
+                {attendeeIds.map(uid=>{const u=users.find(u=>u.id===uid);return u?<option key={uid} value={uid}>{u.nickname}</option>:null;})}
+              </select>
+              {reserverId!=null&&<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <span style={{fontSize:11,color:"var(--po-dim)",flexShrink:0}}>Booking fee paid (EGP)</span>
+                <input type="number" key={`rf-${effEv.reservationPaid??"auto"}-${extraFeeTotal}`} defaultValue={effEv.reservationPaid??Math.round(extraFeeTotal)} className="po-inp"
+                  style={{flex:1,minWidth:0,background:"var(--po-inp)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"6px 10px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box"}}
+                  onBlur={e=>{const v=e.target.value.trim();act.updateFinance({reservationPaid:v===""||parseFloat(v)===Math.round(extraFeeTotal)?null:parseFloat(v)||0});}}
+                  onKeyDown={e=>e.key==="Enter"&&e.target.blur()}/>
+              </div>}
+              <div style={{fontSize:10,color:"var(--po-dim)",marginBottom:10}}>{reserverId!=null?`Defaults to the Extra Fee total (${Math.round(extraFeeTotal)} EGP). It's taken off what goes to the venue and off the reserver's own share.`:"No booking fee is taken off — the venue gets the full total."}</div>
             </>;
           })()}
           <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
             <span style={{fontSize:12,color:"var(--po-dim)"}}>Collected so far</span>
             <span style={{fontSize:13,fontWeight:700,color:"#34D399"}}>{paidCnt}/{owingCnt} paid · {collectedSoFar}/{totC} EGP{directCnt>0?` · ${directCnt} paid direct`:""}</span>
           </div>
+          {reservationFee>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
+            <span style={{fontSize:12,color:"var(--po-dim)"}}>To the venue</span>
+            <span style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{venueDue} EGP <span style={{fontWeight:400,fontSize:11,color:"var(--po-dim)"}}>({totC} − {reservationFee} booking fee)</span></span>
+          </div>}
           {splitRoles&&<div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"0.5px solid var(--po-bdr)"}}>
             <span style={{fontSize:12,color:"var(--po-dim)"}}>Sent to {users.find(u=>u.id===venuePayerId)?.nickname||"the payer"}</span>
             <span style={{fontSize:13,fontWeight:700,color:"var(--po-text)"}}>{sentToPayer} EGP{dueToVenuePayer>0?` · ${dueToVenuePayer} still to send`:""}</span>
@@ -15726,9 +15761,10 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                   <span onClick={()=>onViewProfile&&onViewProfile(u.id)} style={{fontSize:13,fontWeight:600,color:"var(--po-text)",cursor:onViewProfile?"pointer":"default"}}>{u.nickname}</span>
                   {isPayer&&<Bdg label="💰 Collector" color="#F59E0B"/>}
                   {isVenuePayer&&<Bdg label="🏟 Pays venue" color="#1F6FEB"/>}
+                  {uid===reserverId&&reservationFee>0&&<Bdg label="📅 Reserver" color="#A78BFA"/>}
                   {isDirect&&<Bdg label="↪ Direct" color="#38BDF8"/>}
                 </div>
-                <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":isVenuePayer?"Pays the venue — nothing to chase":isDirect?`Paid ${cpp} EGP directly — no need to chase`:`${cpp} EGP`}</div>
+                <div style={{fontSize:11,color:"var(--po-dim)"}}>{isEx?"Exempt from payment":isPayer?"Collects from the rest":isVenuePayer?"Pays the venue — nothing to chase":isDirect?`Paid ${cpp} EGP directly — no need to chase`:uid===reserverId&&reservationFee>0?`${dueOf(uid)} EGP (${cpp} − ${reservationFee} booking fee paid)`:`${cpp} EGP`}</div>
               </div>
               {/* An explicit picker (kebab menu, 4 named options), not a tap-to-cycle button —
                   every choice here is a fixed target, so there's no "compute next from current"

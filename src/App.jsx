@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.17";
+const APP_VERSION = "V0.17.18";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -15111,6 +15111,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
             {showHeaderMenu&&<div style={{position:"absolute",top:36,right:0,zIndex:10,width:200,padding:6,background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:12,boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
               <ListRow icon="✏️" label="Edit Event" onClick={()=>{onEditEvent();setShowHeaderMenu(false);}}/>
               <ListRow icon="⧉" label="Duplicate" onClick={()=>{onDuplicateEvent();setShowHeaderMenu(false);}}/>
+              {/* Cancel Event moved here from the button under the event card (admin request
+                  2026-10-26) — a rare, destructive action doesn't need a permanent button next to
+                  Close. Same rules as before: only while registration is open, not in a Practice
+                  Session. The cancel modal itself (reason picker) is unchanged. */}
+              {!sim&&!isCompleted&&!isCancelled&&effEv.status==="registration_open"&&<ListRow icon="❌" label="Cancel Event" danger onClick={()=>{setShowHeaderMenu(false);setShowCancelModal(true);}}/>}
               {ev.archived&&<ListRow icon="📤" label="Unarchive" onClick={()=>{onUnarchive();setShowHeaderMenu(false);}}/>}
               {canDeleteOrArchive&&(!isCompleted||(isCompleted&&!ev.archived))&&<div style={{height:1,background:"var(--po-bdr)",margin:"4px 2px"}}/>}
               {canDeleteOrArchive&&!isCompleted&&<ListRow icon="🗑" label="Delete Event" danger onClick={()=>{if(window.confirm(`Delete "${ev.name}" (#${ev.id})?\n\nThis hides it from everyone in this community immediately — treat it like a permanent action. (Only the platform admin can see and restore deleted events if this was a mistake.)`)){onDelete();setShowHeaderMenu(false);}}}/>}
@@ -15242,10 +15247,6 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
                 performance". Shortened to "Perf-Based" here; "Court-Based" above wasn't
                 flagged so it's untouched. */}
             {isPlatformAdmin&&(isCI||(isCT&&plan?.format==="ladder"))&&<Btn label={(effEv.sport||DEFAULT_SPORT)==="Padel Tennis"?"🧪 Close (Perf-Based)":"🧪 Close with Output PES (Performance Based)"} onClick={()=>{if(window.confirm(`Close "${ev.name}" using Output PES (Entry USR + performance delta) instead of the standard court-based formula?\n\nThis is what actually gets written to USR history for this event — same as a normal close, just computed differently. Freezes final rankings permanently, same as the standard close.`))act.closeEvent("new");}} style={{background:"#A78BFA1a",border:"0.5px solid #A78BFA66",color:"#A78BFA",padding:"8px 6px",fontSize:11.5}}/>}
-            {/* Admin request (2026-09-27): an event that never actually happened — distinct from
-                Close, which freezes real results into history. Plain text style (not `danger`'s
-                filled red) so it doesn't visually compete with Close as "the" primary action. */}
-            <Btn label="❌ Cancel Event" onClick={()=>setShowCancelModal(true)} style={{color:"#EF4444",padding:"8px 6px",fontSize:11.5}}/>
           </div>}
         </div>
         {isAdmin&&sim&&<div style={{marginTop:6,padding:"9px",textAlign:"center",background:"#6366F111",border:"0.5px solid #6366F144",borderRadius:8,fontSize:12,color:"#A5B4FC"}}>🧪 Exit Practice Session to close this event for real</div>}

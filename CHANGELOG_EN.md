@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.17 (current) — Search is back in the event's Players tab
+## V0.17.18 (current) — "Cancel Event" moved into the event's ⋮ menu
+
+- **Admin request (2026-10-26):** the "❌ Cancel Event" button that sat under the event card, right next to Close, is now in the ⋮ menu at the top of the event (below Edit and Duplicate).
+- Same rules and the same reason picker as before: it only appears while registration is open, and not in a Practice Session. The Close button(s) and "Cancel my registration" stay where they were.
+
+---
+
+## V0.17.17 — Search is back in the event's Players tab
 
 - **Admin request (2026-10-26):** the search box that used to sit at the top of an event's Players tab had disappeared, which made finding one player among 15-18 slow.
 - It's back, with the same behavior as the community members search: type part of a nickname or full name and both the Registered list and the Waitlist narrow down ("Registered (1 of 19)"). It shows once the event has more than 6 players, and a "No players match" message appears when nothing fits.

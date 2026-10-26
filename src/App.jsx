@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.16";
+const APP_VERSION = "V0.17.17";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -13864,6 +13864,12 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
   const totalR = Math.max(1, Math.round(eventBookingMins/(roundDur||20)));
   const [showAddM,setSAM]  = useState(false);
   const [addMemberSearch,setAddMemberSearch] = useState("");
+  // Players-tab search (admin request 2026-10-26: it used to exist and went missing) — same
+  // nickname/full-name matching the other member searches use, applied to both the registered
+  // list and the waitlist.
+  const [playerSearch,setPlayerSearch] = useState("");
+  const playerQ = playerSearch.trim().toLowerCase();
+  const matchesPlayerQ = uid => { if(!playerQ) return true; const uu=users.find(x=>x.id===uid); return !!uu&&((uu.nickname||"").toLowerCase().includes(playerQ)||(uu.name||"").toLowerCase().includes(playerQ)); };
   const [inviteUrl,setInviteUrl] = useState(null);
   const [showHeaderMenu,setShowHeaderMenu] = useState(false);
   const [openPlayerMenu,setOpenPlayerMenu] = useState(null); // userId whose Players-tab action menu is open
@@ -15380,8 +15386,11 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         // never the display order itself once numbers are stamped. Anyone not yet numbered (a brief
         // window before the sync effect above catches up) falls back to array order, at the end.
         const activeRegs=capActiveRegs.filter(r=>!ctOddWaitlistedIds.has(r.userId)).sort((a,b)=>(a.confirmOrder??Infinity)-(b.confirmOrder??Infinity));
-        return <><ST>Registered ({activeRegs.length})</ST>
-        {activeRegs.map(r=>{
+        return <>
+        {(activeRegs.length+capWaitlistedRegs.length>6||playerQ)&&<input value={playerSearch} onChange={e=>setPlayerSearch(e.target.value)} placeholder="🔍 Search players..." className="po-inp" style={{width:"100%",background:"var(--po-card)",border:"0.5px solid var(--po-bdr)",borderRadius:8,padding:"9px 12px",color:"var(--po-text)",fontSize:13,boxSizing:"border-box",marginBottom:12}}/>}
+        <ST>Registered ({playerQ?`${activeRegs.filter(r=>matchesPlayerQ(r.userId)).length} of ${activeRegs.length}`:activeRegs.length})</ST>
+        {playerQ&&![...activeRegs,...capWaitlistedRegs].some(r=>matchesPlayerQ(r.userId))&&<Card><div style={{textAlign:"center",color:"var(--po-dim)",fontSize:13,padding:"12px 0"}}>No players match "{playerSearch}"</div></Card>}
+        {activeRegs.filter(r=>matchesPlayerQ(r.userId)).map(r=>{
         const u=users.find(u=>u.id===r.userId);if(!u)return null;
         const ci2=effEv.checkedIn.includes(u.id);
         const isRetired=(effEv.retiredIds||[]).includes(u.id);
@@ -15565,7 +15574,7 @@ function EvDetail({ev,comm,comms,users,venues,me,uidLinks,onBack,onOpenCommunity
         {/* "Promote" (out-of-turn override) only ever shows when a seat is genuinely free —
             there's no room to slip someone in without bumping an already-active player, which
             this action deliberately never does (admin request, 2026-09-14). */}
-        {[...capWaitlistedRegs].sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
+        {[...capWaitlistedRegs].filter(r=>matchesPlayerQ(r.userId)).sort((a,b)=>(a.waitlistOrder??Infinity)-(b.waitlistOrder??Infinity)).map((r)=>{
           const u=users.find(u=>u.id===r.userId); if(!u) return null;
           const wMStatus=comm.members?.find(m=>m.userId===u.id)?.status;
           return <Card key={r.userId} style={{marginBottom:8,borderColor:"#F59E0B66",background:"#F59E0B08"}}>

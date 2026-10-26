@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.16 (current) — Pay Now / Pay To buttons at the top of the Financial tab, with separate Collector and Payer
+## V0.17.17 (current) — Search is back in the event's Players tab
+
+- **Admin request (2026-10-26):** the search box that used to sit at the top of an event's Players tab had disappeared, which made finding one player among 15-18 slow.
+- It's back, with the same behavior as the community members search: type part of a nickname or full name and both the Registered list and the Waitlist narrow down ("Registered (1 of 19)"). It shows once the event has more than 6 players, and a "No players match" message appears when nothing fits.
+
+---
+
+## V0.17.16 — Pay Now / Pay To buttons at the top of the Financial tab, with separate Collector and Payer
 
 - **Admin request (2026-10-21):** the small "InstaPay" link buried further down the Financial tab was easy to miss. The payment action is now the first thing on the tab: a large solid-blue button with the destination in small text underneath. "Share Payment Info" stays small, right below it.
 - **Two roles now:** the **Collector** collects from the players, the **Payer** pays the venue. By default they are the same person (the admin), exactly as before. Set both in the Settlement card; the dropdowns only list players who have an InstaPay link on their profile.

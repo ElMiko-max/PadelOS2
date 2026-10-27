@@ -246,7 +246,7 @@ const isSubscriptionInGrace = (u, subscriptionSettings) => {
 //   MAJOR   — stays 0 until v1.0 is formally declared launch-ready, then becomes 1
 //   SESSION — increments once per work session (each time we sit down to make changes)
 //   PATCH   — increments on every upload/push within that session, resets to 0 on a new session
-const APP_VERSION = "V0.17.18";
+const APP_VERSION = "V0.17.19";
 // Fallback only, used until TopBar's fetch of releases/latest.json resolves (or if it fails,
 // e.g. offline). The real source of truth is that JSON file, written alongside the APK itself
 // at delivery time — see CLAUDE.md §5 and §7 — so this constant can go stale without breaking
@@ -9252,7 +9252,16 @@ export default function Matchkeeper() {
   // footprint at the community level if the invitee wasn't already a member of any status —
   // a name that exists for reference with no extra visibility, upgradeable later via the
   // existing "Make Member" action, rather than a total stranger with zero community trace.
+  // Shows the same blocking "Registering…" overlay as the "I'm In" button while the server
+  // confirms (registeringEventId drives it) — an invite-link registration used to wait on the
+  // registerForEvent call with nothing on screen (admin report 2026-10-27).
   const registerViaInvite=async (cid,eid,uid)=>{
+    const self = uid===me.id;
+    if(self) setRegisteringEventId(eid);
+    try { await registerViaInviteInner(cid,eid,uid); }
+    finally { if(self) setRegisteringEventId(null); }
+  };
+  const registerViaInviteInner=async (cid,eid,uid)=>{
     const ev=getEv(cid,eid);
     // Confirmed live: someone opened a stale invite link the day AFTER the event had already
     // been closed (event #50) — this path had no status check at all, so it silently added a

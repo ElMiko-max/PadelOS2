@@ -4,7 +4,14 @@ English mirror of `CHANGELOG.md`, written for the in-app "Version Updates" scree
 
 ---
 
-## V0.17.18 (current) — "Cancel Event" moved into the event's ⋮ menu
+## V0.17.19 (current) — "Registering…" screen now also shows for invite-link registration
+
+- **Admin request (2026-10-27):** the waiting screen (spinner + "Registering…") only showed for the "I'm In" button. It now also shows when a player registers through an invite link, and closes by itself once the server confirms their spot and the toast appears.
+- No change to the registration logic itself, or to admins adding players.
+
+---
+
+## V0.17.18 — "Cancel Event" moved into the event's ⋮ menu
 
 - **Admin request (2026-10-26):** the "❌ Cancel Event" button that sat under the event card, right next to Close, is now in the ⋮ menu at the top of the event (below Edit and Duplicate).
 - Same rules and the same reason picker as before: it only appears while registration is open, and not in a Practice Session. The Close button(s) and "Cancel my registration" stay where they were.
